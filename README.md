@@ -1,19 +1,23 @@
-# inference-perf
+# Inference Perf
 
-GenAI inference performance benchmarking tool.
+The Inference Perf project aims to provide GenAI inference performance benchmarking tool. It came out of [wg-serving](https://github.com/kubernetes/community/tree/master/wg-serving) and is sponsored by [SIG Scalability](https://github.com/kubernetes/community/blob/master/sig-scalability/README.md#inference-perf). See the [proposal](https://github.com/kubernetes-sigs/wg-serving/tree/main/proposals/013-inference-perf) for more info.
 
-## Community, discussion, contribution, and support
+## Status
 
-Learn how to engage with the Kubernetes community on the [community page](http://kubernetes.io/community/).
+This project is currently in development.
 
-You can reach the maintainers of this project at:
+## Getting Started
 
-- [Slack](https://kubernetes.slack.com/messages/sig-scalability)
-- [Mailing List](https://groups.google.com/forum/#!forum/kubernetes-sig-scale)
+TBA
+
+## Contributing
+
+Our community meeting is weekly at Th 11:30 PDT; [zoom link here](https://zoom.us/j/9955436256?pwd=Z2FQWU1jeDZkVC9RRTN4TlZyZTBHZz09).
+
+We currently utilize the [#wg-serving](https://kubernetes.slack.com/?redir=%2Fmessages%2Fwg-serving) Slack channel for communications.
+
+Contributions are welcomed, thanks for joining us!
 
 ### Code of conduct
 
 Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
-
-[owners]: https://git.k8s.io/community/contributors/guide/owners.md
-[Creative Commons 4.0]: https://git.k8s.io/website/LICENSE
