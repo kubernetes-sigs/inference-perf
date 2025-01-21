@@ -1,4 +1,4 @@
-name: Python Formatting Check
+name: Python Formatting and Type Checks
 
 on:
   push:
