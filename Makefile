@@ -22,7 +22,7 @@ type-check:
 	$(VENV)/bin/mypy --strict ./inference_perf
 
 # Check for and install dependencies
-.PHONY: deps
+.PHONY: all-deps
 deps:
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
@@ -33,4 +33,4 @@ deps:
 	$(VENV)/bin/pip install -r requirements.txt
 
 .PHONY: check
-check: deps lint type-check
+check: all-deps lint type-check
