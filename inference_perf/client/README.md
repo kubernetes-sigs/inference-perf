@@ -1,3 +1,3 @@
 # Custom Clients
 
-All custom clients are organized in this directory including model server and metrics clients. The directory structure is organized to reflect relationships/commonalities between model servers.
+All custom clients are organized in this directory including model server and metrics clients. The directory structure is organized to reflect relationships/commonalities between clients.
