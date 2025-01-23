@@ -59,8 +59,8 @@ class Client(ABC):
     @abstractmethod
     def summary(self) -> Any:
         """
-        Represents summary data derived from the inputs and outputs which depends on their specific data types.
-        Subclasses should implement this at the client data type level (e.g., text-to-text, text-to-image).
+        Returns summary data derived from all inputs and outputs, depends on the clients input and output data types and as such
+        subclasses should implement this at the client data type level (e.g., text-to-text, text-to-image).
         """
         pass
 
