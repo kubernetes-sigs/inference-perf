@@ -23,7 +23,7 @@ type-check:
 
 # Check for and install dependencies
 .PHONY: all-deps
-deps:
+all-deps:
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
 	    python3 -m venv $(VENV); \
