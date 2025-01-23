@@ -52,7 +52,7 @@ class ErrorsReport:
         self.unknown_errors += report.unknown_errors
 
 
-class Client(ABC):
+class Model_Server_Client(ABC):
     # The client will collect a summary of all observed errors
     Errors: ErrorsReport
 
