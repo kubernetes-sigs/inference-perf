@@ -72,7 +72,7 @@ class Client(ABC):
         pass
 
     @abstractmethod
-    def describe_server_metrics(self) -> list[str]:
+    def list_model_server_metrics(self) -> list[str]:
         """
         Returns list of model server metrics of interest.
         """
