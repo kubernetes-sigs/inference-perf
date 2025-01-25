@@ -1,3 +1,10 @@
 # Ignore all venv directories
 .venv/
 **/.venv/
+
+# pycache
+__pycache__
+
+# tmp files
+tmp/*
+!tmp/.gitkeep
