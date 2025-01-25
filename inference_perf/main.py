@@ -11,3 +11,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from loadgen import LoadGenerator
+import subprocess
+
+
+class InferencePerfRunner:
+    # Configuration and benchmarking setup
+    def __init__(self) -> None:
+        self.load_script = LoadGenerator().generate(url="http://test.k6.io")
+
+    # Local testing with k6 executable
+    def run_local(self) -> None:
+        filename = "tmp/script.js"
+        with open(filename, "w") as scriptfile:
+            scriptfile.write(self.load_script)
+
+        subprocess.run(["k6", "run", filename])
+
+    # Distributed testing with Kubernetes
+    def run_distributed_k8s(self) -> None:
+        pass
+
+
+if __name__ == "__main__":
+    InferencePerfRunner().run_local()
