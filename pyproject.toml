@@ -11,13 +11,11 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 
 
-[tool.pdm]
-distribution = true
-
 [dependency-groups]
 dev = [
     "mypy>=1.14.1",
     "ruff>=0.9.4",
+    "pre-commit>=4.1.0",
 ]
 
 [tool.ruff]
@@ -63,3 +61,7 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[tool.pdm]
+distribution = true
+
