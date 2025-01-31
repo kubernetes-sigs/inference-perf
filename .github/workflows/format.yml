@@ -8,7 +8,7 @@ on:
   pull_request:
 
 jobs:
-  black-format-check:
+  format-check:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
