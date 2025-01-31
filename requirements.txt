@@ -1,2 +1,1 @@
--r requirements/build.txt
--r requirements/run.txt
+-e . # Install requirements from pyproject

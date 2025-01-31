@@ -1,0 +1,22 @@
+[project]
+name = "inference-perf"
+version = "0.0.1"
+description = "A GenAI inference performance benchmarking tool."
+authors = []
+dependencies = [
+    "aiohttp>=3.11.11",
+]
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+
+
+[tool.pdm]
+distribution = true
+
+[dependency-groups]
+dev = [
+    "flake8>=7.1.1",
+    "black>=25.1.0",
+    "mypy>=1.14.1",
+]
