@@ -1,0 +1,20 @@
+repos:
+- repo: https://github.com/pdm-project/pdm
+  rev: 2.22.3
+  hooks:
+    - id: pdm-lock-check
+      name: check lock file matches pyproject
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.9.4
+  hooks:
+    - id: ruff
+      name: run the linter
+      args: [ --fix ]
+    - id: ruff-format
+      name: run the formatter
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.14.1
+  hooks:
+    - id: mypy
+      name: run static type check
+      args: [--strict, --ignore-missing-imports]
