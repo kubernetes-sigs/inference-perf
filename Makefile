@@ -38,11 +38,11 @@ install-dev-deps: install-deps
 	$(VENV)/bin/pip install -e .[dev]
 
 .PHONY: validate
-validate: all-deps lint type-check
+validate: install-dev-deps lint type-check
 
 .PHONY: test
-test: all-deps unit-test
+test: install-dev-deps unit-test
 
 .PHONY: unit-test
-unit-test: all-deps
+unit-test: install-dev-deps
 	$(VENV)/bin/pytest
