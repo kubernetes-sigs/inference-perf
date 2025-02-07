@@ -20,7 +20,10 @@ type-check:
 
 # Check for and install dependencies
 .PHONY: all-deps
-all-deps:
+all-deps: install-deps install-dev-deps
+
+.PHONY:
+install-deps:
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
 	    python3 -m venv $(VENV); \
@@ -29,5 +32,17 @@ all-deps:
 	$(VENV)/bin/pip install --upgrade pip
 	$(VENV)/bin/pip install -e .
 
-.PHONY: check
-check: all-deps lint type-check
+.PHONY:
+install-dev-deps: install-deps
+	@echo "Installing development dependencies..."
+	$(VENV)/bin/pip install -e .[dev]
+
+.PHONY: validate
+validate: all-deps lint type-check
+
+.PHONY: test
+test: install-dev-deps unit-test
+
+.PHONY: unit-test
+unit-test: install-dev-deps
+	$(VENV)/bin/pytest

@@ -1,4 +1,4 @@
-name: Python Linting and Type Checks
+name: Unit Tests
 
 on:
   push:
@@ -19,4 +19,4 @@ jobs:
           python-version: '3.13'
       - name: Do Linting and Type Checks
         run: |
-          make validate
+          make unit-test
