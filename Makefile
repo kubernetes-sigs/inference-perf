@@ -41,8 +41,8 @@ install-dev-deps: install-deps
 validate: all-deps lint type-check
 
 .PHONY: test
-test: install-dev-deps unit-test
+test: all-deps unit-test
 
 .PHONY: unit-test
-unit-test: install-dev-deps
+unit-test: all-deps
 	$(VENV)/bin/pytest
