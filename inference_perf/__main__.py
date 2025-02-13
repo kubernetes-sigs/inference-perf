@@ -13,11 +13,21 @@
 # limitations under the License.
 from loadgen import LoadGenerator, LoadType
 from dataset import MockDataGenerator
-from client import MockClient
+from client import MockModelServerClient
+from reportgen import MockReportGenerator
 
 if __name__ == "__main__":
-    client = MockClient(uri="0.0.0.0:0")
+    # Setup Model Server Client
+    client = MockModelServerClient(uri="0.0.0.0:0")
 
+    # Define LoadGenerator
     loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
 
+    # Define ReportGenerator
+    reportgen = MockReportGenerator()
+
+    # Run Perf Test
     loadgen.run(client)
+
+    # Generate Report
+    reportgen.generate_report()

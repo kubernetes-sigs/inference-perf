@@ -21,13 +21,13 @@ class Client(ABC):
         pass
 
     @abstractmethod
-    def process_request(selff, data: InferenceData) -> None:
+    def process_request(self, data: InferenceData) -> None:
         raise NotImplementedError
 
 
-class MockClient(Client):
+class MockModelServerClient(Client):
     def __init__(self, uri: str) -> None:
         self.uri = uri
 
     def process_request(self, data: InferenceData) -> None:
-        print(data.system_prompt)
+        print("Processing request - " + data.system_prompt)
