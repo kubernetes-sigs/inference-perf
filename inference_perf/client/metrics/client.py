@@ -1,4 +1,7 @@
-from abc import ABC
+from abc import ABC, abstractmethod
+
 
 class Metrics_Client(ABC):
-    pass
+    @abstractmethod
+    def __init__(self):
+        pass

@@ -11,3 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from loadgen import LoadGenerator, LoadType
+from dataset import MockDataGenerator
+from client import TGIClient
+
+if __name__ == "__main__":
+    client = TGIClient(uri="0.0.0.0:0")
+
+    loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
+
+    loadgen.run(client)
