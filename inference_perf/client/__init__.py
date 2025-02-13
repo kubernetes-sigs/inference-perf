@@ -13,7 +13,6 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from dataset import InferenceData
-import time
 
 
 class Client(ABC):
@@ -26,10 +25,9 @@ class Client(ABC):
         raise NotImplementedError
 
 
-class TGIClient(Client):
+class MockClient(Client):
     def __init__(self, uri: str) -> None:
         self.uri = uri
 
     def process_request(self, data: InferenceData) -> None:
-        time.sleep(5)
         print(data.system_prompt)

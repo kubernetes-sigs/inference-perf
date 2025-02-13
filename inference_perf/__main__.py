@@ -13,10 +13,10 @@
 # limitations under the License.
 from loadgen import LoadGenerator, LoadType
 from dataset import MockDataGenerator
-from client import TGIClient
+from client import MockClient
 
 if __name__ == "__main__":
-    client = TGIClient(uri="0.0.0.0:0")
+    client = MockClient(uri="0.0.0.0:0")
 
     loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
 
