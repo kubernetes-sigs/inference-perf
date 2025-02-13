@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 
 
 class Metric(BaseModel):
-    metric_name: str
+    name: str
 
 
 class ReportGenerator(ABC):
@@ -41,4 +41,5 @@ class MockReportGenerator(ReportGenerator):
         self.metrics.append(metric)
 
     def generate_report(self) -> None:
-        [print(metric) for metric in self.metrics]
+        print("\n\nGenerating Report ..")
+        print("Report: Total Requests = " + str(len(self.metrics)))

@@ -13,12 +13,17 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from dataset import InferenceData
+from reportgen import ReportGenerator, Metric
 
 
 class Client(ABC):
     @abstractmethod
     def __init__(self, *args) -> None:
         pass
+
+    @abstractmethod
+    def set_report_generator(self, reportgen: ReportGenerator) -> None:
+        self.reportgen = reportgen
 
     @abstractmethod
     def process_request(self, data: InferenceData) -> None:
@@ -29,5 +34,9 @@ class MockModelServerClient(Client):
     def __init__(self, uri: str) -> None:
         self.uri = uri
 
+    def set_report_generator(self, reportgen: ReportGenerator) -> None:
+        self.reportgen = reportgen
+
     def process_request(self, data: InferenceData) -> None:
         print("Processing request - " + data.system_prompt)
+        self.reportgen.collect_metrics(Metric(name=data.system_prompt))

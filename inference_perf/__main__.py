@@ -25,6 +25,7 @@ if __name__ == "__main__":
 
     # Define ReportGenerator
     reportgen = MockReportGenerator()
+    client.set_report_generator(reportgen)
 
     # Run Perf Test
     loadgen.run(client)

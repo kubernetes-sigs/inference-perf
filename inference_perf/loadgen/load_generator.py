@@ -35,13 +35,12 @@ class LoadGenerator:
             raise
 
     def run(self, client: Client) -> None:
+        print("Run started")
         start_time = time.time()
         end_time = start_time + self.duration
-        for index, (data, time_index) in enumerate(
-            zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)
-        ):
+        for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)):
             if time_index < end_time:
                 client.process_request(data)
             else:
-                print("Run complete. Total requests = " + str(index + 1))
+                print("Run complete")
                 break
