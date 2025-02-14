@@ -13,11 +13,26 @@
 # limitations under the License.
 from loadgen import LoadGenerator, LoadType
 from dataset import MockDataGenerator
-from client import MockModelServerClient
-from reportgen import MockReportGenerator
+from client import Client, MockModelServerClient
+from reportgen import ReportGenerator, MockReportGenerator
 
-if __name__ == "__main__":
-    # Setup Model Server Client
+
+class InferencePerfRunner:
+    def __init__(self, client: Client, loadgen: LoadGenerator, reportgen: ReportGenerator) -> None:
+        self.client = client
+        self.loadgen = loadgen
+        self.reportgen = reportgen
+        self.client.set_report_generator(self.reportgen)
+
+    def run(self) -> None:
+        self.loadgen.run(self.client)
+
+    def generate_report(self) -> None:
+        self.reportgen.generate_report()
+
+
+def main():
+    # Define Model Server Client
     client = MockModelServerClient(uri="0.0.0.0:0")
 
     # Define LoadGenerator
@@ -25,10 +40,16 @@ if __name__ == "__main__":
 
     # Define ReportGenerator
     reportgen = MockReportGenerator()
-    client.set_report_generator(reportgen)
+
+    # Setup Perf Test Runner
+    perfrunner = InferencePerfRunner(client, loadgen, reportgen)
 
     # Run Perf Test
-    loadgen.run(client)
+    perfrunner.run()
 
     # Generate Report
-    reportgen.generate_report()
+    perfrunner.generate_report()
+
+
+if __name__ == "__main__":
+    main()
