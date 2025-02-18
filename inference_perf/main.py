@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from loadgen import LoadGenerator, LoadType
-from datagen import MockDataGenerator
-from client import ModelServerClient, MockModelServerClient
-from reportgen import ReportGenerator, MockReportGenerator
+from inference_perf.loadgen import LoadGenerator, LoadType
+from inference_perf.datagen import MockDataGenerator
+from inference_perf.client import ModelServerClient, MockModelServerClient
+from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 
 
 class InferencePerfRunner:
@@ -31,7 +31,7 @@ class InferencePerfRunner:
         self.reportgen.generate_report()
 
 
-def main() -> None:
+def main_cli() -> None:
     # Define Model Server Client
     client = MockModelServerClient(uri="0.0.0.0:0")
 
@@ -52,4 +52,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main_cli()

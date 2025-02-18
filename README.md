@@ -10,24 +10,17 @@ This project is currently in development.
 
 [PDM Python Package Manager](https://pdm-project.org/latest/) is utilized in this repository for dependecy management.
 
-- Clone repo and activate environment
+- Setup virtual environment with `pdm` and install dependencies
 
-```
-pdm venv create --with venv 3.12
-eval $(pdm venv activate in-project)
-```
+    ```
+    make all-deps
+    ```
 
-- Install dependncy packages
+- Run inference-perf CLI
 
-```
-pdm sync
-```
-
- - Run package
-
- ```
-python inference_perf
- ```
+    ```
+    pdm run inference-perf
+    ```
 
 ## Contributing
 

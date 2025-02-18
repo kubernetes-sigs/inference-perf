@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from datagen import InferenceData
-from reportgen import ReportGenerator
 from typing import Tuple
+from inference_perf.datagen import InferenceData
+from inference_perf.reportgen import ReportGenerator
 
 
 class ModelServerClient(ABC):

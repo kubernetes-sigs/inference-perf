@@ -13,8 +13,8 @@
 # limitations under the License.
 from enum import Enum
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
-from datagen import DataGenerator
-from client import ModelServerClient
+from inference_perf.datagen import DataGenerator
+from inference_perf.client import ModelServerClient
 import time
 
 

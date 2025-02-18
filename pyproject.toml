@@ -12,6 +12,8 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 
+[project.scripts]
+inference-perf = "inference_perf:main_cli"
 
 [dependency-groups]
 dev = [
