@@ -1,4 +1,4 @@
-# Copyright 2025
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,3 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pydantic import BaseModel
+from abc import ABC, abstractmethod
+from typing import Generator, Tuple
+
+
+class InferenceData(BaseModel):
+    system_prompt: str
+
+
+class DataGenerator(ABC):
+    """Abstract base class for data generators."""
+
+    @abstractmethod
+    def __init__(self, *args: Tuple[int, ...]) -> None:
+        pass
+
+    @abstractmethod
+    def get_data(self) -> Generator[InferenceData, None, None]:
+        raise NotImplementedError

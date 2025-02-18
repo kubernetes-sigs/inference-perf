@@ -8,7 +8,26 @@ This project is currently in development.
 
 ## Getting Started
 
-TBA
+[PDM Python Package Manager](https://pdm-project.org/latest/) is utilized in this repository for dependecy management.
+
+- Clone repo and activate environment
+
+```
+pdm venv create --with venv 3.12
+eval $(pdm venv activate in-project)
+```
+
+- Install dependncy packages
+
+```
+pdm sync
+```
+
+ - Run package
+
+ ```
+python inference_perf
+ ```
 
 ## Contributing
 

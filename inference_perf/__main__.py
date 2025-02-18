@@ -1,4 +1,4 @@
-# Copyright 2025
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from loadgen import LoadGenerator, LoadType
-from dataset import MockDataGenerator
-from client import Client, MockModelServerClient
+from datagen import MockDataGenerator
+from client import ModelServerClient, MockModelServerClient
 from reportgen import ReportGenerator, MockReportGenerator
 
 
 class InferencePerfRunner:
-    def __init__(self, client: Client, loadgen: LoadGenerator, reportgen: ReportGenerator) -> None:
+    def __init__(self, client: ModelServerClient, loadgen: LoadGenerator, reportgen: ReportGenerator) -> None:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
@@ -31,7 +31,7 @@ class InferencePerfRunner:
         self.reportgen.generate_report()
 
 
-def main():
+def main() -> None:
     # Define Model Server Client
     client = MockModelServerClient(uri="0.0.0.0:0")
 

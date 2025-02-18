@@ -1,4 +1,4 @@
-# Copyright 2025
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional
+from typing import Generator, Optional, Tuple
 import numpy as np
 
 
@@ -21,7 +21,7 @@ class LoadTimer(ABC):
     """Abstract base class for load generators."""
 
     @abstractmethod
-    def __init__(self, *args) -> None:
+    def __init__(self, *args: Tuple[int, ...]) -> None:
         # TODO: Commmon functionallity
         pass
 

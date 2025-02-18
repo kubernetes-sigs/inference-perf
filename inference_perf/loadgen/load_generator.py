@@ -1,4 +1,4 @@
-# Copyright 2025
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from .load_timer import ConstantLoadTimer, PoissonLoadTimer
-from dataset import DataGenerator
-from client import Client
+from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
+from datagen import DataGenerator
+from client import ModelServerClient
 import time
 
 
@@ -27,6 +27,7 @@ class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_type: LoadType, rate: float, duration: float) -> None:
         self.datagen = datagen
         self.duration = duration
+        self.timer: LoadTimer
         if load_type == LoadType.CONSTANT:
             self.timer = ConstantLoadTimer(rate=rate)
         elif load_type == LoadType.POISSON:
@@ -34,7 +35,7 @@ class LoadGenerator:
         else:
             raise
 
-    def run(self, client: Client) -> None:
+    def run(self, client: ModelServerClient) -> None:
         print("Run started")
         start_time = time.time()
         end_time = start_time + self.duration
