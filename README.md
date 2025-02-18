@@ -8,7 +8,19 @@ This project is currently in development.
 
 ## Getting Started
 
-TBA
+[PDM Python Package Manager](https://pdm-project.org/latest/) is utilized in this repository for dependecy management.
+
+- Setup virtual environment with `pdm` and install dependencies
+
+    ```
+    make all-deps
+    ```
+
+- Run inference-perf CLI
+
+    ```
+    pdm run inference-perf
+    ```
 
 ## Contributing
 

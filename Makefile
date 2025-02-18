@@ -23,11 +23,10 @@ type-check:
 all-deps:
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
-	    python3 -m venv $(VENV); \
+	    pdm venv create --with venv 3.12; \
 	fi
 	@echo "Activating virtual environment and installing dependencies..."
-	$(VENV)/bin/pip install --upgrade pip
-	$(VENV)/bin/pip install -e .
+	pdm sync
 
 .PHONY: check
 check: all-deps lint type-check

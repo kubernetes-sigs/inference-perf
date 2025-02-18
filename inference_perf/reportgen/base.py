@@ -11,3 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pydantic import BaseModel
+from abc import ABC, abstractmethod
+from typing import Tuple
+
+
+class Metric(BaseModel):
+    name: str
+
+
+class ReportGenerator(ABC):
+    @abstractmethod
+    def __init__(self, *args: Tuple[int, ...]) -> None:
+        pass
+
+    @abstractmethod
+    def collect_metrics(self, metric: Metric) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def generate_report(self) -> None:
+        raise NotImplementedError

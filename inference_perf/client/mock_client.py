@@ -11,3 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.datagen import InferenceData
+from inference_perf.reportgen import ReportGenerator, Metric
+from .base import ModelServerClient
+
+
+class MockModelServerClient(ModelServerClient):
+    def __init__(self, uri: str) -> None:
+        self.uri = uri
+
+    def set_report_generator(self, reportgen: ReportGenerator) -> None:
+        self.reportgen = reportgen
+
+    def process_request(self, data: InferenceData) -> None:
+        print("Processing request - " + data.system_prompt)
+        self.reportgen.collect_metrics(Metric(name=data.system_prompt))
