@@ -14,15 +14,34 @@
 from inference_perf.datagen import InferenceData
 from inference_perf.reportgen import ReportGenerator, Metric
 from .base import ModelServerClient
+import aiohttp
+import json
 
+# Start docker with 
+# docker run --runtime nvidia --gpus all \
+#     -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     -p 8000:8000 --ipc=host \
+#     vllm/vllm-openai:latest \
+#     --model HuggingFaceTB/SmolLM2-135M-Instruct \
+#     --max-model-len 100 --max-num-seqs 2
 
-class MockModelServerClient(ModelServerClient):
+class vLLMModelServerClient(ModelServerClient):
     def __init__(self, uri: str) -> None:
-        self.uri = uri
+        self.uri = uri+"/v1/completions"
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
     async def process_request(self, data: InferenceData) -> None:
         print("Processing request - " + data.system_prompt)
-        self.reportgen.collect_metrics(Metric(name=data.system_prompt))
+        payload = {
+            "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+            "prompt": data.system_prompt,
+            "max_tokens": 20
+        }
+        headers = {'Content-Type': 'application/json'}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.uri,headers=headers,data=json.dumps(payload)) as response:
+                content = await response.json()
+                print(content["usage"])
+                self.reportgen.collect_metrics(Metric(name=data.system_prompt))
