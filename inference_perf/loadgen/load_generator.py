@@ -15,6 +15,7 @@ from enum import Enum
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client import ModelServerClient
+from asyncio import TaskGroup, sleep
 import time
 
 
@@ -35,13 +36,20 @@ class LoadGenerator:
         else:
             raise
 
-    def run(self, client: ModelServerClient) -> None:
-        print("Run started")
+    async def run(self, client: ModelServerClient) -> None:
         start_time = time.time()
         end_time = start_time + self.duration
-        for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)):
-            if time_index < end_time:
-                client.process_request(data)
-            else:
-                print("Run complete")
-                break
+        print("Run started")
+        async with TaskGroup() as tg:
+            for _, (data, time_index) in enumerate(
+                zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)
+            ):
+                now = time.time()
+                if time_index < end_time and now < end_time:
+                    if time_index > now:
+                        await sleep(time_index - time.time())
+                    tg.create_task(client.process_request(data))
+                    continue
+                else:
+                    break
+        print("Run completed")

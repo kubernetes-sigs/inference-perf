@@ -48,7 +48,7 @@ class ConstantLoadTimer(LoadTimer):
 
         # Given a rate, yield a time to wait before the next request
         while True:
-            next_time += self._rand.exponential(1 / self._rate)
+            next_time += self._rand.uniform(0, 1 / self._rate)
             yield next_time
 
 
@@ -73,7 +73,6 @@ class PoissonLoadTimer(LoadTimer):
 
             # Schedule the requests over the next second
             timer = ConstantLoadTimer(req_count)
-            times = timer.start_timer(next_time)
             for _ in range(req_count):
-                next_time = next(times)
+                next_time = next(timer.start_timer(next_time))
                 yield next_time
