@@ -24,12 +24,15 @@ class MockReportGenerator(ReportGenerator):
         self.metrics.append(metric)
 
     async def generate_report(self) -> None:
-        print("\n\nGenerating Report ..")
-        summary = MetricsSummary(
-            total_requests=len(self.metrics),
-            avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
-            avg_completion_tokens=statistics.mean([x.completion_tokens for x in self.metrics]),
-            avg_latency=statistics.mean([x.time_taken for x in self.metrics]),
-        )
+        if len(self.metrics) > 0:
+            print("\n\nGenerating Report ..")
+            summary = MetricsSummary(
+                total_requests=len(self.metrics),
+                avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
+                avg_completion_tokens=statistics.mean([x.completion_tokens for x in self.metrics]),
+                avg_latency=statistics.mean([x.time_taken for x in self.metrics]),
+            )
 
-        print(summary.model_dump())
+            print(summary.model_dump())
+        else:
+            print("Report generation failed")

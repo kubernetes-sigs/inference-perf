@@ -37,14 +37,20 @@ class vLLMModelServerClient(ModelServerClient):
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
-            async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
-                content = await response.json()
-                end = time.monotonic()
-                usage = content["usage"]
-                self.reportgen.collect_request_metrics(
-                    RequestMetric(
-                        prompt_tokens=usage["prompt_tokens"],
-                        completion_tokens=usage["completion_tokens"],
-                        time_taken=end - start,
-                    )
-                )
+            try:
+                async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
+                    if response.status == 200:
+                        content = await response.json()
+                        end = time.monotonic()
+                        usage = content["usage"]
+                        self.reportgen.collect_request_metrics(
+                            RequestMetric(
+                                prompt_tokens=usage["prompt_tokens"],
+                                completion_tokens=usage["completion_tokens"],
+                                time_taken=end - start,
+                            )
+                        )
+                    else:
+                        print(await response.text())
+            except aiohttp.ClientConnectorError as e:
+                print("vLLM Server connection error:\n", str(e))
