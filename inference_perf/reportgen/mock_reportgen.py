@@ -14,11 +14,13 @@
 from .base import ReportGenerator, RequestMetric, MetricsSummary
 from typing import List
 import statistics
+from pprint import PrettyPrinter
 
 
 class MockReportGenerator(ReportGenerator):
     def __init__(self) -> None:
         self.metrics: List[RequestMetric] = []
+        self.printer = PrettyPrinter(indent=4)
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
@@ -33,6 +35,6 @@ class MockReportGenerator(ReportGenerator):
                 avg_latency=statistics.mean([x.time_taken for x in self.metrics]),
             )
 
-            print(summary.model_dump())
+            self.printer.pprint(summary.model_dump())
         else:
             print("Report generation failed")
