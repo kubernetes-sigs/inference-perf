@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator, Metric
+from inference_perf.reportgen import ReportGenerator
 from .base import ModelServerClient
 
 
@@ -25,4 +25,3 @@ class MockModelServerClient(ModelServerClient):
 
     async def process_request(self, data: InferenceData) -> None:
         print("Processing request - " + data.system_prompt)
-        self.reportgen.collect_metrics(Metric(name=data.system_prompt))

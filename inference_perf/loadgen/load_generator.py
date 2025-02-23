@@ -15,8 +15,9 @@ from enum import Enum
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client import ModelServerClient
+from asyncio import TaskGroup
 import time
-import asyncio
+
 
 class LoadType(Enum):
     CONSTANT = 1
@@ -34,19 +35,18 @@ class LoadGenerator:
             self.timer = PoissonLoadTimer(rate=rate)
         else:
             raise
-    
-    def run(self, client: ModelServerClient) -> None:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(self._run(client))
-        loop.close()
 
-    async def _run(self, client: ModelServerClient) -> None:
+    async def run(self, client: ModelServerClient) -> None:
         print("Run started")
         start_time = time.time()
         end_time = start_time + self.duration
-        for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)):
-            if time_index < end_time:
-                await client.process_request(data)
-            else:
-                print("Run complete")
-                break
+        async with TaskGroup() as tg:
+            for _, (data, time_index) in enumerate(
+                zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)
+            ):
+                if time_index < end_time and time.time() < end_time:
+                    tg.create_task(client.process_request(data))
+                    continue
+                else:
+                    break
+        print("Run completed")

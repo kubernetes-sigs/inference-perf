@@ -12,36 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator, Metric
+from inference_perf.reportgen import ReportGenerator, RequestMetric
 from .base import ModelServerClient
+from typing import Any
 import aiohttp
 import json
+import time
 
-# Start docker with 
-# docker run --runtime nvidia --gpus all \
-#     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     -p 8000:8000 --ipc=host \
-#     vllm/vllm-openai:latest \
-#     --model HuggingFaceTB/SmolLM2-135M-Instruct \
-#     --max-model-len 100 --max-num-seqs 2
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, uri: str) -> None:
-        self.uri = uri+"/v1/completions"
+    def __init__(self, uri: str, model_name: str) -> None:
+        self.model_name = model_name
+        self.uri = uri + "/v1/completions"
+        self.max_completion_tokens = 30
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
+    def _createPayload(self, data: InferenceData) -> dict[str, Any]:
+        return {"model": self.model_name, "prompt": data.system_prompt, "max_tokens": self.max_completion_tokens}
+
     async def process_request(self, data: InferenceData) -> None:
-        print("Processing request - " + data.system_prompt)
-        payload = {
-            "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
-            "prompt": data.system_prompt,
-            "max_tokens": 20
-        }
-        headers = {'Content-Type': 'application/json'}
+        payload = self._createPayload(data)
+        headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
-            async with session.post(self.uri,headers=headers,data=json.dumps(payload)) as response:
+            start = time.monotonic()
+            async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
                 content = await response.json()
-                print(content["usage"])
-                self.reportgen.collect_metrics(Metric(name=data.system_prompt))
+                end = time.monotonic()
+                usage = content["usage"]
+                self.reportgen.collect_request_metrics(
+                    RequestMetric(
+                        prompt_tokens=usage["prompt_tokens"],
+                        completion_tokens=usage["completion_tokens"],
+                        time_taken=end - start,
+                    )
+                )

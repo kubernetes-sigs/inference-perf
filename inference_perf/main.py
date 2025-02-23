@@ -15,6 +15,7 @@ from inference_perf.loadgen import LoadGenerator, LoadType
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
+import asyncio
 
 
 class InferencePerfRunner:
@@ -25,15 +26,15 @@ class InferencePerfRunner:
         self.client.set_report_generator(self.reportgen)
 
     def run(self) -> None:
-        self.loadgen.run(self.client)
+        asyncio.run(self.loadgen.run(self.client))
 
     def generate_report(self) -> None:
-        self.reportgen.generate_report()
+        asyncio.run(self.reportgen.generate_report())
 
 
 def main_cli() -> None:
     # Define Model Server Client
-    client = vLLMModelServerClient(uri="http://0.0.0.0:8000")
+    client = vLLMModelServerClient(uri="http://0.0.0.0:8000", model_name="gpt2")
 
     # Define LoadGenerator
     loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
