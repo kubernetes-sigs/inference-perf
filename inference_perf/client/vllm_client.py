@@ -46,8 +46,8 @@ class vLLMModelServerClient(ModelServerClient):
                         self.reportgen.collect_request_metrics(
                             RequestMetric(
                                 prompt_tokens=usage["prompt_tokens"],
-                                completion_tokens=usage["completion_tokens"],
-                                time_taken=end - start,
+                                output_tokens=usage["completion_tokens"],
+                                time_per_request=end - start,
                             )
                         )
                     else:

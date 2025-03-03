@@ -31,8 +31,8 @@ class MockReportGenerator(ReportGenerator):
             summary = MetricsSummary(
                 total_requests=len(self.metrics),
                 avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
-                avg_completion_tokens=statistics.mean([x.completion_tokens for x in self.metrics]),
-                avg_latency=statistics.mean([x.time_taken for x in self.metrics]),
+                avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
+                avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
             )
 
             self.printer.pprint(summary.model_dump())

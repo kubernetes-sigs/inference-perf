@@ -30,7 +30,7 @@ class MockModelServerClient(ModelServerClient):
         self.reportgen.collect_request_metrics(
             RequestMetric(
                 prompt_tokens=0,
-                completion_tokens=0,
-                time_taken=3,
+                output_tokens=0,
+                time_per_request=3,
             )
         )

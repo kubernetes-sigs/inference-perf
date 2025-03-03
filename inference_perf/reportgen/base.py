@@ -19,14 +19,14 @@ from typing import Tuple
 class MetricsSummary(BaseModel):
     total_requests: int
     avg_prompt_tokens: float
-    avg_completion_tokens: float
-    avg_latency: float
+    avg_output_tokens: float
+    avg_time_per_request: float
 
 
 class RequestMetric(BaseModel):
     prompt_tokens: int
-    completion_tokens: int
-    time_taken: float
+    output_tokens: int
+    time_per_request: float
 
 
 class ReportGenerator(ABC):
