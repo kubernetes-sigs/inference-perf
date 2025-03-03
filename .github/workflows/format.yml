@@ -13,10 +13,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Set up Python PDM
+        uses: pdm-project/setup-pdm@v4
       - name: Do Linting and Type Checks
         run: |
           make check

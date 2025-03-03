@@ -21,7 +21,6 @@ type-check:
 # Check for and install dependencies
 .PHONY: all-deps
 all-deps:
-	pip install pdm
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
 	    pdm venv create --with venv 3.12; \
