@@ -11,7 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient, MetricsSummary
-from .mock_client import MockMetricsClient
+from .base import MetricsSummary, MetricsClient
 
-__all__ = ["MetricsClient", "MetricsSummary", "MockMetricsClient"]
+
+class MockMetricsClient(MetricsClient):
+    def __init__(self, uri: str) -> None:
+        self.uri = uri
+
+    def collect_metrics_summary(self) -> MetricsSummary | None:
+        return None
