@@ -11,17 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, Metric
+from .base import ReportGenerator, RequestMetric, MetricsSummary
 from typing import List
+import statistics
+from pprint import PrettyPrinter
 
 
 class MockReportGenerator(ReportGenerator):
     def __init__(self) -> None:
-        self.metrics: List[Metric] = []
+        self.metrics: List[RequestMetric] = []
+        self.printer = PrettyPrinter(indent=4)
 
-    def collect_metrics(self, metric: Metric) -> None:
+    def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
 
-    def generate_report(self) -> None:
-        print("\n\nGenerating Report ..")
-        print("Report: Total Requests = " + str(len(self.metrics)))
+    async def generate_report(self) -> None:
+        if len(self.metrics) > 0:
+            print("\n\nGenerating Report ..")
+            summary = MetricsSummary(
+                total_requests=len(self.metrics),
+                avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
+                avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
+                avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
+            )
+
+            self.printer.pprint(summary.model_dump())
+        else:
+            print("Report generation failed")

@@ -16,8 +16,17 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 
 
-class Metric(BaseModel):
-    name: str
+class MetricsSummary(BaseModel):
+    total_requests: int
+    avg_prompt_tokens: float
+    avg_output_tokens: float
+    avg_time_per_request: float
+
+
+class RequestMetric(BaseModel):
+    prompt_tokens: int
+    output_tokens: int
+    time_per_request: float
 
 
 class ReportGenerator(ABC):
@@ -26,9 +35,9 @@ class ReportGenerator(ABC):
         pass
 
     @abstractmethod
-    def collect_metrics(self, metric: Metric) -> None:
+    def collect_request_metrics(self, metric: RequestMetric) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def generate_report(self) -> None:
+    async def generate_report(self) -> None:
         raise NotImplementedError
