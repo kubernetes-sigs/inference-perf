@@ -14,13 +14,7 @@
 from pydantic import BaseModel
 from abc import ABC, abstractmethod
 from typing import Tuple
-
-
-class MetricsSummary(BaseModel):
-    total_requests: int
-    avg_prompt_tokens: float
-    avg_output_tokens: float
-    avg_time_per_request: float
+from inference_perf.metrics import MetricsClient
 
 
 class RequestMetric(BaseModel):
@@ -31,7 +25,8 @@ class RequestMetric(BaseModel):
 
 class ReportGenerator(ABC):
     @abstractmethod
-    def __init__(self, *args: Tuple[int, ...]) -> None:
+    def __init__(self, metrics_client: MetricsClient, *args: Tuple[int, ...]) -> None:
+        self.metrics_client = metrics_client
         pass
 
     @abstractmethod
