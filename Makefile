@@ -46,5 +46,3 @@ test: install-dev-deps unit-test
 unit-test: install-dev-deps
 	$(VENV)/bin/pytest
 
-.PHONY: check
-check: all-deps lint type-check
