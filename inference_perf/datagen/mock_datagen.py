@@ -1,4 +1,4 @@
-# Copyright 2025
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,3 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .base import DataGenerator, InferenceData
+from typing import Generator
+
+
+class MockDataGenerator(DataGenerator):
+    def __init__(self) -> None:
+        pass
+
+    def get_data(self) -> Generator[InferenceData, None, None]:
+        i = 0
+        while True:
+            i += 1
+            yield InferenceData(system_prompt="text" + str(i))

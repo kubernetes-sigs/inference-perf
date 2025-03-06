@@ -11,8 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric
-from .mock_reportgen import MockReportGenerator
+from abc import ABC, abstractmethod
+from typing import Tuple
+from inference_perf.datagen import InferenceData
+from inference_perf.reportgen import ReportGenerator
 
 
-__all__ = ["ReportGenerator", "RequestMetric", "MockReportGenerator"]
+class ModelServerClient(ABC):
+    @abstractmethod
+    def __init__(self, *args: Tuple[int, ...]) -> None:
+        pass
+
+    @abstractmethod
+    def set_report_generator(self, reportgen: ReportGenerator) -> None:
+        self.reportgen = reportgen
+
+    @abstractmethod
+    async def process_request(self, data: InferenceData) -> None:
+        raise NotImplementedError

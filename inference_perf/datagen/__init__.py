@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric
-from .mock_reportgen import MockReportGenerator
+from .base import DataGenerator, InferenceData
+from .mock_datagen import MockDataGenerator
 
-
-__all__ = ["ReportGenerator", "RequestMetric", "MockReportGenerator"]
+__all__ = ["DataGenerator", "InferenceData", "MockDataGenerator"]
