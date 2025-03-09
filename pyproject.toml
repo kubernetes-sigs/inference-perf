@@ -7,6 +7,7 @@ dependencies = [
     "aiohttp>=3.11.11",
     "pydantic>=2.10.6",
     "numpy>=2.2.2",
+    "datasets>=3.3.2",
 ]
 requires-python = ">=3.12"
 readme = "README.md"

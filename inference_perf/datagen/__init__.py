@@ -13,5 +13,6 @@
 # limitations under the License.
 from .base import DataGenerator, InferenceData
 from .mock_datagen import MockDataGenerator
+from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 
-__all__ = ["DataGenerator", "InferenceData", "MockDataGenerator"]
+__all__ = ["DataGenerator", "InferenceData", "MockDataGenerator", "HFShareGPTDataGenerator"]
