@@ -29,11 +29,11 @@ class vLLMModelServerClient(ModelServerClient):
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    def _createPayload(self, data: InferenceData) -> dict[str, Any]:
+    def _create_payload(self, data: InferenceData) -> dict[str, Any]:
         return {"model": self.model_name, "prompt": data.system_prompt, "max_tokens": self.max_completion_tokens}
 
     async def process_request(self, data: InferenceData) -> None:
-        payload = self._createPayload(data)
+        payload = self._create_payload(data)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
