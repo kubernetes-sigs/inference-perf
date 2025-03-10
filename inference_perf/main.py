@@ -15,6 +15,7 @@ from inference_perf.loadgen import LoadGenerator, LoadType
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
+from inference_perf.metrics import MockMetricsClient
 import asyncio
 
 
@@ -39,8 +40,11 @@ def main_cli() -> None:
     # Define LoadGenerator
     loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
 
-    # Define ReportGenerator
-    reportgen = MockReportGenerator()
+    # Define Metrics Client
+    metricsclient = MockMetricsClient(uri="http://0.0.0.0:8000/metrics")
+
+    # Define Report Generator
+    reportgen = MockReportGenerator(metricsclient)
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(client, loadgen, reportgen)

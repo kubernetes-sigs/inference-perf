@@ -11,7 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient, MetricsSummary
-from .mock_client import MockMetricsClient
+from abc import ABC, abstractmethod
+from pydantic import BaseModel
 
-__all__ = ["MetricsClient", "MetricsSummary", "MockMetricsClient"]
+
+class MetricsSummary(BaseModel):
+    total_requests: int
+    avg_prompt_tokens: float
+    avg_output_tokens: float
+    avg_time_per_request: float
+
+
+class MetricsClient(ABC):
+    @abstractmethod
+    def __init__(self) -> None:
+        pass
+
+    @abstractmethod
+    def collect_metrics_summary(self) -> MetricsSummary | None:
+        raise NotImplementedError
