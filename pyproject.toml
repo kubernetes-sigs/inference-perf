@@ -16,11 +16,12 @@ license = {text = "Apache-2.0"}
 [project.scripts]
 inference-perf = "inference_perf:main_cli"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "mypy>=1.14.1",
     "ruff>=0.9.4",
     "pre-commit>=4.1.0",
+    "pytest>=8.3.4",
 ]
 
 [tool.ruff]
@@ -70,3 +71,8 @@ docstring-code-line-length = "dynamic"
 [tool.pdm]
 distribution = true
 
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
