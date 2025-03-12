@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric, MetricsSummary
+from .base import ReportGenerator, RequestMetric
 from typing import List
 import statistics
 from pprint import PrettyPrinter
+from inference_perf.metrics import MetricsClient, MetricsSummary
 
 
 class MockReportGenerator(ReportGenerator):
-    def __init__(self) -> None:
+    def __init__(self, metrics_client: MetricsClient) -> None:
+        self.metrics_client = metrics_client
         self.metrics: List[RequestMetric] = []
         self.printer = PrettyPrinter(indent=4)
 
@@ -26,15 +28,18 @@ class MockReportGenerator(ReportGenerator):
         self.metrics.append(metric)
 
     async def generate_report(self) -> None:
-        if len(self.metrics) > 0:
-            print("\n\nGenerating Report ..")
+        print("\n\nGenerating Report ..")
+        summary = self.metrics_client.collect_metrics_summary()
+        if summary is not None:
+            self.printer.pprint(summary.model_dump())
+
+        elif summary is None and len(self.metrics) > 0:
             summary = MetricsSummary(
                 total_requests=len(self.metrics),
                 avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
                 avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
                 avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
             )
-
             self.printer.pprint(summary.model_dump())
         else:
-            print("Report generation failed")
+            print("Report generation failed - no metrics collected")
