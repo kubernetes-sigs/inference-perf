@@ -19,7 +19,7 @@ This project is currently in development.
 - Run inference-perf CLI
 
     ```
-    pdm run inference-perf
+    pdm run inference-perf --config_file config.yml
     ```
 
 ## Contributing
