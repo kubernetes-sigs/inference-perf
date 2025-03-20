@@ -26,23 +26,24 @@ all-deps: install-deps install-dev-deps
 install-deps:
 	@echo "Creating virtual environment if it doesn't exist..."
 	@if [ ! -d $(VENV) ]; then \
-	    pdm venv create --with venv 3.12; \
+	    python3 -m venv $(VENV); \
 	fi
 	@echo "Activating virtual environment and installing dependencies..."
-	pdm sync
+	$(VENV)/bin/pip install --upgrade pip
+	$(VENV)/bin/pip install -e .
 
 .PHONY:
 install-dev-deps: install-deps
 	@echo "Installing development dependencies..."
 	$(VENV)/bin/pip install -e .[dev]
 
-.PHONY: validate
-validate: install-dev-deps lint type-check
-
-.PHONY: test
-test: install-dev-deps unit-test
-
 .PHONY: unit-test
 unit-test: install-dev-deps
 	$(VENV)/bin/pytest
+
+.PHONY: validate
+validate: install-dev-deps format lint type-check
+
+.PHONY: test
+test: install-dev-deps unit-test
 

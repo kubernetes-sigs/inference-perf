@@ -11,17 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from enum import Enum
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client import ModelServerClient
+from inference_perf.config import LoadType
 from asyncio import TaskGroup, sleep
 import time
-
-
-class LoadType(Enum):
-    CONSTANT = 1
-    POISSON = 2
 
 
 class LoadGenerator:

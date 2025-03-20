@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.loadgen import LoadGenerator, LoadType
+from inference_perf.loadgen import LoadGenerator
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.metrics import MockMetricsClient
+from inference_perf.config import read_config
 import asyncio
 
 
@@ -34,17 +35,37 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
+    config = read_config()
+
     # Define Model Server Client
-    client = vLLMModelServerClient(uri="http://0.0.0.0:8000", model_name="openai-community/gpt2")
+    if config.vllm:
+        client = vLLMModelServerClient(uri=config.vllm.url, model_name=config.vllm.model_name)
+    else:
+        raise Exception("vLLM client config missing")
+
+    # Define DataGenerator
+    if config.data:
+        datagen = MockDataGenerator()
+    else:
+        raise Exception("data config missing")
 
     # Define LoadGenerator
-    loadgen = LoadGenerator(MockDataGenerator(), LoadType.CONSTANT, rate=2, duration=5)
+    if config.load:
+        loadgen = LoadGenerator(datagen, config.load.type, rate=config.load.rate, duration=config.load.duration)
+    else:
+        raise Exception("load config missing")
 
     # Define Metrics Client
-    metricsclient = MockMetricsClient(uri="http://0.0.0.0:8000/metrics")
+    if config.metrics:
+        metricsclient = MockMetricsClient(uri=config.metrics.url)
+    else:
+        raise Exception("metrics config missing")
 
     # Define Report Generator
-    reportgen = MockReportGenerator(metricsclient)
+    if config.report:
+        reportgen = MockReportGenerator(metricsclient)
+    else:
+        raise Exception("report config missing")
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(client, loadgen, reportgen)
