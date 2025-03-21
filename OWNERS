@@ -1,9 +1,5 @@
 # See the OWNERS docs at https://go.k8s.io/owners
 
 approvers:
-- achandrasekar
-- ArangoGutierrez
-- Jeffwan
-- SergeyKanzhelev
-- terrytangyuan
-- wangchen615
+- inference-perf-maintainers
+- wg-serving-leads
