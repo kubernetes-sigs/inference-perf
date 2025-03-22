@@ -1,13 +1,7 @@
-data:
-  type: mock
 load:
   type: constant
   rate: 1
-  duration: 2
-report:
-  name: openai-community-gpt2-test
-metrics:
-  url: http://0.0.0.0:8000/metrics
+  duration: 30
 vllm:
-  model_name: openai-community/gpt2
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   url: http://0.0.0.0:8000
