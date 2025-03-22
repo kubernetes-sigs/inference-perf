@@ -8,19 +8,19 @@ This project is currently in development.
 
 ## Getting Started
 
-[PDM Python Package Manager](https://pdm-project.org/latest/) is utilized in this repository for dependecy management.
-
-- Setup virtual environment with `pdm` and install dependencies
+- Setup a virtual environment and install inference-perf
 
     ```
-    make all-deps
+    pip install -e .
     ```
 
-- Run inference-perf CLI
+- Run inference-perf CLI with a configuration file
 
     ```
-    pdm run inference-perf --config_file config.yml
+    inference-perf --config_file config.yml
     ```
+
+- See more [examples](./examples/)
 
 ## Contributing
 

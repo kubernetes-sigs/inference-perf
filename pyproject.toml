@@ -23,6 +23,7 @@ dev = [
     "pre-commit>=4.1.0",
     "pytest>=8.3.4",
     "types-PyYAML>=6.0.12.20241230",
+    "ipykernel>=6.29.5",
 ]
 
 [tool.ruff]
@@ -81,3 +82,7 @@ python_functions = ["test_*"]
 [[tool.mypy.overrides]]
 module = ["datasets.*"]
 ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

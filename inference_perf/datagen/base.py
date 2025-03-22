@@ -12,12 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
+from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Generator, Tuple
+from typing import Generator, Tuple, Optional, List
+
+
+class CompletionData(BaseModel):
+    prompt: str
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatCompletionData(BaseModel):
+    messages: List[ChatMessage]
 
 
 class InferenceData(BaseModel):
-    system_prompt: str
+    type: APIType = APIType.Completion
+    chat: Optional[ChatCompletionData] = None
+    data: Optional[CompletionData] = None
 
 
 class DataGenerator(ABC):

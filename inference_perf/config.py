@@ -18,8 +18,19 @@ from enum import Enum
 import yaml
 
 
+class APIType(Enum):
+    Completion = "completion"
+    Chat = "chat"
+
+
+class DataGenType(Enum):
+    Mock = "mock"
+    ShareGPT = "shareGPT"
+
+
 class DataConfig(BaseModel):
-    type: str
+    type: DataGenType = DataGenType.Mock
+    api: APIType = APIType.Completion
 
 
 class LoadType(Enum):
@@ -43,11 +54,12 @@ class MetricsConfig(BaseModel):
 
 class VLLMConfig(BaseModel):
     model_name: str
+    api: APIType = APIType.Completion
     url: str
 
 
 class Config(BaseModel):
-    data: Optional[DataConfig] = DataConfig(type="")
+    data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
     metrics: Optional[MetricsConfig] = MetricsConfig(url="")

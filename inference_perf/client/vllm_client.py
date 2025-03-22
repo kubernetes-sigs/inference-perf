@@ -13,6 +13,7 @@
 # limitations under the License.
 from inference_perf.datagen import InferenceData
 from inference_perf.reportgen import ReportGenerator, RequestMetric
+from inference_perf.config import APIType
 from .base import ModelServerClient
 from typing import Any
 import aiohttp
@@ -21,16 +22,31 @@ import time
 
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, uri: str, model_name: str) -> None:
+    def __init__(self, uri: str, model_name: str, api_type: APIType = APIType.Completion) -> None:
         self.model_name = model_name
-        self.uri = uri + "/v1/completions"
+        self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    def _create_payload(self, data: InferenceData) -> dict[str, Any]:
-        return {"model": self.model_name, "prompt": data.system_prompt, "max_tokens": self.max_completion_tokens}
+    def _create_payload(self, payload: InferenceData) -> dict[str, Any]:
+        if payload.type == APIType.Completion:
+            return {
+                "model": self.model_name,
+                "prompt": payload.data.prompt if payload.data else "",
+                "max_tokens": self.max_completion_tokens,
+            }
+        if payload.type == APIType.Chat:
+            return {
+                "model": self.model_name,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in (payload.chat.messages if payload.chat else [])
+                ],
+                "max_tokens": self.max_completion_tokens,
+            }
+        raise Exception("api type not supported - has to be completions or chat completions")
 
     async def process_request(self, data: InferenceData) -> None:
         payload = self._create_payload(data)

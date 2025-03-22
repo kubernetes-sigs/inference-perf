@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData
+from .base import DataGenerator, InferenceData, CompletionData
 from typing import Generator
 
 
@@ -23,4 +23,4 @@ class MockDataGenerator(DataGenerator):
         i = 0
         while True:
             i += 1
-            yield InferenceData(system_prompt="text" + str(i))
+            yield InferenceData(data=CompletionData(prompt="text" + str(i)))
