@@ -1,0 +1,13 @@
+data:
+  type: mock
+load:
+  type: constant
+  rate: 1
+  duration: 2
+report:
+  name: smol-model-135M-test
+metrics:
+  url: http://0.0.0.0:8000/metrics
+vllm:
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  url: http://0.0.0.0:8000
