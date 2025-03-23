@@ -27,6 +27,10 @@ class HFShareGPTDataGenerator(DataGenerator):
                 split="train",
             )
         )
+        self.max_num_turns = 2
+        self.data_key = "conversations"
+        self.role_key = "from"
+        self.content_key = "value"
         # initialize data collection
         next(self.sharegpt_dataset)
 
@@ -34,15 +38,20 @@ class HFShareGPTDataGenerator(DataGenerator):
         if self.sharegpt_dataset is not None:
             while True:
                 data = next(self.sharegpt_dataset)
-                if data is None or len(data["conversations"]) > 2 or len(data["conversations"]) == 0:
+                if (
+                    data is None
+                    or data[self.data_key] is None
+                    or len(data[self.data_key]) > self.max_num_turns
+                    or len(data[self.data_key]) == 0
+                ):
                     continue
                 else:
                     yield InferenceData(
                         type=APIType.Chat,
                         chat=ChatCompletionData(
                             messages=[
-                                ChatMessage(role=conversation["from"], content=conversation["value"])
-                                for conversation in data["conversations"]
+                                ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
+                                for conversation in data[self.data_key]
                             ]
                         ),
                     )
