@@ -27,7 +27,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 split="train",
             )
         )
-        self.max_num_turns = 2
+        self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
@@ -41,7 +41,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 if (
                     data is None
                     or data[self.data_key] is None
-                    or len(data[self.data_key]) > self.max_num_turns
+                    or len(data[self.data_key]) < self.min_num_turns
                     or len(data[self.data_key]) == 0
                 ):
                     continue
