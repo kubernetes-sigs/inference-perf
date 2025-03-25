@@ -1,11 +1,10 @@
-FROM python:3.9.20-slim-bookworm as dev
+FROM python:3.12.9-slim-bookworm as dev
 
 RUN apt-get update -y \
     && apt-get install -y python3-pip
 
-# Install PDM
+# Upgrade pip
 RUN pip3 install --upgrade pip
-RUN pip3 install pdm
 
 # Set working directory
 WORKDIR /workspace
@@ -13,8 +12,8 @@ WORKDIR /workspace
 # Copy project files
 COPY . /workspace
 
-# Install dependencies using PDM
-RUN pdm install
+# Install dependencies
+RUN pip install -e .
 
-# Run inference-perf (example, adjust as needed)
-CMD ["pdm", "run", "inference-perf", "--config_file", "config.yml"]
+# Run inference-perf
+CMD ["inference-perf", "--config_file", "config.yml"]
