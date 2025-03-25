@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.datagen import MockDataGenerator
+from inference_perf.config import DataGenType
+from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.metrics import MockMetricsClient
@@ -39,13 +40,13 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        client = vLLMModelServerClient(uri=config.vllm.url, model_name=config.vllm.model_name)
+        client = vLLMModelServerClient(uri=config.vllm.url, model_name=config.vllm.model_name, api_type=config.vllm.api)
     else:
         raise Exception("vLLM client config missing")
 
     # Define DataGenerator
     if config.data:
-        datagen = MockDataGenerator()
+        datagen = HFShareGPTDataGenerator() if config.data.type == DataGenType.ShareGPT else MockDataGenerator()
     else:
         raise Exception("data config missing")
 

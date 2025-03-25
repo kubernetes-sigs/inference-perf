@@ -14,7 +14,6 @@
 from .base import ReportGenerator, RequestMetric
 from typing import List
 import statistics
-from pprint import PrettyPrinter
 from inference_perf.metrics import MetricsClient, MetricsSummary
 
 
@@ -22,7 +21,6 @@ class MockReportGenerator(ReportGenerator):
     def __init__(self, metrics_client: MetricsClient) -> None:
         self.metrics_client = metrics_client
         self.metrics: List[RequestMetric] = []
-        self.printer = PrettyPrinter(indent=4)
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
@@ -31,7 +29,8 @@ class MockReportGenerator(ReportGenerator):
         print("\n\nGenerating Report ..")
         summary = self.metrics_client.collect_metrics_summary()
         if summary is not None:
-            self.printer.pprint(summary.model_dump())
+            for field_name, value in summary:
+                print(f"{field_name}: {value}")
 
         elif summary is None and len(self.metrics) > 0:
             summary = MetricsSummary(
@@ -40,6 +39,7 @@ class MockReportGenerator(ReportGenerator):
                 avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
                 avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
             )
-            self.printer.pprint(summary.model_dump())
+            for field_name, value in summary:
+                print(f"{field_name}: {value}")
         else:
             print("Report generation failed - no metrics collected")
