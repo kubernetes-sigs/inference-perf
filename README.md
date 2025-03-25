@@ -8,6 +8,8 @@ This project is currently in development.
 
 ## Getting Started
 
+### Run locally
+
 [PDM Python Package Manager](https://pdm-project.org/latest/) is utilized in this repository for dependecy management.
 
 - Setup virtual environment with `pdm` and install dependencies
@@ -20,6 +22,21 @@ This project is currently in development.
 
     ```
     pdm run inference-perf --config_file config.yml
+    ```
+
+### Run in a Docker container
+
+- Build the container
+
+    ```
+    docker build -t inference-perf .
+    ```
+
+- Run the container
+
+    ```
+    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml inference-perf
+
     ```
 
 ## Contributing
