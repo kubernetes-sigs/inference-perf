@@ -1,0 +1,26 @@
+{
+  "categories": [
+    {
+      "title": "🚀 Features",
+      "labels": ["feature", "enhancement"]
+    },
+    {
+      "title": "🐛 Bug Fixes",
+      "labels": ["bug", "fix"]
+    },
+    {
+      "title": "📚 Documentation",
+      "labels": ["documentation", "docs"]
+    },
+    {
+      "title": "⚡️ Performance",
+      "labels": ["performance", "perf"]
+    },
+    {
+      "title": "🔧 Dependencies",
+      "labels": ["dependencies", "deps"]
+    }
+  ],
+  "template": "${{CHANGELOG}}\n\n## Docker Image\n\n${{DOCKER_IMAGE}}\n\n## Contributors\n\n${{CONTRIBUTORS}}",
+  "pr-template": "- ${{TITLE}} (#${{NUMBER}})"
+} 
