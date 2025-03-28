@@ -34,6 +34,9 @@ class HFShareGPTDataGenerator(DataGenerator):
         # initialize data collection
         next(self.sharegpt_dataset)
 
+    def get_api(self) -> APIType:
+        return APIType.Chat
+
     def get_data(self) -> Generator[InferenceData, None, None]:
         if self.sharegpt_dataset is not None:
             while True:

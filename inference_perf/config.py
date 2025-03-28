@@ -30,7 +30,6 @@ class DataGenType(Enum):
 
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
-    api: APIType = APIType.Completion
 
 
 class LoadType(Enum):
