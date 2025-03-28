@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType
+from inference_perf.config import DataGenType, MetricsServerType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
@@ -58,7 +59,16 @@ def main_cli() -> None:
 
     # Define Metrics Client
     if config.metrics:
-        metricsclient = MockMetricsClient(uri=config.metrics.url)
+        if config.metrics.server_type == MetricsServerType.Prometheus:
+            if config.metrics.server_url:
+                # Assuming PrometheusMetricsClient requires a base URL to connect
+                metricsclient = PrometheusMetricsClient(base_url=config.metrics.server_url)
+            else:
+                # If server_url is not provided, fallback to a mock metrics client
+                print("Warning: Metrics server URL not provided, using MockMetricsClient")
+                metricsclient = MockMetricsClient(uri=config.metrics.url)
+        else:
+            metricsclient = MockMetricsClient(uri=config.metrics.url)
     else:
         raise Exception("metrics config missing")
 

@@ -22,6 +22,9 @@ class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
 
+class MetricsServerType(Enum):
+    Prometheus = "prometheus"
+
 
 class DataGenType(Enum):
     Mock = "mock"
@@ -47,9 +50,10 @@ class LoadConfig(BaseModel):
 class ReportConfig(BaseModel):
     name: str
 
-
 class MetricsConfig(BaseModel):
-    url: str
+    server_url: str
+    server_type: MetricsServerType
+
 
 
 class VLLMConfig(BaseModel):

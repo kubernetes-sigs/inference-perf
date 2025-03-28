@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -19,8 +20,10 @@ class MetricsSummary(BaseModel):
     total_requests: int
     avg_prompt_tokens: float
     avg_output_tokens: float
-    avg_time_per_request: float
-
+    avg_request_latency: float
+    avg_time_to_first_token: float
+    avg_time_per_output_token: float
+    avg_queue_length: float
 
 class MetricsClient(ABC):
     @abstractmethod
