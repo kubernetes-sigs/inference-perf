@@ -13,11 +13,15 @@
 # limitations under the License.
 from .base import DataGenerator, InferenceData, CompletionData
 from typing import Generator
+from inference_perf.config import APIType
 
 
 class MockDataGenerator(DataGenerator):
     def __init__(self) -> None:
         pass
+
+    def get_api(self) -> APIType:
+        return APIType.Completion
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
