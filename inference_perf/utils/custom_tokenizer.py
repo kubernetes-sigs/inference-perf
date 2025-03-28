@@ -11,6 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .custom_tokenizer import CustomTokenizer
+from transformers import AutoTokenizer
 
-__all__ = ["CustomTokenizer"]
+class CustomTokenizer:
+    def __init__(self, tokenizer_id: str, trust_remote_code: bool = False):
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_id,
+            trust_remote_code=trust_remote_code
+        )
+
+    def count_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        return len(self.tokenizer(text).input_ids)
+
+    def get_tokenizer(self):
+        return self.tokenizer

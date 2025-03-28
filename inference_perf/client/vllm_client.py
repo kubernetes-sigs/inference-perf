@@ -14,6 +14,7 @@
 from inference_perf.datagen import InferenceData
 from inference_perf.reportgen import ReportGenerator, RequestMetric
 from inference_perf.config import APIType
+from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient
 from typing import Any
 import aiohttp
@@ -22,10 +23,11 @@ import time
 
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, uri: str, model_name: str, api_type: APIType = APIType.Completion) -> None:
+    def __init__(self, uri: str, model_name: str, tokenizer_id: str, api_type: APIType, trust_remote_code: bool = False) -> None:
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
+        self.custom_tokenizer = CustomTokenizer(tokenizer_id, trust_remote_code)
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
@@ -58,11 +60,23 @@ class vLLMModelServerClient(ModelServerClient):
                     if response.status == 200:
                         content = await response.json()
                         end = time.monotonic()
-                        usage = content["usage"]
+
+                        if data.type == APIType.Completion:
+                            prompt = data.data.prompt if data.data else ""
+                            output_text = content["choices"][0]["text"]
+                        elif data.type == APIType.Chat:
+                            prompt = " ".join([msg.content for msg in data.chat.messages]) if data.chat else ""
+                            output_text = content["choices"][0]["message"]["content"]
+                        else:
+                            raise Exception("Unsupported API type")
+                        
+                        prompt_tokens = self.custom_tokenizer.count_tokens(prompt)
+                        output_tokens = self.custom_tokenizer.count_tokens(output_text)
+
                         self.reportgen.collect_request_metrics(
                             RequestMetric(
-                                prompt_tokens=usage["prompt_tokens"],
-                                output_tokens=usage["completion_tokens"],
+                                prompt_tokens=prompt_tokens,
+                                output_tokens=output_tokens,
                                 time_per_request=end - start,
                             )
                         )

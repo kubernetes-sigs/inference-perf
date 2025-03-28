@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.10.6",
     "numpy>=2.2.2",
     "datasets>=3.3.2",
+    "transformers>=4.50.2",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
