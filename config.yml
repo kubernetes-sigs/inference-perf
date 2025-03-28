@@ -3,5 +3,11 @@ load:
   rate: 1
   duration: 30
 vllm:
+  api: chat
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   url: http://0.0.0.0:8000
+tokenizer:
+  tokenizer_id: HuggingFaceTB/SmolLM2-135M-Instruct
+  trust_remote_code: false
+data:
+  type: shareGPT

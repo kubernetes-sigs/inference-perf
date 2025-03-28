@@ -57,6 +57,10 @@ class VLLMConfig(BaseModel):
     api: APIType = APIType.Completion
     url: str
 
+class CustomTokenizerConfig(BaseModel):
+    tokenizer_id: str
+    trust_remote_code: bool = False
+
 
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
@@ -64,6 +68,7 @@ class Config(BaseModel):
     report: Optional[ReportConfig] = ReportConfig(name="")
     metrics: Optional[MetricsConfig] = MetricsConfig(url="")
     vllm: Optional[VLLMConfig] = None
+    tokenizer: Optional[CustomTokenizerConfig] = None
 
 
 def read_config() -> Config:
