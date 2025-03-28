@@ -1,0 +1,39 @@
+name: Release Processing
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Matches semantic versioning tags like v1.0.0
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get full history for changelog
+
+    - name: Set env variable for tag name
+      run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+    - name: Generate changelog
+      id: github_release
+      uses: mikepenz/release-changelog-builder-action@v3
+      with:
+        configuration: ".github/changelog-config.json"
+        ignorePreReleases: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release ${{ env.RELEASE_VERSION }}
+        body: |
+          # Release ${{ env.RELEASE_VERSION }}
+
+          ## What's Changed
+          ${{ steps.github_release.outputs.changelog }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
