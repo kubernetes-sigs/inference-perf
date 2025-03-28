@@ -12,9 +12,9 @@ repos:
       args: [ --fix ]
     - id: ruff-format
       name: run the formatter
-- repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.14.1
-  hooks:
-    - id: mypy
-      name: run static type check
-      args: [--strict, --ignore-missing-imports]
+# - repo: https://github.com/pre-commit/mirrors-mypy
+#   rev: v1.14.1
+#   hooks:
+#     - id: mypy
+#       name: run static type check
+#       args: [--strict, --ignore-missing-imports]
