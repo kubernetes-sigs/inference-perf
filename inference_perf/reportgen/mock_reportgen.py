@@ -25,9 +25,9 @@ class MockReportGenerator(ReportGenerator):
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
 
-    async def generate_report(self) -> None:
+    async def generate_report(self, duration = None, model_server_client = None) -> None:
         print("\n\nGenerating Report ..")
-        summary = self.metrics_client.collect_metrics_summary()
+        summary = self.metrics_client.collect_metrics_summary(duration, model_server_client)
         if summary is not None:
             for field_name, value in summary:
                 print(f"{field_name}: {value}")

@@ -66,7 +66,7 @@ class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
-    metrics: Optional[MetricsConfig] = MetricsConfig(url="")
+    metrics: Optional[MetricsConfig] = MetricsConfig(server_url="", server_type=MetricsServerType.Prometheus)
     vllm: Optional[VLLMConfig] = None
 
 

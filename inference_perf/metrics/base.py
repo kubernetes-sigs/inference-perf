@@ -18,12 +18,12 @@ from pydantic import BaseModel
 
 class MetricsSummary(BaseModel):
     total_requests: int
-    avg_prompt_tokens: float
-    avg_output_tokens: float
+    avg_prompt_tokens: int
+    avg_output_tokens: int
     avg_request_latency: float
     avg_time_to_first_token: float
     avg_time_per_output_token: float
-    avg_queue_length: float
+    avg_queue_length: int
 
 class MetricsClient(ABC):
     @abstractmethod
@@ -31,5 +31,5 @@ class MetricsClient(ABC):
         pass
 
     @abstractmethod
-    def collect_metrics_summary(self) -> MetricsSummary | None:
+    def collect_metrics_summary(self, duration = None, model_server_client = None) -> MetricsSummary | None:
         raise NotImplementedError
