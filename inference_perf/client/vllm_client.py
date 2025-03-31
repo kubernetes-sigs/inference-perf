@@ -26,6 +26,12 @@ class vLLMModelServerClient(ModelServerClient):
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
+    
+    def get_model_name(self) -> str:
+        return self.model_name
+
+    def get_engine(self) -> str:
+        return "vllm"
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen

@@ -5,10 +5,9 @@ This repository provides clients to query performance metrics from various monit
 ## Supported Monitoring Platforms
 
 **Available now**:
-- None
+- Self Deployed Prometheus
 
 **Todo**:
 - Google Cloud Monitoring
 - AWS CloudWatch
 - Azure Monitor
-- Self Deployed Prometheus
