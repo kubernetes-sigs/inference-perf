@@ -50,11 +50,13 @@ class LoadConfig(BaseModel):
 class ReportConfig(BaseModel):
     name: str
 
+class PrometheusServerConfig(BaseModel):
+    scrape_interval: int = 15
+    url: str = "http://localhost:9090"
+
 class MetricsConfig(BaseModel):
-    server_url: str
     server_type: MetricsServerType
-
-
+    prometheus_server_config: PrometheusServerConfig
 
 class VLLMConfig(BaseModel):
     model_name: str
@@ -66,7 +68,10 @@ class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
-    metrics: Optional[MetricsConfig] = MetricsConfig(server_url="", server_type=MetricsServerType.Prometheus)
+    metrics: Optional[MetricsConfig] = MetricsConfig(
+        server_type=MetricsServerType.Prometheus,
+        prometheus_server_config=PrometheusServerConfig(url="http://localhost:9090", scrape_interval=15),
+    )
     vllm: Optional[VLLMConfig] = None
 
 

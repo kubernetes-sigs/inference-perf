@@ -38,6 +38,7 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
+    scrape_interval = 0
     config = read_config()
 
     # Define Model Server Client
@@ -60,8 +61,10 @@ def main_cli() -> None:
 
     # Define Metrics Client
     if config.metrics:
-        if config.metrics.server_type == MetricsServerType.Prometheus and config.metrics.server_url:
-            metricsclient = PrometheusMetricsClient(base_url=config.metrics.server_url)
+        if config.metrics.server_type == MetricsServerType.Prometheus and config.metrics.prometheus_server_config:
+            server_url = config.metrics.prometheus_server_config.url
+            scrape_interval = config.metrics.prometheus_server_config.scrape_interval
+            metricsclient = PrometheusMetricsClient(base_url=server_url)
         else:
             metricsclient = MockMetricsClient(uri=config.metrics.url)
     else:
@@ -81,7 +84,10 @@ def main_cli() -> None:
     # Run Perf Test
     perfrunner.run()
     
-    time.sleep(30) # TODO make it scrape interval, Allow some time for metrics to be collected after the loadgen has finished
+    if scrape_interval > 0:
+        # Wait for the metrics to be collected
+        print(f"Waiting for {2*scrape_interval} seconds for metrics to be collected...")
+        time.sleep(2*scrape_interval)
     duration = time.time() - start_time  # Calculate the duration of the test
 
     # Generate Report after the test
