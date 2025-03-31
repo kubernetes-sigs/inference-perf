@@ -57,12 +57,19 @@ class VLLMConfig(BaseModel):
     url: str
 
 
+class CustomTokenizerConfig(BaseModel):
+    pretrained_model_name_or_path: str
+    trust_remote_code: Optional[bool] = None
+    token: Optional[str] = None
+
+
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
     metrics: Optional[MetricsConfig] = MetricsConfig(url="")
     vllm: Optional[VLLMConfig] = None
+    tokenizer: Optional[CustomTokenizerConfig] = None
 
 
 def read_config() -> Config:
