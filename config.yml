@@ -7,7 +7,6 @@ vllm:
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   url: http://0.0.0.0:8000
 tokenizer:
-  tokenizer_id: HuggingFaceTB/SmolLM2-135M-Instruct
-  trust_remote_code: false
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
   type: shareGPT

@@ -56,9 +56,11 @@ class VLLMConfig(BaseModel):
     api: APIType = APIType.Completion
     url: str
 
+
 class CustomTokenizerConfig(BaseModel):
-    tokenizer_id: str
-    trust_remote_code: bool = False
+    pretrained_model_name_or_path: str
+    trust_remote_code: Optional[bool] = None
+    token: Optional[str] = None
 
 
 class Config(BaseModel):

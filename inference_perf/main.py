@@ -40,7 +40,9 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        client = vLLMModelServerClient(uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer_id=config.tokenizer.tokenizer_id, api_type=config.vllm.api, trust_remote_code=config.tokenizer.trust_remote_code)
+        client = vLLMModelServerClient(
+            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
+        )
     else:
         raise Exception("vLLM client config missing")
 
