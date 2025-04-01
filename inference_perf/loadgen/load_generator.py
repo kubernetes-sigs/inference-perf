@@ -26,7 +26,7 @@ class LoadGenerator:
         self.load_type = load_config.type
         self.stages = load_config.stages
 
-    def get_timer(self, rate: float):
+    def get_timer(self, rate: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate)
         return ConstantLoadTimer(rate=rate)
@@ -50,4 +50,5 @@ class LoadGenerator:
                     else:
                         break
             print(f"Stage {stage_id} - run completed")
-            await sleep(self.stageInterval)
+            if self.stageInterval:
+                await sleep(self.stageInterval)

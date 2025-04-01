@@ -44,7 +44,7 @@ class LoadStage(BaseModel):
 
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
-    interval: Optional[int] = 1
+    interval: Optional[float] = 1.0
     stages: List[LoadStage]
 
 
