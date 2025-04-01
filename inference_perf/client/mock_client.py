@@ -25,7 +25,7 @@ class MockModelServerClient(ModelServerClient):
         self.reportgen = reportgen
 
     async def process_request(self, payload: InferenceData, stage_id: int) -> None:
-        print("Processing request - " + str(payload.data)+ " for stage - "+ str(stage_id))
+        print("Processing request - " + str(payload.data) + " for stage - " + str(stage_id))
         await asyncio.sleep(3)
         self.reportgen.collect_request_metrics(
             RequestMetric(
