@@ -56,7 +56,7 @@ def main_cli() -> None:
 
     # Define LoadGenerator
     if config.load:
-        loadgen = LoadGenerator(datagen, config.load.type, rate=config.load.rate, duration=config.load.duration)
+        loadgen = LoadGenerator(datagen, config.load)
     else:
         raise Exception("load config missing")
 
