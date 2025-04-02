@@ -14,37 +14,41 @@
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client import ModelServerClient
-from inference_perf.config import LoadType
+from inference_perf.config import LoadType, LoadConfig
 from asyncio import TaskGroup, sleep
 import time
 
 
 class LoadGenerator:
-    def __init__(self, datagen: DataGenerator, load_type: LoadType, rate: float, duration: float) -> None:
+    def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
         self.datagen = datagen
-        self.duration = duration
-        self.timer: LoadTimer
-        if load_type == LoadType.CONSTANT:
-            self.timer = ConstantLoadTimer(rate=rate)
-        elif load_type == LoadType.POISSON:
-            self.timer = PoissonLoadTimer(rate=rate)
-        else:
-            raise
+        self.stageInterval = load_config.interval
+        self.load_type = load_config.type
+        self.stages = load_config.stages
+
+    def get_timer(self, rate: float) -> LoadTimer:
+        if self.load_type == LoadType.POISSON:
+            return PoissonLoadTimer(rate=rate)
+        return ConstantLoadTimer(rate=rate)
 
     async def run(self, client: ModelServerClient) -> None:
-        start_time = time.time()
-        end_time = start_time + self.duration
-        print("Run started")
-        async with TaskGroup() as tg:
-            for _, (data, time_index) in enumerate(
-                zip(self.datagen.get_data(), self.timer.start_timer(start_time), strict=True)
-            ):
-                now = time.time()
-                if time_index < end_time and now < end_time:
-                    if time_index > now:
-                        await sleep(time_index - time.time())
-                    tg.create_task(client.process_request(data))
-                    continue
-                else:
-                    break
-        print("Run completed")
+        for stage_id, stage in enumerate(self.stages):
+            timer = self.get_timer(stage.rate)
+            start_time = time.time()
+            end_time = start_time + stage.duration
+            print(f"Stage {stage_id} - run started")
+            async with TaskGroup() as tg:
+                for _, (data, time_index) in enumerate(
+                    zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
+                ):
+                    now = time.time()
+                    if time_index < end_time and now < end_time:
+                        if time_index > now:
+                            await sleep(time_index - time.time())
+                        tg.create_task(client.process_request(data, stage_id))
+                        continue
+                    else:
+                        break
+            print(f"Stage {stage_id} - run completed")
+            if self.stageInterval:
+                await sleep(self.stageInterval)

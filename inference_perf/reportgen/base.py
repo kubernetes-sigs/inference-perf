@@ -18,6 +18,7 @@ from inference_perf.metrics import MetricsClient
 
 
 class RequestMetric(BaseModel):
+    stage_id: int
     prompt_tokens: int
     output_tokens: int
     time_per_request: float

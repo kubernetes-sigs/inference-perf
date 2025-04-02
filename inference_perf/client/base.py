@@ -27,5 +27,5 @@ class ModelServerClient(ABC):
         self.reportgen = reportgen
 
     @abstractmethod
-    async def process_request(self, data: InferenceData) -> None:
+    async def process_request(self, data: InferenceData, stage_id: int) -> None:
         raise NotImplementedError
