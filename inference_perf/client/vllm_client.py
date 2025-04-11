@@ -25,7 +25,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
-        self.request_metrics = list()
+        self.request_metrics: List[RequestMetric] = list()
         self.prometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
                 "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name

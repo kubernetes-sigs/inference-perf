@@ -41,10 +41,10 @@ class MockReportGenerator(ReportGenerator):
                     prompt_tokens_per_second = 0.0
                     output_tokens_per_second = 0.0
                     requests_per_second = 0.0
-                
+
                 summary = MetricsSummary(
                     total_requests=len(request_metrics),
-                    total_requests_per_second=requests_per_second,
+                    requests_per_second=requests_per_second,
                     prompt_tokens_per_second=prompt_tokens_per_second,
                     output_tokens_per_second=output_tokens_per_second,
                     avg_prompt_tokens=int(statistics.mean([x.prompt_tokens for x in request_metrics])),

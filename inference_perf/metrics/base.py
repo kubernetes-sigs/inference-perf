@@ -49,6 +49,7 @@ class MetricsSummary(BaseModel):
     avg_output_tokens: int = 0
     avg_queue_length: int = 0
 
+
 class MetricsClient(ABC):
     @abstractmethod
     def __init__(self) -> None:

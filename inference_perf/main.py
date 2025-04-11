@@ -16,7 +16,7 @@ from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.base import PerfRuntimeParameters
+from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.metrics import MockMetricsClient
@@ -63,6 +63,7 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define Metrics Client
+    metrics_client: MetricsClient
     if config.metrics_client:
         if config.metrics_client.type == MetricsClientType.PROMETHEUS:
             if config.metrics_client.prometheus:
