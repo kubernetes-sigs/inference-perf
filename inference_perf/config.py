@@ -40,6 +40,7 @@ class LoadType(Enum):
 
 class MetricsClientType(Enum):
     PROMETHEUS = "prometheus"
+    DEFAULT = "default"
 
 
 class LoadConfig(BaseModel):
@@ -58,8 +59,8 @@ class PrometheusClientConfig(BaseModel):
 
 
 class MetricsClientConfig(BaseModel):
-    type: MetricsClientType = MetricsClientType.PROMETHEUS
-    prometheus: Optional[PrometheusClientConfig] = PrometheusClientConfig()
+    type: MetricsClientType
+    prometheus: Optional[PrometheusClientConfig] = None
 
 
 class VLLMConfig(BaseModel):
@@ -72,7 +73,7 @@ class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
-    metrics_client: Optional[MetricsClientConfig] = MetricsClientConfig()
+    metrics_client: Optional[MetricsClientConfig] = None
     vllm: Optional[VLLMConfig] = None
 
 

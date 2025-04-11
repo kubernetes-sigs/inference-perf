@@ -31,7 +31,6 @@ class InferencePerfRunner:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
-        self.client.set_report_generator(self.reportgen)
 
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
@@ -41,7 +40,6 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
-    scrape_interval = 0
     config = read_config()
 
     # Define Model Server Client
@@ -69,7 +67,7 @@ def main_cli() -> None:
         if config.metrics_client.type == MetricsClientType.PROMETHEUS:
             if config.metrics_client.prometheus:
                 url = config.metrics_client.prometheus.url
-                if not config.metrics_client.prometheus.url:
+                if not url:
                     raise Exception("prometheus url missing")
                 scrape_interval = config.metrics_client.prometheus.scrape_interval or 30
             else:
@@ -94,7 +92,8 @@ def main_cli() -> None:
     # Run Perf Test
     perfrunner.run()
 
-    if scrape_interval > 0:
+    # Wait for metrics collection
+    if config.metrics_client is not None and config.metrics_client.type == MetricsClientType.PROMETHEUS:
         # Wait for the metrics to be scraped, added a buffer to even the last request's metrics are collected
         wait_time = scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")

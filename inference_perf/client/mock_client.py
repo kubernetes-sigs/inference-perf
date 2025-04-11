@@ -12,25 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator, RequestMetric
 from .base import ModelServerClient
-import asyncio
 
 
 class MockModelServerClient(ModelServerClient):
     def __init__(self) -> None:
         pass
 
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
-
     async def process_request(self, payload: InferenceData) -> None:
-        print("Processing request - " + str(payload.data))
-        await asyncio.sleep(3)
-        self.reportgen.collect_request_metrics(
-            RequestMetric(
-                prompt_tokens=0,
-                output_tokens=0,
-                time_per_request=3,
-            )
-        )
+        raise NotImplementedError

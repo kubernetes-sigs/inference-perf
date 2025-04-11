@@ -35,7 +35,6 @@ class PrometheusQueryBuilder:
                 "min": "min_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
                 "max": "max_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
                 "p90": "quantile_over_time(0.9, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "p95": "quantile_over_time(0.95, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
                 "p99": "quantile_over_time(0.99, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
             },
             "histogram": {
@@ -47,14 +46,12 @@ class PrometheusQueryBuilder:
                 "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (metric_name, filter, self.duration),
                 "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
                 % (metric_name, filter, self.duration),
-                "p95": "histogram_quantile(0.95, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
-                % (metric_name, filter, self.duration),
                 "p99": "histogram_quantile(0.99, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
                 % (metric_name, filter, self.duration),
             },
             "counter": {
-                "rate": "rate(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "increase": "increase(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
+                "rate": "sum(rate(%s{%s}[%.0fs]))" % (metric_name, filter, self.duration),
+                "increase": "sum(increase(%s{%s}[%.0fs]))" % (metric_name, filter, self.duration),
                 "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
                 % (metric_name, filter, self.duration, self.duration, self.duration),
                 "max": "max_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
@@ -62,8 +59,6 @@ class PrometheusQueryBuilder:
                 "min": "min_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
                 % (metric_name, filter, self.duration, self.duration, self.duration),
                 "p90": "quantile_over_time(0.9, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-                "p95": "quantile_over_time(0.5, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
                 % (metric_name, filter, self.duration, self.duration, self.duration),
                 "p99": "quantile_over_time(0.99, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
                 % (metric_name, filter, self.duration, self.duration, self.duration),
@@ -104,21 +99,13 @@ class PrometheusMetricsClient(MetricsClient):
         Returns:
         A MetricsSummary object containing the summary metrics.
         """
-        metrics_summary: MetricsSummary = MetricsSummary(
-            total_requests=0,
-            avg_queue_length=0,
-            avg_time_to_first_token=0.0,
-            avg_time_per_output_token=0.0,
-            avg_prompt_tokens=0,
-            avg_output_tokens=0,
-            avg_request_latency=0.0,
-        )
+        metrics_summary: MetricsSummary = MetricsSummary()
         if runtime_parameters is None:
             print("Perf Runtime parameters are not set, skipping metrics collection")
             return None
 
         # Get the duration and model server client from the runtime parameters
-        evaluation_time = runtime_parameters.evaluation_time
+        eval_time = runtime_parameters.eval_time
         duration = runtime_parameters.duration
         model_server_client = runtime_parameters.model_server_client
 
@@ -147,16 +134,19 @@ class PrometheusMetricsClient(MetricsClient):
                 continue
 
             # Execute the query and get the result
-            result = self.execute_query(query, str(evaluation_time))
+            result = self.execute_query(query, str(eval_time))
             if result is None:
                 print("Error executing query: %s" % (query))
                 continue
             # Set the result in the metrics summary
-            setattr(metrics_summary, summary_metric_name, result)
+            attr = getattr(metrics_summary, summary_metric_name)
+            if attr is not None:
+                target_type = type(attr)
+                setattr(metrics_summary, summary_metric_name, target_type(result))
 
         return metrics_summary
 
-    def execute_query(self, query: str, evaluation_time: str) -> float:
+    def execute_query(self, query: str, eval_time: str) -> float:
         """
         Executes the given query on the Prometheus server and returns the result.
 
@@ -167,7 +157,7 @@ class PrometheusMetricsClient(MetricsClient):
         The result of the query.
         """
         query_result = 0.0
-        response = requests.get(f"{self.base_url}/api/v1/query", params={"query": query, "time": evaluation_time})
+        response = requests.get(f"{self.base_url}/api/v1/query", params={"query": query, "time": eval_time})
         if response is None:
             print("Error executing query: %s" % (query))
             return query_result

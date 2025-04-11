@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import List, Tuple
+
+from pydantic import BaseModel
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator
+
+
+class RequestMetric(BaseModel):
+    prompt_tokens: int
+    output_tokens: int
+    time_per_request: float
 
 
 class ModelServerPrometheusMetric:
@@ -31,11 +38,11 @@ class ModelServerClient(ABC):
         pass
 
     @abstractmethod
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
+    async def process_request(self, data: InferenceData) -> None:
+        raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceData) -> None:
+    def get_request_metrics(self) -> List[RequestMetric]:
         raise NotImplementedError
 
     @abstractmethod
