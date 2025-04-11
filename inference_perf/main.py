@@ -45,7 +45,7 @@ def main_cli() -> None:
     # Define Model Server Client
     if config.vllm:
         model_server_client = vLLMModelServerClient(
-            uri=config.vllm.url, model_name=config.vllm.model_name, api_type=config.vllm.api
+            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
         )
     else:
         raise Exception("vLLM client config missing")
@@ -53,6 +53,8 @@ def main_cli() -> None:
     # Define DataGenerator
     if config.data:
         datagen = HFShareGPTDataGenerator() if config.data.type == DataGenType.ShareGPT else MockDataGenerator()
+        if datagen.get_api() != config.vllm.api:
+            raise Exception("data and model server api type doesn't match")
     else:
         raise Exception("data config missing")
 

@@ -44,5 +44,9 @@ class DataGenerator(ABC):
         pass
 
     @abstractmethod
+    def get_api(self) -> APIType:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_data(self) -> Generator[InferenceData, None, None]:
         raise NotImplementedError

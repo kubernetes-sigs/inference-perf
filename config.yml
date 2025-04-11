@@ -3,8 +3,13 @@ load:
   rate: 1
   duration: 30
 vllm:
+  api: chat
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   url: http://0.0.0.0:8000
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: shareGPT
 metrics_client:
   type: prometheus
   prometheus:
