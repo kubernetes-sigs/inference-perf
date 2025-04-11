@@ -10,9 +10,8 @@ tokenizer:
   pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
   type: shareGPT
-metrics_client:
-  type: prometheus
-  prometheus:
-    url: http://0.0.0.0:9091
-    scrape_interval: 15
-
+# metrics_client:
+#   type: prometheus
+#   prometheus:
+#     url: http://localhost:9090
+#     scrape_interval: 15

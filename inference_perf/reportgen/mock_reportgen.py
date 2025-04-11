@@ -23,8 +23,14 @@ class MockReportGenerator(ReportGenerator):
 
     async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
         print("\n\nGenerating Report ..")
+        summary: MetricsSummary | None = None
         # check metrics_client has generated the summary, if not, use the request metrics from model server client
-        summary = self.metrics_client.collect_metrics_summary(runtime_parameters)
+        if self.metrics_client is None:
+            print("No metrics client provided, falling back to model server request metrics...")
+        else:
+            print("Using metrics client to generate report...")
+            summary = self.metrics_client.collect_metrics_summary(runtime_parameters)
+
         if summary is not None:
             for field_name, value in summary:
                 print(f"{field_name}: {value}")

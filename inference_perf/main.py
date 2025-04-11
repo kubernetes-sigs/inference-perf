@@ -19,7 +19,6 @@ from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
-from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
 import asyncio
 
@@ -65,7 +64,7 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define Metrics Client
-    metrics_client: MetricsClient
+    metrics_client: MetricsClient | None = None
     if config.metrics_client:
         if config.metrics_client.type == MetricsClientType.PROMETHEUS:
             if config.metrics_client.prometheus:
@@ -76,10 +75,6 @@ def main_cli() -> None:
             else:
                 raise Exception("prometheus config missing")
             metrics_client = PrometheusMetricsClient(base_url=url)
-        else:
-            metrics_client = MockMetricsClient()
-    else:
-        raise Exception("metrics config missing")
 
     # Define Report Generator
     if config.report:
