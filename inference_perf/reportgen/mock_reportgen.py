@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.metrics.base import PerfRuntimeParameters
 from .base import ReportGenerator, RequestMetric
 from typing import List
 import statistics
@@ -25,9 +26,9 @@ class MockReportGenerator(ReportGenerator):
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
 
-    async def generate_report(self, duration = None, model_server_client = None) -> None:
+    async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
         print("\n\nGenerating Report ..")
-        summary = self.metrics_client.collect_metrics_summary(duration, model_server_client)
+        summary = self.metrics_client.collect_metrics_summary(runtime_parameters)
         if summary is not None:
             for field_name, value in summary:
                 print(f"{field_name}: {value}")
@@ -35,9 +36,12 @@ class MockReportGenerator(ReportGenerator):
         elif summary is None and len(self.metrics) > 0:
             summary = MetricsSummary(
                 total_requests=len(self.metrics),
-                avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
-                avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
-                avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
+                avg_prompt_tokens=int(statistics.mean([x.prompt_tokens for x in self.metrics])),
+                avg_output_tokens=int(statistics.mean([x.output_tokens for x in self.metrics])),
+                avg_request_latency=statistics.mean([x.time_per_request for x in self.metrics]),
+                avg_time_to_first_token=0.0,
+                avg_time_per_output_token=0.0,
+                avg_queue_length=0,
             )
             for field_name, value in summary:
                 print(f"{field_name}: {value}")

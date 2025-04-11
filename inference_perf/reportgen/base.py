@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from abc import ABC, abstractmethod
 from typing import Tuple
 from inference_perf.metrics import MetricsClient
+from inference_perf.metrics.base import PerfRuntimeParameters
 
 
 class RequestMetric(BaseModel):
@@ -34,5 +35,5 @@ class ReportGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def generate_report(self) -> None:
+    async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
         raise NotImplementedError

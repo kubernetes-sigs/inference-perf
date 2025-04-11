@@ -5,8 +5,9 @@ load:
 vllm:
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   url: http://0.0.0.0:8000
-metrics:
-  server_type: prometheus
-  prometheus_server_config:
+metrics_client:
+  type: prometheus
+  prometheus:
     url: http://0.0.0.0:9091
     scrape_interval: 15
+

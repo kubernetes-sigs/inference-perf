@@ -17,6 +17,14 @@ from inference_perf.datagen import InferenceData
 from inference_perf.reportgen import ReportGenerator
 
 
+class ModelServerPrometheusMetric:
+    def __init__(self, name: str, op: str, type: str, filters: str) -> None:
+        self.name = name
+        self.op = op
+        self.type = type
+        self.filters = filters
+
+
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
@@ -28,4 +36,9 @@ class ModelServerClient(ABC):
 
     @abstractmethod
     async def process_request(self, data: InferenceData) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_prometheus_metric_metadata(self) -> dict[str, ModelServerPrometheusMetric]:
+        # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError

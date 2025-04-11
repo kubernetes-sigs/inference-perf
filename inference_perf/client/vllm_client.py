@@ -14,7 +14,7 @@
 from inference_perf.datagen import InferenceData
 from inference_perf.reportgen import ReportGenerator, RequestMetric
 from inference_perf.config import APIType
-from .base import ModelServerClient
+from .base import ModelServerClient, ModelServerPrometheusMetric
 from typing import Any
 import aiohttp
 import json
@@ -26,12 +26,29 @@ class vLLMModelServerClient(ModelServerClient):
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
-    
-    def get_model_name(self) -> str:
-        return self.model_name
-
-    def get_engine(self) -> str:
-        return "vllm"
+        self.prometheusMetricMetadata = {
+            "avg_queue_length": ModelServerPrometheusMetric(
+                "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name
+            ),
+            "avg_time_to_first_token": ModelServerPrometheusMetric(
+                "vllm:time_to_first_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "avg_time_per_output_token": ModelServerPrometheusMetric(
+                "vllm:time_per_output_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "avg_prompt_tokens": ModelServerPrometheusMetric(
+                "vllm:prompt_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
+            ),
+            "avg_output_tokens": ModelServerPrometheusMetric(
+                "vllm:generation_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
+            ),
+            "total_requests": ModelServerPrometheusMetric(
+                "vllm:request_success_total", "increase", "counter", "model_name='%s'" % self.model_name
+            ),
+            "avg_request_latency": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+        }
 
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
@@ -76,3 +93,6 @@ class vLLMModelServerClient(ModelServerClient):
                         print(await response.text())
             except aiohttp.ClientConnectorError as e:
                 print("vLLM Server connection error:\n", str(e))
+
+    def get_prometheus_metric_metadata(self) -> dict[str, ModelServerPrometheusMetric]:
+        return self.prometheusMetricMetadata

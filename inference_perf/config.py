@@ -22,9 +22,6 @@ class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
 
-class MetricsServerType(Enum):
-    Prometheus = "prometheus"
-
 
 class DataGenType(Enum):
     Mock = "mock"
@@ -41,6 +38,10 @@ class LoadType(Enum):
     POISSON = "poisson"
 
 
+class MetricsClientType(Enum):
+    PROMETHEUS = "prometheus"
+
+
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     rate: int = 1
@@ -50,13 +51,16 @@ class LoadConfig(BaseModel):
 class ReportConfig(BaseModel):
     name: str
 
-class PrometheusServerConfig(BaseModel):
-    scrape_interval: int = 15
+
+class PrometheusClientConfig(BaseModel):
+    scrape_interval: Optional[int] = 15
     url: str = "http://localhost:9090"
 
-class MetricsConfig(BaseModel):
-    server_type: MetricsServerType
-    prometheus_server_config: PrometheusServerConfig
+
+class MetricsClientConfig(BaseModel):
+    type: MetricsClientType = MetricsClientType.PROMETHEUS
+    prometheus: Optional[PrometheusClientConfig] = PrometheusClientConfig()
+
 
 class VLLMConfig(BaseModel):
     model_name: str
@@ -68,10 +72,7 @@ class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig(name="")
-    metrics: Optional[MetricsConfig] = MetricsConfig(
-        server_type=MetricsServerType.Prometheus,
-        prometheus_server_config=PrometheusServerConfig(url="http://localhost:9090", scrape_interval=15),
-    )
+    metrics_client: Optional[MetricsClientConfig] = MetricsClientConfig()
     vllm: Optional[VLLMConfig] = None
 
 

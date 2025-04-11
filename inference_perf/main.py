@@ -13,14 +13,17 @@
 # limitations under the License.
 import time
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsServerType
+from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.metrics.base import PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
 import asyncio
+
+PROMETHEUS_SCRAPE_BUFFER_SEC = 5
 
 
 class InferencePerfRunner:
@@ -33,8 +36,8 @@ class InferencePerfRunner:
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_report(self, duration = None) -> None:
-        asyncio.run(self.reportgen.generate_report(duration, self.client))
+    def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
+        asyncio.run(self.reportgen.generate_report(runtime_parameters=runtime_parameters))
 
 
 def main_cli() -> None:
@@ -43,7 +46,9 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        client = vLLMModelServerClient(uri=config.vllm.url, model_name=config.vllm.model_name, api_type=config.vllm.api)
+        model_server_client = vLLMModelServerClient(
+            uri=config.vllm.url, model_name=config.vllm.model_name, api_type=config.vllm.api
+        )
     else:
         raise Exception("vLLM client config missing")
 
@@ -60,39 +65,47 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define Metrics Client
-    if config.metrics:
-        if config.metrics.server_type == MetricsServerType.Prometheus and config.metrics.prometheus_server_config:
-            server_url = config.metrics.prometheus_server_config.url
-            scrape_interval = config.metrics.prometheus_server_config.scrape_interval
-            metricsclient = PrometheusMetricsClient(base_url=server_url)
+    if config.metrics_client:
+        if config.metrics_client.type == MetricsClientType.PROMETHEUS:
+            if config.metrics_client.prometheus:
+                url = config.metrics_client.prometheus.url
+                if not config.metrics_client.prometheus.url:
+                    raise Exception("prometheus url missing")
+                scrape_interval = config.metrics_client.prometheus.scrape_interval or 30
+            else:
+                raise Exception("prometheus config missing")
+            metrics_client = PrometheusMetricsClient(base_url=url)
         else:
-            metricsclient = MockMetricsClient(uri=config.metrics.url)
+            metrics_client = MockMetricsClient()
     else:
         raise Exception("metrics config missing")
 
     # Define Report Generator
     if config.report:
-        reportgen = MockReportGenerator(metricsclient)
+        reportgen = MockReportGenerator(metrics_client)
     else:
         raise Exception("report config missing")
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(client, loadgen, reportgen)
+    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen)
 
     start_time = time.time()
 
     # Run Perf Test
     perfrunner.run()
-    
+
     if scrape_interval > 0:
-        # Wait for the metrics to be collected
-        print(f"Waiting for {2*scrape_interval} seconds for metrics to be collected...")
-        time.sleep(2*scrape_interval)
-    duration = time.time() - start_time  # Calculate the duration of the test
+        # Wait for the metrics to be scraped, added a buffer to even the last request's metrics are collected
+        wait_time = scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
+        print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")
+        time.sleep(wait_time)
+    end_time = time.time()
+    duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Report after the test
-    # engine is passed for PrometheusMetricsClient to collect metrics for the specific engine
-    perfrunner.generate_report(duration) # TODO pass start_time and sleep if the metrics server need it, e.g. Prometheus
+    perfrunner.generate_report(
+        PerfRuntimeParameters(end_time, duration, model_server_client)
+    )  # TODO pass start_time and sleep if the metrics server need it, e.g. Prometheus
 
 
 if __name__ == "__main__":
