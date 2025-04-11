@@ -19,7 +19,7 @@ from inference_perf.metrics.base import PerfRuntimeParameters
 
 class ReportGenerator(ABC):
     @abstractmethod
-    def __init__(self, metrics_client: MetricsClient, *args: Tuple[int, ...]) -> None:
+    def __init__(self, metrics_client: MetricsClient | None, *args: Tuple[int, ...]) -> None:
         self.metrics_client = metrics_client
         pass
 
