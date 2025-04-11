@@ -18,5 +18,5 @@ class MockMetricsClient(MetricsClient):
     def __init__(self) -> None:
         pass
 
-    def collect_metrics_summary(self) -> MetricsSummary | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> MetricsSummary | None:
         return None
