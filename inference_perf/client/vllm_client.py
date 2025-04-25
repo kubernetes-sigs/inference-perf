@@ -64,7 +64,7 @@ class vLLMModelServerClient(ModelServerClient):
             }
         raise Exception("api type not supported - has to be completions or chat completions")
 
-    async def process_request(self, data: InferenceData) -> None:
+    async def process_request(self, data: InferenceData, stage_id: int) -> None:
         payload = self._create_payload(data)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
@@ -95,6 +95,7 @@ class vLLMModelServerClient(ModelServerClient):
 
                         self.reportgen.collect_request_metrics(
                             RequestMetric(
+                                stage_id=stage_id,
                                 prompt_tokens=prompt_tokens,
                                 output_tokens=output_tokens,
                                 time_per_request=end - start,
