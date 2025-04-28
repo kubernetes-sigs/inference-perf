@@ -2,6 +2,8 @@
 
 This guide explains how to deploy `inference-perf` to a Kubernetes cluster as a job.
 
+> [!NOTE]
+> There is currently no support for persisting output reports, all outputs are currently printed to standard output, please refer to issue [#59](https://github.com/kubernetes-sigs/inference-perf/issues/59)
 ### Setup
 
 Since public container images are not currently published, you'll need to build the `inference-perf` image yourself. Follow the [official guide](https://github.com/kubernetes-sigs/inference-perf?tab=readme-ov-file#run-in-a-docker-container) to build the container.
