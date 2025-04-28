@@ -51,12 +51,17 @@ class HFShareGPTDataGenerator(DataGenerator):
                     continue
 
                 if self.apiType == APIType.Completion:
-                    yield InferenceData(
-                        type=APIType.Completion,
-                        data=CompletionData(
-                            prompt=data[self.data_key][0][self.content_key]
-                        ),
-                    )
+                    try:
+                        prompt = data[self.data_key][0].get(self.content_key)
+                        if not prompt:
+                            continue
+                        yield InferenceData(
+                            type=APIType.Completion,
+                            data=CompletionData(prompt=prompt),
+                        )
+                    except (KeyError, TypeError) as e:
+                        print(f"Skipping invalid completion data: {e}")
+                        continue
                 elif self.APIType == APIType.Chat:
                     yield InferenceData(
                         type=APIType.Chat,
