@@ -19,7 +19,7 @@ from datasets import load_dataset
 
 class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, apiType: APIType) -> None:
-        self.apiType = apiType
+        super().__init__(apiType)
         self.sharegpt_dataset = iter(
             load_dataset(
                 "anon8231489123/ShareGPT_Vicuna_unfiltered",
@@ -34,6 +34,9 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.content_key = "value"
         # initialize data collection
         next(self.sharegpt_dataset)
+
+    def get_supported_apis(self):
+        return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         if self.sharegpt_dataset is not None:

@@ -17,11 +17,20 @@ from inference_perf.config import APIType
 
 class MockDataGenerator(DataGenerator):
     def __init__(self, apiType: APIType) -> None:
-        self.apiType = apiType
+        super().__init__(apiType)
         pass
+
+    def get_supported_apis(self):
+        return [APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
         while True:
             i += 1
-            yield InferenceData(data=CompletionData(prompt="text" + str(i)))
+            if self.apiType == APIType.Completion:
+                yield InferenceData(
+                    data=CompletionData(prompt="text" + str(i))
+                )
+            else:
+                raise Exception("Unsupported API type")
+                
