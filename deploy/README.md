@@ -12,7 +12,7 @@ Once built, push the image to your preferred container registry:
 - [Artifact Registry (Google Cloud)](https://cloud.google.com/artifact-registry/docs/docker/pushing-and-pulling)
 - [Docker Hub](https://docs.docker.com/get-started/introduction/build-and-push-first-image/)
 
-Take note of the image name once successfully pushed, it should look something like `<your-artifact-registry-region>-docker.pkg.dev/<your-project-name>/<your-artifact-registry-name>/inference-perf:latest`, in `manifests.yaml` replace `<your image here>` with this image name.
+Take note of the image name once successfully pushed,replace `<your image here>` in `manifests.yaml` with this image name.
 
 `inference-perf` requires an input configuration file. This should be provided via a Kubernetes ConfigMap. You can create the ConfigMap using:
 
