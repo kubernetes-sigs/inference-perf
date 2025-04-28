@@ -46,6 +46,7 @@ class DataGenerator(ABC):
             raise Exception(f"Unsupported API type {apiType}")
         self.apiType = apiType
 
+    @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
         raise NotImplementedError
 
