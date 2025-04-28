@@ -51,9 +51,6 @@ def main_cli() -> None:
         datagen = MockDataGenerator(config.vllm.api)
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
-            
-        if not datagen:
-            raise Exception("dataset incompatible with model server api type")
     else:
         raise Exception("data config missing")
 
