@@ -14,7 +14,7 @@ Once built, push the image to your preferred container registry:
 
 Take note of the image name once successfully pushed,replace `<your image here>` in `manifests.yaml` with this image name.
 
-`inference-perf` requires an input configuration file. This should be provided via a Kubernetes ConfigMap. You can create the ConfigMap using:
+`inference-perf` requires an input configuration file. This should be provided via a Kubernetes ConfigMap. Create the ConfigMap by running at the root of this repo:
 
 ```bash
 kubectl create configmap inference-perf-config --from-file=config.yml
