@@ -1,4 +1,4 @@
-## `inference-perf` as a Kubernetes Job
+## Run `inference-perf` as a Job in a Kubernetes cluster
 
 This guide explains how to deploy `inference-perf` to a Kubernetes cluster as a job.
 
