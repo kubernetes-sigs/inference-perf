@@ -32,5 +32,5 @@ kubectl apply -f manifests.yaml
 
 Currently, inference-perf outputs benchmark results to standard output only. To view the results after the job completes, run:
 ```bash
-kubectl logs jobs/inference-perf
+kubectl wait --for=condition=complete job/inference-perf && kubectl logs jobs/inference-perf
 ```
