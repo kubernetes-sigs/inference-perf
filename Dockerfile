@@ -14,3 +14,6 @@ COPY . /workspace
 
 # Install dependencies
 RUN pip install -e .
+
+# Run inference-perf
+CMD ["inference-perf", "--config_file", "config.yml"]
