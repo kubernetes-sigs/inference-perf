@@ -41,7 +41,7 @@ This project is currently in development.
 
 ### Run in Kubernetes cluster
 
-Refer to [README](./deploy/README.md) in `/deploy`.
+Refer to the [guide](./deploy/README.md) in `/deploy`.
 
 ## Contributing
 
