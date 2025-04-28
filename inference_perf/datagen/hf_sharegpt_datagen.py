@@ -35,7 +35,7 @@ class HFShareGPTDataGenerator(DataGenerator):
         # initialize data collection
         next(self.sharegpt_dataset)
 
-    def get_supported_apis(self):
+    def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:

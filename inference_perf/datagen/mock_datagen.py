@@ -20,7 +20,7 @@ class MockDataGenerator(DataGenerator):
         super().__init__(apiType)
         pass
 
-    def get_supported_apis(self):
+    def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
