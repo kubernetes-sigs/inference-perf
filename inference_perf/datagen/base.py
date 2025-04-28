@@ -38,14 +38,11 @@ class InferenceData(BaseModel):
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
+    apiType: APIType
 
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
         pass
-
-    @abstractmethod
-    def get_api(self) -> APIType:
-        raise NotImplementedError
 
     @abstractmethod
     def get_data(self) -> Generator[InferenceData, None, None]:
