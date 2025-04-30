@@ -12,19 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import DataGenerator, InferenceData, CompletionData
-from typing import Generator
+from typing import Generator, List
 from inference_perf.config import APIType
 
-
 class MockDataGenerator(DataGenerator):
-    def __init__(self) -> None:
+    def __init__(self, apiType: APIType) -> None:
+        super().__init__(apiType)
         pass
 
-    def get_api(self) -> APIType:
-        return APIType.Completion
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
         while True:
             i += 1
-            yield InferenceData(data=CompletionData(prompt="text" + str(i)))
+            if self.apiType == APIType.Completion:
+                yield InferenceData(
+                    data=CompletionData(prompt="text" + str(i))
+                )
+            else:
+                raise Exception("Unsupported API type")
+                
