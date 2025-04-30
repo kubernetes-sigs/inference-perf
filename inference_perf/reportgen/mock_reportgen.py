@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric
+from .base import ReportFile, ReportGenerator, RequestMetric
 from typing import List
 import statistics
 from inference_perf.metrics import MetricsClient, MetricsSummary
@@ -19,13 +19,13 @@ from inference_perf.metrics import MetricsClient, MetricsSummary
 
 class MockReportGenerator(ReportGenerator):
     def __init__(self, metrics_client: MetricsClient) -> None:
-        self.metrics_client = metrics_client
+        super().__init__(metrics_client = metrics_client)
         self.metrics: List[RequestMetric] = []
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
 
-    async def generate_report(self) -> None:
+    async def generate_reports(self) -> List[ReportFile]:
         print("\n\nGenerating Report ..")
         summary = self.metrics_client.collect_metrics_summary()
         if summary is not None:
@@ -43,3 +43,6 @@ class MockReportGenerator(ReportGenerator):
                 print(f"{field_name}: {value}")
         else:
             print("Report generation failed - no metrics collected")
+            return []
+
+        return [ReportFile(name="mock_report", contents=summary)]

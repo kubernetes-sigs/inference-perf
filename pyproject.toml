@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.2.2",
     "datasets>=3.3.2",
     "transformers>=4.50.2",
+    "google-cloud-storage>=3.1.0",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
