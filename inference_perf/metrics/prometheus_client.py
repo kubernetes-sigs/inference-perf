@@ -11,9 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 import requests
-from inference_perf.client.base import ModelServerPrometheusMetric
-from .base import MetricsClient, MetricsSummary, PerfRuntimeParameters
+from inference_perf.client.base import ModelServerMetrics, ModelServerPrometheusMetric
+from inference_perf.config import MetricsClientConfig
+from .base import MetricsClient, PerfRuntimeParameters
+
+PROMETHEUS_SCRAPE_BUFFER_SEC = 5
 
 
 class PrometheusQueryBuilder:
@@ -86,10 +90,25 @@ class PrometheusQueryBuilder:
 
 
 class PrometheusMetricsClient(MetricsClient):
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url
+    def __init__(self, metrics_client_config: MetricsClientConfig) -> None:
+        if metrics_client_config.prometheus:
+            self.url = metrics_client_config.prometheus.url
+            if not self.url:
+                raise Exception("prometheus url missing")
+            self.scrape_interval = metrics_client_config.prometheus.scrape_interval or 30
+        else:
+            raise Exception("prometheus config missing")
 
-    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> MetricsSummary | None:
+    def wait(self) -> None:
+        """
+        Waits for the Prometheus server to scrape the metrics.
+        We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
+        """
+        wait_time = self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
+        print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")
+        time.sleep(wait_time)
+
+    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
         """
         Collects the summary metrics for the given Perf Benchmark Runtime Parameters.
 
@@ -97,9 +116,9 @@ class PrometheusMetricsClient(MetricsClient):
         runtime_parameters: The runtime parameters containing details about the Perf Benchmark like the duration and model server client
 
         Returns:
-        A MetricsSummary object containing the summary metrics.
+        A ModelServerMetrics object containing the summary metrics.
         """
-        metrics_summary: MetricsSummary = MetricsSummary()
+        metrics_summary: ModelServerMetrics = ModelServerMetrics()
         if runtime_parameters is None:
             print("Perf Runtime parameters are not set, skipping metrics collection")
             return None
@@ -118,17 +137,14 @@ class PrometheusMetricsClient(MetricsClient):
         if not metrics_metadata:
             print("Metrics metadata is not present for the runtime")
             return None
-
-        # Populate query builders for each metric
-        query_builders = {}
         for summary_metric_name in metrics_metadata:
-            if metrics_metadata[summary_metric_name] is None:
+            summary_metric_metadata = metrics_metadata.get(summary_metric_name)
+            if summary_metric_metadata is None:
                 print("Metric metadata is not present for metric: %s" % (summary_metric_name))
                 continue
-            query_builders[summary_metric_name] = PrometheusQueryBuilder(metrics_metadata[summary_metric_name], duration)
+            query_builder = PrometheusQueryBuilder(summary_metric_metadata, duration)
 
-        for summary_metric_name in query_builders:
-            query = query_builders[summary_metric_name].build_query()
+            query = query_builder.build_query()
             if not query:
                 print("No query found for metric: %s. Skipping metric." % (summary_metric_name))
                 continue
@@ -138,7 +154,7 @@ class PrometheusMetricsClient(MetricsClient):
             if result is None:
                 print("Error executing query: %s" % (query))
                 continue
-            # Set the result in the metrics summary
+            # Set the result in metrics summary
             attr = getattr(metrics_summary, summary_metric_name)
             if attr is not None:
                 target_type = type(attr)
@@ -157,7 +173,7 @@ class PrometheusMetricsClient(MetricsClient):
         The result of the query.
         """
         query_result = 0.0
-        response = requests.get(f"{self.base_url}/api/v1/query", params={"query": query, "time": eval_time})
+        response = requests.get(f"{self.url}/api/v1/query", params={"query": query, "time": eval_time})
         if response is None:
             print("Error executing query: %s" % (query))
             return query_result

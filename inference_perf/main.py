@@ -22,8 +22,6 @@ from inference_perf.reportgen import ReportGenerator, MockReportGenerator
 from inference_perf.config import read_config
 import asyncio
 
-PROMETHEUS_SCRAPE_BUFFER_SEC = 5
-
 
 class InferencePerfRunner:
     def __init__(self, client: ModelServerClient, loadgen: LoadGenerator, reportgen: ReportGenerator) -> None:
@@ -67,14 +65,7 @@ def main_cli() -> None:
     metrics_client: MetricsClient | None = None
     if config.metrics_client:
         if config.metrics_client.type == MetricsClientType.PROMETHEUS:
-            if config.metrics_client.prometheus:
-                url = config.metrics_client.prometheus.url
-                if not url:
-                    raise Exception("prometheus url missing")
-                scrape_interval = config.metrics_client.prometheus.scrape_interval or 30
-            else:
-                raise Exception("prometheus config missing")
-            metrics_client = PrometheusMetricsClient(base_url=url)
+            metrics_client = PrometheusMetricsClient(metrics_client_config=config.metrics_client)
 
     # Define Report Generator
     if config.report:
@@ -91,18 +82,15 @@ def main_cli() -> None:
     perfrunner.run()
 
     # Wait for metrics collection
-    if config.metrics_client is not None and config.metrics_client.type == MetricsClientType.PROMETHEUS:
-        # Wait for the metrics to be scraped, added a buffer to even the last request's metrics are collected
-        wait_time = scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
-        print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")
-        time.sleep(wait_time)
+    if metrics_client is not None:
+        # Wait for the metrics to be ready
+        metrics_client.wait()
+
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Report after the test
-    perfrunner.generate_report(
-        PerfRuntimeParameters(end_time, duration, model_server_client)
-    )  # TODO pass start_time and sleep if the metrics server need it, e.g. Prometheus
+    perfrunner.generate_report(PerfRuntimeParameters(end_time, duration, model_server_client))
 
 
 if __name__ == "__main__":

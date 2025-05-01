@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from typing import List, Tuple, TypedDict
 
 from pydantic import BaseModel
 from inference_perf.datagen import InferenceData
@@ -23,6 +23,31 @@ class RequestMetric(BaseModel):
     output_tokens: int
     time_per_request: float
 
+class ModelServerMetrics(BaseModel):
+    # Throughput
+    prompt_tokens_per_second: float = 0.0
+    output_tokens_per_second: float = 0.0
+    requests_per_second: float = 0.0
+
+    # Latency
+    avg_request_latency: float = 0.0
+    median_request_latency: float = 0.0
+    p90_request_latency: float = 0.0
+    p99_request_latency: float = 0.0
+    avg_time_to_first_token: float = 0.0
+    median_time_to_first_token: float = 0.0
+    p90_time_to_first_token: float = 0.0
+    p99_time_to_first_token: float = 0.0
+    avg_time_per_output_token: float = 0.0
+    median_time_per_output_token: float = 0.0
+    p90_time_per_output_token: float = 0.0
+    p99_time_per_output_token: float = 0.0
+
+    # Request
+    total_requests: int = 0
+    avg_prompt_tokens: int = 0
+    avg_output_tokens: int = 0
+    avg_queue_length: int = 0
 
 class ModelServerPrometheusMetric:
     def __init__(self, name: str, op: str, type: str, filters: str) -> None:
@@ -31,6 +56,12 @@ class ModelServerPrometheusMetric:
         self.type = type
         self.filters = filters
 
+
+# Dynamically create PrometheusMetricMetadata TypedDict
+PrometheusMetricMetadata = TypedDict(
+    "PrometheusMetricMetadata",
+    {key: ModelServerPrometheusMetric for key in ModelServerMetrics.__annotations__.keys()},
+)
 
 class ModelServerClient(ABC):
     @abstractmethod
@@ -46,6 +77,6 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> dict[str, ModelServerPrometheusMetric]:
+    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError

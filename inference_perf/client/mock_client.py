@@ -20,4 +20,4 @@ class MockModelServerClient(ModelServerClient):
         pass
 
     async def process_request(self, payload: InferenceData) -> None:
-        raise NotImplementedError
+        print("Processing request - " + str(payload.data))

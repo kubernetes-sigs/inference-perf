@@ -14,7 +14,7 @@
 from inference_perf.datagen import InferenceData
 from inference_perf.config import APIType, CustomTokenizerConfig
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerPrometheusMetric, RequestMetric
+from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata, RequestMetric
 from typing import Any, Optional, List
 import aiohttp
 import json
@@ -42,7 +42,7 @@ class vLLMModelServerClient(ModelServerClient):
         else:
             print("Tokenizer path is empty. Falling back to usage metrics.")
         self.request_metrics: List[RequestMetric] = list()
-        self.prometheusMetricMetadata = {
+        self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
                 "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name
             ),
@@ -164,5 +164,5 @@ class vLLMModelServerClient(ModelServerClient):
     def get_request_metrics(self) -> List[RequestMetric]:
         return self.request_metrics
 
-    def get_prometheus_metric_metadata(self) -> dict[str, ModelServerPrometheusMetric]:
-        return self.prometheusMetricMetadata
+    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+        return self.prometheus_metric_metadata
