@@ -14,7 +14,7 @@
 from pydantic import BaseModel
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Generator, Tuple, Optional, List
+from typing import Generator, Optional, List
 
 
 class CompletionData(BaseModel):
@@ -38,9 +38,11 @@ class InferenceData(BaseModel):
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
+
     apiType: APIType
 
     """Abstract base class for data generators."""
+
     def __init__(self, apiType: APIType) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
