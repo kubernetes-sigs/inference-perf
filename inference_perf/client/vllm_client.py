@@ -42,6 +42,7 @@ class vLLMModelServerClient(ModelServerClient):
         else:
             print("Tokenizer path is empty. Falling back to usage metrics.")
         self.request_metrics: List[RequestMetric] = list()
+
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
                 "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name
@@ -120,7 +121,7 @@ class vLLMModelServerClient(ModelServerClient):
             }
         raise Exception("api type not supported - has to be completions or chat completions")
 
-    async def process_request(self, data: InferenceData) -> None:
+    async def process_request(self, data: InferenceData, stage_id: int) -> None:
         payload = self._create_payload(data)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
@@ -151,6 +152,7 @@ class vLLMModelServerClient(ModelServerClient):
 
                         self.request_metrics.append(
                             RequestMetric(
+                                stage_id=stage_id,
                                 prompt_tokens=prompt_tokens,
                                 output_tokens=output_tokens,
                                 time_per_request=end - start,

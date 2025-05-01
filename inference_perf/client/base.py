@@ -19,6 +19,7 @@ from inference_perf.datagen import InferenceData
 
 
 class RequestMetric(BaseModel):
+    stage_id: int
     prompt_tokens: int
     output_tokens: int
     time_per_request: float
@@ -69,7 +70,16 @@ class ModelServerClient(ABC):
         pass
 
     @abstractmethod
-    async def process_request(self, data: InferenceData) -> None:
+    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def get_request_metrics(self) -> List[RequestMetric]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+        # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError
 
     @abstractmethod

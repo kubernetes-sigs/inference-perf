@@ -19,5 +19,5 @@ class MockModelServerClient(ModelServerClient):
     def __init__(self) -> None:
         pass
 
-    async def process_request(self, payload: InferenceData) -> None:
+    async def process_request(self, payload: InferenceData, stage_id: int) -> None:
         print("Processing request - " + str(payload.data))

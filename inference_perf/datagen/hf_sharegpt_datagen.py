@@ -11,14 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData, ChatCompletionData, ChatMessage
+from .base import DataGenerator, InferenceData, CompletionData, ChatCompletionData, ChatMessage
 from inference_perf.config import APIType
-from typing import Generator
+from typing import Generator, List
 from datasets import load_dataset
 
 
 class HFShareGPTDataGenerator(DataGenerator):
-    def __init__(self) -> None:
+    def __init__(self, apiType: APIType) -> None:
+        super().__init__(apiType)
         self.sharegpt_dataset = iter(
             load_dataset(
                 "anon8231489123/ShareGPT_Vicuna_unfiltered",
@@ -34,8 +35,8 @@ class HFShareGPTDataGenerator(DataGenerator):
         # initialize data collection
         next(self.sharegpt_dataset)
 
-    def get_api(self) -> APIType:
-        return APIType.Chat
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         if self.sharegpt_dataset is not None:
@@ -48,7 +49,20 @@ class HFShareGPTDataGenerator(DataGenerator):
                     or len(data[self.data_key]) == 0
                 ):
                     continue
-                else:
+
+                if self.apiType == APIType.Completion:
+                    try:
+                        prompt = data[self.data_key][0].get(self.content_key)
+                        if not prompt:
+                            continue
+                        yield InferenceData(
+                            type=APIType.Completion,
+                            data=CompletionData(prompt=prompt),
+                        )
+                    except (KeyError, TypeError) as e:
+                        print(f"Skipping invalid completion data: {e}")
+                        continue
+                elif self.APIType == APIType.Chat:
                     yield InferenceData(
                         type=APIType.Chat,
                         chat=ChatCompletionData(
@@ -58,3 +72,5 @@ class HFShareGPTDataGenerator(DataGenerator):
                             ]
                         ),
                     )
+                else:
+                    raise Exception("Unsupported API type")

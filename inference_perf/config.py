@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
@@ -42,10 +42,15 @@ class MetricsClientType(Enum):
     DEFAULT = "default"
 
 
-class LoadConfig(BaseModel):
-    type: LoadType = LoadType.CONSTANT
+class LoadStage(BaseModel):
     rate: int = 1
     duration: int = 1
+
+
+class LoadConfig(BaseModel):
+    type: LoadType = LoadType.CONSTANT
+    interval: Optional[float] = 1.0
+    stages: List[LoadStage]
 
 
 class ReportConfig(BaseModel):
@@ -76,7 +81,7 @@ class CustomTokenizerConfig(BaseModel):
 
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig()
+    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
     report: Optional[ReportConfig] = ReportConfig(name="")
     metrics_client: Optional[MetricsClientConfig] = None
     vllm: Optional[VLLMConfig] = None
@@ -89,7 +94,6 @@ def read_config() -> Config:
     parser.add_argument("-c", "--config_file", help="Config File", required=True)
 
     args = parser.parse_args()
-
     if args.config_file:
         print("Using configuration from: % s" % args.config_file)
         with open(args.config_file, "r") as stream:

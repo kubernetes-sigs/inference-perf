@@ -1,7 +1,8 @@
 load:
   type: constant
-  rate: 1
-  duration: 30
+  stages:
+  - rate: 1
+    duration: 30
 vllm:
   api: chat
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct

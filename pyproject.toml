@@ -81,8 +81,12 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["inference_perf*", "deploy*"]
+
 [[tool.mypy.overrides]]
-module = ["datasets.*"]
+module = ["datasets.*","transformers.*"]
 ignore_missing_imports = true
 
 [build-system]
