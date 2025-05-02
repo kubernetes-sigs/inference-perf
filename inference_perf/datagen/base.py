@@ -14,7 +14,7 @@
 from pydantic import BaseModel
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Generator, Tuple, Optional, List
+from typing import Generator, Optional, List
 
 
 class CompletionData(BaseModel):

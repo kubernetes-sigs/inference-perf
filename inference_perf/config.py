@@ -11,11 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import numpy as np
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
+
+
+
+class RequestMetric(BaseModel):
+    stage_id: int
+    prompt_len: int
+    prompt: str
+    output_len: int
+    output: str
+    start_time: float
+    end_time: float
 
 
 class APIType(Enum):
@@ -29,7 +41,7 @@ class DataGenType(Enum):
 
 
 class DataConfig(BaseModel):
-    type: DataGenType = DataGenType.Mock
+    type: DataGenType
 
 
 class LoadType(Enum):
@@ -38,8 +50,8 @@ class LoadType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: int = 1
-    duration: int = 1
+    rate: int
+    duration: int
 
 
 class LoadConfig(BaseModel):
@@ -48,12 +60,69 @@ class LoadConfig(BaseModel):
     stages: List[LoadStage]
 
 
+class ObservedMetricsReportSummaryConfig(BaseModel):
+    def get_summarization(self, items: List[float]) -> Any:
+        return {
+            "mean": float(np.mean(items)),
+            "min": float(np.min(items)),
+            "p10": float(np.percentile(items, 10)),
+            "p50": float(np.percentile(items, 50)),
+            "p90": float(np.percentile(items, 90)),
+            "max": float(np.max(items)),
+        }
+
+    def get_report(self, request_metrics: List[RequestMetric]) -> Any:
+        return {
+            "total_requests": len(request_metrics),
+            "prompt_length": self.get_summarization([x.prompt_len for x in request_metrics]),
+            "output_length": self.get_summarization([x.output_len for x in request_metrics]),
+            "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in request_metrics]),
+            "per_token_latency": self.get_summarization([(x.end_time - x.start_time) / (x.output_len) for x in request_metrics])
+        }
+
+class ObservedMetricsReportPerRequestConfig(BaseModel):
+    include_inputs: bool = False        # replace input_len with input request body
+    include_outputs: bool = False       # replace output_len with output request body
+
+    def get_report(self, request_metrics: List[RequestMetric]) -> Any:
+        for metric in request_metrics:
+            if not self.include_inputs:
+                delattr(metric, 'prompt')
+            if not self.include_outputs:
+                delattr(metric, 'output')
+        return [metric.model_dump() for metric in request_metrics]
+
+
+class ObservedMetricsReportConfig(BaseModel):
+    """What data is presented from what this tool observes about the requests?"""
+    summary: ObservedMetricsReportSummaryConfig = ObservedMetricsReportSummaryConfig()
+    per_request: Optional[ObservedMetricsReportPerRequestConfig] = None
+
+    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
+        return {
+            "summary": self.summary.get_report(request_metrics) if self.summary else None,
+            "per_request": self.per_request.get_report(request_metrics) if self.per_request else None
+        }
+
+
+class PrometheusMetricsReportConfig(BaseModel):
+    """What data should be presented from prometheus metrics?"""
+    def get_report(self) -> dict[str, Any] | None:
+        return None
+    
 class ReportConfig(BaseModel):
-    name: str
+    observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
+    prometheus: Optional[PrometheusMetricsReportConfig] = None
+
+    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
+        return {
+            "observed": self.observed.get_report(request_metrics) if self.observed else None,
+            "prometheus": self.prometheus.get_report() if self.prometheus else None,
+        }
 
 
 class MetricsConfig(BaseModel):
-    url: str
+    pass
 
 
 class VLLMConfig(BaseModel):
@@ -69,12 +138,25 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
-    report: Optional[ReportConfig] = ReportConfig(name="")
-    metrics: Optional[MetricsConfig] = MetricsConfig(url="")
+    data: Optional[DataConfig] = None
+    load: Optional[LoadConfig] = None
+    report: ReportConfig = ReportConfig(
+        contents=ReportContentsConfig()
+    )
+    metrics: MetricsConfig = MetricsConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
 
 
 def read_config() -> Config:
@@ -84,10 +166,11 @@ def read_config() -> Config:
 
     args = parser.parse_args()
     if args.config_file:
-        print("Using configuration from: % s" % args.config_file)
+        print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
-        return Config(**cfg)
-
+        default_cfg = Config().model_dump()
+        merged_cfg = deep_merge(default_cfg, cfg)
+        return Config(**merged_cfg)
     return Config()

@@ -11,14 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Any, List
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.reportgen import ReportGenerator, MockReportGenerator
-from inference_perf.metrics import MockMetricsClient
+from inference_perf.metrics.observed import ObservedMetricsCollector
+from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import read_config
 import asyncio
+
+from inference_perf.reportgen.base import ReportFile
 
 
 class InferencePerfRunner:
@@ -31,8 +34,8 @@ class InferencePerfRunner:
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_report(self) -> None:
-        asyncio.run(self.reportgen.generate_report())
+    def generate_reports(self) -> List[ReportFile]:
+        return asyncio.run(self.reportgen.generate_reports())
 
 
 def main_cli() -> None:
@@ -60,15 +63,12 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define Metrics Client
-    if config.metrics:
-        metricsclient = MockMetricsClient(uri=config.metrics.url)
-    else:
-        raise Exception("metrics config missing")
+    # Define collector for observed metrics and clients for all other specified metrics clients
+    observed_metrics_client = ObservedMetricsCollector(config.metrics)
 
     # Define Report Generator
     if config.report:
-        reportgen = MockReportGenerator(metricsclient)
+        reportgen = ReportGenerator(config=config.report, observed_metrics_collector=observed_metrics_client)
     else:
         raise Exception("report config missing")
 
@@ -79,7 +79,8 @@ def main_cli() -> None:
     perfrunner.run()
 
     # Generate Report
-    perfrunner.generate_report()
+    report = perfrunner.generate_reports()
+    print(report)
 
 
 if __name__ == "__main__":

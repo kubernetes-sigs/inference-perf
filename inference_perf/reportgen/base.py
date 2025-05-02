@@ -11,29 +11,46 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
+
 from pydantic import BaseModel
-from abc import ABC, abstractmethod
-from typing import Tuple
-from inference_perf.metrics import MetricsClient
+from inference_perf.config import ReportConfig, RequestMetric
+from typing import Any, List
 
+from inference_perf.metrics.observed import ObservedMetricsCollector
 
-class RequestMetric(BaseModel):
-    stage_id: int
-    prompt_tokens: int
-    output_tokens: int
-    time_per_request: float
+class ReportFile():
+    name: str
+    contents: BaseModel
 
+    def __init__(self, name: str, contents: BaseModel):
+        self.name = f"{name}.json"
+        self.contents = contents
+        self._store_locally()
 
-class ReportGenerator(ABC):
-    @abstractmethod
-    def __init__(self, metrics_client: MetricsClient, *args: Tuple[int, ...]) -> None:
-        self.metrics_client = metrics_client
-        pass
+    def _store_locally(self):
+        filename = self.get_filename()
+        contents = self.get_contents()
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(contents, indent=2))
 
-    @abstractmethod
+    def get_filename(self) -> str:
+        return self.name
+
+    def get_contents(self) -> dict[str, Any]:
+        return self.contents.model_dump()
+
+class ReportGenerator():
+    def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
+        self.config = config
+        self.metrics_client = observed_metrics_collector
+        self.metrics: List[RequestMetric] = []
+
     def collect_request_metrics(self, metric: RequestMetric) -> None:
-        raise NotImplementedError
+        self.metrics.append(metric)
 
-    @abstractmethod
-    async def generate_report(self) -> None:
-        raise NotImplementedError
+    async def generate_report(self) -> List[ReportFile]:
+        if self.config is not None:
+            if self.config.contents is not None:
+                return self.config.get_report(self.metrics)
+        

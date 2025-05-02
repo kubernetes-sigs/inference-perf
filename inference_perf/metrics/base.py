@@ -11,22 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from abc import ABC, abstractmethod
-from pydantic import BaseModel
+from abc import ABC
+from inference_perf.config import MetricsConfig
 
-
-class MetricsSummary(BaseModel):
-    total_requests: int
-    avg_prompt_tokens: float
-    avg_output_tokens: float
-    avg_time_per_request: float
-
-
-class MetricsClient(ABC):
-    @abstractmethod
-    def __init__(self) -> None:
+class MetricsSource(ABC):
+    """ Anything that can provide metrics """
+    def __init__(self, config: MetricsConfig) -> None:
+        self.config = config
         pass
-
-    @abstractmethod
-    def collect_metrics_summary(self) -> MetricsSummary | None:
-        raise NotImplementedError
