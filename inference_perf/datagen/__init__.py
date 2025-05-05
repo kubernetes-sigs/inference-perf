@@ -14,5 +14,12 @@
 from .base import DataGenerator, InferenceData
 from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
+from .synthetic_datagen import SyntheticDataGenerator
 
-__all__ = ["DataGenerator", "InferenceData", "MockDataGenerator", "HFShareGPTDataGenerator"]
+__all__ = [
+    "DataGenerator",
+    "InferenceData",
+    "MockDataGenerator",
+    "HFShareGPTDataGenerator",
+    "SyntheticDataGenerator",
+]
