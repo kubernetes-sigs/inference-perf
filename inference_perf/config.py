@@ -154,8 +154,13 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
+<<<<<<< HEAD
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig(stages=[LoadStage()])
+=======
+    data: Optional[DataConfig] = None
+    load: Optional[LoadConfig] = None
+>>>>>>> 9afd930 (use metrics collector)
     report: ReportConfig = ReportConfig()
     metrics: MetricsConfig = MetricsConfig()
     storage: Optional[StorageConfig] = StorageConfig()

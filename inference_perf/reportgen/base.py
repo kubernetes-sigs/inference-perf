@@ -52,7 +52,10 @@ class ReportFile():
 class ReportGenerator():
     def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
         self.config = config
-        self.metrics_client = observed_metrics_collector
+        self.metrics_collector = observed_metrics_collector
+
+    def collect_request_metrics(self, metric: RequestMetric) -> None:
+        self.metrics_collector.append(metric)
 
     def _store_locally(self):
         filename = self.get_filename()
@@ -64,11 +67,7 @@ class ReportGenerator():
         return self.name
 
     def get_contents(self) -> dict[str, Any]:
-        return self.contents.model_dump()
-
-    def collect_request_metrics(self, metric: RequestMetric) -> None:
-        self.metrics.append(metric)
-    
+        return self.contents.model_dump() 
     
     async def generate_reports(self) -> List[ReportFile]:
         print("\n\nGenerating Report ..")
