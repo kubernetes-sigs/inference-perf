@@ -11,16 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import Any, List
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.metrics.observed import ObservedMetricsCollector
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportGenerator, ReportFile
-from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
 import asyncio
+
+from inference_perf.reportgen.base import ReportFile
 
 
 class InferencePerfRunner:
@@ -36,7 +38,7 @@ class InferencePerfRunner:
 
     def generate_reports(self) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports())
-    
+
     def save_reports(self, reports: List[ReportFile]):
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
@@ -67,14 +69,11 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define Metrics Client
-    if config.metrics:
-        metricsclient = MockMetricsClient(uri=config.metrics.url)
-    else:
-        raise Exception("metrics config missing")
+    # Define collector for observed metrics and clients for all other specified metrics clients
+    observed_metrics_client = ObservedMetricsCollector(config.metrics)
 
     # Define Report Generator
-    reportgen = ReportGenerator(metricsclient)     
+    reportgen = ReportGenerator(config=config.report, observed_metrics_collector=observed_metrics_client) 
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []

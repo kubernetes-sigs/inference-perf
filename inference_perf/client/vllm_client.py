@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator, RequestMetric
-from inference_perf.config import APIType, CustomTokenizerConfig
+from inference_perf.reportgen import ReportGenerator
+from inference_perf.config import APIType, CustomTokenizerConfig, RequestMetric
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient
 from typing import Any, Optional
@@ -87,18 +87,21 @@ class vLLMModelServerClient(ModelServerClient):
                             raise Exception("Unsupported API type")
 
                         if self.tokenizer_available:
-                            prompt_tokens = self.custom_tokenizer.count_tokens(prompt)
-                            output_tokens = self.custom_tokenizer.count_tokens(output_text)
+                            prompt_len = self.custom_tokenizer.count_tokens(prompt)
+                            output_len = self.custom_tokenizer.count_tokens(output_text)
                         else:
-                            prompt_tokens = usage.get("prompt_tokens", 0)
-                            output_tokens = usage.get("completion_tokens", 0)
+                            prompt_len = usage.get("prompt_tokens", 0)
+                            output_len = usage.get("completion_tokens", 0)
 
                         self.reportgen.collect_request_metrics(
                             RequestMetric(
                                 stage_id=stage_id,
-                                prompt_tokens=prompt_tokens,
-                                output_tokens=output_tokens,
-                                time_per_request=end - start,
+                                prompt_len=prompt_len,
+                                prompt=prompt,
+                                output_len=output_len,
+                                output=output_text,
+                                start_time=start,
+                                end_time=end,
                             )
                         )
                     else:

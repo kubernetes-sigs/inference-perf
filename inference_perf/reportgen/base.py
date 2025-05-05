@@ -16,6 +16,8 @@ import statistics
 from pydantic import BaseModel
 from typing import Any, List
 from inference_perf.metrics import MetricsClient, MetricsSummary
+from inference_perf.config import ReportConfig, RequestMetric
+from inference_perf.metrics.observed import ObservedMetricsCollector
 
 class ReportFile():
     name: str
@@ -38,40 +40,44 @@ class ReportFile():
     def get_contents(self) -> dict[str, Any]:
         return self.contents.model_dump()
 
+class ReportFile():
+    name: str
+    contents: BaseModel
 
-class RequestMetric(BaseModel):
-    stage_id: int
-    prompt_tokens: int
-    output_tokens: int
-    time_per_request: float
-
+    def __init__(self, name: str, contents: BaseModel):
+        self.name = f"{name}.json"
+        self.contents = contents
+        self._store_locally()
 
 class ReportGenerator():
-    def __init__(self, metrics_client: MetricsClient) -> None:
-        self.metrics_client = metrics_client
-        self.metrics: List[RequestMetric] = []
+    def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
+        self.config = config
+        self.metrics_client = observed_metrics_collector
+
+    def _store_locally(self):
+        filename = self.get_filename()
+        contents = self.get_contents()
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(contents, indent=2))
+
+    def get_filename(self) -> str:
+        return self.name
+
+    def get_contents(self) -> dict[str, Any]:
+        return self.contents.model_dump()
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
         self.metrics.append(metric)
-
+    
+    
     async def generate_reports(self) -> List[ReportFile]:
         print("\n\nGenerating Report ..")
-        summary = self.metrics_client.collect_metrics_summary()
-        if summary is not None:
-            for field_name, value in summary:
-                print(f"{field_name}: {value}")
 
-        elif summary is None and len(self.metrics) > 0:
-            summary = MetricsSummary(
-                total_requests=len(self.metrics),
-                avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
-                avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
-                avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
-            )
-            for field_name, value in summary:
-                print(f"{field_name}: {value}")
+        if self.config is not None:
+            if self.config.contents is not None:
+                report = self.config.get_report(self.metrics)
+                return [ReportFile(name="report", contents=report)]
+            
         else:
             print("Report generation failed - no metrics collected")
             return []
-
-        return [ReportFile(name="mock_report", contents=summary)]

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient, MetricsSummary
-from .mock_client import MockMetricsClient
+from .base import MetricsSource
+from .observed import ObservedMetricsCollector
 
-__all__ = ["MetricsClient", "MetricsSummary", "MockMetricsClient"]
+__all__ = ["MetricsSource", "ObservedMetricsCollector"]

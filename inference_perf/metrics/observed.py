@@ -11,12 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsSummary, MetricsClient
 
+from inference_perf.metrics.base import MetricsSource
+from inference_perf.config import MetricsConfig
 
-class MockMetricsClient(MetricsClient):
-    def __init__(self, uri: str) -> None:
-        self.uri = uri
-
-    def collect_metrics_summary(self) -> MetricsSummary | None:
-        return None
+class ObservedMetricsCollector(MetricsSource):
+    def __init__(self, config: MetricsConfig) -> None:
+        self.config = config
+        pass

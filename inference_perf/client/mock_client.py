@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.config import RequestMetric
 from inference_perf.datagen import InferenceData
-from inference_perf.reportgen import ReportGenerator, RequestMetric
+from inference_perf.reportgen import ReportGenerator
 from .base import ModelServerClient
 import asyncio
 
@@ -30,8 +31,9 @@ class MockModelServerClient(ModelServerClient):
         self.reportgen.collect_request_metrics(
             RequestMetric(
                 stage_id=stage_id,
-                prompt_tokens=0,
-                output_tokens=0,
-                time_per_request=3,
+                prompt_len=0,
+                output_len=0,
+                start_time=1.23,
+                end_time=3.21,
             )
         )
