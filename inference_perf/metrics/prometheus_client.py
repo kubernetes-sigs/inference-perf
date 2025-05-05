@@ -13,7 +13,6 @@
 # limitations under the License.
 import time
 from typing import cast
-from urllib.error import HTTPError
 import requests
 from inference_perf.client.base import ModelServerMetrics, ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
@@ -142,11 +141,14 @@ class PrometheusMetricsClient(MetricsClient):
         for summary_metric_name in metrics_metadata:
             summary_metric_metadata = metrics_metadata.get(summary_metric_name)
             if summary_metric_metadata is None:
-                print("Metric metadata is not present for metric: %s" % (summary_metric_name))
+                print("Metric metadata is not present for metric: %s. Skipping this metric." % (summary_metric_name))
                 continue
             summary_metric_metadata = cast(ModelServerPrometheusMetric, summary_metric_metadata)
             if summary_metric_metadata is None:
-                print("Metric metadata is not present for metric: %s" % (summary_metric_name))
+                print(
+                    "Metric metadata for %s is missing or has an incorrect format. Skipping this metric."
+                    % (summary_metric_name)
+                )
                 continue
 
             query_builder = PrometheusQueryBuilder(summary_metric_metadata, duration)

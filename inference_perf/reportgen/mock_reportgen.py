@@ -19,7 +19,6 @@ from inference_perf.metrics import MetricsClient
 class MockReportGenerator(ReportGenerator):
     def __init__(self, metrics_client: MetricsClient | None) -> None:
         super().__init__(metrics_client=metrics_client)
-        self.metrics_client = metrics_client
 
     async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
         print("\n\nGenerating Report ..")
