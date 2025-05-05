@@ -48,7 +48,7 @@ class RequestMetric(BaseModel):
 
 class ReportGenerator():
     def __init__(self, metrics_client: MetricsClient) -> None:
-        super().__init__(metrics_client = metrics_client)
+        self.metrics_client = metrics_client
         self.metrics: List[RequestMetric] = []
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
