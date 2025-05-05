@@ -43,11 +43,11 @@ class ReportFile():
 class ReportGenerator():
     def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
         self.config = config
-        self.metrics_client = observed_metrics_collector
+        self.metrics_collector = observed_metrics_collector
         self.metrics: List[RequestMetric] = []
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
-        self.metrics.append(metric)
+        self.metrics_collector.append(metric)
 
     async def generate_report(self) -> List[ReportFile]:
         if self.config is not None:

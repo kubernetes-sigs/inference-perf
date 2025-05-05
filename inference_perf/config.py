@@ -140,9 +140,7 @@ class CustomTokenizerConfig(BaseModel):
 class Config(BaseModel):
     data: Optional[DataConfig] = None
     load: Optional[LoadConfig] = None
-    report: ReportConfig = ReportConfig(
-        contents=ReportContentsConfig()
-    )
+    report: ReportConfig = ReportConfig()
     metrics: MetricsConfig = MetricsConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None

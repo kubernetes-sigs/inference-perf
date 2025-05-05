@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List
 from inference_perf.metrics.base import MetricsSource
-from inference_perf.config import MetricsConfig
+from inference_perf.config import MetricsConfig, RequestMetric
 
 class ObservedMetricsCollector(MetricsSource):
     def __init__(self, config: MetricsConfig) -> None:
         self.config = config
+        self.metrics: List[RequestMetric] = []
         pass
