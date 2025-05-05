@@ -15,9 +15,21 @@ from datetime import datetime
 import numpy as np
 from pydantic import BaseModel
 from typing import Any, Optional, List
+from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
+
+
+
+class RequestMetric(BaseModel):
+    stage_id: int
+    prompt_len: int
+    prompt: str
+    output_len: int
+    output: str
+    start_time: float
+    end_time: float
 
 
 
@@ -43,6 +55,7 @@ class DataGenType(Enum):
 
 class DataConfig(BaseModel):
     type: DataGenType
+    type: DataGenType
 
 
 class LoadType(Enum):
@@ -51,6 +64,8 @@ class LoadType(Enum):
 
 
 class LoadStage(BaseModel):
+    rate: int
+    duration: int
     rate: int
     duration: int
 
@@ -139,6 +154,7 @@ class ReportConfig(BaseModel):
 
 class MetricsConfig(BaseModel):
     pass
+    pass
 
 
 class VLLMConfig(BaseModel):
@@ -179,6 +195,17 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 
+def deep_merge(base: dict, override: dict) -> dict:
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+
 def read_config() -> Config:
     parser = ArgumentParser()
 
@@ -187,9 +214,13 @@ def read_config() -> Config:
     args = parser.parse_args()
     if args.config_file:
         print("Using configuration from: %s" % args.config_file)
+        print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
+        default_cfg = Config().model_dump()
+        merged_cfg = deep_merge(default_cfg, cfg)
+        return Config(**merged_cfg)
         default_cfg = Config().model_dump()
         merged_cfg = deep_merge(default_cfg, cfg)
         return Config(**merged_cfg)

@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Any, List
+from typing import Any, List
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType
+from inference_perf.config import DataGenType, read_config
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.metrics.observed import ObservedMetricsCollector
@@ -21,6 +22,8 @@ from inference_perf.client.storage import StorageClient, GoogleCloudStorageClien
 from inference_perf.reportgen import ReportGenerator, ReportGenerator, ReportFile
 from inference_perf.config import read_config
 import asyncio
+
+from inference_perf.reportgen.base import ReportFile
 
 from inference_perf.reportgen.base import ReportFile
 
@@ -69,6 +72,8 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
+    # Define collector for observed metrics and clients for all other specified metrics clients
+    observed_metrics_client = ObservedMetricsCollector(config.metrics)
     # Define collector for observed metrics and clients for all other specified metrics clients
     observed_metrics_client = ObservedMetricsCollector(config.metrics)
 
