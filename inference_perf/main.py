@@ -22,6 +22,7 @@ from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 import asyncio
 
 
@@ -52,10 +53,22 @@ class InferencePerfRunner:
 def main_cli() -> None:
     config = read_config()
 
+    # Create tokenizer based on tokenizer config
+    tokenizer = None
+    if config.tokenizer and config.tokenizer.pretrained_model_name_or_path:
+        try:
+            tokenizer = CustomTokenizer(
+                config.tokenizer.pretrained_model_name_or_path,
+                config.tokenizer.token,
+                config.tokenizer.trust_remote_code,
+            )
+        except Exception as e:
+            raise Exception(f"Tokenizer initialization failed: {e}")
+
     # Define Model Server Client
     if config.vllm:
         model_server_client = vLLMModelServerClient(
-            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
+            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=tokenizer, api_type=config.vllm.api
         )
     else:
         raise Exception("vLLM client config missing")

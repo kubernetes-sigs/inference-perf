@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
 from inference_perf.config import APIType, Distribution
 from abc import ABC, abstractmethod
@@ -49,12 +50,15 @@ class DataGenerator(ABC):
 
     """Abstract base class for data generators."""
 
-    def __init__(self, apiType: APIType, ioDistribution: IODistribution) -> None:
+    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
 
         if ioDistribution is not None and not self.is_io_distribution_supported():
             raise Exception(f"IO distribution not supported for this data generator")
+
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
 
         self.apiType = apiType
         self.ioDistribution = ioDistribution

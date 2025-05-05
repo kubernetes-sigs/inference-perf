@@ -12,14 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import numpy as np
-from .base import DataGenerator, InferenceData, CompletionData
+
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from .base import DataGenerator, IODistribution, InferenceData, CompletionData
 from typing import Generator, List
 from inference_perf.config import APIType
 
 
 class SyntheticDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType)
+    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
+        super().__init__(apiType, ioDistribution, tokenizer)
+        self.input_lengths = self.generate_distribution(
+            self.ioDistribution.input.min,
+            self.ioDistribution.input.max,
+            self.ioDistribution.input.mean,
+            self.ioDistribution.input.std_dev,
+            self.ioDistribution.input.total_count
+        )
+        with open("sonnet.txt", "r") as f:
+            sonnet = f.read()
+        self.token_ids = self.tokenizer.get_tokenizer().encode(sonnet)
+
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
@@ -28,10 +41,14 @@ class SyntheticDataGenerator(DataGenerator):
         return True
 
     def get_data(self) -> Generator[InferenceData, None, None]:
-        generated_input_lengths = self.generate_distribution(self.ioDistribution.input.min, self.ioDistribution.input.max, self.ioDistribution.input.mean, self.ioDistribution.input.std_dev, self.ioDistribution.input.total_count)
-
+        i = 0
         while True:
-            yield InferenceData(data=CompletionData(prompt="text"))
+            if self.apiType == APIType.Completion:
+                prompt = self.tokenizer.get_tokenizer().decode(self.token_ids[:self.input_lengths[i]])
+                yield InferenceData(data=CompletionData(prompt=prompt))
+                i += 1
+            else:
+                raise Exception("Unsupported API type")
 
     def generate_distribution(self, min: int, max: int, mean: float, std_dev: float, total_count: int) -> np.ndarray:
         """
