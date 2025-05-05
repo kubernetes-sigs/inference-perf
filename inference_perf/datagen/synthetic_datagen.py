@@ -29,7 +29,8 @@ class SyntheticDataGenerator(DataGenerator):
             self.ioDistribution.input.std_dev,
             self.ioDistribution.input.total_count
         )
-        self.token_ids = self.tokenizer.get_tokenizer().encode(self.get_sonnet_data())
+        base_prompt = "Pick as many lines as you can from these poem lines:\n"
+        self.token_ids = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
 
 
     def get_supported_apis(self) -> List[APIType]:
