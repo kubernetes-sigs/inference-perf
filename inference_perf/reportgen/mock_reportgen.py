@@ -11,35 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric
-from typing import List
-import statistics
-from inference_perf.metrics import MetricsClient, MetricsSummary
+from inference_perf.metrics.base import PerfRuntimeParameters
+from .base import ReportGenerator
+from inference_perf.metrics import MetricsClient
 
 
 class MockReportGenerator(ReportGenerator):
-    def __init__(self, metrics_client: MetricsClient) -> None:
+    def __init__(self, metrics_client: MetricsClient | None) -> None:
+        super().__init__(metrics_client=metrics_client)
         self.metrics_client = metrics_client
-        self.metrics: List[RequestMetric] = []
 
-    def collect_request_metrics(self, metric: RequestMetric) -> None:
-        self.metrics.append(metric)
-
-    async def generate_report(self) -> None:
+    async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
         print("\n\nGenerating Report ..")
-        summary = self.metrics_client.collect_metrics_summary()
-        if summary is not None:
-            for field_name, value in summary:
-                print(f"{field_name}: {value}")
-
-        elif summary is None and len(self.metrics) > 0:
-            summary = MetricsSummary(
-                total_requests=len(self.metrics),
-                avg_prompt_tokens=statistics.mean([x.prompt_tokens for x in self.metrics]),
-                avg_output_tokens=statistics.mean([x.output_tokens for x in self.metrics]),
-                avg_time_per_request=statistics.mean([x.time_per_request for x in self.metrics]),
-            )
-            for field_name, value in summary:
-                print(f"{field_name}: {value}")
-        else:
-            print("Report generation failed - no metrics collected")
+        super().report_request_summary(runtime_parameters)
+        super().report_metrics_summary(runtime_parameters)

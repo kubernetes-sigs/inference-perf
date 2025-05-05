@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType
+from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
+from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.reportgen import ReportGenerator, MockReportGenerator
-from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
 import asyncio
 
@@ -26,13 +28,12 @@ class InferencePerfRunner:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
-        self.client.set_report_generator(self.reportgen)
 
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_report(self) -> None:
-        asyncio.run(self.reportgen.generate_report())
+    def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
+        asyncio.run(self.reportgen.generate_report(runtime_parameters=runtime_parameters))
 
 
 def main_cli() -> None:
@@ -40,7 +41,7 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        client = vLLMModelServerClient(
+        model_server_client = vLLMModelServerClient(
             uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
         )
     else:
@@ -63,25 +64,35 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define Metrics Client
-    if config.metrics:
-        metricsclient = MockMetricsClient(uri=config.metrics.url)
-    else:
-        raise Exception("metrics config missing")
+    metrics_client: MetricsClient | None = None
+    if config.metrics_client:
+        if config.metrics_client.type == MetricsClientType.PROMETHEUS and config.metrics_client.prometheus:
+            metrics_client = PrometheusMetricsClient(config=config.metrics_client.prometheus)
 
     # Define Report Generator
     if config.report:
-        reportgen = MockReportGenerator(metricsclient)
+        reportgen = MockReportGenerator(metrics_client)
     else:
         raise Exception("report config missing")
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(client, loadgen, reportgen)
+    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen)
+
+    start_time = time.time()
 
     # Run Perf Test
     perfrunner.run()
 
-    # Generate Report
-    perfrunner.generate_report()
+    # Wait for metrics collection
+    if metrics_client is not None:
+        # Wait for the metrics to be ready
+        metrics_client.wait()
+
+    end_time = time.time()
+    duration = end_time - start_time  # Calculate the duration of the test
+
+    # Generate Report after the test
+    perfrunner.generate_report(PerfRuntimeParameters(end_time, duration, model_server_client))
 
 
 if __name__ == "__main__":

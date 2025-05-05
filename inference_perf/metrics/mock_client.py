@@ -11,12 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsSummary, MetricsClient
+from inference_perf.client.base import ModelServerMetrics
+from .base import MetricsClient, PerfRuntimeParameters
 
 
 class MockMetricsClient(MetricsClient):
-    def __init__(self, uri: str) -> None:
-        self.uri = uri
+    def __init__(self) -> None:
+        pass
 
-    def collect_metrics_summary(self) -> MetricsSummary | None:
+    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
         return None
+
+    def wait(self) -> None:
+        pass
