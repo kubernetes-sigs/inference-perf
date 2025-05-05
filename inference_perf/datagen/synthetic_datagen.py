@@ -24,7 +24,12 @@ class SyntheticDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
+    def is_io_distribution_supported(self) -> bool:
+        return True
+
     def get_data(self) -> Generator[InferenceData, None, None]:
+        generated_input_lengths = self.generate_distribution(self.ioDistribution.input.min, self.ioDistribution.input.max, self.ioDistribution.input.mean, self.ioDistribution.input.std_dev, self.ioDistribution.input.total_count)
+
         while True:
             yield InferenceData(data=CompletionData(prompt="text"))
 

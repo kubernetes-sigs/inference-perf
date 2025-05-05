@@ -74,3 +74,6 @@ class HFShareGPTDataGenerator(DataGenerator):
                     )
                 else:
                     raise Exception("Unsupported API type")
+
+    def is_io_distribution_supported(self) -> bool:
+        return False

@@ -32,3 +32,6 @@ class MockDataGenerator(DataGenerator):
                 yield InferenceData(data=CompletionData(prompt="text" + str(i)))
             else:
                 raise Exception("Unsupported API type")
+
+    def is_io_distribution_supported(self) -> bool:
+        return False
