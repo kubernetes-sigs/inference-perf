@@ -17,6 +17,6 @@ report:
     per_request: 
       include_inputs: True
       include_outputs: False
-  storage:
-    google_cloud_storage:
-      bucket_name: slabe-dev-bucket
+storage:
+  google_cloud_storage:
+    bucket_name: slabe-dev-bucket
