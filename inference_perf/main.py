@@ -17,7 +17,7 @@ from inference_perf.config import DataGenType
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
-from inference_perf.reportgen import ReportGenerator, MockReportGenerator, ReportFile
+from inference_perf.reportgen import ReportGenerator, ReportGenerator, ReportFile
 from inference_perf.metrics import MockMetricsClient
 from inference_perf.config import read_config
 import asyncio
@@ -74,7 +74,7 @@ def main_cli() -> None:
         raise Exception("metrics config missing")
 
     # Define Report Generator
-    reportgen = MockReportGenerator(metricsclient)     
+    reportgen = ReportGenerator(metricsclient)     
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []

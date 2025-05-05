@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import ReportGenerator, RequestMetric, ReportFile
-from .mock_reportgen import MockReportGenerator
 
 
-__all__ = ["ReportGenerator", "RequestMetric", "MockReportGenerator", "ReportFile"]
+__all__ = ["ReportGenerator", "RequestMetric", "ReportGenerator", "ReportFile"]
