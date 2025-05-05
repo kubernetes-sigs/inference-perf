@@ -8,6 +8,17 @@ This project is currently in development.
 
 ## Getting Started
 
+### Configuration
+
+You can configure inference-perf to run with different data generation and load generation configurations today. Please see `config.yml` and examples in `/examples`.
+
+Supported datasets include the following:
+- ShareGPT (for a real world conversational dataset)
+- Synthetic (for specific input / output distributions)
+- Mock (for testing)
+
+Similarly load generation can be configured to run with different request rates and durations. You can also run multiple stages with different request rates and durations within a single run.
+
 ### Run locally
 
 - Setup a virtual environment and install inference-perf
