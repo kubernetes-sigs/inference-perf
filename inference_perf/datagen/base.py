@@ -38,8 +38,8 @@ class InferenceData(BaseModel):
 
 
 class IODistribution(BaseModel):
-    input: Distribution
-    output: Distribution
+    input: Distribution = None
+    output: Distribution = None
 
 
 class DataGenerator(ABC):

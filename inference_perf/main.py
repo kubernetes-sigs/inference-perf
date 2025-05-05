@@ -13,6 +13,7 @@
 # limitations under the License.
 import time
 from typing import List
+from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
@@ -77,11 +78,13 @@ def main_cli() -> None:
     if config.data:
         datagen: DataGenerator
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.vllm.api)
+            datagen = HFShareGPTDataGenerator(config.vllm.api, None, None)
         elif config.data.type == DataGenType.Synthetic:
-            datagen = SyntheticDataGenerator(config.vllm.api)
+            datagen = SyntheticDataGenerator(config.vllm.api,
+                                             ioDistribution=IODistribution(input=config.data.input_distribution),
+                                             tokenizer=tokenizer)
         else:
-            datagen = MockDataGenerator(config.vllm.api)
+            datagen = MockDataGenerator(config.vllm.api, None, None)
     else:
         raise Exception("data config missing")
 
