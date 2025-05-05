@@ -13,16 +13,16 @@
 # limitations under the License.
 import numpy as np
 from .base import DataGenerator, InferenceData, CompletionData
-from typing import Generator
+from typing import Generator, List
 from inference_perf.config import APIType
 
 
 class SyntheticDataGenerator(DataGenerator):
-    def __init__(self) -> None:
-        pass
+    def __init__(self, apiType: APIType) -> None:
+        super().__init__(apiType)
 
-    def get_api(self) -> APIType:
-        return APIType.Completion
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Completion]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         while True:
