@@ -27,10 +27,22 @@ class APIType(Enum):
 class DataGenType(Enum):
     Mock = "mock"
     ShareGPT = "shareGPT"
+    Synthetic = "synthetic"
+
+
+class Distribution(BaseModel):
+    min: int = 10
+    max: int = 1024
+    mean: float = 512
+    std_dev: float = 200
+    total_count: int = 1000
 
 
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
+    # Distributions are only supported for synthetic dataset at this moment
+    input_distribution: Optional[Distribution] = Distribution
+    output_distribution: Optional[Distribution] = Distribution
 
 
 class LoadType(Enum):
