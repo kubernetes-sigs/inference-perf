@@ -22,7 +22,7 @@ class CustomTokenizer:
         )
 
     def count_tokens(self, text: str) -> int:
-        if not text:
+        if text == "":
             return 0
         return len(self.tokenizer(text).input_ids)
 
