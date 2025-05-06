@@ -14,23 +14,31 @@
 from datetime import datetime
 import numpy as np
 from pydantic import BaseModel
-from typing import Any, Optional, List
+from typing import Any, Optional, List, cast
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
 
 
 class Metric(BaseModel):
-    stage_id: int
+    stage_id: Optional[int] = None
+
+
+class SuccessfulResponse(BaseModel):
+    output_len: int
+    output: Optional[str]
+
+
+class FailedResponse(BaseModel):
+    exception: Exception
 
 
 class RequestMetric(Metric):
     prompt_len: int
     prompt: Optional[str]
-    output_len: int
-    output: Optional[str]
     start_time: float
     end_time: float
+    result: SuccessfulResponse | FailedResponse
 
 
 class APIType(Enum):
@@ -88,14 +96,25 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
         }
 
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
+        successful = [x for x in request_metrics if isinstance(x.result, SuccessfulResponse)]
+        failed = [x for x in request_metrics if isinstance(x.result, FailedResponse)]
+
         return {
-            "total_requests": len(request_metrics),
-            "prompt_length": self.get_summarization([x.prompt_len for x in request_metrics]),
-            "output_length": self.get_summarization([x.output_len for x in request_metrics]),
-            "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in request_metrics]),
-            "per_token_latency": self.get_summarization(
-                [(x.end_time - x.start_time) / (x.output_len) if x.output_len != 0 else 0 for x in request_metrics]
-            ),
+            "successful": {
+                "total_requests": len(successful),
+                "prompt_length": self.get_summarization([x.prompt_len for x in successful]),
+                "output_length": self.get_summarization([cast(SuccessfulResponse, x.result).output_len for x in successful]),
+                "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in successful]),
+                "per_token_latency": self.get_summarization(
+                    [
+                        (x.end_time - x.start_time) / (cast(SuccessfulResponse, x.result).output_len)
+                        if cast(SuccessfulResponse, x.result).output_len != 0
+                        else 0
+                        for x in successful
+                    ]
+                ),
+            },
+            "failed": {"total_requests": len(failed)},
         }
 
 

@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.config import RequestMetric
-from inference_perf.datagen import InferenceData
+from inference_perf.config import RequestMetric, SuccessfulResponse
+from inference_perf.datagen import PromptData
 from inference_perf.reportgen import ReportGenerator
 from .base import ModelServerClient
 import asyncio
@@ -25,16 +25,18 @@ class MockModelServerClient(ModelServerClient):
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    async def process_request(self, payload: InferenceData, stage_id: int) -> None:
+    async def process_request(self, payload: PromptData, stage_id: int) -> None:
         print("Processing request - " + str(payload.data) + " for stage - " + str(stage_id))
         await asyncio.sleep(3)
-        self.reportgen.collect_request_metrics(
+        self.reportgen.collect_request_metric(
             RequestMetric(
                 stage_id=stage_id,
                 prompt_len=0,
                 prompt=None,
-                output_len=0,
-                output=None,
+                result=SuccessfulResponse(
+                    output_len=0,
+                    output=None,
+                ),
                 start_time=1.23,
                 end_time=3.21,
             )

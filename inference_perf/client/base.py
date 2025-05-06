@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import Tuple
-from inference_perf.datagen import InferenceData
+from inference_perf.datagen import PromptData
 from inference_perf.reportgen import ReportGenerator
 
 
@@ -27,5 +27,5 @@ class ModelServerClient(ABC):
         self.reportgen = reportgen
 
     @abstractmethod
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+    async def process_request(self, data: PromptData, stage_id: int) -> None:
         raise NotImplementedError

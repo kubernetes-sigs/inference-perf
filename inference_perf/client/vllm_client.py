@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.datagen import InferenceData
+from inference_perf.datagen import PromptData
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.config import APIType, CustomTokenizerConfig, RequestMetric
+from inference_perf.config import APIType, CustomTokenizerConfig, FailedResponse, RequestMetric, SuccessfulResponse
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient
-from typing import Any, Optional
+from typing import Optional
 import aiohttp
 import json
 import time
@@ -46,26 +46,8 @@ class vLLMModelServerClient(ModelServerClient):
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    def _create_payload(self, payload: InferenceData) -> dict[str, Any]:
-        if payload.type == APIType.Completion:
-            return {
-                "model": self.model_name,
-                "prompt": payload.data.prompt if payload.data else "",
-                "max_tokens": self.max_completion_tokens,
-            }
-        if payload.type == APIType.Chat:
-            return {
-                "model": self.model_name,
-                "messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in (payload.chat.messages if payload.chat else [])
-                ],
-                "max_tokens": self.max_completion_tokens,
-            }
-        raise Exception("api type not supported - has to be completions or chat completions")
-
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
-        payload = self._create_payload(data)
+    async def process_request(self, data: PromptData, stage_id: int) -> None:
+        payload = data.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
@@ -93,18 +75,24 @@ class vLLMModelServerClient(ModelServerClient):
                             prompt_len = usage.get("prompt_tokens", 0)
                             output_len = usage.get("completion_tokens", 0)
 
-                        self.reportgen.collect_request_metrics(
+                        self.reportgen.collect_request_metric(
                             RequestMetric(
                                 stage_id=stage_id,
                                 prompt_len=prompt_len,
                                 prompt=prompt,
-                                output_len=output_len,
-                                output=output_text,
+                                result=SuccessfulResponse(output_len=output_len, output=output_text),
                                 start_time=start,
                                 end_time=end,
                             )
                         )
                     else:
                         print(await response.text())
-            except aiohttp.ClientConnectorError as e:
-                print("vLLM Server connection error:\n", str(e))
+            except Exception as e:
+                RequestMetric(
+                    stage_id=stage_id,
+                    prompt_len=prompt_len,
+                    prompt=prompt,
+                    result=FailedResponse(exception=e),
+                    start_time=start,
+                    end_time=time.monotonic(),
+                )

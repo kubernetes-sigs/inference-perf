@@ -14,11 +14,24 @@
 from pydantic import BaseModel
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, List
+from typing import Any, Generator, List
 
 
-class CompletionData(BaseModel):
+class PromptData(BaseModel, ABC):
+    @abstractmethod
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class CompletionData(PromptData):
     prompt: str
+
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "prompt": self.prompt,
+            "max_tokens": max_tokens,
+        }
 
 
 class ChatMessage(BaseModel):
@@ -26,22 +39,21 @@ class ChatMessage(BaseModel):
     content: str
 
 
-class ChatCompletionData(BaseModel):
+class ChatCompletionData(PromptData):
     messages: List[ChatMessage]
 
-
-class InferenceData(BaseModel):
-    type: APIType = APIType.Completion
-    chat: Optional[ChatCompletionData] = None
-    data: Optional[CompletionData] = None
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+            "max_tokens": max_tokens,
+        }
 
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
     apiType: APIType
-
-    """Abstract base class for data generators."""
 
     def __init__(self, apiType: APIType) -> None:
         if apiType not in self.get_supported_apis():
@@ -53,5 +65,5 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[PromptData, None, None]:
         raise NotImplementedError

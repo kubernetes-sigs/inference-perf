@@ -42,7 +42,7 @@ class ReportGenerator:
         self.config = config
         self.metrics_collector = observed_metrics_collector
 
-    def collect_request_metrics(self, metric: RequestMetric) -> None:
+    def collect_request_metric(self, metric: RequestMetric) -> None:
         self.metrics_collector.record_metric(metric)
 
     async def generate_reports(self) -> List[ReportFile]:
