@@ -114,10 +114,16 @@ class ObservedMetricsReportConfig(BaseModel):
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
         if len(request_metrics) == 0:
             return None
-        return {
-            "summary": self.summary.get_report(request_metrics) if self.summary else None,
-            "per_request": self.per_request.get_report(request_metrics) if self.per_request else None
-        }
+
+        report = {}
+        summary_report = self.summary.get_report(request_metrics) if self.summary else None
+        if summary_report is not None:
+            report["summary"] = summary_report
+        if self.per_request:
+            per_request_report = self.per_request.get_report(request_metrics)
+            if per_request_report is not None:
+                report["per_request"] = per_request_report
+        return report if report else None
 
 
 class PrometheusMetricsReportConfig(BaseModel):
@@ -130,11 +136,16 @@ class ReportConfig(BaseModel):
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
-        return {
-            "observed": self.observed.get_report(request_metrics) if self.observed else None,
-            "prometheus": self.prometheus.get_report() if self.prometheus else None,
-        }
-
+        report = {}
+        if self.observed:
+            observed_report = self.observed.get_report(request_metrics)
+            if observed_report is not None:
+                report["observed"] = observed_report
+        if self.prometheus:
+            prometheus_report = self.prometheus.get_report()
+            if prometheus_report is not None:
+                report["prometheus"] = prometheus_report
+        return report if report else None
 
 class MetricsConfig(BaseModel):
     pass
