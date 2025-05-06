@@ -11,7 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, RequestMetric, ReportFile
+from abc import ABC, abstractmethod
+from typing import List
+from inference_perf.config import StorageConfigBase
+from inference_perf.reportgen import ReportFile
 
 
-__all__ = ["ReportGenerator", "RequestMetric", "ReportGenerator", "ReportFile"]
+class StorageClient(ABC):
+    def __init__(self, config: StorageConfigBase) -> None:
+        self.config = config
+        print(f"Report files will be stored at: {self.config.path}")
+
+    @abstractmethod
+    def save_report(self, reports: List[ReportFile]) -> None:
+        raise NotImplementedError()
