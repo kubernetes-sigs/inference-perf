@@ -25,6 +25,7 @@ class ObservedMetricsCollector(MetricsSource):
     def record_metric(self, metric: RequestMetric):
         if metric.output_len == 0:
             print(f"WARNING: {metric}")
+            return
         self.metrics.append(metric)
 
     def get_metrics(self):
