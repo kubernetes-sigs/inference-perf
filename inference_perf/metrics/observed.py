@@ -24,3 +24,6 @@ class ObservedMetricsCollector(MetricsSource):
 
     def record_metric(self, metric: RequestMetric):
         self.metrics.append(metric)
+
+    def get_metrics(self):
+        return self.metrics
