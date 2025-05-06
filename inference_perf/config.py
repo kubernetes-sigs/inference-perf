@@ -65,8 +65,6 @@ class LoadType(Enum):
 class LoadStage(BaseModel):
     rate: int
     duration: int
-    rate: int
-    duration: int
 
 
 class LoadConfig(BaseModel):
