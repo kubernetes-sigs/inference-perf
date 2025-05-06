@@ -14,32 +14,23 @@
 from datetime import datetime
 import numpy as np
 from pydantic import BaseModel
-from typing import Any, Optional, List, cast
+from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
+
+from inference_perf.datagen.base import FailedReponseData, VllmPromptData, ResponseData, SuccessfulResponseData
 
 
 class Metric(BaseModel):
     stage_id: Optional[int] = None
 
 
-class SuccessfulResponse(BaseModel):
-    output_len: int
-    output: Optional[str]
-
-
-class FailedResponse(BaseModel):
-    error_message: str
-    error_type: str
-
-
 class RequestMetric(Metric):
-    prompt_len: int
-    prompt: Optional[str]
     start_time: float
     end_time: float
-    result: SuccessfulResponse | FailedResponse
+    request: VllmPromptData
+    response: ResponseData
 
 
 class APIType(Enum):
@@ -97,20 +88,18 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
         }
 
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
-        successful = [x for x in request_metrics if isinstance(x.result, SuccessfulResponse)]
-        failed = [x for x in request_metrics if isinstance(x.result, FailedResponse)]
+        successful = [x for x in request_metrics if isinstance(x.response, SuccessfulResponseData)]
+        failed = [x for x in request_metrics if isinstance(x.response, FailedReponseData)]
 
         return {
             "successful": {
                 "total_requests": len(successful),
                 "prompt_length": self.get_summarization([x.prompt_len for x in successful]),
-                "output_length": self.get_summarization([cast(SuccessfulResponse, x.result).output_len for x in successful]),
+                "output_length": self.get_summarization([x.response.output_len for x in successful]),
                 "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in successful]),
                 "per_token_latency": self.get_summarization(
                     [
-                        (x.end_time - x.start_time) / (cast(SuccessfulResponse, x.result).output_len)
-                        if cast(SuccessfulResponse, x.result).output_len != 0
-                        else 0
+                        (x.end_time - x.start_time) / x.response.output_len if x.response.output_len != 0 else 0
                         for x in successful
                     ]
                 ),

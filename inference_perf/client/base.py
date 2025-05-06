@@ -12,9 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Tuple
-from inference_perf.datagen import PromptData
+from typing import Any, Tuple
+
+from pydantic import BaseModel
+from inference_perf.datagen import VllmPromptData
 from inference_perf.reportgen import ReportGenerator
+
+
+class FailedResponseData(BaseModel):
+    error_type: str
+    error_msg: str
+
+
+class SuccessfulResponseData(BaseModel):
+    info: dict[str, Any]
+
+
+ResponseData = FailedResponseData | SuccessfulResponseData
 
 
 class ModelServerClient(ABC):
@@ -27,5 +41,5 @@ class ModelServerClient(ABC):
         self.reportgen = reportgen
 
     @abstractmethod
-    async def process_request(self, data: PromptData, stage_id: int) -> None:
+    async def process_request(self, data: VllmPromptData, stage_id: int) -> None:
         raise NotImplementedError

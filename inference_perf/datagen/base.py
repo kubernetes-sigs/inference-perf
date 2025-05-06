@@ -11,43 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from pydantic import BaseModel
+from inference_perf.client.vllm_client import VllmPromptData
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Any, Generator, List
-
-
-class PromptData(BaseModel, ABC):
-    @abstractmethod
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        raise NotImplementedError
-
-
-class CompletionData(PromptData):
-    prompt: str
-
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        return {
-            "model": model_name,
-            "prompt": self.prompt,
-            "max_tokens": max_tokens,
-        }
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionData(PromptData):
-    messages: List[ChatMessage]
-
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        return {
-            "model": model_name,
-            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
-            "max_tokens": max_tokens,
-        }
+from typing import Generator, List
 
 
 class DataGenerator(ABC):
@@ -65,5 +32,5 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[PromptData, None, None]:
+    def get_data(self) -> Generator[VllmPromptData, None, None]:
         raise NotImplementedError
