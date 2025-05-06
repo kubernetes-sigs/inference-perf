@@ -71,7 +71,7 @@ class ReportGenerator():
         print("\n\nGenerating Report ..")
 
         if self.config is not None:
-            if self.config.contents is not None:
+            if self.config is not None:
                 report = self.config.get_report(self.metrics)
                 return [ReportFile(name="report", contents=report)]
             
