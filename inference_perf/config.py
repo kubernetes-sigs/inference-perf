@@ -70,7 +70,7 @@ class LoadStage(BaseModel):
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: Optional[float] = 1.0
-    stages: List[LoadStage]
+    stages: List[LoadStage] = []
 
 
 class StorageConfig(BaseModel):
@@ -151,7 +151,6 @@ class ReportConfig(BaseModel):
 
 class MetricsConfig(BaseModel):
     pass
-    pass
 
 
 class VLLMConfig(BaseModel):
@@ -168,7 +167,7 @@ class CustomTokenizerConfig(BaseModel):
 
 class Config(BaseModel):
     data: DataConfig = DataConfig()
-    load: LoadConfig = LoadConfig(stages=[LoadStage()])
+    load: LoadConfig = LoadConfig()
     report: ReportConfig = ReportConfig()
     metrics: MetricsConfig = MetricsConfig()
     storage: Optional[StorageConfig] = StorageConfig()
@@ -210,9 +209,6 @@ def read_config() -> Config:
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
-        default_cfg = Config().model_dump()
-        merged_cfg = deep_merge(default_cfg, cfg)
-        return Config(**merged_cfg)
         default_cfg = Config().model_dump()
         merged_cfg = deep_merge(default_cfg, cfg)
         return Config(**merged_cfg)
