@@ -17,7 +17,8 @@ from pydantic import BaseModel
 from typing import Any, List
 from inference_perf.metrics import MetricsClient, MetricsSummary
 
-class ReportFile():
+
+class ReportFile:
     name: str
     contents: BaseModel
 
@@ -26,10 +27,10 @@ class ReportFile():
         self.contents = contents
         self._store_locally()
 
-    def _store_locally(self):
+    def _store_locally(self) -> None:
         filename = self.get_filename()
         contents = self.get_contents()
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(contents, indent=2))
 
     def get_filename(self) -> str:
@@ -46,7 +47,7 @@ class RequestMetric(BaseModel):
     time_per_request: float
 
 
-class ReportGenerator():
+class ReportGenerator:
     def __init__(self, metrics_client: MetricsClient) -> None:
         self.metrics_client = metrics_client
         self.metrics: List[RequestMetric] = []

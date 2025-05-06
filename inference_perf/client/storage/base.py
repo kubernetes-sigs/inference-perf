@@ -13,11 +13,12 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List
-from inference_perf.config import StorageConfig
+from inference_perf.config import StorageConfigBase
 from inference_perf.reportgen import ReportFile
 
+
 class StorageClient(ABC):
-    def __init__(self, config : StorageConfig) -> None:
+    def __init__(self, config: StorageConfigBase) -> None:
         self.config = config
         print(f"Report files will be stored at: {self.config.path}")
 

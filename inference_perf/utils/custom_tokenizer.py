@@ -17,7 +17,9 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 class CustomTokenizer:
     def __init__(self, tokenizer_id: str, token: Optional[str], trust_remote_code: Optional[bool]):
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, token=token, trust_remote_code=trust_remote_code)
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+            tokenizer_id, token=token, trust_remote_code=trust_remote_code
+        )
 
     def count_tokens(self, text: str) -> int:
         if not text:

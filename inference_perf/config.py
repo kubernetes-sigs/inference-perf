@@ -49,12 +49,12 @@ class LoadConfig(BaseModel):
     stages: List[LoadStage]
 
 
-class StorageConfig(BaseModel):
-    path: str = f"reports-{datetime.now().strftime("%Y%m%d-%H%M%S")}"
+class StorageConfigBase(BaseModel):
+    path: str = f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     report_file_prefix: Optional[str] = None
 
 
-class GoogleCloudStorageConfig(StorageConfig):
+class GoogleCloudStorageConfig(StorageConfigBase):
     bucket_name: str
 
 

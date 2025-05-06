@@ -38,9 +38,11 @@ class InferenceData(BaseModel):
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
+
     apiType: APIType
 
     """Abstract base class for data generators."""
+
     def __init__(self, apiType: APIType) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
