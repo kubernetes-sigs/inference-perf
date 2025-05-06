@@ -17,7 +17,7 @@ from inference_perf.config import ReportConfig, RequestMetric
 from inference_perf.metrics.observed import ObservedMetricsCollector
 
 
-class ReportFile():
+class ReportFile:
     name: str
     contents: dict[str, Any]
 
@@ -26,18 +26,18 @@ class ReportFile():
         self.contents = contents
         self._store_locally()
 
-    def _store_locally(self):
-        with open(self.get_filename(), 'w', encoding='utf-8') as f:
+    def _store_locally(self) -> None:
+        with open(self.get_filename(), "w", encoding="utf-8") as f:
             f.write(json.dumps(self.get_contents(), indent=2))
-    
+
     def get_filename(self) -> str:
         return self.name
 
     def get_contents(self) -> dict[str, Any]:
         return self.contents
-    
 
-class ReportGenerator():
+
+class ReportGenerator:
     def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
         self.config = config
         self.metrics_collector = observed_metrics_collector
@@ -51,7 +51,7 @@ class ReportGenerator():
             if self.config is not None:
                 report = self.config.get_report(self.metrics_collector.get_metrics())
                 return [ReportFile(name="report", contents=report)]
-            
+
         else:
             print("Report generation failed - no metrics collected")
             return []

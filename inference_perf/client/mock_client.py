@@ -32,7 +32,9 @@ class MockModelServerClient(ModelServerClient):
             RequestMetric(
                 stage_id=stage_id,
                 prompt_len=0,
+                prompt=None,
                 output_len=0,
+                output=None,
                 start_time=1.23,
                 end_time=3.21,
             )

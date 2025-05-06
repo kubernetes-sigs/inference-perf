@@ -23,7 +23,13 @@ import asyncio
 
 
 class InferencePerfRunner:
-    def __init__(self, client: ModelServerClient, loadgen: LoadGenerator, reportgen: ReportGenerator, storage_clients : List[StorageClient]) -> None:
+    def __init__(
+        self,
+        client: ModelServerClient,
+        loadgen: LoadGenerator,
+        reportgen: ReportGenerator,
+        storage_clients: List[StorageClient],
+    ) -> None:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
@@ -70,7 +76,7 @@ def main_cli() -> None:
     observed_metrics_client = ObservedMetricsCollector(config.metrics)
 
     # Define Report Generator
-    reportgen = ReportGenerator(config=config.report, observed_metrics_collector=observed_metrics_client) 
+    reportgen = ReportGenerator(config=config.report, observed_metrics_collector=observed_metrics_client)
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []

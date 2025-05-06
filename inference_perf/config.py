@@ -64,7 +64,7 @@ class LoadConfig(BaseModel):
 
 
 class StorageConfigBase(BaseModel):
-    path: str = f"reports-{datetime.now().strftime("%Y%m%d-%H%M%S")}"
+    path: str = f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     report_file_prefix: Optional[str] = None
 
 
@@ -93,24 +93,28 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
             "prompt_length": self.get_summarization([x.prompt_len for x in request_metrics]),
             "output_length": self.get_summarization([x.output_len for x in request_metrics]),
             "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in request_metrics]),
-            "per_token_latency": self.get_summarization([(x.end_time - x.start_time) / (x.output_len) if x.output_len != 0 else 0 for x in request_metrics])
+            "per_token_latency": self.get_summarization(
+                [(x.end_time - x.start_time) / (x.output_len) if x.output_len != 0 else 0 for x in request_metrics]
+            ),
         }
 
-class ObservedMetricsReportPerRequestConfig(BaseModel):
-    include_inputs: bool = False        # replace input_len with input request body
-    include_outputs: bool = False       # replace output_len with output request body
 
-    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
+class ObservedMetricsReportPerRequestConfig(BaseModel):
+    include_inputs: bool = False  # replace input_len with input request body
+    include_outputs: bool = False  # replace output_len with output request body
+
+    def get_report(self, request_metrics: List[RequestMetric]) -> List[dict[str, Any]]:
         for metric in request_metrics:
             if not self.include_inputs:
-                delattr(metric, 'prompt')
+                delattr(metric, "prompt")
             if not self.include_outputs:
-                delattr(metric, 'output')
+                delattr(metric, "output")
         return [metric.model_dump() for metric in request_metrics]
 
 
 class ObservedMetricsReportConfig(BaseModel):
     """What data is inferred from observed request metrics is presented?"""
+
     summary: ObservedMetricsReportSummaryConfig = ObservedMetricsReportSummaryConfig()
     per_request: Optional[ObservedMetricsReportPerRequestConfig] = None
 
@@ -131,9 +135,11 @@ class ObservedMetricsReportConfig(BaseModel):
 
 class PrometheusMetricsReportConfig(BaseModel):
     """What prometheus metrics data should be presented?"""
+
     def get_report(self) -> dict[str, Any] | None:
         return None
-    
+
+
 class ReportConfig(BaseModel):
     observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = None
@@ -149,6 +155,7 @@ class ReportConfig(BaseModel):
             if prometheus_report is not None:
                 report["prometheus"] = prometheus_report
         return report if report else None
+
 
 class MetricsConfig(BaseModel):
     pass
@@ -176,7 +183,7 @@ class Config(BaseModel):
     tokenizer: Optional[CustomTokenizerConfig] = None
 
 
-def deep_merge(base: dict, override: dict) -> dict:
+def deep_merge(base: dict, override: dict) -> dict[str, Any]:
     result = base.copy()
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):

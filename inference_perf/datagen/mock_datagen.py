@@ -15,6 +15,7 @@ from .base import DataGenerator, InferenceData, CompletionData
 from typing import Generator, List
 from inference_perf.config import APIType
 
+
 class MockDataGenerator(DataGenerator):
     def __init__(self, apiType: APIType) -> None:
         super().__init__(apiType)
@@ -28,9 +29,6 @@ class MockDataGenerator(DataGenerator):
         while True:
             i += 1
             if self.apiType == APIType.Completion:
-                yield InferenceData(
-                    data=CompletionData(prompt="text" + str(i))
-                )
+                yield InferenceData(data=CompletionData(prompt="text" + str(i)))
             else:
                 raise Exception("Unsupported API type")
-                

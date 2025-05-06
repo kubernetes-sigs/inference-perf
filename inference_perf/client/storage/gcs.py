@@ -38,7 +38,7 @@ class GoogleCloudStorageClient(StorageClient):
 
         for _, report in enumerate(reports):
             filename = report.get_filename()
-            blob_path = f"{self.config.path if self.config.path else ""}/{self.config.report_file_prefix if self.config.report_file_prefix else ""}{filename}"
+            blob_path = f"{self.config.path if self.config.path else ''}/{self.config.report_file_prefix if self.config.report_file_prefix else ''}{filename}"
             blob = self.bucket.blob(blob_path)
 
             if blob.exists():
@@ -46,7 +46,7 @@ class GoogleCloudStorageClient(StorageClient):
                 continue
 
             try:
-                blob.upload_from_string(json.dumps(report.get_contents()), content_type='application/json')
+                blob.upload_from_string(json.dumps(report.get_contents()), content_type="application/json")
                 print(f"Uploaded gs://{self.output_bucket}/{blob_path}")
             except GoogleCloudError as e:
                 print(f"Failed to upload {blob_path}: {e}")
