@@ -127,6 +127,8 @@ class ObservedMetricsReportConfig(BaseModel):
     per_request: Optional[ObservedMetricsReportPerRequestConfig] = None
 
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
+        if len(request_metrics) == 0:
+            return None
         return {
             "summary": self.summary.get_report(request_metrics) if self.summary else None,
             "per_request": self.per_request.get_report(request_metrics) if self.per_request else None
