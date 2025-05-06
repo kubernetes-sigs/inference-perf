@@ -90,7 +90,7 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
             "prompt_length": self.get_summarization([x.prompt_len for x in request_metrics]),
             "output_length": self.get_summarization([x.output_len for x in request_metrics]),
             "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in request_metrics]),
-            "per_token_latency": self.get_summarization([(x.end_time - x.start_time) / (x.output_len) for x in request_metrics])
+            "per_token_latency": self.get_summarization([(x.end_time - x.start_time) / (x.output_len) if x.output_len != 0 else 0 for x in request_metrics])
         }
 
 class ObservedMetricsReportPerRequestConfig(BaseModel):
