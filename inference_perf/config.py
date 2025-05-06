@@ -129,7 +129,7 @@ class ReportConfig(BaseModel):
     observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
-    def get_report(self, request_metrics: List[RequestMetric]) -> BaseModel | None:
+    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
         return {
             "observed": self.observed.get_report(request_metrics) if self.observed else None,
             "prometheus": self.prometheus.get_report() if self.prometheus else None,
