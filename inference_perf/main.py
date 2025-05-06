@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import List
+from inference_perf.datagen.base import DataGenerator
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType
-from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
+from inference_perf.config import DataGenType, read_config
+from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.metrics import ObservedMetricsCollector
@@ -42,16 +43,13 @@ class InferencePerfRunner:
     def generate_reports(self) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports())
 
-    def save_reports(self, reports: List[ReportFile]):
+    def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
 
 
 def main_cli() -> None:
-    config = 
-    
-    
-    ()
+    config = read_config()
 
     # Define Model Server Client
     if config.vllm:
@@ -63,11 +61,9 @@ def main_cli() -> None:
 
     # Define DataGenerator
     if config.data:
-        datagen: DataGenerator
+        datagen: DataGenerator = MockDataGenerator(config.vllm.api)
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
-        else:
-            datagen = MockDataGenerator(config.vllm.api)
     else:
         raise Exception("data config missing")
 
