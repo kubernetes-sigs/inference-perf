@@ -54,7 +54,7 @@ class DataGenType(Enum):
 
 
 class DataConfig(BaseModel):
-    type: DataGenType = DataGenType()
+    type: DataGenType = DataGenType.Mock
 
 
 class LoadType(Enum):
