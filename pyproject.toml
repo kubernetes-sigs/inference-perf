@@ -86,8 +86,11 @@ where = ["."]
 include = ["inference_perf*", "deploy*"]
 
 [[tool.mypy.overrides]]
-module = ["datasets.*","transformers.*"]
+module = ["datasets.*"]
 ignore_missing_imports = true
+
+[tool.mypy]
+disable_error_code = ["attr-defined"]
 
 [build-system]
 requires = ["setuptools>=61"]

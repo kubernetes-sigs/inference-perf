@@ -13,8 +13,8 @@
 # limitations under the License.
 from typing import List
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, read_config
-from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
+from inference_perf.config import DataGenType
+from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.metrics import ObservedMetricsCollector
@@ -48,7 +48,10 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
-    config = read_config()
+    config = 
+    
+    
+    ()
 
     # Define Model Server Client
     if config.vllm:
@@ -60,9 +63,11 @@ def main_cli() -> None:
 
     # Define DataGenerator
     if config.data:
-        datagen = MockDataGenerator(config.vllm.api)
+        datagen: DataGenerator
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
+        else:
+            datagen = MockDataGenerator(config.vllm.api)
     else:
         raise Exception("data config missing")
 
