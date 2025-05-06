@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-import statistics
 from pydantic import BaseModel
 from typing import Any, List
-from inference_perf.metrics import MetricsClient, MetricsSummary
 from inference_perf.config import ReportConfig, RequestMetric
 from inference_perf.metrics.observed import ObservedMetricsCollector
 
