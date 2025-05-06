@@ -54,7 +54,7 @@ class DataGenType(Enum):
 
 
 class DataConfig(BaseModel):
-    type: DataGenType
+    type: DataGenType = DataGenType()
 
 
 class LoadType(Enum):
