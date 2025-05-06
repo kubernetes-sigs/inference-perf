@@ -74,7 +74,7 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 class ObservedMetricsReportSummaryConfig(BaseModel):
-    def get_summarization(self, items: List[float]) -> Any:
+    def get_summarization(self, items: List[float]) -> dict[str, Any]:
         return {
             "mean": float(np.mean(items)),
             "min": float(np.min(items)),
@@ -84,7 +84,7 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
             "max": float(np.max(items)),
         }
 
-    def get_report(self, request_metrics: List[RequestMetric]) -> Any:
+    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
         return {
             "total_requests": len(request_metrics),
             "prompt_length": self.get_summarization([x.prompt_len for x in request_metrics]),

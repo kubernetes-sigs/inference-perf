@@ -4,19 +4,15 @@ load:
   - rate: 1
     duration: 30
 vllm:
-  api: completion
-  model_name: meta-llama/Llama-2-7b-hf
-  url: http://llama3-8b-vllm-service:8000
+  api: chat
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  url: http://0.0.0.0:8000
 tokenizer:
-  pretrained_model_name_or_path: meta-llama/Llama-2-7b-hf
-  token: my-token
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
   type: shareGPT
 report:
   observed:
     per_request: 
       include_inputs: True
-      include_outputs: False
-storage:
-  google_cloud_storage:
-    bucket_name: slabe-dev-bucket
+      include_outputs: True
