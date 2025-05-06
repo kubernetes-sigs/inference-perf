@@ -11,11 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from abc import ABC
-from inference_perf.config import MetricsConfig
+from abc import ABC, abstractmethod
+from typing import List
+from inference_perf.config import Metric, MetricsConfig
 
 class MetricsSource(ABC):
     """ Anything that can provide metrics """
     def __init__(self, config: MetricsConfig) -> None:
         self.config = config
         pass
+
+    @abstractmethod
+    def get_metrics(self) -> List[Metric]:
+        pass
+
+    

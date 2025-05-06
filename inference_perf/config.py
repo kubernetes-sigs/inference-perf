@@ -20,13 +20,15 @@ from enum import Enum
 import yaml
 
 
-
-class RequestMetric(BaseModel):
+class Metric(BaseModel):
     stage_id: int
+
+
+class RequestMetric(Metric):
     prompt_len: int
-    prompt: str
+    prompt: Optional[str]
     output_len: int
-    output: str
+    output: Optional[str]
     start_time: float
     end_time: float
 
@@ -61,17 +63,18 @@ class LoadConfig(BaseModel):
     stages: List[LoadStage] = []
 
 
-class StorageConfig(BaseModel):
+class StorageConfigBase(BaseModel):
     path: str = f"reports-{datetime.now().strftime("%Y%m%d-%H%M%S")}"
     report_file_prefix: Optional[str] = None
 
 
-class GoogleCloudStorageConfig(StorageConfig):
+class GoogleCloudStorageConfig(StorageConfigBase):
     bucket_name: str
 
 
 class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
+
 
 class ObservedMetricsReportSummaryConfig(BaseModel):
     def get_summarization(self, items: List[float]) -> dict[str, Any]:
@@ -97,7 +100,7 @@ class ObservedMetricsReportPerRequestConfig(BaseModel):
     include_inputs: bool = False        # replace input_len with input request body
     include_outputs: bool = False       # replace output_len with output request body
 
-    def get_report(self, request_metrics: List[RequestMetric]) -> Any:
+    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
         for metric in request_metrics:
             if not self.include_inputs:
                 delattr(metric, 'prompt')
@@ -107,7 +110,7 @@ class ObservedMetricsReportPerRequestConfig(BaseModel):
 
 
 class ObservedMetricsReportConfig(BaseModel):
-    """What data is presented from what this tool observes about the requests?"""
+    """What data is inferred from observed request metrics is presented?"""
     summary: ObservedMetricsReportSummaryConfig = ObservedMetricsReportSummaryConfig()
     per_request: Optional[ObservedMetricsReportPerRequestConfig] = None
 
@@ -127,7 +130,7 @@ class ObservedMetricsReportConfig(BaseModel):
 
 
 class PrometheusMetricsReportConfig(BaseModel):
-    """What data should be presented from prometheus metrics?"""
+    """What prometheus metrics data should be presented?"""
     def get_report(self) -> dict[str, Any] | None:
         return None
     

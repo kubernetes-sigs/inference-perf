@@ -16,9 +16,9 @@ from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, read_config
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.observed import ObservedMetricsCollector
-from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
+from inference_perf.metrics import ObservedMetricsCollector
+from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 import asyncio
 
 
@@ -66,9 +66,7 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define collector for observed metrics and clients for all other specified metrics clients
-    observed_metrics_client = ObservedMetricsCollector(config.metrics)
-    # Define collector for observed metrics and clients for all other specified metrics clients
+    # Define collector for observed metrics
     observed_metrics_client = ObservedMetricsCollector(config.metrics)
 
     # Define Report Generator
