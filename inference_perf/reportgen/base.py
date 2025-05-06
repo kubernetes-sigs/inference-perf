@@ -53,7 +53,7 @@ class ReportGenerator():
         self.metrics_collector = observed_metrics_collector
 
     def collect_request_metrics(self, metric: RequestMetric) -> None:
-        self.metrics_collector.append(metric)
+        self.metrics_collector.record_metric(metric)
 
     def _store_locally(self):
         filename = self.get_filename()

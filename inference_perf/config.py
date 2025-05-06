@@ -205,7 +205,6 @@ def read_config() -> Config:
     args = parser.parse_args()
     if args.config_file:
         print("Using configuration from: %s" % args.config_file)
-        print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 

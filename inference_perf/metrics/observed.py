@@ -21,3 +21,6 @@ class ObservedMetricsCollector(MetricsSource):
         self.config = config
         self.metrics: List[RequestMetric] = []
         pass
+
+    def record_metric(self, metric: RequestMetric):
+        self.metrics.append(metric)
