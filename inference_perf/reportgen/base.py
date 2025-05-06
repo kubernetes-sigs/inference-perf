@@ -17,26 +17,6 @@ from typing import Any, List
 from inference_perf.config import ReportConfig, RequestMetric
 from inference_perf.metrics.observed import ObservedMetricsCollector
 
-class ReportFile():
-    name: str
-    contents: BaseModel
-
-    def __init__(self, name: str, contents: BaseModel):
-        self.name = f"{name}.json"
-        self.contents = contents
-        self._store_locally()
-
-    def _store_locally(self):
-        filename = self.get_filename()
-        contents = self.get_contents()
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(contents, indent=2))
-
-    def get_filename(self) -> str:
-        return self.name
-
-    def get_contents(self) -> dict[str, Any]:
-        return self.contents.model_dump()
 
 class ReportFile():
     name: str

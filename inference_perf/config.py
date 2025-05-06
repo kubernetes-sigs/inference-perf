@@ -15,21 +15,9 @@ from datetime import datetime
 import numpy as np
 from pydantic import BaseModel
 from typing import Any, Optional, List
-from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
-
-
-
-class RequestMetric(BaseModel):
-    stage_id: int
-    prompt_len: int
-    prompt: str
-    output_len: int
-    output: str
-    start_time: float
-    end_time: float
 
 
 
@@ -85,9 +73,6 @@ class GoogleCloudStorageConfig(StorageConfig):
 class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
-
-class ReportConfig(BaseModel):
-    pass
 class ObservedMetricsReportSummaryConfig(BaseModel):
     def get_summarization(self, items: List[float]) -> Any:
         return {
@@ -185,18 +170,6 @@ def deep_merge(base: dict, override: dict) -> dict:
         else:
             result[k] = v
     return result
-
-
-
-def deep_merge(base: dict, override: dict) -> dict:
-    result = base.copy()
-    for k, v in override.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = deep_merge(result[k], v)
-        else:
-            result[k] = v
-    return result
-
 
 
 def read_config() -> Config:
