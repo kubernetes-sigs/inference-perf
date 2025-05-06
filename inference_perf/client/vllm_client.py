@@ -92,7 +92,7 @@ class vLLMModelServerClient(ModelServerClient):
                     stage_id=stage_id,
                     prompt_len=prompt_len,
                     prompt=prompt,
-                    result=FailedResponse(exception=e),
+                    result=FailedResponse(error_message=str(e), error_type=type(e).__name__),
                     start_time=start,
                     end_time=time.monotonic(),
                 )

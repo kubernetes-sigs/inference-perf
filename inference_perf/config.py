@@ -30,7 +30,8 @@ class SuccessfulResponse(BaseModel):
 
 
 class FailedResponse(BaseModel):
-    exception: Exception
+    error_message: str
+    error_type: str
 
 
 class RequestMetric(Metric):
