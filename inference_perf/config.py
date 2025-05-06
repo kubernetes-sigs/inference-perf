@@ -122,7 +122,7 @@ class ObservedMetricsReportConfig(BaseModel):
         if len(request_metrics) == 0:
             return None
 
-        report = {}
+        report: dict[str, Any] = {}
         summary_report = self.summary.get_report(request_metrics) if self.summary else None
         if summary_report is not None:
             report["summary"] = summary_report
@@ -183,7 +183,7 @@ class Config(BaseModel):
     tokenizer: Optional[CustomTokenizerConfig] = None
 
 
-def deep_merge(base: dict, override: dict) -> dict[str, Any]:
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     result = base.copy()
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):

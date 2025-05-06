@@ -50,7 +50,7 @@ class ReportGenerator:
         if self.config is not None:
             if self.config is not None:
                 report = self.config.get_report(self.metrics_collector.get_metrics())
-                return [ReportFile(name="report", contents=report)]
+                return [ReportFile(name="report", contents=report)] if report else []
 
         else:
             print("Report generation failed - no metrics collected")
