@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.client import ChatMessage, VllmChatCompletionPromptData, VllmCompletionPromptData
-from .base import DataGenerator, VllmPromptData
+from .base import DataGenerator, PromptData
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
@@ -39,7 +39,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def get_data(self) -> Generator[VllmPromptData, None, None]:
+    def get_data(self) -> Generator[PromptData, None, None]:
         if self.sharegpt_dataset is not None:
             while True:
                 data = next(self.sharegpt_dataset)

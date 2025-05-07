@@ -14,10 +14,11 @@
 from abc import ABC, abstractmethod
 from typing import Any, Tuple
 
+from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.client.vllm_client import VllmPromptData
+from inference_perf.client.vllm_client import PromptData
 from inference_perf.reportgen import ReportGenerator
-
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 class FailedResponseData(BaseModel):
     error_type: str
@@ -30,6 +31,14 @@ class SuccessfulResponseData(BaseModel):
 
 ResponseData = FailedResponseData | SuccessfulResponseData
 
+class PromptData(ABC, BaseModel):
+    @abstractmethod
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+        """Response metrics will differ depending on the API being benchmarked"""
+        raise NotImplementedError
 
 class ModelServerClient(ABC):
     @abstractmethod
@@ -41,5 +50,5 @@ class ModelServerClient(ABC):
         self.reportgen = reportgen
 
     @abstractmethod
-    async def process_request(self, data: VllmPromptData, stage_id: int) -> None:
+    async def process_request(self, data: PromptData, stage_id: int) -> None:
         raise NotImplementedError

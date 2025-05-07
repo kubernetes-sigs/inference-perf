@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.client.vllm_client import VllmPromptData
+from inference_perf.client.vllm_client import PromptData
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
 from typing import Generator, List
@@ -32,5 +32,5 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[VllmPromptData, None, None]:
+    def get_data(self) -> Generator[PromptData, None, None]:
         raise NotImplementedError

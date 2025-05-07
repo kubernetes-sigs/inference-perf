@@ -11,29 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from abc import ABC, abstractmethod
 from pydantic import BaseModel
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import APIType, CustomTokenizerConfig, RequestMetric
 from inference_perf.utils import CustomTokenizer
-from .base import FailedResponseData, ModelServerClient, ResponseData, SuccessfulResponseData
+from .base import FailedResponseData, ModelServerClient, PromptData, ResponseData, SuccessfulResponseData
 from typing import Any, List, Optional
 from aiohttp import ClientSession, ClientResponse
 import json
 import time
 
-
-class VllmPromptData(ABC, BaseModel):
-    @abstractmethod
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        raise NotImplementedError
-
-    async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
-        """Response metrics will differ depending on the API being benchmarked"""
-        raise NotImplementedError
-
-
-class VllmCompletionPromptData(VllmPromptData):
+class VllmCompletionPromptData(PromptData):
     prompt: str
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
@@ -61,7 +49,7 @@ class ChatMessage(BaseModel):
     content: str
 
 
-class VllmChatCompletionPromptData(VllmPromptData):
+class VllmChatCompletionPromptData(PromptData):
     messages: List[ChatMessage]
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
@@ -108,7 +96,7 @@ class vLLMModelServerClient(ModelServerClient):
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    async def process_request(self, prompt_data: VllmPromptData, stage_id: int) -> None:
+    async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
         payload = prompt_data.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with ClientSession() as session:

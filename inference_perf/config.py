@@ -19,7 +19,8 @@ from argparse import ArgumentParser
 from enum import Enum
 import yaml
 
-from inference_perf.datagen.base import FailedReponseData, VllmPromptData, ResponseData, SuccessfulResponseData
+from inference_perf.client.base import FailedResponseData, ResponseData, SuccessfulResponseData
+from inference_perf.datagen.base import PromptData
 
 
 class Metric(BaseModel):
@@ -29,7 +30,7 @@ class Metric(BaseModel):
 class RequestMetric(Metric):
     start_time: float
     end_time: float
-    request: VllmPromptData
+    request: PromptData
     response: ResponseData
 
 
@@ -89,7 +90,7 @@ class ObservedMetricsReportSummaryConfig(BaseModel):
 
     def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
         successful = [x for x in request_metrics if isinstance(x.response, SuccessfulResponseData)]
-        failed = [x for x in request_metrics if isinstance(x.response, FailedReponseData)]
+        failed = [x for x in request_metrics if isinstance(x.response, FailedResponseData)]
 
         return {
             "successful": {
