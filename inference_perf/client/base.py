@@ -50,7 +50,6 @@ class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
         pass
 
     def record_metric(self, metric: ClientRequestMetric) -> None:
-        print("recorded metric", metric)
         self.metrics.append(metric)
 
     def get_metrics(self) -> List[ClientRequestMetric]:
