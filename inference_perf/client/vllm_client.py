@@ -44,10 +44,13 @@ class VllmCompletionPromptData(PromptData):
     async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
         content = await res.json()
         choices = content.get("choices", [])
+        prompt_len = tokenizer.count_tokens(self.prompt)
         output_text = choices[0].get("text", "")
         output_len = tokenizer.count_tokens(output_text)
         return SuccessfulResponseData(
             info={
+                "prompt": self.prompt,
+                "prompt_len": prompt_len,
                 "output_text": output_text,
                 "output_len": output_len,
             }
@@ -67,7 +70,7 @@ class VllmCompletionPromptData(PromptData):
             successes={
                 "count": len(all_successful),
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
-                "prompt_len": get_summarization([success.prompt_len for success in all_successful]),
+                "prompt_len": get_summarization([success.info.get("prompt_len") for success in all_successful]),
                 "output_len": get_summarization(
                     [float(v) for success in all_successful if (v := success.info.get("output_text")) is not None]
                 ),
