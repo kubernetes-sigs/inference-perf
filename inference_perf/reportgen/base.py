@@ -52,7 +52,7 @@ class ReportGenerator:
         if len(self.client_request_metrics_collector.get_metrics()) == 0:
             print("Report generation failed, no metrics collected")
             return []
-        elif hasattr(config, "observed") and hasattr(config, "prometheus"):
+        elif not hasattr(config, "observed") and not hasattr(config, "prometheus"):
             print("Report generation disabled, skipping report generation")
             return []
         else:
