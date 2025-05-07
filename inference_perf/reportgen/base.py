@@ -27,6 +27,11 @@ class ReportFile:
         self._store_locally()
 
     def _store_locally(self) -> None:
+        filename = self.get_filename()
+        contents = self.get_contents()
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(json.dumps(contents, indent=2))
+    def _store_locally(self) -> None:
         with open(self.get_filename(), "w", encoding="utf-8") as f:
             f.write(json.dumps(self.get_contents(), indent=2))
 
