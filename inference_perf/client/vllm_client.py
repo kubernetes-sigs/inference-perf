@@ -77,7 +77,9 @@ class VllmCompletionPromptData(PromptData):
                 "per_token_latency": get_summarization(
                     [
                         (metric.end_time - metric.start_time) / float(metric.response.info.get("output_len"))
-                        if metric.response.info.get("output_len") is not None and float(metric.response.info.get("output_len")) != 0
+                        if isinstance(metric.response, SuccessfulResponseData)
+                        and metric.response.info.get("output_len") is not None
+                        and float(metric.response.info.get("output_len")) != 0
                         else 0
                         for metric in metrics
                     ]
