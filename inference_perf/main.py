@@ -61,9 +61,11 @@ def main_cli() -> None:
 
     # Define DataGenerator
     if config.data:
-        datagen: DataGenerator = MockDataGenerator(config.vllm.api)
+        datagen: DataGenerator
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
+        else:
+            datagen = MockDataGenerator(config.vllm.api)
     else:
         raise Exception("data config missing")
 
