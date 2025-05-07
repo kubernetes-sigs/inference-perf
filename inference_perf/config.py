@@ -18,20 +18,6 @@ from argparse import ArgumentParser
 from enum import Enum
 import yaml
 
-from inference_perf.client.base import ResponseData
-from inference_perf.datagen.base import PromptData
-
-
-class Metric(BaseModel):
-    stage_id: Optional[int] = None
-
-
-class RequestMetric(Metric):
-    start_time: float
-    end_time: float
-    request: PromptData
-    response: ResponseData
-
 
 class APIType(Enum):
     Completion = "completion"

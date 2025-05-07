@@ -13,6 +13,5 @@ data:
   type: shareGPT
 report:
   observed:
-    per_request: 
-      include_inputs: True
-      include_outputs: True
+    summary: True
+    per_request: True

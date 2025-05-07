@@ -14,10 +14,11 @@
 from .base import ModelServerClient
 from .mock_client import MockModelServerClient
 from .vllm_client import (
-    vLLMModelServerClient,
-    ChatMessage,
     PromptData,
+    ResponseData,
+    vLLMModelServerClient,
     VllmChatCompletionPromptData,
+    ChatMessage,
     VllmCompletionPromptData,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "vLLMModelServerClient",
     "ChatMessage",
     "PromptData",
+    "ResponseData",
     "VllmChatCompletionPromptData",
     "VllmCompletionPromptData",
 ]

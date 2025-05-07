@@ -16,7 +16,8 @@ from typing import Any, List
 
 import numpy as np
 from inference_perf.metrics import MetricsSource
-from inference_perf.config import MetricsConfig, RequestMetric
+from inference_perf.config import MetricsConfig
+from inference_perf.metrics.base import RequestMetric
 
 
 def get_summarization(items: List[float]) -> dict[str, Any]:

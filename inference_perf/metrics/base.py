@@ -12,8 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import abstractmethod
-from typing import Generic, List, TypeVar
-from inference_perf.config import Metric, MetricsConfig
+from typing import Generic, List, Optional, TypeVar
+
+from pydantic import BaseModel
+from inference_perf.client import PromptData, ResponseData
+from inference_perf.config import MetricsConfig
+
+
+class Metric(BaseModel):
+    """Abstract type to track individual request metrics, prometheus metrics, etc"""
+
+    stage_id: Optional[int] = None
+
+
+class RequestMetric(Metric):
+    """The source of truth for all data pertaining to a particular request"""
+
+    start_time: float
+    end_time: float
+    request: PromptData
+    response: ResponseData
+
 
 T = TypeVar("T", bound=Metric)
 
