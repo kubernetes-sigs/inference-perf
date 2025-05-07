@@ -41,26 +41,25 @@ class ReportFile:
 
 
 class ReportGenerator:
-    def __init__(self, config: ReportConfig, client_request_metrics_collector: ClientRequestMetricsCollector) -> None:
-        self.config = config
+    def __init__(self, client_request_metrics_collector: ClientRequestMetricsCollector) -> None:
         self.client_request_metrics_collector = client_request_metrics_collector
 
     def collect_request_metric(self, metric: ClientRequestMetric) -> None:
         self.client_request_metrics_collector.record_metric(metric)
 
-    async def generate_reports(self) -> List[ReportFile]:
+    async def generate_reports(self, config: ReportConfig) -> List[ReportFile]:
         if len(self.client_request_metrics_collector.get_metrics()) == 0:
-            print("Report generation failed - no metrics collected")
+            print("Report generation failed, no metrics collected")
             return []
-        elif self.config.observed is None:
+        elif hasattr(config, 'observed') and hasattr(config, 'prometheus'):
             print("Report generation disabled, skipping report generation")
             return []
         else:
             print("\n\nGenerating Report ..")
             report: dict[str, Any] = {}
-            if self.config.observed:
-                report["observed"] = self.client_request_metrics_collector.get_report(config=self.config.observed)
-            if self.config.prometheus:
+            if config.observed:
+                report["observed"] = self.client_request_metrics_collector.get_report(config=config.observed)
+            if config.prometheus:
                 prometheus_report: dict[str, Any] = {}
                 if prometheus_report is not None:
                     report["prometheus"] = prometheus_report

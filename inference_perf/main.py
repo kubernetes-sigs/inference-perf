@@ -76,10 +76,10 @@ def main_cli() -> None:
     perfrunner.run()
 
     # Define Report Generator
-    reportgen = ReportGenerator(config=config.report, client_request_metrics_collector=client.collector)
+    reportgen = ReportGenerator(client_request_metrics_collector=client.collector)
 
     # Generate Reports
-    reports = asyncio.run(reportgen.generate_reports())
+    reports = asyncio.run(reportgen.generate_reports(config=config.report))
 
     # Save Reports
     for storage_client in storage_clients:
