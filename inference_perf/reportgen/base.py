@@ -44,9 +44,6 @@ class ReportGenerator:
     def __init__(self, client_request_metrics_collector: ClientRequestMetricsCollector) -> None:
         self.client_request_metrics_collector = client_request_metrics_collector
 
-    def collect_request_metric(self, metric: ClientRequestMetric) -> None:
-        self.client_request_metrics_collector.record_metric(metric)
-
     async def generate_reports(self, config: ReportConfig) -> List[ReportFile]:
         print(f"Generating report according to config {config.model_dump_json()}")
         if len(self.client_request_metrics_collector.get_metrics()) == 0:
