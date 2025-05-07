@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsSource, RequestMetric
-from .observed import ObservedMetricsCollector
+from .base import MetricsCollector
 
-__all__ = ["MetricsSource", "ObservedMetricsCollector", "RequestMetric"]
+__all__ = ["MetricsCollector"]

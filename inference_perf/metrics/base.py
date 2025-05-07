@@ -15,35 +15,23 @@ from abc import abstractmethod
 from typing import Generic, List, Optional, TypeVar
 
 from pydantic import BaseModel
-from inference_perf.client import PromptData, ResponseData
 from inference_perf.config import MetricsConfig
 
 
 class Metric(BaseModel):
     """Abstract type to track individual request metrics, prometheus metrics, etc"""
-
     stage_id: Optional[int] = None
-
-
-class RequestMetric(Metric):
-    """The source of truth for all data pertaining to a particular request"""
-
-    start_time: float
-    end_time: float
-    request: PromptData
-    response: ResponseData
 
 
 T = TypeVar("T", bound=Metric)
 
 
-class MetricsSource(Generic[T]):
-    """Anything that can provide a list of metrics"""
+class MetricsCollector(Generic[T]):
+    """Anything that can collect and report metrics"""
 
     def __init__(self, config: MetricsConfig) -> None:
         self.config = config
-        pass
 
     @abstractmethod
     def get_metrics(self) -> List[T]:
-        pass
+        raise NotImplementedError

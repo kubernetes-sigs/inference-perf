@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from inference_perf.metrics.observed import get_summarization
+from inference_perf.client.metrics import ClientRequestMetric, get_summarization
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.config import APIType, CustomTokenizerConfig, RequestMetric
+from inference_perf.config import APIType, CustomTokenizerConfig
 from inference_perf.utils import CustomTokenizer
-from .base import FailedResponseData, ModelServerClient, PromptData, ResponseData, ResponsesSummary, SuccessfulResponseData
+from .base import (
+    FailedResponseData,
+    ModelServerClient,
+    PromptData,
+    ResponseData,
+    ResponsesSummary,
+    SuccessfulResponseData,
+)
 from typing import Any, List, Optional
 from aiohttp import ClientSession, ClientResponse
 import json
@@ -33,7 +40,7 @@ class VllmCompletionPromptData(PromptData):
             "max_tokens": max_tokens,
         }
 
-    async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+    async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
         content = await res.json()
         choices = content.get("choices", [])
         output_text = choices[0].get("text", "")
@@ -45,7 +52,7 @@ class VllmCompletionPromptData(PromptData):
             }
         )
 
-    def get_summary_report_for_request_metrics(self, metrics: List[RequestMetric]) -> ResponsesSummary:
+    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
         all_successful: List[SuccessfulResponseData] = [
             x.response for x in metrics if isinstance(x.response, SuccessfulResponseData)
         ]
@@ -94,7 +101,7 @@ class VllmChatCompletionPromptData(PromptData):
             "max_tokens": max_tokens,
         }
 
-    async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+    async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
         content = await res.json()
         choices = content.get("choices", [])
         output_text = choices[0].get("message", {}).get("content", "")
@@ -106,7 +113,7 @@ class VllmChatCompletionPromptData(PromptData):
             }
         )
 
-    def get_summary_report_for_request_metrics(self, metrics: List[RequestMetric]) -> ResponsesSummary:
+    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
         all_successful: List[SuccessfulResponseData] = [
             x.response for x in metrics if isinstance(x.response, SuccessfulResponseData)
         ]
@@ -172,11 +179,11 @@ class vLLMModelServerClient(ModelServerClient):
             try:
                 async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        response_data = await prompt_data.get_response_data(res=response, tokenizer=self.custom_tokenizer)
+                        response_data = await prompt_data.process_response(res=response, tokenizer=self.custom_tokenizer)
                         end = time.monotonic()
 
                         self.reportgen.collect_request_metric(
-                            RequestMetric(
+                            ClientRequestMetric(
                                 stage_id=stage_id,
                                 request=prompt_data,
                                 response=response_data,
@@ -185,7 +192,7 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
                     else:
-                        RequestMetric(
+                        ClientRequestMetric(
                             stage_id=stage_id,
                             request=prompt_data,
                             response=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
@@ -193,7 +200,7 @@ class vLLMModelServerClient(ModelServerClient):
                             end_time=time.monotonic(),
                         )
             except Exception as e:
-                RequestMetric(
+                ClientRequestMetric(
                     stage_id=stage_id,
                     request=prompt_data,
                     response=FailedResponseData(error_msg=str(e), error_type=type(e).__name__),

@@ -16,7 +16,7 @@ from typing import Any, List, Tuple
 
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.metrics.base import RequestMetric
+from inference_perf.client.metrics import ClientRequestMetric
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -48,12 +48,12 @@ class PromptData(ABC, BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+    async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
         """For a given response type, what is the success criteria and what should be reported from successful responses"""
         raise NotImplementedError
 
     @abstractmethod
-    def get_summary_report_for_request_metrics(self, responses: List[RequestMetric]) -> ResponsesSummary:
+    def get_summary_report_for_request_metrics(self, responses: List[ClientRequestMetric]) -> ResponsesSummary:
         """Given a list of responses for this request type, how will these be summarized"""
         raise NotImplementedError
 

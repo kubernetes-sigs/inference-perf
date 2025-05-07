@@ -14,8 +14,8 @@
 import json
 from typing import Any, List
 
-from inference_perf.config import ReportConfig, RequestMetric
-from inference_perf.metrics.observed import ObservedMetricsCollector
+from inference_perf.client.metrics import ClientRequestMetric, ClientRequestMetricsCollector
+from inference_perf.config import ReportConfig
 
 
 class ReportFile:
@@ -41,15 +41,15 @@ class ReportFile:
 
 
 class ReportGenerator:
-    def __init__(self, config: ReportConfig, observed_metrics_collector: ObservedMetricsCollector) -> None:
+    def __init__(self, config: ReportConfig, client_request_metrics_collector: ClientRequestMetricsCollector) -> None:
         self.config = config
-        self.metrics_collector = observed_metrics_collector
+        self.client_request_metrics_collector = client_request_metrics_collector
 
-    def collect_request_metric(self, metric: RequestMetric) -> None:
-        self.metrics_collector.record_metric(metric)
+    def collect_request_metric(self, metric: ClientRequestMetric) -> None:
+        self.client_request_metrics_collector.record_metric(metric)
 
     async def generate_reports(self) -> List[ReportFile]:
-        if len(self.metrics_collector.get_metrics()) == 0:
+        if len(self.client_request_metrics_collector.get_metrics()) == 0:
             print("Report generation failed - no metrics collected")
             return []
         elif self.config is None:
@@ -61,9 +61,9 @@ class ReportGenerator:
             if self.config.observed:
                 observed_report: dict[str, Any] = {}
                 if self.config.observed.summary:
-                    observed_report["summary"] = self.metrics_collector.get_summary_report()
+                    observed_report["summary"] = self.client_request_metrics_collector.get_summary_report()
                 if self.config.observed.per_request:
-                    observed_report["per_request"] = self.metrics_collector.get_per_request_report()
+                    observed_report["per_request"] = self.client_request_metrics_collector.get_per_request_report()
                 report["observed"] = observed_report
             if self.config.prometheus:
                 prometheus_report: dict[str, Any] = {}
