@@ -16,7 +16,7 @@ from typing import Any, List, Tuple
 
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.config import RequestMetric
+from inference_perf.metrics.base import RequestMetric
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 

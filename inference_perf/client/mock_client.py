@@ -11,10 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.config import RequestMetric
-from inference_perf.datagen import VllmPromptData
+from inference_perf.metrics.base import RequestMetric
 from inference_perf.reportgen import ReportGenerator
-from .base import ModelServerClient, SuccessfulResponseData
+from .base import ModelServerClient, PromptData, SuccessfulResponseData
 import asyncio
 
 
@@ -25,7 +24,7 @@ class MockModelServerClient(ModelServerClient):
     def set_report_generator(self, reportgen: ReportGenerator) -> None:
         self.reportgen = reportgen
 
-    async def process_request(self, promptData: VllmPromptData, stage_id: int) -> None:
+    async def process_request(self, promptData: PromptData, stage_id: int) -> None:
         print(
             "Processing mock request - "
             + str(promptData.to_payload(model_name="mock-model", max_tokens=0))
