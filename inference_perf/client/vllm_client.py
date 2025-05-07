@@ -72,7 +72,7 @@ class VllmCompletionPromptData(PromptData):
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
                 "prompt_len": get_summarization([success.info.get("prompt_len") for success in all_successful]),
                 "output_len": get_summarization(
-                    [float(v) for success in all_successful if (v := success.info.get("output_text")) is not None]
+                    [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
                 ),
                 "per_token_latency": get_summarization(
                     [
@@ -132,7 +132,7 @@ class VllmChatCompletionPromptData(PromptData):
                 "count": len(all_successful),
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
                 "output_len": get_summarization(
-                    [float(v) for success in all_successful if (v := success.info.get("output_text")) is not None]
+                    [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
                 ),
                 "per_token_latency": get_summarization(
                     [
