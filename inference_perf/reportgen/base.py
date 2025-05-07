@@ -13,6 +13,7 @@
 # limitations under the License.
 import json
 from typing import Any, List
+
 from inference_perf.config import ReportConfig, RequestMetric
 from inference_perf.metrics.observed import ObservedMetricsCollector
 
@@ -48,12 +49,24 @@ class ReportGenerator:
         self.metrics_collector.record_metric(metric)
 
     async def generate_reports(self) -> List[ReportFile]:
-        print("\n\nGenerating Report ..")
-        if self.config is not None:
-            if self.config is not None:
-                report = self.config.get_report(self.metrics_collector.get_metrics())
-                return [ReportFile(name="report", contents=report)] if report else []
-
-        else:
+        if len(self.metrics_collector.get_metrics()) == 0:
             print("Report generation failed - no metrics collected")
             return []
+        elif self.config is None:
+            print("Report generation disabled, skipping report generation")
+            return []
+        else:
+            print("\n\nGenerating Report ..")
+            report: dict[str, Any] = {}
+            if self.config.observed:
+                observed_report: dict[str, Any] = {}
+                if self.config.observed.summary:
+                    observed_report["summary"] = self.metrics_collector.get_summary_report()
+                if self.config.observed.per_request:
+                    observed_report["per_request"] = self.metrics_collector.get_per_request_report()
+                report["observed"] = observed_report
+            if self.config.prometheus:
+                prometheus_report: dict[str, Any] = {}
+                if prometheus_report is not None:
+                    report["prometheus"] = prometheus_report
+            return [ReportFile(name="report", contents=report)] if report else []

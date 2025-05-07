@@ -19,7 +19,7 @@ T = TypeVar("T", bound=Metric)
 
 
 class MetricsSource(Generic[T]):
-    """Anything that can provide metrics"""
+    """Anything that can provide a list of metrics"""
 
     def __init__(self, config: MetricsConfig) -> None:
         self.config = config

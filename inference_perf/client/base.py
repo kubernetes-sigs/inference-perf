@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, Tuple
+from typing import Any, List, Tuple
 
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.client.vllm_client import PromptData
+from inference_perf.config import RequestMetric
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
 
 class FailedResponseData(BaseModel):
     error_type: str
@@ -31,14 +32,31 @@ class SuccessfulResponseData(BaseModel):
 
 ResponseData = FailedResponseData | SuccessfulResponseData
 
+
+class ResponsesSummary(BaseModel):
+    """Regardless of the request type, successes and failures should always be categorized separately"""
+
+    load_summary: dict[str, Any]
+    successes: dict[str, Any]
+    failures: dict[str, Any]
+
+
 class PromptData(ABC, BaseModel):
     @abstractmethod
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        """What should the body for an HTTP request contain for this request type"""
         raise NotImplementedError
 
+    @abstractmethod
     async def get_response_data(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
-        """Response metrics will differ depending on the API being benchmarked"""
+        """For a given response type, what is the success criteria and what should be reported from successful responses"""
         raise NotImplementedError
+
+    @abstractmethod
+    def get_summary_report_for_request_metrics(self, responses: List[RequestMetric]) -> ResponsesSummary:
+        """Given a list of responses for this request type, how will these be summarized"""
+        raise NotImplementedError
+
 
 class ModelServerClient(ABC):
     @abstractmethod

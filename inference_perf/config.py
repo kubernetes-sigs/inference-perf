@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-import numpy as np
 from pydantic import BaseModel
 from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
 
-from inference_perf.client.base import FailedResponseData, ResponseData, SuccessfulResponseData
+from inference_perf.client.base import ResponseData
 from inference_perf.datagen.base import PromptData
 
 
@@ -77,94 +76,18 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
-class ObservedMetricsReportSummaryConfig(BaseModel):
-    def get_summarization(self, items: List[float]) -> dict[str, Any]:
-        return {
-            "mean": float(np.mean(items)),
-            "min": float(np.min(items)),
-            "p10": float(np.percentile(items, 10)),
-            "p50": float(np.percentile(items, 50)),
-            "p90": float(np.percentile(items, 90)),
-            "max": float(np.max(items)),
-        }
-
-    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any]:
-        successful = [x for x in request_metrics if isinstance(x.response, SuccessfulResponseData)]
-        failed = [x for x in request_metrics if isinstance(x.response, FailedResponseData)]
-
-        return {
-            "successful": {
-                "total_requests": len(successful),
-                "prompt_length": self.get_summarization([x.prompt_len for x in successful]),
-                "output_length": self.get_summarization([x.response.output_len for x in successful]),
-                "time_per_request": self.get_summarization([(x.end_time - x.start_time) for x in successful]),
-                "per_token_latency": self.get_summarization(
-                    [
-                        (x.end_time - x.start_time) / x.response.output_len if x.response.output_len != 0 else 0
-                        for x in successful
-                    ]
-                ),
-            },
-            "failed": {"total_requests": len(failed)},
-        }
-
-
-class ObservedMetricsReportPerRequestConfig(BaseModel):
-    include_inputs: bool = False  # replace input_len with input request body
-    include_outputs: bool = False  # replace output_len with output request body
-
-    def get_report(self, request_metrics: List[RequestMetric]) -> List[dict[str, Any]]:
-        for metric in request_metrics:
-            if not self.include_inputs:
-                delattr(metric, "prompt")
-            if not self.include_outputs:
-                delattr(metric, "output")
-        return [metric.model_dump() for metric in request_metrics]
-
-
 class ObservedMetricsReportConfig(BaseModel):
-    """What data is inferred from observed request metrics is presented?"""
-
-    summary: ObservedMetricsReportSummaryConfig = ObservedMetricsReportSummaryConfig()
-    per_request: Optional[ObservedMetricsReportPerRequestConfig] = None
-
-    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
-        if len(request_metrics) == 0:
-            return None
-
-        report: dict[str, Any] = {}
-        summary_report = self.summary.get_report(request_metrics) if self.summary else None
-        if summary_report is not None:
-            report["summary"] = summary_report
-        if self.per_request:
-            per_request_report = self.per_request.get_report(request_metrics)
-            if per_request_report is not None:
-                report["per_request"] = per_request_report
-        return report if report else None
+    summary: Optional[bool] = True
+    per_request: Optional[bool] = False
 
 
 class PrometheusMetricsReportConfig(BaseModel):
-    """What prometheus metrics data should be presented?"""
-
-    def get_report(self) -> dict[str, Any] | None:
-        return None
+    pass
 
 
 class ReportConfig(BaseModel):
     observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = None
-
-    def get_report(self, request_metrics: List[RequestMetric]) -> dict[str, Any] | None:
-        report = {}
-        if self.observed:
-            observed_report = self.observed.get_report(request_metrics)
-            if observed_report is not None:
-                report["observed"] = observed_report
-        if self.prometheus:
-            prometheus_report = self.prometheus.get_report()
-            if prometheus_report is not None:
-                report["prometheus"] = prometheus_report
-        return report if report else None
 
 
 class MetricsConfig(BaseModel):

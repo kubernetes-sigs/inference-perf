@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
+from inference_perf.metrics.observed import get_summarization
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import APIType, CustomTokenizerConfig, RequestMetric
 from inference_perf.utils import CustomTokenizer
-from .base import FailedResponseData, ModelServerClient, PromptData, ResponseData, SuccessfulResponseData
+from .base import FailedResponseData, ModelServerClient, PromptData, ResponseData, ResponsesSummary, SuccessfulResponseData
 from typing import Any, List, Optional
 from aiohttp import ClientSession, ClientResponse
 import json
 import time
+
 
 class VllmCompletionPromptData(PromptData):
     prompt: str
@@ -41,6 +43,39 @@ class VllmCompletionPromptData(PromptData):
                 "output_text": output_text,
                 "output_len": output_len,
             }
+        )
+
+    def get_summary_report_for_request_metrics(self, metrics: List[RequestMetric]) -> ResponsesSummary:
+        all_successful: List[SuccessfulResponseData] = [
+            x.response for x in metrics if isinstance(x.response, SuccessfulResponseData)
+        ]
+        all_failed: List[FailedResponseData] = [x.response for x in metrics if isinstance(x.response, FailedResponseData)]
+
+        return ResponsesSummary(
+            load_summary={
+                "count": len(metrics),
+                "prompt_length": self.get_summarization([success.prompt_len for success in metrics]),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+            },
+            successes={
+                "count": len(all_successful),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+                "output_len": get_summarization(
+                    [float(v) for success in all_successful if (v := success.info.get("output_text")) is not None]
+                ),
+                "per_token_latency": get_summarization(
+                    [
+                        (success.end_time - success.start_time) / success.response.output_len
+                        if success.response.output_len != 0
+                        else 0
+                        for success in all_successful
+                    ]
+                ),
+            },
+            failures={
+                "count": len(all_failed),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+            },
         )
 
 
@@ -69,6 +104,39 @@ class VllmChatCompletionPromptData(PromptData):
                 "output_text": output_text,
                 "output_len": output_len,
             }
+        )
+
+    def get_summary_report_for_request_metrics(self, metrics: List[RequestMetric]) -> ResponsesSummary:
+        all_successful: List[SuccessfulResponseData] = [
+            x.response for x in metrics if isinstance(x.response, SuccessfulResponseData)
+        ]
+        all_failed: List[FailedResponseData] = [x.response for x in metrics if isinstance(x.response, FailedResponseData)]
+
+        return ResponsesSummary(
+            load_summary={
+                "count": len(metrics),
+                "prompt_length": self.get_summarization([success.prompt_len for success in metrics]),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+            },
+            successes={
+                "count": len(all_successful),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+                "output_len": get_summarization(
+                    [float(v) for success in all_successful if (v := success.info.get("output_text")) is not None]
+                ),
+                "per_token_latency": get_summarization(
+                    [
+                        (success.end_time - success.start_time) / success.response.output_len
+                        if success.response.output_len != 0
+                        else 0
+                        for success in all_successful
+                    ]
+                ),
+            },
+            failures={
+                "count": len(all_failed),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
+            },
         )
 
 
