@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import List
-from inference_perf.client.metrics import ClientRequestMetricsCollector
+from inference_perf.client.base import ClientRequestMetricsCollector
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, read_config
 from inference_perf.datagen import MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.reportgen import ReportGenerator, ReportFile
+from inference_perf.reportgen import ReportGenerator
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 import asyncio
 
@@ -28,24 +28,12 @@ class InferencePerfRunner:
         self,
         client: ModelServerClient,
         loadgen: LoadGenerator,
-        reportgen: ReportGenerator,
-        storage_clients: List[StorageClient],
     ) -> None:
         self.client = client
         self.loadgen = loadgen
-        self.reportgen = reportgen
-        self.storage_clients = storage_clients
-        self.client.set_report_generator(self.reportgen)
 
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
-
-    def generate_reports(self) -> List[ReportFile]:
-        return asyncio.run(self.reportgen.generate_reports())
-
-    def save_reports(self, reports: List[ReportFile]) -> None:
-        for storage_client in self.storage_clients:
-            storage_client.save_report(reports)
 
 
 def main_cli() -> None:
@@ -88,16 +76,17 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(client, loadgen, reportgen, storage_clients)
+    perfrunner = InferencePerfRunner(client, loadgen)
 
     # Run Perf Test
     perfrunner.run()
 
     # Generate Reports
-    reports = perfrunner.generate_reports()
+    reports = asyncio.run(reportgen.generate_reports())
 
     # Save Reports
-    perfrunner.save_reports(reports=reports)
+    for storage_client in storage_clients:
+        storage_client.save_report(reports)
 
 
 if __name__ == "__main__":

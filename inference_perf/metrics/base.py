@@ -20,6 +20,7 @@ from inference_perf.config import MetricsConfig
 
 class Metric(BaseModel):
     """Abstract type to track individual request metrics, prometheus metrics, etc"""
+
     stage_id: Optional[int] = None
 
 

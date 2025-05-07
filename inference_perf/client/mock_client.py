@@ -11,18 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.metrics.base import RequestMetric
-from inference_perf.reportgen import ReportGenerator
-from .base import ModelServerClient, PromptData, SuccessfulResponseData
+from .base import ClientRequestMetric, ModelServerClient, PromptData, SuccessfulResponseData
 import asyncio
 
 
 class MockModelServerClient(ModelServerClient):
     def __init__(self) -> None:
         pass
-
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
 
     async def process_request(self, promptData: PromptData, stage_id: int) -> None:
         print(
@@ -33,7 +28,7 @@ class MockModelServerClient(ModelServerClient):
         )
         await asyncio.sleep(3)
         self.reportgen.collect_request_metric(
-            RequestMetric(
+            ClientRequestMetric(
                 stage_id=stage_id,
                 request=promptData,
                 response=SuccessfulResponseData(info={"res": "this is a mock response"}),

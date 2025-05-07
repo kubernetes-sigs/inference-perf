@@ -19,7 +19,6 @@ from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.config import MetricsConfig, ObservedMetricsReportConfig
 from inference_perf.metrics.base import Metric, MetricsCollector
-from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -110,10 +109,6 @@ class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
         pass
-
-    @abstractmethod
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
 
     @abstractmethod
     async def process_request(self, data: PromptData, stage_id: int) -> None:

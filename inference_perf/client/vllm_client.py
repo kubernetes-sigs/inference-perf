@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import APIType, CustomTokenizerConfig
 from inference_perf.utils import CustomTokenizer
 from .base import (
@@ -168,9 +167,6 @@ class vLLMModelServerClient(ModelServerClient):
                 print("Falling back to usage metrics.")
         else:
             print("Tokenizer path is empty. Falling back to usage metrics.")
-
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
 
     async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
         payload = prompt_data.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
