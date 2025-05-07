@@ -23,7 +23,7 @@ import json
 import time
 
 
-class VllmPromptData(ABC):
+class VllmPromptData(ABC, BaseModel):
     @abstractmethod
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
         raise NotImplementedError
