@@ -63,12 +63,6 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define collector for client request metrics
-    client_request_metrics_collector = ClientRequestMetricsCollector()
-
-    # Define Report Generator
-    reportgen = ReportGenerator(config=config.report, client_request_metrics_collector=client_request_metrics_collector)
-
     # Define Storage Clients
     storage_clients: List[StorageClient] = []
     if config.storage:
@@ -80,6 +74,9 @@ def main_cli() -> None:
 
     # Run Perf Test
     perfrunner.run()
+
+    # Define Report Generator
+    reportgen = ReportGenerator(config=config.report, client_request_metrics_collector=client.collector)
 
     # Generate Reports
     reports = asyncio.run(reportgen.generate_reports())
