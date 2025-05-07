@@ -27,11 +27,10 @@ class SyntheticDataGenerator(DataGenerator):
             self.ioDistribution.input.max,
             self.ioDistribution.input.mean,
             self.ioDistribution.input.std_dev,
-            self.ioDistribution.input.total_count
+            self.ioDistribution.input.total_count,
         )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self.token_ids = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
-
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
@@ -43,7 +42,7 @@ class SyntheticDataGenerator(DataGenerator):
         i = 0
         while True:
             if self.apiType == APIType.Completion:
-                prompt = self.tokenizer.get_tokenizer().decode(self.token_ids[:self.input_lengths[i]])
+                prompt = self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]])
                 yield InferenceData(data=CompletionData(prompt=prompt))
                 i += 1
             else:

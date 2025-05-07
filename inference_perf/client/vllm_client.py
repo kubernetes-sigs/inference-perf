@@ -15,7 +15,7 @@ from inference_perf.datagen import InferenceData
 from inference_perf.config import APIType
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata, RequestMetric
-from typing import Any, Optional, List
+from typing import Any, List
 import aiohttp
 import json
 import time

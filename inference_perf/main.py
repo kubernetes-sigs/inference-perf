@@ -64,7 +64,7 @@ def main_cli() -> None:
                 config.tokenizer.trust_remote_code,
             )
         except Exception as e:
-            raise Exception(f"Tokenizer initialization failed: {e}")
+            raise Exception("Tokenizer initialization failed") from e
 
     # Define Model Server Client
     if config.vllm:
@@ -80,9 +80,9 @@ def main_cli() -> None:
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api, None, None)
         elif config.data.type == DataGenType.Synthetic:
-            datagen = SyntheticDataGenerator(config.vllm.api,
-                                             ioDistribution=IODistribution(input=config.data.input_distribution),
-                                             tokenizer=tokenizer)
+            datagen = SyntheticDataGenerator(
+                config.vllm.api, ioDistribution=IODistribution(input=config.data.input_distribution), tokenizer=tokenizer
+            )
         else:
             datagen = MockDataGenerator(config.vllm.api, None, None)
     else:

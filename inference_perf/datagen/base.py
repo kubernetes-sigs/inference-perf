@@ -55,7 +55,7 @@ class DataGenerator(ABC):
             raise Exception(f"Unsupported API type {apiType}")
 
         if ioDistribution is not None and not self.is_io_distribution_supported():
-            raise Exception(f"IO distribution not supported for this data generator")
+            raise Exception("IO distribution not supported for this data generator")
 
         if tokenizer is not None:
             self.tokenizer = tokenizer

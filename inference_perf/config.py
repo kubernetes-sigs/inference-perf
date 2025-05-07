@@ -29,6 +29,7 @@ class DataGenType(Enum):
     ShareGPT = "shareGPT"
     Synthetic = "synthetic"
 
+
 # Represents the distribution for input prompts and output generations.
 class Distribution(BaseModel):
     min: int = 10
