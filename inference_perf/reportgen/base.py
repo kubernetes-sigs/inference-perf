@@ -48,10 +48,11 @@ class ReportGenerator:
         self.client_request_metrics_collector.record_metric(metric)
 
     async def generate_reports(self, config: ReportConfig) -> List[ReportFile]:
+        print(f"Generating report according to config {config.model_dump_json()}")
         if len(self.client_request_metrics_collector.get_metrics()) == 0:
             print("Report generation failed, no metrics collected")
             return []
-        elif hasattr(config, 'observed') and hasattr(config, 'prometheus'):
+        elif hasattr(config, "observed") and hasattr(config, "prometheus"):
             print("Report generation disabled, skipping report generation")
             return []
         else:

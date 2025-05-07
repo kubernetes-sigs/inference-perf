@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import List
-from inference_perf.client.base import ClientRequestMetricsCollector
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, read_config
