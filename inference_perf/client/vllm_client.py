@@ -62,7 +62,7 @@ class VllmCompletionPromptData(PromptData):
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "prompt_length": get_summarization([success.prompt_len for success in metrics]),
+                "prompt_length": get_summarization([metric.prompt_len for metric in metrics]),
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
             },
             successes={
@@ -123,7 +123,7 @@ class VllmChatCompletionPromptData(PromptData):
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "prompt_length": get_summarization([success.prompt_len for success in metrics]),
+                "prompt_length": get_summarization([metric.prompt_len for metric in metrics]),
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
             },
             successes={
