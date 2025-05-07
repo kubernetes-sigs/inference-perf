@@ -12,17 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from inference_perf.client.metrics import ClientRequestMetric, get_summarization
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import APIType, CustomTokenizerConfig
 from inference_perf.utils import CustomTokenizer
 from .base import (
+    ClientRequestMetric,
     FailedResponseData,
     ModelServerClient,
     PromptData,
     ResponseData,
     ResponsesSummary,
     SuccessfulResponseData,
+    get_summarization,
 )
 from typing import Any, List, Optional
 from aiohttp import ClientSession, ClientResponse

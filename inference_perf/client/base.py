@@ -11,14 +11,64 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import numpy as np
 from abc import ABC, abstractmethod
 from typing import Any, List, Tuple
 
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.client.metrics import ClientRequestMetric
+from inference_perf.config import MetricsConfig, ObservedMetricsReportConfig
+from inference_perf.metrics.base import Metric, MetricsCollector
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+
+def get_summarization(items: List[float]) -> dict[str, Any]:
+    return {
+        "mean": float(np.mean(items)),
+        "min": float(np.min(items)),
+        "p10": float(np.percentile(items, 10)),
+        "p50": float(np.percentile(items, 50)),
+        "p90": float(np.percentile(items, 90)),
+        "max": float(np.max(items)),
+    }
+
+
+class ClientRequestMetric(Metric):
+    """Tracks data for a request across its lifecycle"""
+
+    start_time: float
+    end_time: float
+    request: "PromptData"
+    response: "ResponseData"
+
+
+class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
+    """Responsible for accumulating client request metrics and generating corresponding reports"""
+
+    def __init__(self, config: MetricsConfig) -> None:
+        self.config = config
+        self.metrics: List[ClientRequestMetric] = []
+        pass
+
+    def record_metric(self, metric: ClientRequestMetric) -> None:
+        self.metrics.append(metric)
+
+    def get_metrics(self) -> List[ClientRequestMetric]:
+        return self.metrics
+
+    def get_report(self, config: ObservedMetricsReportConfig) -> dict[str, Any]:
+        report: dict[str, Any] = {}
+        if config.summary:
+            request_metrics = self.get_metrics()
+            # Assumes all requests are of the same type
+            if len(self.get_metrics()) != 0:
+                report["summary"] = (
+                    request_metrics[0].request.get_summary_report_for_request_metrics(request_metrics).model_dump()
+                )
+        if config.per_request:
+            report["per_request"] = [metric.model_dump() for metric in self.get_metrics()]
+        return report
 
 
 class FailedResponseData(BaseModel):
@@ -34,8 +84,6 @@ ResponseData = FailedResponseData | SuccessfulResponseData
 
 
 class ResponsesSummary(BaseModel):
-    """Regardless of the request type, successes and failures should always be categorized separately"""
-
     load_summary: dict[str, Any]
     successes: dict[str, Any]
     failures: dict[str, Any]

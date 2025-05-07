@@ -14,7 +14,7 @@
 import json
 from typing import Any, List
 
-from inference_perf.client.metrics import ClientRequestMetric, ClientRequestMetricsCollector
+from inference_perf.client.base import ClientRequestMetric, ClientRequestMetricsCollector
 from inference_perf.config import ReportConfig
 
 
@@ -59,12 +59,7 @@ class ReportGenerator:
             print("\n\nGenerating Report ..")
             report: dict[str, Any] = {}
             if self.config.observed:
-                observed_report: dict[str, Any] = {}
-                if self.config.observed.summary:
-                    observed_report["summary"] = self.client_request_metrics_collector.get_summary_report()
-                if self.config.observed.per_request:
-                    observed_report["per_request"] = self.client_request_metrics_collector.get_per_request_report()
-                report["observed"] = observed_report
+                report["observed"] = self.client_request_metrics_collector.get_report(config=self.config.observed)
             if self.config.prometheus:
                 prometheus_report: dict[str, Any] = {}
                 if prometheus_report is not None:
