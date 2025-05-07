@@ -107,7 +107,7 @@ class PromptData(ABC, BaseModel):
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
-        pass
+        self.collector = ClientRequestMetricsCollector()
 
     @abstractmethod
     async def process_request(self, data: PromptData, stage_id: int) -> None:

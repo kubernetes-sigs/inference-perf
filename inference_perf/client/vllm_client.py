@@ -150,6 +150,7 @@ class VllmChatCompletionPromptData(PromptData):
 
 class vLLMModelServerClient(ModelServerClient):
     def __init__(self, uri: str, model_name: str, tokenizer: Optional[CustomTokenizerConfig], api_type: APIType) -> None:
+        super().__init__()
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
@@ -169,9 +170,6 @@ class vLLMModelServerClient(ModelServerClient):
                 print("Falling back to usage metrics.")
         else:
             print("Tokenizer path is empty. Falling back to usage metrics.")
-
-    def set_collector(self, collector: ClientRequestMetricsCollector) -> None:
-        self.collector = collector
 
     async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
         payload = prompt_data.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)

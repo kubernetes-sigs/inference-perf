@@ -17,7 +17,7 @@ import asyncio
 
 class MockModelServerClient(ModelServerClient):
     def __init__(self) -> None:
-        pass
+        super().__init__()
 
     async def process_request(self, promptData: PromptData, stage_id: int) -> None:
         print(
