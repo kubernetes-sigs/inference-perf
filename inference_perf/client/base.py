@@ -44,17 +44,17 @@ class ResponsesSummary(BaseModel):
 class PromptData(ABC, BaseModel):
     @abstractmethod
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        """What should the body for an HTTP request contain for this request type"""
+        """Defines the HTTP request body for this request type."""
         raise NotImplementedError
 
     @abstractmethod
     async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
-        """For a given response type, what is the success criteria and what should be reported from successful responses"""
+        """Parses the HTTP response and returns either a successful or failed response object."""
         raise NotImplementedError
 
     @abstractmethod
     def get_summary_report_for_request_metrics(self, responses: List[ClientRequestMetric]) -> ResponsesSummary:
-        """Given a list of responses for this request type, how will these be summarized"""
+        """Generates a summary report from all response metrics with distinct summaries for successes and failures."""
         raise NotImplementedError
 
 

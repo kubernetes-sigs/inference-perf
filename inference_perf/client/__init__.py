@@ -26,10 +26,10 @@ from .vllm_client import (
 __all__ = [
     "ModelServerClient",
     "MockModelServerClient",
-    "vLLMModelServerClient",
-    "ChatMessage",
     "PromptData",
     "ResponseData",
+    "vLLMModelServerClient",
     "VllmChatCompletionPromptData",
+    "ChatMessage",
     "VllmCompletionPromptData",
 ]
