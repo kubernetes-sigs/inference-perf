@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Tuple
 
 from pydantic import BaseModel
-from inference_perf.datagen import VllmPromptData
+from inference_perf.client.vllm_client import VllmPromptData
 from inference_perf.reportgen import ReportGenerator
 
 

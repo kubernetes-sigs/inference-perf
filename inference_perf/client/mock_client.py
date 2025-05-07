@@ -27,7 +27,7 @@ class MockModelServerClient(ModelServerClient):
 
     async def process_request(self, promptData: VllmPromptData, stage_id: int) -> None:
         print(
-            "Processing request - "
+            "Processing mock request - "
             + str(promptData.to_payload(model_name="mock-model", max_tokens=0))
             + " for stage - "
             + str(stage_id)

@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, VllmPromptData, VllmCompletionPromptData, VllmChatCompletionPromptData, ChatMessage
+from inference_perf.client.vllm_client import VllmCompletionPromptData
+from .base import DataGenerator, VllmPromptData
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
