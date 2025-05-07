@@ -17,7 +17,7 @@ from typing import Any, List, Tuple
 
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.config import MetricsConfig, ObservedMetricsReportConfig
+from inference_perf.config import ObservedMetricsReportConfig
 from inference_perf.metrics.base import Metric, MetricsCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -45,12 +45,12 @@ class ClientRequestMetric(Metric):
 class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
-    def __init__(self, config: MetricsConfig) -> None:
-        self.config = config
+    def __init__(self) -> None:
         self.metrics: List[ClientRequestMetric] = []
         pass
 
     def record_metric(self, metric: ClientRequestMetric) -> None:
+        print("recorded metric", metric)
         self.metrics.append(metric)
 
     def get_metrics(self) -> List[ClientRequestMetric]:

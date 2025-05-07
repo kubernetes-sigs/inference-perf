@@ -27,12 +27,10 @@ class MockModelServerClient(ModelServerClient):
             + str(stage_id)
         )
         await asyncio.sleep(3)
-        self.reportgen.collect_request_metric(
-            ClientRequestMetric(
-                stage_id=stage_id,
-                request=promptData,
-                response=SuccessfulResponseData(info={"res": "this is a mock response"}),
-                start_time=1.23,
-                end_time=3.21,
-            )
+        ClientRequestMetric(
+            stage_id=stage_id,
+            request=promptData,
+            response=SuccessfulResponseData(info={"res": "this is a mock response"}),
+            start_time=1.23,
+            end_time=3.21,
         )

@@ -64,7 +64,7 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define collector for client request metrics
-    client_request_metrics_collector = ClientRequestMetricsCollector(config.metrics)
+    client_request_metrics_collector = ClientRequestMetricsCollector()
 
     # Define Report Generator
     reportgen = ReportGenerator(config=config.report, client_request_metrics_collector=client_request_metrics_collector)

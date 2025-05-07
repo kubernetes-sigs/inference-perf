@@ -16,6 +16,7 @@ from inference_perf.config import APIType, CustomTokenizerConfig
 from inference_perf.utils import CustomTokenizer
 from .base import (
     ClientRequestMetric,
+    ClientRequestMetricsCollector,
     FailedResponseData,
     ModelServerClient,
     PromptData,
@@ -153,6 +154,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
         self.tokenizer_available = False
+        self.collector = ClientRequestMetricsCollector()
 
         if tokenizer and tokenizer.pretrained_model_name_or_path:
             try:
@@ -168,6 +170,9 @@ class vLLMModelServerClient(ModelServerClient):
         else:
             print("Tokenizer path is empty. Falling back to usage metrics.")
 
+    def set_collector(self, collector: ClientRequestMetricsCollector) -> None:
+        self.collector = collector
+
     async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
         payload = prompt_data.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
@@ -179,7 +184,7 @@ class vLLMModelServerClient(ModelServerClient):
                         response_data = await prompt_data.process_response(res=response, tokenizer=self.custom_tokenizer)
                         end = time.monotonic()
 
-                        self.reportgen.collect_request_metric(
+                        self.collector.record_metric(
                             ClientRequestMetric(
                                 stage_id=stage_id,
                                 request=prompt_data,
@@ -189,18 +194,22 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
                     else:
-                        ClientRequestMetric(
-                            stage_id=stage_id,
-                            request=prompt_data,
-                            response=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
-                            start_time=start,
-                            end_time=time.monotonic(),
+                        self.collector.crecord_metric(
+                            ClientRequestMetric(
+                                stage_id=stage_id,
+                                request=prompt_data,
+                                response=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
+                                start_time=start,
+                                end_time=time.monotonic(),
+                            )
                         )
             except Exception as e:
-                ClientRequestMetric(
-                    stage_id=stage_id,
-                    request=prompt_data,
-                    response=FailedResponseData(error_msg=str(e), error_type=type(e).__name__),
-                    start_time=start,
-                    end_time=time.monotonic(),
+                self.collector.record_metric(
+                    ClientRequestMetric(
+                        stage_id=stage_id,
+                        request=prompt_data,
+                        response=FailedResponseData(error_msg=str(e), error_type=type(e).__name__),
+                        start_time=start,
+                        end_time=time.monotonic(),
+                    )
                 )
