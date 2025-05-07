@@ -76,10 +76,10 @@ class VllmCompletionPromptData(PromptData):
                 ),
                 "per_token_latency": get_summarization(
                     [
-                        (success.end_time - success.start_time) / success.response.output_len
-                        if success.response.output_len != 0
+                        (metric.end_time - metric.start_time) / float(metric.response.info.get("output_len"))
+                        if metric.response.info.get("output_len") is not None and float(metric.response.info.get("output_len")) != 0
                         else 0
-                        for success in all_successful
+                        for metric in metrics
                     ]
                 ),
             },
