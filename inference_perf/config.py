@@ -38,6 +38,11 @@ class LoadType(Enum):
     POISSON = "poisson"
 
 
+class MetricsClientType(Enum):
+    PROMETHEUS = "prometheus"
+    DEFAULT = "default"
+
+
 class LoadStage(BaseModel):
     rate: int
     duration: int
@@ -66,8 +71,14 @@ class ReportConfig(BaseModel):
     pass
 
 
-class MetricsConfig(BaseModel):
-    url: str
+class PrometheusClientConfig(BaseModel):
+    scrape_interval: Optional[int] = 15
+    url: str = "http://localhost:9090"
+
+
+class MetricsClientConfig(BaseModel):
+    type: MetricsClientType
+    prometheus: Optional[PrometheusClientConfig] = None
 
 
 class VLLMConfig(BaseModel):

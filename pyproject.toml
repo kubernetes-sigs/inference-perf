@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.3.4",
     "types-PyYAML>=6.0.12.20241230",
     "ipykernel>=6.29.5",
+    "types-requests>=2.32.0.20250328",
 ]
 
 [tool.ruff]
