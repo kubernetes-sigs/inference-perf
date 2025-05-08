@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData
+from .base import DataGenerator, PromptData
 from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 
-__all__ = ["DataGenerator", "InferenceData", "MockDataGenerator", "HFShareGPTDataGenerator"]
+__all__ = ["DataGenerator", "PromptData", "MockDataGenerator", "HFShareGPTDataGenerator"]

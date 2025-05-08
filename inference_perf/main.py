@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
-from typing import List
+from typing import List, Optional
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType
+from inference_perf.config import DataGenType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
-from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
+from inference_perf.metrics.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
@@ -76,14 +75,17 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define Metrics Client
-    metrics_client: MetricsClient | None = None
-    if config.metrics_client:
-        if config.metrics_client.type == MetricsClientType.PROMETHEUS and config.metrics_client.prometheus:
-            metrics_client = PrometheusMetricsClient(config=config.metrics_client.prometheus)
+    # Define Metrics Clients
+    prometheus_metrics_client: Optional[PrometheusMetricsCollector] = (
+        PrometheusMetricsCollector(config=config.metrics_client.prometheus)
+        if config.metrics_clietn is not None and config.metrics_client.prometheus
+        else None
+    )
 
     # Define Report Generator
-    reportgen = ReportGenerator(metrics_client)
+    reportgen = ReportGenerator(
+        client_request_metrics_collector=model_server_client.collector, prometheus_metrics_collector=prometheus_metrics_client
+    )
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []

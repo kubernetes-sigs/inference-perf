@@ -13,18 +13,17 @@
 # limitations under the License.
 import json
 import statistics
-from pydantic import BaseModel
-from typing import Any, List
-from inference_perf.metrics import MetricsClient
-from inference_perf.client.base import ModelServerMetrics
-from inference_perf.metrics.base import PerfRuntimeParameters
+from typing import Any, List, Optional
+from inference_perf.client.base import ClientRequestMetricsCollector, ModelServerMetrics
+from inference_perf.config import ReportConfig
+from inference_perf.metrics.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
 
 
 class ReportFile:
     name: str
-    contents: BaseModel
+    contents: dict[str, Any]
 
-    def __init__(self, name: str, contents: BaseModel):
+    def __init__(self, name: str, contents: dict[str, Any]):
         self.name = f"{name}.json"
         self.contents = contents
         self._store_locally()
@@ -39,22 +38,36 @@ class ReportFile:
         return self.name
 
     def get_contents(self) -> dict[str, Any]:
-        return self.contents.model_dump()
+        return self.contents
 
 
 class ReportGenerator:
-    def __init__(self, metrics_client: MetricsClient | None) -> None:
-        self.metrics_client = metrics_client
+    def __init__(
+        self,
+        client_request_metrics_collector: ClientRequestMetricsCollector,
+        prometheus_metrics_collector: Optional[PrometheusMetricsCollector],
+    ) -> None:
+        self.client_request_metrics_collector = client_request_metrics_collector
+        self.prometheus_metrics_collector = prometheus_metrics_collector
 
-    async def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        print("\n\nGenerating Report ..")
-        request_summary = self.report_request_summary(runtime_parameters)
-        metrics_client_summary = self.report_metrics_summary(runtime_parameters)
-
-        return [
-            ReportFile(name="request_summary_report", contents=request_summary),
-            ReportFile(name="metrics_client_report", contents=metrics_client_summary),
-        ]
+    async def generate_reports(self, config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
+        print(f"Generating report according to config {config.model_dump_json()}")
+        if len(self.client_request_metrics_collector.get_metrics()) == 0:
+            print("Report generation failed, no metrics collected")
+            return []
+        elif not hasattr(config, "observed") and not hasattr(config, "prometheus"):
+            print("Report generation disabled, skipping report generation")
+            return []
+        else:
+            print("\n\nGenerating Report ..")
+            report: dict[str, Any] = {}
+            if config.observed:
+                report["observed"] = self.client_request_metrics_collector.get_report(config=config.observed)
+            if config.prometheus:
+                prometheus_report: dict[str, Any] = {}
+                if prometheus_report is not None:
+                    report["prometheus"] = self.report_metrics_summary(runtime_parameters).model_dump()
+            return [ReportFile(name="report", contents=report)] if report else []
 
     def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
         """

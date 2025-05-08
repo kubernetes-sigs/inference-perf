@@ -12,13 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
-from typing import cast
+from typing import Optional, cast
 import requests
-from inference_perf.client.base import ModelServerMetrics, ModelServerPrometheusMetric
+from inference_perf.client.base import ModelServerClient, ModelServerMetrics, ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
-from .base import MetricsClient, PerfRuntimeParameters
+from .base import MetricsCollector
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 5
+
+
+class PerfRuntimeParameters:
+    def __init__(self, start_time: float, duration: float, model_server_client: ModelServerClient) -> None:
+        self.start_time = start_time
+        self.duration = duration
+        self.model_server_client = model_server_client
 
 
 class PrometheusQueryBuilder:
@@ -90,7 +97,7 @@ class PrometheusQueryBuilder:
         return queries[metric_type][query_op]
 
 
-class PrometheusMetricsClient(MetricsClient):
+class PrometheusMetricsCollector(MetricsCollector):
     def __init__(self, config: PrometheusClientConfig) -> None:
         if config:
             self.url = config.url
@@ -109,7 +116,7 @@ class PrometheusMetricsClient(MetricsClient):
         print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")
         time.sleep(wait_time)
 
-    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def get_metrics(self, runtime_parameters: PerfRuntimeParameters) -> Optional[ModelServerMetrics]:
         """
         Collects the summary metrics for the given Perf Benchmark Runtime Parameters.
 
@@ -119,7 +126,7 @@ class PrometheusMetricsClient(MetricsClient):
         Returns:
         A ModelServerMetrics object containing the summary metrics.
         """
-        metrics_summary: ModelServerMetrics = ModelServerMetrics()
+        metrics_summary = {}
         if runtime_parameters is None:
             print("Perf Runtime parameters are not set, skipping metrics collection")
             return None

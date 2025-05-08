@@ -38,11 +38,6 @@ class LoadType(Enum):
     POISSON = "poisson"
 
 
-class MetricsClientType(Enum):
-    PROMETHEUS = "prometheus"
-    DEFAULT = "default"
-
-
 class LoadStage(BaseModel):
     rate: int = 1
     duration: int = 1
@@ -67,8 +62,18 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
-class ReportConfig(BaseModel):
+class ObservedMetricsReportConfig(BaseModel):
+    summary: Optional[bool] = True
+    per_request: Optional[bool] = False
+
+
+class PrometheusMetricsReportConfig(BaseModel):
     pass
+
+
+class ReportConfig(BaseModel):
+    observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
+    prometheus: Optional[PrometheusMetricsReportConfig] = None
 
 
 class PrometheusClientConfig(BaseModel):
@@ -77,7 +82,6 @@ class PrometheusClientConfig(BaseModel):
 
 
 class MetricsClientConfig(BaseModel):
-    type: MetricsClientType
     prometheus: Optional[PrometheusClientConfig] = None
 
 

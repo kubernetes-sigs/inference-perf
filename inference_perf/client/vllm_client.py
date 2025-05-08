@@ -11,14 +11,142 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.datagen import InferenceData
+import numpy as np
+from pydantic import BaseModel
+from inference_perf.datagen import PromptData
 from inference_perf.config import APIType, CustomTokenizerConfig
+from inference_perf.datagen.base import FailedResponseData, ResponseData, ResponsesSummary
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata, RequestMetric
+from .base import (
+    ClientRequestMetric,
+    ModelServerClient,
+    ModelServerPrometheusMetric,
+    PrometheusMetricMetadata,
+    RequestMetric,
+    get_summarization,
+)
 from typing import Any, Optional, List
 import aiohttp
 import json
 import time
+
+
+class VllmCompletionPromptData(PromptData):
+    prompt: str
+
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "prompt": self.prompt,
+            "max_tokens": max_tokens,
+        }
+
+    async def process_response(self, res: aiohttp.ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+        content = await res.json()
+        choices = content.get("choices", [])
+        prompt_len = tokenizer.count_tokens(self.prompt)
+        output_text = choices[0].get("text", "")
+        output_len = tokenizer.count_tokens(output_text)
+        return ResponseData(
+            info={
+                "prompt": self.prompt,
+                "prompt_len": prompt_len,
+                "output_text": output_text,
+                "output_len": output_len,
+            }
+        )
+
+    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
+        all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
+
+        return ResponsesSummary(
+            load_summary={
+                "count": len(metrics),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
+            },
+            successes={
+                "count": len(all_successful),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
+                "prompt_len": get_summarization([success.response.info.get("prompt_len") for success in all_successful]).model_dump(),
+                "output_len": get_summarization(
+                    [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
+                ).model_dump(),
+                "per_token_latency": get_summarization(
+                    [
+                        (metric.end_time - metric.start_time) / float(metric.response.info.get("output_len"))
+                        if isinstance(metric.response, ResponseData)
+                        and metric.response.info.get("output_len") is not None
+                        and float(metric.response.info.get("output_len")) != 0
+                        else 0
+                        for metric in all_successful
+                    ]
+                ).model_dump(),
+            },
+            failures={
+                "count": len(all_failed),
+                # need to filter to only the failures, currently dont do that, same for successes
+                "time_per_request": get_summarization([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump(),
+            },
+        )
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class VllmChatCompletionPromptData(PromptData):
+    messages: List[ChatMessage]
+
+    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+        return {
+            "model": model_name,
+            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+            "max_tokens": max_tokens,
+        }
+
+    async def process_response(self, res: aiohttp.ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
+        content = await res.json()
+        choices = content.get("choices", [])
+        output_text = choices[0].get("message", {}).get("content", "")
+        output_len = tokenizer.count_tokens(output_text)
+        return ResponseData(
+            info={
+                "output_text": output_text,
+                "output_len": output_len,
+            }
+        )
+
+    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
+        all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
+
+        return ResponsesSummary(
+            load_summary={
+                "count": len(metrics),
+                "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
+            },
+            successes={
+                "count": len(all_successful),
+                "time_per_request": get_summarization([(successful.end_time - successful.start_time) for successful in all_successful]).model_dump(),
+                "output_len": get_summarization(
+                    [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
+                ).model_dump(),
+                "per_token_latency": get_summarization(
+                    [
+                        (success.end_time - success.start_time) / success.response.output_len
+                        if success.response.output_len != 0
+                        else 0
+                        for success in all_successful
+                    ]
+                ).model_dump(),
+            },
+            failures={
+                "count": len(all_failed),
+                "time_per_request": get_summarization([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump(),
+            },
+        )
 
 
 class vLLMModelServerClient(ModelServerClient):
@@ -103,7 +231,7 @@ class vLLMModelServerClient(ModelServerClient):
             ),
         }
 
-    def _create_payload(self, payload: InferenceData) -> dict[str, Any]:
+    def _create_payload(self, payload: PromptData) -> dict[str, Any]:
         if payload.type == APIType.Completion:
             return {
                 "model": self.model_name,
@@ -121,7 +249,7 @@ class vLLMModelServerClient(ModelServerClient):
             }
         raise Exception("api type not supported - has to be completions or chat completions")
 
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+    async def process_request(self, data: PromptData, stage_id: int) -> None:
         payload = self._create_payload(data)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:

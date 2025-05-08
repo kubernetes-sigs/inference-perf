@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData, CompletionData, ChatCompletionData, ChatMessage
+from .base import DataGenerator, PromptData, CompletionData, ChatCompletionData, ChatMessage
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
@@ -38,7 +38,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[PromptData, None, None]:
         if self.sharegpt_dataset is not None:
             while True:
                 data = next(self.sharegpt_dataset)
@@ -55,22 +55,16 @@ class HFShareGPTDataGenerator(DataGenerator):
                         prompt = data[self.data_key][0].get(self.content_key)
                         if not prompt:
                             continue
-                        yield InferenceData(
-                            type=APIType.Completion,
-                            data=CompletionData(prompt=prompt),
-                        )
+                        yield CompletionData(prompt=prompt)
                     except (KeyError, TypeError) as e:
                         print(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.apiType == APIType.Chat:
-                    yield InferenceData(
-                        type=APIType.Chat,
-                        chat=ChatCompletionData(
-                            messages=[
-                                ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
-                                for conversation in data[self.data_key]
-                            ]
-                        ),
+                    yield ChatCompletionData(
+                        messages=[
+                            ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
+                            for conversation in data[self.data_key]
+                        ]
                     )
                 else:
                     raise Exception("Unsupported API type")

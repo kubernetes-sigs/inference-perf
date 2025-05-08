@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import ModelServerClient
-from .mock_client import MockModelServerClient
 from .vllm_client import vLLMModelServerClient
 
 
-__all__ = ["ModelServerClient", "MockModelServerClient", "vLLMModelServerClient"]
+__all__ = ["ModelServerClient", "vLLMModelServerClient"]
