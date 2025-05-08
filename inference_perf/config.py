@@ -38,6 +38,11 @@ class LoadType(Enum):
     POISSON = "poisson"
 
 
+class MetricsClientType(Enum):
+    PROMETHEUS = "prometheus"
+    DEFAULT = "default"
+
+
 class LoadStage(BaseModel):
     rate: int
     duration: int
@@ -67,7 +72,7 @@ class ReportConfig(BaseModel):
 
 
 class MetricsConfig(BaseModel):
-    pass
+    url: str
 
 
 class VLLMConfig(BaseModel):
@@ -83,10 +88,10 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    data: DataConfig = DataConfig()
-    load: LoadConfig = LoadConfig()
-    report: ReportConfig = ReportConfig()
-    metrics_client: MetricsConfig = MetricsConfig()
+    data: Optional[DataConfig] = DataConfig()
+    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
+    report: Optional[ReportConfig] = ReportConfig()
+    metrics: Optional[MetricsConfig] = MetricsConfig(url="")
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
