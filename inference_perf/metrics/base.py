@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from pydantic import BaseModel
+from inference_perf.client.base import ModelServerClient, ModelServerMetrics
 
 
-class MetricsSummary(BaseModel):
-    total_requests: int
-    avg_prompt_tokens: float
-    avg_output_tokens: float
-    avg_time_per_request: float
+class PerfRuntimeParameters:
+    def __init__(self, start_time: float, duration: float, model_server_client: ModelServerClient) -> None:
+        self.start_time = start_time
+        self.duration = duration
+        self.model_server_client = model_server_client
 
 
 class MetricsClient(ABC):
@@ -28,5 +28,9 @@ class MetricsClient(ABC):
         pass
 
     @abstractmethod
-    def collect_metrics_summary(self) -> MetricsSummary | None:
+    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def wait(self) -> None:
         raise NotImplementedError
