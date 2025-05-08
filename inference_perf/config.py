@@ -123,7 +123,7 @@ def read_config() -> Config:
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
-        default_cfg = Config().model_dump()
+        default_cfg = Config().model_dump(mode="json")
         merged_cfg = deep_merge(default_cfg, cfg)
 
         print(f"Benchmarking with the following config:\n{yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)}")
