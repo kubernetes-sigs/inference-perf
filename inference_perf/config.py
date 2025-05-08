@@ -13,7 +13,7 @@
 # limitations under the License.
 from datetime import datetime
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
@@ -67,7 +67,7 @@ class ReportConfig(BaseModel):
 
 
 class MetricsConfig(BaseModel):
-    url: str
+    pass
 
 
 class VLLMConfig(BaseModel):
@@ -86,7 +86,7 @@ class Config(BaseModel):
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     report: ReportConfig = ReportConfig()
-    metrics: MetricsConfig = MetricsConfig()
+    metrics_client: MetricsConfig = MetricsConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
