@@ -13,35 +13,12 @@
 # limitations under the License.
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.client.base import ClientRequestMetric
+from inference_perf.client.base import ClientRequestMetric, ResponseData
 from inference_perf.config import APIType
 from abc import ABC, abstractmethod
-from typing import Any, Generator, Optional, List
+from typing import Any, Generator, List
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-
-
-class CompletionData(BaseModel):
-    prompt: str
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionData(BaseModel):
-    messages: List[ChatMessage]
-
-
-class FailedResponseData(BaseModel):
-    error_type: str
-    error_msg: str
-
-
-class ResponseData(BaseModel):
-    info: dict[str, Any]
-    error: Optional[FailedResponseData]
 
 
 class ResponsesSummary(BaseModel):

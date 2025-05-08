@@ -14,6 +14,7 @@
 from abc import ABC, abstractmethod
 from typing import Generic, List, Optional, TypeVar
 
+import numpy as np
 from pydantic import BaseModel
 from build.lib.inference_perf.config import MetricsConfig
 

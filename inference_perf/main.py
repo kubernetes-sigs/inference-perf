@@ -17,7 +17,7 @@ from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
+from inference_perf.client.client_interfaces.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
@@ -39,9 +39,6 @@ class InferencePerfRunner:
 
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
-
-    def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        return asyncio.run(self.reportgen.generate_reports(runtime_parameters=runtime_parameters))
 
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
@@ -78,7 +75,7 @@ def main_cli() -> None:
     # Define Metrics Clients
     prometheus_metrics_client: Optional[PrometheusMetricsCollector] = (
         PrometheusMetricsCollector(config=config.metrics_client.prometheus)
-        if config.metrics_clietn is not None and config.metrics_client.prometheus
+        if config.metrics_client is not None and config.metrics_client.prometheus is not None
         else None
     )
 
@@ -105,7 +102,11 @@ def main_cli() -> None:
     duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Report after the tests
-    reports = perfrunner.generate_reports(PerfRuntimeParameters(start_time, duration, model_server_client))
+    reports = asyncio.run(
+        reportgen.generate_reports(
+            config=config.report, runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client)
+        )
+    )
 
     # Save Reports
     perfrunner.save_reports(reports=reports)

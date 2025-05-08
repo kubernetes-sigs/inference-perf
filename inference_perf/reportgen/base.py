@@ -16,7 +16,7 @@ import statistics
 from typing import Any, List, Optional
 from inference_perf.client.base import ClientRequestMetricsCollector, ModelServerMetrics
 from inference_perf.config import ReportConfig
-from inference_perf.metrics.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
+from inference_perf.client.client_interfaces.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
 
 
 class ReportFile:

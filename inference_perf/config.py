@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 from argparse import ArgumentParser
 from enum import Enum
@@ -77,8 +77,8 @@ class ReportConfig(BaseModel):
 
 
 class PrometheusClientConfig(BaseModel):
-    scrape_interval: Optional[int] = 15
-    url: str = "http://localhost:9090"
+    scrape_interval: int = 15
+    url: HttpUrl = "http://localhost:9090"
 
 
 class MetricsClientConfig(BaseModel):

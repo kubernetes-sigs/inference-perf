@@ -12,27 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, List, Tuple, TypedDict
+from typing import Any, List, Optional, Tuple, TypedDict
 
 import numpy as np
 from pydantic import BaseModel
 from build.lib.inference_perf.reportgen.base import RequestMetric
 from inference_perf.config import ObservedMetricsReportConfig
 from inference_perf.datagen import PromptData
-from inference_perf.datagen.base import ResponseData
 from inference_perf.metrics.base import Metric, MetricsCollector
 
 
-class MetricsStatisticalSummary(BaseModel):
-    mean: float
-    min: float
-    p10: float
-    p50: float
-    p90: float
-    max: float
+class FailedResponseData(BaseModel):
+    error_type: str
+    error_msg: str
 
-def get_summarization(items: List[float]) -> MetricsStatisticalSummary:
-    return MetricsStatisticalSummary(
+
+class ResponseData(BaseModel):
+    info: dict[str, Any]
+    error: Optional[FailedResponseData]
+
+
+class ClientRequestMetric(Metric):
+    """Tracks data for a request across its lifecycle"""
+    start_time: float
+    end_time: float
+    request: "PromptData"
+    response: "ResponseData"
+
+class ClientRequestMetricsStatisticalSummary(BaseModel):
+    mean: Optional[float]
+    min: Optional[float]
+    p10: Optional[float]
+    p50: Optional[float]
+    p90: Optional[float]
+    max: Optional[float]
+
+
+def get_summarization(items: List[float]) -> ClientRequestMetricsStatisticalSummary:
+    return ClientRequestMetricsStatisticalSummary(
         mean=float(np.mean(items)),
         min=float(np.min(items)),
         p10=float(np.percentile(items, 10)),
@@ -40,16 +57,6 @@ def get_summarization(items: List[float]) -> MetricsStatisticalSummary:
         p90=float(np.percentile(items, 90)),
         max=float(np.max(items)),
     )
-
-
-class ClientRequestMetric(Metric):
-    """Tracks data for a request across its lifecycle"""
-
-    start_time: float
-    end_time: float
-    request: "PromptData"
-    response: "ResponseData"
-
 
 class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
@@ -79,9 +86,9 @@ class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
 
 
 class ModelServerPrometheusMetric:
-    def __init__(self, name: str, op: str, type: str, filters: str) -> None:
+    def __init__(self, name: str, ops: List[str], type: str, filters: str) -> None:
         self.name = name
-        self.op = op
+        self.ops = ops
         self.type = type
         self.filters = filters
 
@@ -113,36 +120,6 @@ class ModelServerMetrics(BaseModel):
     avg_queue_length: int = 0
 
 
-# PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
-# and the filters to be applied to them.
-# This is used to generate Prometheus query for the metrics.
-class PrometheusMetricMetadata(TypedDict):
-    # Throughput
-    prompt_tokens_per_second: ModelServerPrometheusMetric
-    output_tokens_per_second: ModelServerPrometheusMetric
-    requests_per_second: ModelServerPrometheusMetric
-
-    # Latency
-    avg_request_latency: ModelServerPrometheusMetric
-    median_request_latency: ModelServerPrometheusMetric
-    p90_request_latency: ModelServerPrometheusMetric
-    p99_request_latency: ModelServerPrometheusMetric
-    avg_time_to_first_token: ModelServerPrometheusMetric
-    median_time_to_first_token: ModelServerPrometheusMetric
-    p90_time_to_first_token: ModelServerPrometheusMetric
-    p99_time_to_first_token: ModelServerPrometheusMetric
-    avg_time_per_output_token: ModelServerPrometheusMetric
-    median_time_per_output_token: ModelServerPrometheusMetric
-    p90_time_per_output_token: ModelServerPrometheusMetric
-    p99_time_per_output_token: ModelServerPrometheusMetric
-
-    # Request
-    total_requests: ModelServerPrometheusMetric
-    avg_prompt_tokens: ModelServerPrometheusMetric
-    avg_output_tokens: ModelServerPrometheusMetric
-    avg_queue_length: ModelServerPrometheusMetric
-
-
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
@@ -155,9 +132,4 @@ class ModelServerClient(ABC):
 
     @abstractmethod
     def get_request_metrics(self) -> List[RequestMetric]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
-        # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError
