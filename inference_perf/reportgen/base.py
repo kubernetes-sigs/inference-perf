@@ -15,12 +15,8 @@ import json
 import statistics
 from pydantic import BaseModel
 from typing import Any, List
-from inference_perf.metrics import MetricsClient, MetricsSummary
-from abc import ABC, abstractmethod
-import statistics
-from typing import Tuple
-from inference_perf.client.base import ModelServerMetrics
 from inference_perf.metrics import MetricsClient
+from inference_perf.client.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
 
 
@@ -50,14 +46,15 @@ class ReportGenerator:
     def __init__(self, metrics_client: MetricsClient | None) -> None:
         self.metrics_client = metrics_client
 
-
     async def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
         print("\n\nGenerating Report ..")
         request_summary = self.report_request_summary(runtime_parameters)
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)
 
-
-        return [ReportFile(name="request_summary_report", contents=request_summary), ReportFile(name="metrics_client_report", contents=metrics_client_summary)]
+        return [
+            ReportFile(name="request_summary_report", contents=request_summary),
+            ReportFile(name="metrics_client_report", contents=metrics_client_summary),
+        ]
 
     def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
         """
@@ -115,15 +112,16 @@ class ReportGenerator:
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
         """
-        metric_client_summary = ModelServerMetrics()
+        metrics_client_summary = ModelServerMetrics()
         if self.metrics_client is not None:
             print("-" * 50)
             print("Metrics Client Summary")
             print("-" * 50)
-            metric_client_summary = self.metrics_client.collect_model_server_metrics(runtime_parameters)
-            if metric_client_summary is not None:
-                for field_name, value in metric_client_summary:
+            collected_metrics = self.metrics_client.collect_model_server_metrics(runtime_parameters)
+            if collected_metrics is not None:
+                metrics_client_summary = collected_metrics
+                for field_name, value in metrics_client_summary:
                     print(f"{field_name}: {value}")
             else:
                 print("Report generation failed - no metrics collected by metrics client")
-        return metric_client_summary
+        return metrics_client_summary
