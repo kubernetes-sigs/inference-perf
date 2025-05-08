@@ -12,28 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
+from typing import List
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
-from inference_perf.reportgen import ReportGenerator, MockReportGenerator
+from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
+from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
 import asyncio
 
 
 class InferencePerfRunner:
-    def __init__(self, client: ModelServerClient, loadgen: LoadGenerator, reportgen: ReportGenerator) -> None:
+    def __init__(
+        self,
+        client: ModelServerClient,
+        loadgen: LoadGenerator,
+        reportgen: ReportGenerator,
+        storage_clients: List[StorageClient],
+    ) -> None:
         self.client = client
         self.loadgen = loadgen
         self.reportgen = reportgen
+        self.storage_clients = storage_clients
 
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
-        asyncio.run(self.reportgen.generate_report(runtime_parameters=runtime_parameters))
+    def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
+        return asyncio.run(self.reportgen.generate_reports(runtime_parameters=runtime_parameters))
+
+    def save_reports(self, reports: List[ReportFile]) -> None:
+        for storage_client in self.storage_clients:
+            storage_client.save_report(reports)
 
 
 def main_cli() -> None:
@@ -70,13 +83,16 @@ def main_cli() -> None:
             metrics_client = PrometheusMetricsClient(config=config.metrics_client.prometheus)
 
     # Define Report Generator
-    if config.report:
-        reportgen = MockReportGenerator(metrics_client)
-    else:
-        raise Exception("report config missing")
+    reportgen = ReportGenerator(metrics_client)
+
+    # Define Storage Clients
+    storage_clients: List[StorageClient] = []
+    if config.storage:
+        if config.storage.google_cloud_storage:
+            storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen)
+    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
     start_time = time.time()
 
@@ -86,8 +102,11 @@ def main_cli() -> None:
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
-    # Generate Report after the test
-    perfrunner.generate_report(PerfRuntimeParameters(start_time, duration, model_server_client))
+    # Generate Report after the tests
+    reports = perfrunner.generate_reports(PerfRuntimeParameters(start_time, duration, model_server_client))
+
+    # Save Reports
+    perfrunner.save_reports(reports=reports)
 
 
 if __name__ == "__main__":

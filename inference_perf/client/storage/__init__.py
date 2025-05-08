@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ReportGenerator, ReportFile
+from .base import StorageClient
+from .gcs import GoogleCloudStorageClient
 
 
-__all__ = ["ReportGenerator", "ReportGenerator", "ReportFile"]
+__all__ = ["StorageClient", "GoogleCloudStorageClient"]

@@ -11,16 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.metrics.base import PerfRuntimeParameters
-from .base import ReportGenerator
-from inference_perf.metrics import MetricsClient
+from abc import ABC, abstractmethod
+from typing import List
+from inference_perf.config import StorageConfigBase
+from inference_perf.reportgen import ReportFile
 
 
-class MockReportGenerator(ReportGenerator):
-    def __init__(self, metrics_client: MetricsClient | None) -> None:
-        super().__init__(metrics_client=metrics_client)
+class StorageClient(ABC):
+    def __init__(self, config: StorageConfigBase) -> None:
+        self.config = config
+        print(f"Report files will be stored at: {self.config.path}")
 
-    async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
-        print("\n\nGenerating Report ..")
-        super().report_request_summary(runtime_parameters)
-        super().report_metrics_summary(runtime_parameters)
+    @abstractmethod
+    def save_report(self, reports: List[ReportFile]) -> None:
+        raise NotImplementedError()

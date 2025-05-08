@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional, List
 from argparse import ArgumentParser
@@ -53,8 +54,21 @@ class LoadConfig(BaseModel):
     stages: List[LoadStage]
 
 
+class StorageConfigBase(BaseModel):
+    path: str = f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    report_file_prefix: Optional[str] = None
+
+
+class GoogleCloudStorageConfig(StorageConfigBase):
+    bucket_name: str
+
+
+class StorageConfig(BaseModel):
+    google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
+
+
 class ReportConfig(BaseModel):
-    name: str
+    pass
 
 
 class PrometheusClientConfig(BaseModel):
@@ -82,8 +96,9 @@ class CustomTokenizerConfig(BaseModel):
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
-    report: Optional[ReportConfig] = ReportConfig(name="")
+    report: Optional[ReportConfig] = ReportConfig()
     metrics_client: Optional[MetricsClientConfig] = None
+    storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
 

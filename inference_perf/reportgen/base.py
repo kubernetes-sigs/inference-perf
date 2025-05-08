@@ -11,6 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
+import statistics
+from pydantic import BaseModel
+from typing import Any, List
+from inference_perf.metrics import MetricsClient, MetricsSummary
 from abc import ABC, abstractmethod
 import statistics
 from typing import Tuple
@@ -19,23 +24,49 @@ from inference_perf.metrics import MetricsClient
 from inference_perf.metrics.base import PerfRuntimeParameters
 
 
-class ReportGenerator(ABC):
-    @abstractmethod
-    def __init__(self, metrics_client: MetricsClient | None, *args: Tuple[int, ...]) -> None:
+class ReportFile:
+    name: str
+    contents: BaseModel
+
+    def __init__(self, name: str, contents: BaseModel):
+        self.name = f"{name}.json"
+        self.contents = contents
+        self._store_locally()
+
+    def _store_locally(self) -> None:
+        filename = self.get_filename()
+        contents = self.get_contents()
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(json.dumps(contents, indent=2))
+
+    def get_filename(self) -> str:
+        return self.name
+
+    def get_contents(self) -> dict[str, Any]:
+        return self.contents.model_dump()
+
+
+class ReportGenerator:
+    def __init__(self, metrics_client: MetricsClient | None) -> None:
         self.metrics_client = metrics_client
-        pass
 
-    @abstractmethod
-    async def generate_report(self, runtime_parameters: PerfRuntimeParameters) -> None:
-        raise NotImplementedError
 
-    def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> None:
+    async def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
+        print("\n\nGenerating Report ..")
+        request_summary = self.report_request_summary(runtime_parameters)
+        metrics_client_summary = self.report_metrics_summary(runtime_parameters)
+
+
+        return [ReportFile(name="request_summary_report", contents=request_summary), ReportFile(name="metrics_client_report", contents=metrics_client_summary)]
+
+    def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
         """
         report request metrics collected by the model server client during the run.
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
         """
         request_metrics = runtime_parameters.model_server_client.get_request_metrics()
+        request_summary = ModelServerMetrics()
         if len(request_metrics) > 0:
             total_prompt_tokens = sum([x.prompt_tokens for x in request_metrics])
             total_output_tokens = sum([x.output_tokens for x in request_metrics])
@@ -76,13 +107,15 @@ class ReportGenerator(ABC):
                 print(f"{field_name}: {value}")
         else:
             print("Report generation failed - no request metrics collected")
+        return request_summary
 
-    def report_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> None:
+    def report_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
         """
         Report summary of the metrics collected by the metrics client during the run.
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
         """
+        metric_client_summary = ModelServerMetrics()
         if self.metrics_client is not None:
             print("-" * 50)
             print("Metrics Client Summary")
@@ -93,3 +126,4 @@ class ReportGenerator(ABC):
                     print(f"{field_name}: {value}")
             else:
                 print("Report generation failed - no metrics collected by metrics client")
+        return metric_client_summary
