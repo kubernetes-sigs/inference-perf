@@ -16,8 +16,8 @@ from inference_perf.client.base import ModelServerClient, ModelServerMetrics
 
 
 class PerfRuntimeParameters:
-    def __init__(self, eval_time: float, duration: float, model_server_client: ModelServerClient) -> None:
-        self.eval_time = eval_time
+    def __init__(self, start_time: float, duration: float, model_server_client: ModelServerClient) -> None:
+        self.start_time = start_time
         self.duration = duration
         self.model_server_client = model_server_client
 

@@ -124,9 +124,14 @@ class PrometheusMetricsClient(MetricsClient):
             print("Perf Runtime parameters are not set, skipping metrics collection")
             return None
 
+        # Wait for the Prometheus server to scrape the metrics
+        # We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
+        # This is to ensure that the metrics are collected before we query them
+        self.wait()
+
         # Get the duration and model server client from the runtime parameters
-        eval_time = runtime_parameters.eval_time
-        duration = runtime_parameters.duration
+        query_eval_time = time.time()
+        query_duration = query_eval_time - runtime_parameters.start_time
         model_server_client = runtime_parameters.model_server_client
 
         # Get the engine and model from the model server client
@@ -151,14 +156,14 @@ class PrometheusMetricsClient(MetricsClient):
                 )
                 continue
 
-            query_builder = PrometheusQueryBuilder(summary_metric_metadata, duration)
+            query_builder = PrometheusQueryBuilder(summary_metric_metadata, query_duration)
             query = query_builder.build_query()
             if not query:
                 print("No query found for metric: %s. Skipping metric." % (summary_metric_name))
                 continue
 
             # Execute the query and get the result
-            result = self.execute_query(query, str(eval_time))
+            result = self.execute_query(query, str(query_eval_time))
             if result is None:
                 print("Error executing query: %s" % (query))
                 continue

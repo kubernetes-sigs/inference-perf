@@ -83,16 +83,11 @@ def main_cli() -> None:
     # Run Perf Test
     perfrunner.run()
 
-    # Wait for metrics collection
-    if metrics_client is not None:
-        # Wait for the metrics to be ready
-        metrics_client.wait()
-
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Report after the test
-    perfrunner.generate_report(PerfRuntimeParameters(end_time, duration, model_server_client))
+    perfrunner.generate_report(PerfRuntimeParameters(start_time, duration, model_server_client))
 
 
 if __name__ == "__main__":
