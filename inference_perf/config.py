@@ -50,7 +50,7 @@ class LoadStage(BaseModel):
 
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
-    interval: Optional[float] = 1.0
+    interval: float = 1.0
     stages: List[LoadStage] = []
 
 
@@ -95,7 +95,7 @@ class CustomTokenizerConfig(BaseModel):
 
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
+    load: Optional[LoadConfig] = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig()
     metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
