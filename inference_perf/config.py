@@ -94,8 +94,8 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig()
+    data: DataConfig = DataConfig()
+    load: LoadConfig = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig()
     metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
