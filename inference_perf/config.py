@@ -125,5 +125,7 @@ def read_config() -> Config:
 
         default_cfg = Config().model_dump()
         merged_cfg = deep_merge(default_cfg, cfg)
+
+        print(f"Benchmarking with the following config:\n{yaml.dump(merged_cfg.model_dump(), sort_keys=False, default_flow_style=False)}")
         return Config(**merged_cfg)
     return Config()
