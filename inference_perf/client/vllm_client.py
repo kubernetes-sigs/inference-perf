@@ -87,6 +87,7 @@ class VllmCompletionPromptData(PromptData):
             },
             failures={
                 "count": len(all_failed),
+                # need to filter to only the failures, currently dont do that, same for successes
                 "time_per_request": get_summarization([(metric.end_time - metric.start_time) for metric in metrics]),
             },
         )
