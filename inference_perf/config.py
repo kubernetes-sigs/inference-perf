@@ -39,14 +39,14 @@ class LoadType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: int = 1
-    duration: int = 1
+    rate: int
+    duration: int
 
 
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: Optional[float] = 1.0
-    stages: List[LoadStage]
+    stages: List[LoadStage] = []
 
 
 class StorageConfigBase(BaseModel):
@@ -83,13 +83,22 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
-    report: Optional[ReportConfig] = ReportConfig()
-    metrics: Optional[MetricsConfig] = MetricsConfig(url="")
+    data: DataConfig = DataConfig()
+    load: LoadConfig = LoadConfig()
+    report: ReportConfig = ReportConfig()
+    metrics: MetricsConfig = MetricsConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
 
 def read_config() -> Config:
@@ -99,10 +108,11 @@ def read_config() -> Config:
 
     args = parser.parse_args()
     if args.config_file:
-        print("Using configuration from: % s" % args.config_file)
+        print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
-        return Config(**cfg)
-
+        default_cfg = Config().model_dump()
+        merged_cfg = deep_merge(default_cfg, cfg)
+        return Config(**merged_cfg)
     return Config()
