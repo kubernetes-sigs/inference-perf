@@ -71,8 +71,14 @@ class ReportConfig(BaseModel):
     pass
 
 
-class MetricsConfig(BaseModel):
-    url: str
+class PrometheusClientConfig(BaseModel):
+    scrape_interval: int = 15
+    url: str = "http://localhost:9090"
+
+
+class MetricsClientConfig(BaseModel):
+    type: MetricsClientType
+    prometheus: Optional[PrometheusClientConfig] = None
 
 
 class VLLMConfig(BaseModel):
@@ -91,7 +97,7 @@ class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
     report: Optional[ReportConfig] = ReportConfig()
-    metrics: Optional[MetricsConfig] = MetricsConfig(url="")
+    metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
