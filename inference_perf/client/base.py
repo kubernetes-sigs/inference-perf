@@ -12,88 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple
+from typing import Tuple
 
-import numpy as np
-from pydantic import BaseModel
-from inference_perf.config import ObservedMetricsReportConfig
 from inference_perf.datagen import LlmPrompt
-from inference_perf.metrics.base import Metric, MetricCollector
-
-
-class FailedResponseData(BaseModel):
-    error_type: str
-    error_msg: str
-
-
-class ResponseData(BaseModel):
-    info: dict[str, Any]
-    error: Optional[FailedResponseData]
-
-
-class ClientRequestMetric(Metric):
-    """Tracks data for a request across its lifecycle"""
-
-    start_time: float
-    end_time: float
-    request: LlmPrompt
-    response: "ResponseData"
-
-    async def to_report(self, duration: float) -> dict[str, Any]:
-        return self.model_dump()
-
-
-class ClientRequestMetricsStatisticalSummary(BaseModel):
-    mean: Optional[float]
-    min: Optional[float]
-    p10: Optional[float]
-    p50: Optional[float]
-    p90: Optional[float]
-    max: Optional[float]
-
-
-def summarize(items: List[float]) -> ClientRequestMetricsStatisticalSummary:
-    return ClientRequestMetricsStatisticalSummary(
-        mean=float(np.mean(items)),
-        min=float(np.min(items)),
-        p10=float(np.percentile(items, 10)),
-        p50=float(np.percentile(items, 50)),
-        p90=float(np.percentile(items, 90)),
-        max=float(np.max(items)),
-    )
-
-
-class ClientRequestMetricsCollector(MetricCollector[ClientRequestMetric]):
-    """Responsible for accumulating client request metrics and generating corresponding reports"""
-
-    def __init__(self) -> None:
-        self.metrics: List[ClientRequestMetric] = []
-        pass
-
-    def record_metric(self, metric: ClientRequestMetric) -> None:
-        self.metrics.append(metric)
-
-    def list_metrics(self) -> List[ClientRequestMetric]:
-        return self.metrics
-
-    async def to_report(self, report_config: ObservedMetricsReportConfig, duration: float) -> dict[str, Any]:
-        report: dict[str, Any] = {}
-        if report_config.summary:
-            request_metrics = self.list_metrics()
-            if len(self.list_metrics()) != 0:
-                report["summary"] = (
-                    # Assumes all requests are of the same type
-                    request_metrics[0].request.summarize_requests(request_metrics).model_dump()
-                )
-        if report_config.per_request:
-            report["per_request"] = [metric.model_dump() for metric in self.list_metrics()]
-        return report
+from inference_perf.datagen.base import PromptMetricsCollector
 
 
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
-        self.collector = ClientRequestMetricsCollector()
+        self.collector = PromptMetricsCollector()
         pass
 
     @abstractmethod

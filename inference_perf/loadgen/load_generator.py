@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
-from inference_perf.datagen import DataGenerator
+from inference_perf.datagen import PromptGenerator
 from inference_perf.client import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
 from asyncio import TaskGroup, sleep
@@ -20,7 +20,7 @@ import time
 
 
 class LoadGenerator:
-    def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+    def __init__(self, datagen: PromptGenerator, load_config: LoadConfig) -> None:
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type

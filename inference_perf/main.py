@@ -15,7 +15,7 @@ import time
 from typing import List
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
-from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
+from inference_perf.datagen import PromptGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
@@ -55,7 +55,7 @@ def main_cli() -> None:
 
     # Define DataGenerator
     if config.data:
-        datagen: DataGenerator
+        datagen: PromptGenerator
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
         else:

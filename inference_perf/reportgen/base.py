@@ -15,9 +15,9 @@ import json
 from typing import Any, List, Optional
 
 from pydantic import BaseModel
-from inference_perf.client.base import ClientRequestMetricsCollector
-from inference_perf.client.client_interfaces.prometheus.prometheus import PrometheusMetricsCollector
+from inference_perf.client.client_interfaces.prometheus.base import PrometheusMetricsCollector
 from inference_perf.config import ReportConfig
+from inference_perf.datagen.base import PromptMetricsCollector
 
 
 class ReportFile:
@@ -43,7 +43,7 @@ class ReportFile:
 
 
 class ReportGenerator(BaseModel):
-    client_request_metrics_collector: ClientRequestMetricsCollector
+    client_request_metrics_collector: PromptMetricsCollector
     prometheus_metrics_collector: Optional[PrometheusMetricsCollector]
 
     async def generate_reports(self, config: ReportConfig, duration: float) -> List[ReportFile]:
@@ -56,11 +56,11 @@ class ReportGenerator(BaseModel):
 
             if (
                 self.client_request_metrics_collector is not None
-                and config.observed
+                and config.prompt
                 and len(self.client_request_metrics_collector.list_metrics()) != 0
             ):
                 report["observed"] = self.client_request_metrics_collector.to_report(
-                    report_config=config.observed, duration=duration
+                    report_config=config.prompt, duration=duration
                 )
 
             if self.prometheus_metrics_collector is not None and config.prometheus:

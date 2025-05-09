@@ -13,12 +13,13 @@
 # limitations under the License.
 from aiohttp import ClientResponse
 import aiohttp
+import numpy as np
 from pydantic import BaseModel
-from inference_perf.client.base import ClientRequestMetric, ResponseData, summarize
-from inference_perf.config import APIType
+from inference_perf.config import APIType, PromptMetricsReportConfig
 from abc import ABC, abstractmethod
-from typing import Any, Generator, List
+from typing import Any, Generator, List, Optional
 
+from inference_perf.metrics.base import Metric, MetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -27,6 +28,36 @@ def safe_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0
+
+
+class PromptMetricsStatisticalSummary(BaseModel):
+    mean: Optional[float]
+    min: Optional[float]
+    p10: Optional[float]
+    p50: Optional[float]
+    p90: Optional[float]
+    max: Optional[float]
+
+
+def summarize(items: List[float]) -> PromptMetricsStatisticalSummary:
+    return PromptMetricsStatisticalSummary(
+        mean=float(np.mean(items)),
+        min=float(np.min(items)),
+        p10=float(np.percentile(items, 10)),
+        p50=float(np.percentile(items, 50)),
+        p90=float(np.percentile(items, 90)),
+        max=float(np.max(items)),
+    )
+
+
+class FailedResponseData(BaseModel):
+    error_type: str
+    error_msg: str
+
+
+class ResponseData(BaseModel):
+    info: dict[str, Any]
+    error: Optional[FailedResponseData]
 
 
 class ResponsesSummary(BaseModel):
@@ -50,11 +81,23 @@ class LlmPrompt(ABC, BaseModel):
 
     @abstractmethod
     def summarize_requests(
-        self, responses: List[ClientRequestMetric]
+        self, responses: List["PromptMetric"]
     ) -> (
         ResponsesSummary
     ):  # Generates a summary report from all response metrics with distinct summaries for successes and failures
         raise NotImplementedError
+
+
+class PromptMetric(Metric):
+    """Tracks data for a request across its lifecycle"""
+
+    start_time: float
+    end_time: float
+    request: LlmPrompt
+    response: ResponseData
+
+    async def to_report(self, duration: float) -> dict[str, Any]:
+        return self.model_dump()
 
 
 class LlmCompletionPrompt(LlmPrompt):
@@ -83,9 +126,9 @@ class LlmCompletionPrompt(LlmPrompt):
             error=None,
         )
 
-    def summarize_requests(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
-        all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
-        all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
+    def summarize_requests(self, metrics: List[PromptMetric]) -> ResponsesSummary:
+        all_successful: List[PromptMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[PromptMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
@@ -145,9 +188,9 @@ class LlmChatCompletionPrompt(LlmPrompt):
             error=None,
         )
 
-    def summarize_requests(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
-        all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
-        all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
+    def summarize_requests(self, metrics: List[PromptMetric]) -> ResponsesSummary:
+        all_successful: List[PromptMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[PromptMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
@@ -178,8 +221,35 @@ class LlmChatCompletionPrompt(LlmPrompt):
         )
 
 
-class DataGenerator(ABC):
-    """Abstract base class for data generators."""
+class PromptMetricsCollector(MetricCollector[PromptMetric]):
+    """Responsible for accumulating client request metrics and generating corresponding reports"""
+
+    def __init__(self) -> None:
+        self.metrics: List[PromptMetric] = []
+        pass
+
+    def record_metric(self, metric: PromptMetric) -> None:
+        self.metrics.append(metric)
+
+    def list_metrics(self) -> List[PromptMetric]:
+        return self.metrics
+
+    async def to_report(self, report_config: PromptMetricsReportConfig, duration: float) -> dict[str, Any]:
+        report: dict[str, Any] = {}
+        if report_config.summary:
+            request_metrics = self.list_metrics()
+            if len(self.list_metrics()) != 0:
+                report["summary"] = (
+                    # Assumes all requests are of the same type
+                    request_metrics[0].request.summarize_requests(request_metrics).model_dump()
+                )
+        if report_config.per_request:
+            report["per_request"] = [metric.model_dump() for metric in self.list_metrics()]
+        return report
+
+
+class PromptGenerator(ABC):
+    """Abstract base class for prompt generators."""
 
     apiType: APIType
 

@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, LlmCompletionPrompt, LlmPrompt
+from .base import PromptGenerator, LlmCompletionPrompt, LlmPrompt
 from typing import Generator, List
 from inference_perf.config import APIType
 
 
-class MockDataGenerator(DataGenerator):
+class MockDataGenerator(PromptGenerator):
     def __init__(self, apiType: APIType) -> None:
         super().__init__(apiType)
         pass

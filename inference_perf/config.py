@@ -62,7 +62,7 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
-class ObservedMetricsReportConfig(BaseModel):
+class PromptMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_request: Optional[bool] = False
 
@@ -72,7 +72,7 @@ class PrometheusMetricsReportConfig(BaseModel):
 
 
 class ReportConfig(BaseModel):
-    observed: ObservedMetricsReportConfig = ObservedMetricsReportConfig()
+    prompt: PromptMetricsReportConfig = PromptMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
 

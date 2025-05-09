@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ChatMessage, DataGenerator, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
+from .base import ChatMessage, PromptGenerator, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
 
 
-class HFShareGPTDataGenerator(DataGenerator):
+class HFShareGPTDataGenerator(PromptGenerator):
     def __init__(self, apiType: APIType) -> None:
         super().__init__(apiType)
         self.sharegpt_dataset = iter(
