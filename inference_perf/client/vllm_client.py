@@ -14,7 +14,7 @@
 from inference_perf.datagen import InferenceData
 from inference_perf.config import APIType
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata, RequestMetric
+from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
 from typing import Any, List
 import aiohttp
 import json
@@ -27,9 +27,67 @@ class vLLMModelServerClient(ModelServerClient):
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
+        self.request_metrics: List[RequestMetric] = list()
 
-    def set_report_generator(self, reportgen: ReportGenerator) -> None:
-        self.reportgen = reportgen
+        self.prometheus_metric_metadata: PrometheusMetricMetadata = {
+            "avg_queue_length": ModelServerPrometheusMetric(
+                "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name
+            ),
+            "avg_time_to_first_token": ModelServerPrometheusMetric(
+                "vllm:time_to_first_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "median_time_to_first_token": ModelServerPrometheusMetric(
+                "vllm:time_to_first_token_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p90_time_to_first_token": ModelServerPrometheusMetric(
+                "vllm:time_to_first_token_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p99_time_to_first_token": ModelServerPrometheusMetric(
+                "vllm:time_to_first_token_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "avg_time_per_output_token": ModelServerPrometheusMetric(
+                "vllm:time_per_output_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "median_time_per_output_token": ModelServerPrometheusMetric(
+                "vllm:time_per_output_token_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p90_time_per_output_token": ModelServerPrometheusMetric(
+                "vllm:time_per_output_token_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p99_time_per_output_token": ModelServerPrometheusMetric(
+                "vllm:time_per_output_token_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "avg_prompt_tokens": ModelServerPrometheusMetric(
+                "vllm:prompt_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
+            ),
+            "prompt_tokens_per_second": ModelServerPrometheusMetric(
+                "vllm:prompt_tokens_total", "rate", "counter", "model_name='%s'" % self.model_name
+            ),
+            "avg_output_tokens": ModelServerPrometheusMetric(
+                "vllm:generation_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
+            ),
+            "output_tokens_per_second": ModelServerPrometheusMetric(
+                "vllm:generation_tokens_total", "rate", "counter", "model_name='%s'" % self.model_name
+            ),
+            "total_requests": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds_count", "increase", "counter", "model_name='%s'" % self.model_name
+            ),
+            "requests_per_second": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds_count", "rate", "counter", "model_name='%s'" % self.model_name
+            ),
+            "avg_request_latency": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "median_request_latency": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p90_request_latency": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+            ),
+            "p99_request_latency": ModelServerPrometheusMetric(
+                "vllm:e2e_request_latency_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+            ),
+        }
 
     def _create_payload(self, payload: InferenceData) -> dict[str, Any]:
         if payload.type == APIType.Completion:
@@ -70,7 +128,6 @@ class vLLMModelServerClient(ModelServerClient):
                         else:
                             raise Exception("Unsupported API type")
 
-                    
                         prompt_tokens = self.tokenizer.count_tokens(prompt)
                         output_tokens = self.tokenizer.count_tokens(output_text)
 
