@@ -59,7 +59,7 @@ class ReportGenerator(BaseModel):
                 and config.prompt
                 and len(self.client_request_metrics_collector.list_metrics()) != 0
             ):
-                report["observed"] = self.client_request_metrics_collector.to_report(
+                report["observed"] = await self.client_request_metrics_collector.to_report(
                     report_config=config.prompt, duration=duration
                 )
 

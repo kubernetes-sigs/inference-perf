@@ -94,7 +94,7 @@ def main_cli() -> None:
 
     if config.report:
         # Generate and save report after the tests
-        reports = asyncio.run(reportgen.generate_reports(config=config.report, duration=duration))
+        reports = await asyncio.run(reportgen.generate_reports(config=config.report, duration=duration))
         perfrunner.save_reports(reports=reports)
 
 
