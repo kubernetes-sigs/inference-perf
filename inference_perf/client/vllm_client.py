@@ -34,6 +34,7 @@ import time
 
 class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClient):
     def __init__(self, config: VLLMConfig, prometheus_client_config: Optional[PrometheusCollectorConfig]) -> None:
+        super().__init__()
         self.config = config
         if prometheus_client_config:
             filter = f"model_name='{self.config.model_name}'"
