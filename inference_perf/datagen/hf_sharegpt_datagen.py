@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator, IODistribution, InferenceData, CompletionData, ChatCompletionData, ChatMessage
+from .base import DataGenerator, IODistribution, InferenceData, CompletionData, ChatCompletionData, ChatMessage, Optional
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
 
 
 class HFShareGPTDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
+    def __init__(self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
         super().__init__(apiType, ioDistribution, tokenizer)
         self.sharegpt_dataset = iter(
             load_dataset(

@@ -18,8 +18,7 @@ from inference_perf.config import APIType
 
 class MockDataGenerator(DataGenerator):
     def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType)
-        pass
+        super().__init__(apiType, ioDistribution=None, tokenizer=None)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]

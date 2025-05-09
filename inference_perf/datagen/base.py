@@ -38,19 +38,22 @@ class InferenceData(BaseModel):
 
 
 class IODistribution(BaseModel):
-    input: Distribution = None
-    output: Distribution = None
+    input: Distribution = Distribution()
+    output: Distribution = Distribution()
 
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
     apiType: APIType
-    ioDistribution: IODistribution
+    ioDistribution: Optional[IODistribution]
+    tokenizer: Optional[CustomTokenizer]
 
     """Abstract base class for data generators."""
 
-    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
+    def __init__(
+        self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]
+    ) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
 

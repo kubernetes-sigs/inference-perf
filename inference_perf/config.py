@@ -42,8 +42,8 @@ class Distribution(BaseModel):
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
     # Distributions are only supported for synthetic dataset at this moment
-    input_distribution: Optional[Distribution] = Distribution
-    output_distribution: Optional[Distribution] = Distribution
+    input_distribution: Optional[Distribution] = Distribution()
+    output_distribution: Optional[Distribution] = Distribution()
 
 
 class LoadType(Enum):

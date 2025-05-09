@@ -17,11 +17,16 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution, InferenceData, CompletionData
 from typing import Generator, List
 from inference_perf.config import APIType
+from numpy.typing import NDArray
 
 
 class SyntheticDataGenerator(DataGenerator):
     def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
         super().__init__(apiType, ioDistribution, tokenizer)
+
+        if self.ioDistribution is None or self.tokenizer is None:
+            raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
+
         self.input_lengths = self.generate_distribution(
             self.ioDistribution.input.min,
             self.ioDistribution.input.max,
@@ -41,6 +46,8 @@ class SyntheticDataGenerator(DataGenerator):
     def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
         while True:
+            if self.tokenizer is None:
+                raise ValueError("Tokenizer is required for SyntheticDataGenerator")
             if self.apiType == APIType.Completion:
                 prompt = self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]])
                 yield InferenceData(data=CompletionData(prompt=prompt))
@@ -48,7 +55,7 @@ class SyntheticDataGenerator(DataGenerator):
             else:
                 raise Exception("Unsupported API type")
 
-    def generate_distribution(self, min: int, max: int, mean: float, std_dev: float, total_count: int) -> np.ndarray:
+    def generate_distribution(self, min: int, max: int, mean: float, std_dev: float, total_count: int) -> NDArray[np.int_]:
         """
         Generates an array of lengths in integer adhering to the specified distribution constraints.
 

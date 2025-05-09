@@ -23,7 +23,7 @@ from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
-from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.custom_tokenizer import CustomTokenizer, Optional
 import asyncio
 
 
@@ -55,7 +55,7 @@ def main_cli() -> None:
     config = read_config()
 
     # Create tokenizer based on tokenizer config
-    tokenizer = None
+    tokenizer: Optional[CustomTokenizer] = None
     if config.tokenizer and config.tokenizer.pretrained_model_name_or_path:
         try:
             tokenizer = CustomTokenizer(
@@ -68,6 +68,12 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
+        # The type error for vLLMModelServerClient's tokenizer argument indicates it expects CustomTokenizer, not Optional.
+        if tokenizer is None:
+            raise Exception(
+                "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
+                "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+            )
         model_server_client = vLLMModelServerClient(
             uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=tokenizer, api_type=config.vllm.api
         )
@@ -77,14 +83,26 @@ def main_cli() -> None:
     # Define DataGenerator
     if config.data:
         datagen: DataGenerator
+
+        # Common checks for generators that require a tokenizer
+        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic]:
+            if tokenizer is None:
+                raise Exception(
+                    f"{config.data.type.value} data generator requires a configured tokenizer. "
+                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+                )
+
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.vllm.api, None, None)
+            datagen = HFShareGPTDataGenerator(config.vllm.api, None, tokenizer)
+
         elif config.data.type == DataGenType.Synthetic:
-            datagen = SyntheticDataGenerator(
-                config.vllm.api, ioDistribution=IODistribution(input=config.data.input_distribution), tokenizer=tokenizer
-            )
+            if config.data.input_distribution is None:
+                raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
+
+            io_distribution = IODistribution(input=config.data.input_distribution)
+            datagen = SyntheticDataGenerator(config.vllm.api, ioDistribution=io_distribution, tokenizer=tokenizer)
         else:
-            datagen = MockDataGenerator(config.vllm.api, None, None)
+            datagen = MockDataGenerator(config.vllm.api)
     else:
         raise Exception("data config missing")
 
