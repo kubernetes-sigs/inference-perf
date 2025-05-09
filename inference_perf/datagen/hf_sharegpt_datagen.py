@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, Prompt, CompletionData, ChatCompletionData, ChatMessage
+from .base import DataGenerator, LlmPrompt, CompletionData, ChatCompletionData, ChatMessage
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
@@ -38,7 +38,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def get_data(self) -> Generator[Prompt, None, None]:
+    def get_data(self) -> Generator[LlmPrompt, None, None]:
         if self.sharegpt_dataset is not None:
             while True:
                 data = next(self.sharegpt_dataset)

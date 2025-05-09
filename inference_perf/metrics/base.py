@@ -17,22 +17,24 @@ from pydantic import BaseModel
 
 
 class Metric(BaseModel):
-    """ Abstract type to track reportable (but not neccesarily summarizable) metrics """
+    """Abstract type to track reportable (but not neccesarily summarizable) metrics"""
+
     stage_id: Optional[int] = None
 
     @abstractmethod
-    async def to_report() -> dict[str, Any]:
-        """ Create the report for this metric """
-        raise NotImplemented
+    async def to_report(self, duration: float) -> dict[str, Any]:
+        """Create the report for this metric"""
+        raise NotImplementedError
 
 
 T = TypeVar("T", bound=Metric)
 
 
 class MetricCollector(ABC, Generic[T]):
-    """Anything that can collect metrics to be included in the output report """
-    metrics : List[T]
+    """Anything that can collect metrics to be included in the output report"""
+
+    metrics: List[T]
 
     @abstractmethod
-    async def to_report(self) -> dict[str, Any]:
+    async def to_report(self, report_config: Any, duration: float) -> dict[str, Any]:
         raise NotImplementedError

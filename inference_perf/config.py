@@ -78,7 +78,7 @@ class ReportConfig(BaseModel):
 
 class PrometheusCollectorConfig(BaseModel):
     scrape_interval: int = 15
-    url: HttpUrl = "http://localhost:9090"
+    url: HttpUrl = HttpUrl(url="http://localhost:9090")
 
 
 class MetricsClientConfig(BaseModel):

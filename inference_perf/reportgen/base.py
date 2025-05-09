@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-import statistics
 from typing import Any, List, Optional
+
+from pydantic import BaseModel
 from inference_perf.client.base import ClientRequestMetricsCollector
-from inference_perf.client.client_interfaces.prometheus.prometheus_client import PrometheusMetricsCollector
+from inference_perf.client.client_interfaces.prometheus.prometheus import PrometheusMetricsCollector
 from inference_perf.config import ReportConfig
 
 
@@ -41,30 +42,32 @@ class ReportFile:
         return self.contents
 
 
-class ReportGenerator:
-    def __init__(
-        self,
-        client_request_metrics_collector: ClientRequestMetricsCollector,
-        prometheus_metrics_collector: Optional[PrometheusMetricsCollector],
-    ) -> None:
-        self.client_request_metrics_collector = client_request_metrics_collector
-        self.prometheus_metrics_collector = prometheus_metrics_collector
+class ReportGenerator(BaseModel):
+    client_request_metrics_collector: ClientRequestMetricsCollector
+    prometheus_metrics_collector: Optional[PrometheusMetricsCollector]
 
     async def generate_reports(self, config: ReportConfig, duration: float) -> List[ReportFile]:
         print(f"Generating report according to config {config.model_dump_json()}")
-        if len(self.client_request_metrics_collector.list_metrics()) == 0:
-            print("Report generation failed, no metrics collected")
-            return []
-        elif not hasattr(config, "observed") and not hasattr(config, "prometheus"):
+        if not hasattr(config, "observed") and not hasattr(config, "prometheus"):
             print("Report generation disabled, skipping report generation")
             return []
         else:
-            print("\n\nGenerating Report ..")
             report: dict[str, Any] = {}
-            if self.client_request_metrics_collector is not None and config.observed:
-                report["observed"] = self.client_request_metrics_collector.get_report(config=config.observed)
-            if self.prometheus_client_collector is not None and config.prometheus:
+
+            if (
+                self.client_request_metrics_collector is not None
+                and config.observed
+                and len(self.client_request_metrics_collector.list_metrics()) != 0
+            ):
+                report["observed"] = self.client_request_metrics_collector.to_report(
+                    report_config=config.observed, duration=duration
+                )
+
+            if self.prometheus_metrics_collector is not None and config.prometheus:
                 prometheus_report: dict[str, Any] = {}
                 if prometheus_report is not None:
-                    report["prometheus"] = await self.prometheus_metrics_collector.to_report(duration=duration)
+                    report["prometheus"] = await self.prometheus_metrics_collector.to_report(
+                        report_config=config.prometheus, duration=duration
+                    )
+
             return [ReportFile(name="report", contents=report)] if report else []

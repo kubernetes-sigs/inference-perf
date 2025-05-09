@@ -16,9 +16,8 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 from pydantic import BaseModel
-from build.lib.inference_perf.reportgen.base import RequestMetric
 from inference_perf.config import ObservedMetricsReportConfig
-from inference_perf.datagen import Prompt
+from inference_perf.datagen import LlmPrompt
 from inference_perf.metrics.base import Metric, MetricCollector
 
 
@@ -37,10 +36,10 @@ class ClientRequestMetric(Metric):
 
     start_time: float
     end_time: float
-    request: "Prompt"
+    request: "LlmPrompt"
     response: "ResponseData"
 
-    async def to_report(self) -> dict[str, Any]:
+    async def to_report(self, duration: float) -> dict[str, Any]:
         return self.model_dump()
 
 
@@ -77,16 +76,16 @@ class ClientRequestMetricsCollector(MetricCollector[ClientRequestMetric]):
     def list_metrics(self) -> List[ClientRequestMetric]:
         return self.metrics
 
-    def get_report(self, config: ObservedMetricsReportConfig) -> dict[str, Any]:
+    async def to_report(self, report_config: ObservedMetricsReportConfig, duration: float) -> dict[str, Any]:
         report: dict[str, Any] = {}
-        if config.summary:
+        if report_config.summary:
             request_metrics = self.list_metrics()
             if len(self.list_metrics()) != 0:
                 report["summary"] = (
                     # Assumes all requests are of the same type
                     request_metrics[0].request.summarize_requests(request_metrics).model_dump()
                 )
-        if config.per_request:
+        if report_config.per_request:
             report["per_request"] = [metric.model_dump() for metric in self.list_metrics()]
         return report
 
@@ -98,5 +97,5 @@ class ModelServerClient(ABC):
         pass
 
     @abstractmethod
-    async def handle_prompt(self, data: Prompt, stage_id: int) -> None:
+    async def handle_prompt(self, data: LlmPrompt, stage_id: int) -> None:
         raise NotImplementedError

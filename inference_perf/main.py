@@ -71,8 +71,8 @@ def main_cli() -> None:
 
     # Define Report Generator
     reportgen = ReportGenerator(
-        client_request_metrics_collector=vllm_client.collector, 
-        prometheus_metrics_collector=vllm_client.prometheus_metrics_client
+        client_request_metrics_collector=vllm_client.collector,
+        prometheus_metrics_collector=vllm_client.prometheus_metrics_client,
     )
 
     # Define Storage Clients
@@ -93,12 +93,8 @@ def main_cli() -> None:
     duration = end_time - start_time  # Calculate the duration of the test
 
     if config.report:
-        # Generate Report after the tests
-        reports = asyncio.run(
-            reportgen.generate_reports(config=config.report, duration=duration)
-        )
-
-        # Save Reports
+        # Generate and save report after the tests
+        reports = asyncio.run(reportgen.generate_reports(config=config.report, duration=duration))
         perfrunner.save_reports(reports=reports)
 
 

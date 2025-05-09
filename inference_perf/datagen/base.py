@@ -27,20 +27,25 @@ class ResponsesSummary(BaseModel):
     failures: dict[str, Any]
 
 
-class Prompt(ABC, BaseModel):
+class LlmPrompt(ABC, BaseModel):
     @abstractmethod
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
-        """Defines the HTTP request body for this request type."""
+    def to_payload(
+        self, model_name: str, max_tokens: int
+    ) -> dict[str, Any]:  # Defines the HTTP request body for this request type
         raise NotImplementedError
 
     @abstractmethod
-    async def process_response(self, res: ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:
-        """Awaits the HTTP response and returns either a successful or failed response object once resolved."""
+    async def process_response(
+        self, res: ClientResponse, tokenizer: CustomTokenizer
+    ) -> ResponseData:  # Awaits the HTTP response and returns either a successful or failed response object once resolved
         raise NotImplementedError
 
     @abstractmethod
-    def summarize_requests(self, responses: List[ClientRequestMetric]) -> ResponsesSummary:
-        """Generates a summary report from all response metrics with distinct summaries for successes and failures."""
+    def summarize_requests(
+        self, responses: List[ClientRequestMetric]
+    ) -> (
+        ResponsesSummary
+    ):  # Generates a summary report from all response metrics with distinct summaries for successes and failures
         raise NotImplementedError
 
 
@@ -59,5 +64,5 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[Prompt, None, None]:
+    def get_data(self) -> Generator[LlmPrompt, None, None]:
         raise NotImplementedError
