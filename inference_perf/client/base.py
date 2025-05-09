@@ -22,7 +22,6 @@ class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
         self.prompt_metrics_collector = PromptMetricsCollector()
-        pass
 
     @abstractmethod
     async def handle_prompt(self, data: LlmPrompt, stage_id: int) -> None:
