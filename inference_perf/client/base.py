@@ -36,7 +36,7 @@ class ClientRequestMetric(Metric):
 
     start_time: float
     end_time: float
-    request: "LlmPrompt"
+    request: LlmPrompt
     response: "ResponseData"
 
     async def to_report(self, duration: float) -> dict[str, Any]:

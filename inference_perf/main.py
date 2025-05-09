@@ -72,7 +72,7 @@ def main_cli() -> None:
     # Define Report Generator
     reportgen = ReportGenerator(
         client_request_metrics_collector=vllm_client.collector,
-        prometheus_metrics_collector=vllm_client.prometheus_metrics_client,
+        prometheus_metrics_collector=vllm_client.prometheus_collector,
     )
 
     # Define Storage Clients

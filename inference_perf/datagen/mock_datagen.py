@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, LlmPrompt, CompletionData
+from .base import DataGenerator, LlmCompletionPrompt, LlmPrompt
 from typing import Generator, List
 from inference_perf.config import APIType
 
@@ -24,11 +24,11 @@ class MockDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
-    def get_data(self) -> Generator[LlmPrompt, None, None]:
+    def generate_prompt(self) -> Generator[LlmPrompt, None, None]:
         i = 0
         while True:
             i += 1
             if self.apiType == APIType.Completion:
-                yield CompletionData(prompt="text" + str(i))
+                yield LlmCompletionPrompt(prompt="text" + str(i))
             else:
                 raise Exception("Unsupported API type")

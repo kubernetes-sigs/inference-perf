@@ -39,7 +39,7 @@ class LoadGenerator:
             print(f"Stage {stage_id} - run started")
             async with TaskGroup() as tg:
                 for _, (data, time_index) in enumerate(
-                    zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
+                    zip(self.datagen.generate_prompt(), timer.start_timer(start_time), strict=True)
                 ):
                     now = time.time()
                     if time_index < end_time and now < end_time:
