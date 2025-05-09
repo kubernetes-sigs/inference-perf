@@ -23,6 +23,7 @@ class PrometheusMetric(Metric):
     name: str
     metric: str
     filter: Optional[str] = ""
+    url: Optional[HttpUrl] = None
 
     def set_target_url(self, url: HttpUrl) -> None:
         self.url = url
