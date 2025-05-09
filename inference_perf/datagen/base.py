@@ -40,13 +40,24 @@ class PromptMetricsStatisticalSummary(BaseModel):
 
 
 def summarize(items: List[float]) -> PromptMetricsStatisticalSummary:
-    return PromptMetricsStatisticalSummary(
-        mean=float(np.mean(items)),
-        min=float(np.min(items)),
-        p10=float(np.percentile(items, 10)),
-        p50=float(np.percentile(items, 50)),
-        p90=float(np.percentile(items, 90)),
-        max=float(np.max(items)),
+    return (
+        PromptMetricsStatisticalSummary(
+            mean=float(np.mean(items)),
+            min=float(np.min(items)),
+            p10=float(np.percentile(items, 10)),
+            p50=float(np.percentile(items, 50)),
+            p90=float(np.percentile(items, 90)),
+            max=float(np.max(items)),
+        )
+        if len(items) != 0
+        else PromptMetricsStatisticalSummary(
+            mean=None,
+            min=None,
+            p10=None,
+            p50=None,
+            p90=None,
+            max=None,
+        )
     )
 
 
@@ -155,7 +166,9 @@ class LlmCompletionPrompt(LlmPrompt):
             failures={
                 "count": len(all_failed),
                 # need to filter to only the failures, currently dont do that, same for successes
-                "time_per_request": summarize([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump(),
+                "time_per_request": summarize([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump()
+                if len(all_failed) != 0
+                else None,
             },
         )
 
@@ -203,7 +216,11 @@ class LlmChatCompletionPrompt(LlmPrompt):
                     [(successful.end_time - successful.start_time) for successful in all_successful]
                 ).model_dump(),
                 "output_len": summarize(
-                    [float(v) for success in all_successful if (v := safe_float(success.response.info.get("output_len"))) is not None]
+                    [
+                        float(v)
+                        for success in all_successful
+                        if (v := safe_float(success.response.info.get("output_len"))) is not None
+                    ]
                 ).model_dump(),
                 "per_token_latency": summarize(
                     [

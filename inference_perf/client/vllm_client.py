@@ -54,7 +54,6 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                 ),
             ]
             self.prometheus_collector = PrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
- 
         self.model_name = self.config.model_name
         self.uri = self.config.url + ("/v1/chat/completions" if self.config.api == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
