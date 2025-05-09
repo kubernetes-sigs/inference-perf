@@ -18,7 +18,7 @@ import numpy as np
 from pydantic import BaseModel
 from build.lib.inference_perf.reportgen.base import RequestMetric
 from inference_perf.config import ObservedMetricsReportConfig
-from inference_perf.datagen import PromptData
+from inference_perf.datagen import Prompt
 from inference_perf.metrics.base import Metric, MetricCollector
 
 
@@ -37,8 +37,11 @@ class ClientRequestMetric(Metric):
 
     start_time: float
     end_time: float
-    request: "PromptData"
+    request: "Prompt"
     response: "ResponseData"
+
+    async def to_report(self) -> dict[str, Any]:
+        return self.model_dump()
 
 
 class ClientRequestMetricsStatisticalSummary(BaseModel):
@@ -50,7 +53,7 @@ class ClientRequestMetricsStatisticalSummary(BaseModel):
     max: Optional[float]
 
 
-def get_summarization(items: List[float]) -> ClientRequestMetricsStatisticalSummary:
+def summarize(items: List[float]) -> ClientRequestMetricsStatisticalSummary:
     return ClientRequestMetricsStatisticalSummary(
         mean=float(np.mean(items)),
         min=float(np.min(items)),
@@ -71,49 +74,21 @@ class ClientRequestMetricsCollector(MetricCollector[ClientRequestMetric]):
     def record_metric(self, metric: ClientRequestMetric) -> None:
         self.metrics.append(metric)
 
-    def get_metrics(self) -> List[ClientRequestMetric]:
+    def list_metrics(self) -> List[ClientRequestMetric]:
         return self.metrics
 
     def get_report(self, config: ObservedMetricsReportConfig) -> dict[str, Any]:
         report: dict[str, Any] = {}
         if config.summary:
-            request_metrics = self.get_metrics()
-            # Assumes all requests are of the same type
-            if len(self.get_metrics()) != 0:
+            request_metrics = self.list_metrics()
+            if len(self.list_metrics()) != 0:
                 report["summary"] = (
-                    request_metrics[0].request.get_summary_report_for_request_metrics(request_metrics).model_dump()
+                    # Assumes all requests are of the same type
+                    request_metrics[0].request.summarize_requests(request_metrics).model_dump()
                 )
         if config.per_request:
-            report["per_request"] = [metric.model_dump() for metric in self.get_metrics()]
+            report["per_request"] = [metric.model_dump() for metric in self.list_metrics()]
         return report
-
-
-
-class ModelServerMetrics(BaseModel):
-    # Throughput
-    prompt_tokens_per_second: float = 0.0
-    output_tokens_per_second: float = 0.0
-    requests_per_second: float = 0.0
-
-    # Latency
-    avg_request_latency: float = 0.0
-    median_request_latency: float = 0.0
-    p90_request_latency: float = 0.0
-    p99_request_latency: float = 0.0
-    avg_time_to_first_token: float = 0.0
-    median_time_to_first_token: float = 0.0
-    p90_time_to_first_token: float = 0.0
-    p99_time_to_first_token: float = 0.0
-    avg_time_per_output_token: float = 0.0
-    median_time_per_output_token: float = 0.0
-    p90_time_per_output_token: float = 0.0
-    p99_time_per_output_token: float = 0.0
-
-    # Request
-    total_requests: int = 0
-    avg_prompt_tokens: int = 0
-    avg_output_tokens: int = 0
-    avg_queue_length: int = 0
 
 
 class ModelServerClient(ABC):
@@ -123,9 +98,5 @@ class ModelServerClient(ABC):
         pass
 
     @abstractmethod
-    async def process_request(self, data: PromptData, stage_id: int) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_request_metrics(self) -> List[RequestMetric]:
+    async def handle_prompt(self, data: Prompt, stage_id: int) -> None:
         raise NotImplementedError

@@ -12,16 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Generic, List, Optional, TypeVar
-
+from typing import Any, Generic, List, Optional, TypeVar
 from pydantic import BaseModel
-from build.lib.inference_perf.config import MetricsConfig
 
 
 class Metric(BaseModel):
-    """Abstract type to track individual request metrics, prometheus metrics, etc"""
-
+    """ Abstract type to track reportable (but not neccesarily summarizable) metrics """
     stage_id: Optional[int] = None
+
+    @abstractmethod
+    async def to_report() -> dict[str, Any]:
+        """ Create the report for this metric """
+        raise NotImplemented
 
 
 T = TypeVar("T", bound=Metric)
@@ -29,11 +31,8 @@ T = TypeVar("T", bound=Metric)
 
 class MetricCollector(ABC, Generic[T]):
     """Anything that can collect metrics to be included in the output report """
+    metrics : List[T]
 
     @abstractmethod
-    def __init__(self, config: MetricsConfig) -> None:
-        self.config = config
-
-    @abstractmethod
-    def get_metrics(self) -> List[T]:
+    async def to_report(self) -> dict[str, Any]:
         raise NotImplementedError

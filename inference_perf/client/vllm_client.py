@@ -14,7 +14,7 @@
 from pydantic import BaseModel
 from inference_perf.client.client_interfaces.prometheus.prometheus import PrometheusEnabledModelServerClient
 from inference_perf.client.client_interfaces.prometheus.prometheus_client import PrometheusCounterMetric, PrometheusGaugeMetric, PrometheusHistogramMetric, PrometheusMetric, PrometheusMetricsCollector
-from inference_perf.datagen import PromptData
+from inference_perf.datagen import Prompt
 from inference_perf.config import APIType, MetricsClientConfig, VLLMConfig
 from inference_perf.datagen.base import ResponseData, ResponsesSummary
 from inference_perf.utils import CustomTokenizer
@@ -23,7 +23,7 @@ from .base import (
     FailedResponseData,
     ModelServerClient,
     RequestMetric,
-    get_summarization,
+    summarize,
 )
 from typing import Any, Optional, List
 import aiohttp
@@ -31,7 +31,7 @@ import json
 import time
 
 
-class VllmCompletionPromptData(PromptData):
+class VllmCompletionPrompt(Prompt):
     prompt: str
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
@@ -56,29 +56,29 @@ class VllmCompletionPromptData(PromptData):
             }
         )
 
-    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
+    def summarize_requests(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
         all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
         all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(metric.end_time - metric.start_time) for metric in metrics]
                 ).model_dump(),
             },
             successes={
                 "count": len(all_successful),
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(metric.end_time - metric.start_time) for metric in metrics]
                 ).model_dump(),
-                "prompt_len": get_summarization(
+                "prompt_len": summarize(
                     [success.response.info.get("prompt_len") for success in all_successful]
                 ).model_dump(),
-                "output_len": get_summarization(
+                "output_len": summarize(
                     [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
                 ).model_dump(),
-                "per_token_latency": get_summarization(
+                "per_token_latency": summarize(
                     [
                         (metric.end_time - metric.start_time) / float(metric.response.info.get("output_len"))
                         if metric.response.info.get("output_len") is not None
@@ -91,7 +91,7 @@ class VllmCompletionPromptData(PromptData):
             failures={
                 "count": len(all_failed),
                 # need to filter to only the failures, currently dont do that, same for successes
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(failed.end_time - failed.start_time) for failed in all_failed]
                 ).model_dump(),
             },
@@ -103,7 +103,7 @@ class ChatMessage(BaseModel):
     content: str
 
 
-class VllmChatCompletionPromptData(PromptData):
+class VllmChatCompletionPrompt(Prompt):
     messages: List[ChatMessage]
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
@@ -125,26 +125,26 @@ class VllmChatCompletionPromptData(PromptData):
             }
         )
 
-    def get_summary_report_for_request_metrics(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
+    def summarize_requests(self, metrics: List[ClientRequestMetric]) -> ResponsesSummary:
         all_successful: List[ClientRequestMetric] = [x for x in metrics if x.response.error is None]
         all_failed: List[ClientRequestMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(metric.end_time - metric.start_time) for metric in metrics]
                 ).model_dump(),
             },
             successes={
                 "count": len(all_successful),
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(successful.end_time - successful.start_time) for successful in all_successful]
                 ).model_dump(),
-                "output_len": get_summarization(
+                "output_len": summarize(
                     [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
                 ).model_dump(),
-                "per_token_latency": get_summarization(
+                "per_token_latency": summarize(
                     [
                         (success.end_time - success.start_time) / success.response.output_len
                         if success.response.output_len != 0
@@ -155,7 +155,7 @@ class VllmChatCompletionPromptData(PromptData):
             },
             failures={
                 "count": len(all_failed),
-                "time_per_request": get_summarization(
+                "time_per_request": summarize(
                     [(failed.end_time - failed.start_time) for failed in all_failed]
                 ).model_dump(),
             },
@@ -198,47 +198,47 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
             print("Tokenizer path is empty. Falling back to usage metrics.")
         self.request_metrics: List[RequestMetric] = list()
 
-    async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
-        payload = prompt_data.to_payload(model=self.config.model_name, max_tokens=self.max_completion_tokens)
+    async def handle_prompt(self, prompt: Prompt, stage_id: int) -> None:
+        payload = prompt.to_payload(model=self.config.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
             try:
                 async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        response_data = await prompt_data.process_response(res=response, tokenizer=self.custom_tokenizer)
+                        response_data = await prompt.process_response(res=response, tokenizer=self.custom_tokenizer)
                         end = time.monotonic()
                         self.collector.record_metric(
                             ClientRequestMetric(
                                 stage_id=stage_id,
-                                request=prompt_data,
+                                request=prompt,
                                 response=ResponseData(info=response_data),
                                 start_time=start,
-                                end_time=time.monotonic(),
+                                end_time=end,
                             )
                         )
                     else:
                         self.collector.record_metric(
                             ClientRequestMetric(
                                 stage_id=stage_id,
-                                request=prompt_data,
+                                request=prompt,
                                 response=ResponseData(
                                     info=response_data,
                                     error=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
                                 ),
                                 start_time=start,
-                                end_time=time.monotonic(),
+                                end_time=end,
                             )
                         )
             except Exception as e:
                 self.collector.record_metric(
                     ClientRequestMetric(
                         stage_id=stage_id,
-                        request=prompt_data,
+                        request=prompt,
                         response=ResponseData(
                             info={}, error=FailedResponseData(error_msg=str(e), error_type=type(e).__name__)
                         ),
                         start_time=start,
-                        end_time=time.monotonic(),
+                        end_time=end,
                     )
                 )

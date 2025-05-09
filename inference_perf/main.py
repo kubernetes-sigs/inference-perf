@@ -13,7 +13,6 @@
 # limitations under the License.
 import time
 from typing import List
-from inference_perf.client.client_interfaces.prometheus.prometheus_client import PerfRuntimeParameters
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
@@ -96,9 +95,7 @@ def main_cli() -> None:
     if config.report:
         # Generate Report after the tests
         reports = asyncio.run(
-            reportgen.generate_reports(
-                config=config.report, runtime_parameters=PerfRuntimeParameters(start_time, duration, vllm_client)
-            )
+            reportgen.generate_reports(config=config.report, duration=duration)
         )
 
         # Save Reports

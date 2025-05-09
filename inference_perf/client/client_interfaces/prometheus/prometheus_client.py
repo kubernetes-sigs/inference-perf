@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import HttpUrl
 import requests
 from inference_perf.client.client_interfaces.prometheus.prometheus import PrometheusEnabledModelServerClient
@@ -19,14 +19,6 @@ from inference_perf.config import PrometheusCollectorConfig
 from inference_perf.metrics.base import Metric, MetricCollector
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 5
-
-
-class PerfRuntimeParameters:
-    def __init__(self, start_time: float, duration: float, model_server_client: PrometheusEnabledModelServerClient) -> None:
-        self.start_time = start_time
-        self.duration = duration
-        self.model_server_client = model_server_client
-
 
 class PrometheusMetric(Metric):
     name: str
@@ -36,14 +28,7 @@ class PrometheusMetric(Metric):
     def get_query_set(self, duration: str) -> dict[str, str]:
         raise NotImplementedError
 
-    async def query_summary(self, url: HttpUrl, duration: float) -> dict[str, str]:
-        report = {}
-        queries = self.get_query_set(duration=str(duration))
-        for query_name, query in queries.items():
-            report[query_name] = await self.query(url, query)
-        return report
-
-    async def query(self, url: HttpUrl, query: str, eval_time: str) -> float:
+    async def single_query(self, url: HttpUrl, query: str, eval_time: str) -> float:
         """
         Executes the given query on the Prometheus server and returns the result.
 
@@ -104,6 +89,13 @@ class PrometheusMetric(Metric):
                     return query_result
         return query_result
 
+    async def to_report(self, url: HttpUrl, duration: float) -> dict[str, Any]:
+        report = {}
+        queries = self.get_query_set(duration=str(duration))
+        for query_name, query in queries.items():
+            report[query_name] = await self.single_query(url, query)
+        return report
+
 
 class PrometheusHistogramMetric(PrometheusMetric):
     def get_query_set(self, duration: str) -> dict[str, str]:
@@ -150,7 +142,7 @@ class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
         self.metrics = metrics
         self.config = config
 
-    async def get_report(self, duration: float) -> dict[str, float]:
+    async def to_report(self, duration: float) -> dict[str, Any]:
         total_report = {}
         for metric in self.metrics:
             total_report[metric.name] = await metric.query_summary(url=self.config.url, duration=duration)

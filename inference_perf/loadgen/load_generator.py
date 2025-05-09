@@ -45,7 +45,7 @@ class LoadGenerator:
                     if time_index < end_time and now < end_time:
                         if time_index > now:
                             await sleep(time_index - time.time())
-                        tg.create_task(client.process_request(data, stage_id))
+                        tg.create_task(client.handle_prompt(data, stage_id))
                         continue
                     else:
                         break
