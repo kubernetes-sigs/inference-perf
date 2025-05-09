@@ -70,7 +70,6 @@ def main_cli() -> None:
         raise Exception("load config missing")
 
     # Define Report Generator
-    print("HERE", vllm_client.prometheus_collector)
     reportgen = ReportGenerator(
         client_request_metrics_collector=vllm_client.prompt_metrics_collector,
         prometheus_metrics_collector=vllm_client.prometheus_collector,
