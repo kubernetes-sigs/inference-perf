@@ -15,9 +15,9 @@ import time
 from typing import List
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.config import DataGenType, MetricsClientType, ModelServerType
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
@@ -67,18 +67,22 @@ def main_cli() -> None:
             raise Exception("Tokenizer initialization failed") from e
 
     # Define Model Server Client
-    if config.vllm:
-        # The type error for vLLMModelServerClient's tokenizer argument indicates it expects CustomTokenizer, not Optional.
-        if tokenizer is None:
-            raise Exception(
-                "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
-                "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+    if config.server:
+        if config.server.type == ModelServerType.VLLM:
+            # The type error for vLLMModelServerClient's tokenizer argument indicates it expects CustomTokenizer, not Optional.
+            if tokenizer is None:
+                raise Exception(
+                    "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
+                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+                )
+            model_server_client = vLLMModelServerClient(
+                uri=config.server.base_url,
+                model_name=config.server.model_name,
+                tokenizer=tokenizer
+                api_type=config.api,
             )
-        model_server_client = vLLMModelServerClient(
-            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=tokenizer, api_type=config.vllm.api
-        )
     else:
-        raise Exception("vLLM client config missing")
+        raise Exception("model server client config missing")
 
     # Define DataGenerator
     if config.data:
@@ -101,8 +105,9 @@ def main_cli() -> None:
 
             io_distribution = IODistribution(input=config.data.input_distribution)
             datagen = SyntheticDataGenerator(config.vllm.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+            datagen = HFShareGPTDataGenerator(config.server.api)
         else:
-            datagen = MockDataGenerator(config.vllm.api)
+            datagen = MockDataGenerator(config.server.api)
     else:
         raise Exception("data config missing")
 

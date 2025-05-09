@@ -16,7 +16,7 @@ import statistics
 from pydantic import BaseModel
 from typing import Any, List
 from inference_perf.metrics import MetricsClient
-from inference_perf.client.base import ModelServerMetrics
+from inference_perf.client.modelserver.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
 
 

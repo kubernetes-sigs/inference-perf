@@ -45,6 +45,8 @@ class DataConfig(BaseModel):
     input_distribution: Optional[Distribution] = Distribution()
     output_distribution: Optional[Distribution] = Distribution()
 
+class ModelServerType(Enum):
+    VLLM = "vLLM"
 
 class LoadType(Enum):
     CONSTANT = "constant"
@@ -54,6 +56,10 @@ class LoadType(Enum):
 class MetricsClientType(Enum):
     PROMETHEUS = "prometheus"
     DEFAULT = "default"
+
+
+class DataConfig(BaseModel):
+    type: DataGenType = DataGenType.Mock
 
 
 class LoadStage(BaseModel):
@@ -94,10 +100,11 @@ class MetricsClientConfig(BaseModel):
     prometheus: Optional[PrometheusClientConfig] = None
 
 
-class VLLMConfig(BaseModel):
-    model_name: str
+class ModelServerClientConfig(BaseModel):
     api: APIType = APIType.Completion
-    url: str
+    model_name: str
+    base_url: str
+    type: ModelServerType = ModelServerType.VLLM
 
 
 class CustomTokenizerConfig(BaseModel):
@@ -112,7 +119,7 @@ class Config(BaseModel):
     report: Optional[ReportConfig] = ReportConfig()
     metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
-    vllm: Optional[VLLMConfig] = None
+    server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
 
 

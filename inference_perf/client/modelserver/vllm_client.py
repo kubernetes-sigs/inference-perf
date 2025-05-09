@@ -24,6 +24,7 @@ import time
 class vLLMModelServerClient(ModelServerClient):
     def __init__(self, uri: str, model_name: str, tokenizer: CustomTokenizer, api_type: APIType) -> None:
         self.model_name = model_name
+        self.api_type = api_type
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
