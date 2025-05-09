@@ -56,18 +56,24 @@ class ReportGenerator(BaseModel):
 
             if (
                 self.client_request_metrics_collector is not None
-                and config.prompt
+                and config.prompt is not None
                 and len(self.client_request_metrics_collector.list_metrics()) != 0
             ):
+                print("Reporting prompt metrics")
                 report["observed"] = await self.client_request_metrics_collector.to_report(
                     report_config=config.prompt, duration=duration
                 )
+            else:
+                print("Not reporting prompt metrics")
 
-            if self.prometheus_metrics_collector is not None and config.prometheus:
+            if self.prometheus_metrics_collector is not None and config.prometheus is not None:
+                print("Reporting prometheus metrics")
                 prometheus_report: dict[str, Any] = {}
                 if prometheus_report is not None:
                     report["prometheus"] = await self.prometheus_metrics_collector.to_report(
                         report_config=config.prometheus, duration=duration
                     )
+            else:
+                print("Not reporting prometheus metrics")
 
             return [ReportFile(name="report", contents=report)] if report else []
