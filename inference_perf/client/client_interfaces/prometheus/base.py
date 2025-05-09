@@ -27,4 +27,4 @@ class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
 class PrometheusEnabledModelServerClient(ABC):
     """Interface for any model server that emits prometheus metrics"""
 
-    prometheus_collector: Optional[PrometheusMetricsCollector]
+    prometheus_collector: Optional[PrometheusMetricsCollector] = None

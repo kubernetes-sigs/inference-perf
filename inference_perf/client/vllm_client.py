@@ -37,7 +37,6 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
         super().__init__()
         self.config = config
         if prometheus_client_config:
-            print("SET PROM")
             filter = f"model_name='{self.config.model_name}'"
             metrics: List[PrometheusMetric] = [
                 PrometheusGaugeMetric(name="avg_queue_length", metric="vllm:num_requests_waiting", filter=filter),
@@ -55,8 +54,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                 ),
             ]
             self.prometheus_collector = PrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
-        else:
-            print("DID NOT SET PROM")
+ 
         self.model_name = self.config.model_name
         self.uri = self.config.url + ("/v1/chat/completions" if self.config.api == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
