@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 from argparse import ArgumentParser
 from enum import Enum
@@ -36,11 +36,6 @@ class DataConfig(BaseModel):
 class LoadType(Enum):
     CONSTANT = "constant"
     POISSON = "poisson"
-
-
-class MetricsClientType(Enum):
-    PROMETHEUS = "prometheus"
-    DEFAULT = "default"
 
 
 class LoadStage(BaseModel):
@@ -67,24 +62,27 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
-class ReportConfig(BaseModel):
+class PromptMetricsReportConfig(BaseModel):
+    summary: Optional[bool] = True
+    per_request: Optional[bool] = False
+
+
+class PrometheusMetricsReportConfig(BaseModel):
     pass
 
 
-class PrometheusClientConfig(BaseModel):
-    scrape_interval: Optional[int] = 15
-    url: str = "http://localhost:9090"
+class ReportConfig(BaseModel):
+    prompt: PromptMetricsReportConfig = PromptMetricsReportConfig()
+    prometheus: Optional[PrometheusMetricsReportConfig] = None
+
+
+class PrometheusCollectorConfig(BaseModel):
+    scrape_interval: int = 15
+    url: HttpUrl = HttpUrl(url="http://localhost:9090")
 
 
 class MetricsClientConfig(BaseModel):
-    type: MetricsClientType
-    prometheus: Optional[PrometheusClientConfig] = None
-
-
-class VLLMConfig(BaseModel):
-    model_name: str
-    api: APIType = APIType.Completion
-    url: str
+    prometheus: Optional[PrometheusCollectorConfig] = None
 
 
 class CustomTokenizerConfig(BaseModel):
@@ -93,14 +91,20 @@ class CustomTokenizerConfig(BaseModel):
     token: Optional[str] = None
 
 
+class VLLMConfig(BaseModel):
+    model_name: str
+    api: APIType
+    url: str
+    tokenizer: CustomTokenizerConfig
+
+
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
     report: Optional[ReportConfig] = ReportConfig()
-    metrics_client: Optional[MetricsClientConfig] = None
+    metrics_client: MetricsClientConfig = MetricsClientConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
 
 
 def read_config() -> Config:

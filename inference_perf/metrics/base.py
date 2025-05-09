@@ -12,25 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from inference_perf.client.base import ModelServerClient, ModelServerMetrics
+from typing import Any, Generic, List, Optional, TypeVar
+from pydantic import BaseModel
 
 
-class PerfRuntimeParameters:
-    def __init__(self, start_time: float, duration: float, model_server_client: ModelServerClient) -> None:
-        self.start_time = start_time
-        self.duration = duration
-        self.model_server_client = model_server_client
+class Metric(BaseModel):
+    """Abstract type to track reportable (but not neccesarily summarizable) metrics"""
 
-
-class MetricsClient(ABC):
-    @abstractmethod
-    def __init__(self) -> None:
-        pass
+    stage_id: Optional[int] = None
 
     @abstractmethod
-    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    async def to_report(self, duration: float) -> dict[str, Any]:
+        """Create the report for this metric"""
         raise NotImplementedError
 
+
+T = TypeVar("T", bound=Metric)
+
+
+class MetricCollector(ABC, BaseModel, Generic[T]):
+    """Anything that can collect metrics to be included in the output report"""
+
+    metrics: List[T]
+
     @abstractmethod
-    def wait(self) -> None:
+    async def to_report(self, report_config: Any, duration: float) -> dict[str, Any]:
         raise NotImplementedError

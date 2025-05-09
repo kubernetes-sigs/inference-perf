@@ -14,11 +14,9 @@
 import time
 from typing import List
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType
-from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
+from inference_perf.config import DataGenType
+from inference_perf.datagen import PromptGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
-from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
@@ -41,9 +39,6 @@ class InferencePerfRunner:
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        return asyncio.run(self.reportgen.generate_reports(runtime_parameters=runtime_parameters))
-
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
@@ -54,15 +49,13 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        model_server_client = vLLMModelServerClient(
-            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
-        )
+        vllm_client = vLLMModelServerClient(config=config.vllm, prometheus_client_config=config.metrics_client.prometheus)
     else:
-        raise Exception("vLLM client config missing")
+        raise Exception("No model server config provided")
 
     # Define DataGenerator
     if config.data:
-        datagen: DataGenerator
+        datagen: PromptGenerator
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.vllm.api)
         else:
@@ -76,14 +69,11 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define Metrics Client
-    metrics_client: MetricsClient | None = None
-    if config.metrics_client:
-        if config.metrics_client.type == MetricsClientType.PROMETHEUS and config.metrics_client.prometheus:
-            metrics_client = PrometheusMetricsClient(config=config.metrics_client.prometheus)
-
     # Define Report Generator
-    reportgen = ReportGenerator(metrics_client)
+    reportgen = ReportGenerator(
+        client_request_metrics_collector=vllm_client.prompt_metrics_collector,
+        prometheus_metrics_collector=vllm_client.prometheus_collector,
+    )
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []
@@ -92,7 +82,7 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
+    perfrunner = InferencePerfRunner(vllm_client, loadgen, reportgen, storage_clients)
 
     start_time = time.time()
 
@@ -102,11 +92,10 @@ def main_cli() -> None:
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
-    # Generate Report after the tests
-    reports = perfrunner.generate_reports(PerfRuntimeParameters(start_time, duration, model_server_client))
-
-    # Save Reports
-    perfrunner.save_reports(reports=reports)
+    if config.report:
+        # Generate and save report after the tests
+        reports = asyncio.run(reportgen.generate_reports(config=config.report, duration=duration))
+        perfrunner.save_reports(reports=reports)
 
 
 if __name__ == "__main__":

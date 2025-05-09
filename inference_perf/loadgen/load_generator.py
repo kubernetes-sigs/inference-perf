@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
-from inference_perf.datagen import DataGenerator
+from inference_perf.datagen import PromptGenerator
 from inference_perf.client import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
 from asyncio import TaskGroup, sleep
@@ -20,7 +20,7 @@ import time
 
 
 class LoadGenerator:
-    def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+    def __init__(self, datagen: PromptGenerator, load_config: LoadConfig) -> None:
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
@@ -39,13 +39,13 @@ class LoadGenerator:
             print(f"Stage {stage_id} - run started")
             async with TaskGroup() as tg:
                 for _, (data, time_index) in enumerate(
-                    zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
+                    zip(self.datagen.generate_prompt(), timer.start_timer(start_time), strict=True)
                 ):
                     now = time.time()
                     if time_index < end_time and now < end_time:
                         if time_index > now:
                             await sleep(time_index - time.time())
-                        tg.create_task(client.process_request(data, stage_id))
+                        tg.create_task(client.handle_prompt(data, stage_id))
                         continue
                     else:
                         break
