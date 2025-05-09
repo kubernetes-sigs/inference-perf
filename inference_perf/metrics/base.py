@@ -30,7 +30,7 @@ class Metric(BaseModel):
 T = TypeVar("T", bound=Metric)
 
 
-class MetricCollector(ABC, Generic[T]):
+class MetricCollector(ABC, BaseModel, Generic[T]):
     """Anything that can collect metrics to be included in the output report"""
 
     metrics: List[T]

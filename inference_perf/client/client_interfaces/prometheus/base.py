@@ -1,15 +1,19 @@
 from abc import ABC
 from typing import Any, List, Optional
 
+from pydantic import model_validator
+
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import PrometheusMetric
 from inference_perf.config import PrometheusCollectorConfig, PrometheusMetricsReportConfig
 from inference_perf.metrics.base import MetricCollector
 
 
 class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
-    def __init__(self, config: PrometheusCollectorConfig, metrics: List[PrometheusMetric]) -> None:
-        self.metrics = metrics
-        self.config = config
+    config: PrometheusCollectorConfig
+    metrics: List[PrometheusMetric]
+
+    @model_validator(mode="before")
+    def set_metric_urls(self) -> None:
         for metric in self.metrics:
             metric.set_target_url(self.config.url)
 
