@@ -58,21 +58,11 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
         self.model_name = self.config.model_name
         self.uri = self.config.url + ("/v1/chat/completions" if self.config.api == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
-        self.tokenizer_available = False
-
-        if self.config.tokenizer and self.config.tokenizer.pretrained_model_name_or_path:
-            try:
-                self.custom_tokenizer = CustomTokenizer(
-                    self.config.tokenizer.pretrained_model_name_or_path,
-                    self.config.tokenizer.token,
-                    self.config.tokenizer.trust_remote_code,
-                )
-                self.tokenizer_available = True
-            except Exception as e:
-                print(f"Tokenizer initialization failed: {e}")
-                print("Falling back to usage metrics.")
-        else:
-            print("Tokenizer path is empty. Falling back to usage metrics.")
+        self.custom_tokenizer = CustomTokenizer(
+            self.config.tokenizer.pretrained_model_name_or_path,
+            self.config.tokenizer.token,
+            self.config.tokenizer.trust_remote_code,
+        )
 
     async def handle_prompt(self, prompt: LlmPrompt, stage_id: int) -> None:
         payload = prompt.to_payload(model_name=self.config.model_name, max_tokens=self.max_completion_tokens)

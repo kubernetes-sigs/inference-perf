@@ -95,7 +95,7 @@ class VLLMConfig(BaseModel):
     model_name: str
     api: APIType = APIType.Completion
     url: str
-    tokenizer: Optional[CustomTokenizerConfig] = None
+    tokenizer: CustomTokenizerConfig = None
 
 
 class Config(BaseModel):
