@@ -21,7 +21,7 @@ from inference_perf.datagen.base import PromptMetricsCollector
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, *args: Tuple[int, ...]) -> None:
-        self.collector = PromptMetricsCollector()
+        self.prompt_metrics_collector = PromptMetricsCollector()
         pass
 
     @abstractmethod

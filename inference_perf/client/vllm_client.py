@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.client.base import ModelServerClient
 from inference_perf.client.client_interfaces.prometheus.base import (
     PrometheusEnabledModelServerClient,
     PrometheusMetricsCollector,
@@ -23,13 +24,8 @@ from inference_perf.client.client_interfaces.prometheus.prometheus_metrics impor
 )
 from inference_perf.datagen import LlmPrompt
 from inference_perf.config import APIType, PrometheusCollectorConfig, VLLMConfig
-from inference_perf.datagen.base import ResponseData
+from inference_perf.datagen.base import FailedResponseData, PromptMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
-from .base import (
-    ClientRequestMetric,
-    FailedResponseData,
-    ModelServerClient,
-)
 from typing import Optional, List
 import aiohttp
 import json
@@ -87,8 +83,8 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                     if response.status == 200:
                         response_body = await prompt.process_response(res=response, tokenizer=self.custom_tokenizer)
                         end = time.monotonic()
-                        self.collector.record_metric(
-                            ClientRequestMetric(
+                        self.prompt_metrics_collector.record_metric(
+                            PromptMetric(
                                 stage_id=stage_id,
                                 request=prompt,
                                 response=response_body,
@@ -97,8 +93,8 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                             )
                         )
                     else:
-                        self.collector.record_metric(
-                            ClientRequestMetric(
+                        self.prompt_metrics_collector.record_metric(
+                            PromptMetric(
                                 stage_id=stage_id,
                                 request=prompt,
                                 response=ResponseData(
@@ -112,8 +108,8 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                             )
                         )
             except Exception as e:
-                self.collector.record_metric(
-                    ClientRequestMetric(
+                self.prompt_metrics_collector.record_metric(
+                    PromptMetric(
                         stage_id=stage_id,
                         request=prompt,
                         response=ResponseData(
