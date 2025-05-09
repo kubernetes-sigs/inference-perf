@@ -142,7 +142,7 @@ class LlmCompletionPrompt(LlmPrompt):
                     [safe_float(success.response.info.get("prompt_len")) for success in all_successful]
                 ).model_dump(),
                 "output_len": summarize(
-                    [float(v) for success in all_successful if (v := success.info.get("output_len")) is not None]
+                    [float(v) for success in all_successful if (v := success.response.info.get("output_len")) is not None]
                 ).model_dump(),
                 "per_token_latency": summarize(
                     [
@@ -203,7 +203,7 @@ class LlmChatCompletionPrompt(LlmPrompt):
                     [(successful.end_time - successful.start_time) for successful in all_successful]
                 ).model_dump(),
                 "output_len": summarize(
-                    [float(v) for success in all_successful if (v := safe_float(success.info.get("output_len"))) is not None]
+                    [float(v) for success in all_successful if (v := safe_float(success.response.info.get("output_len"))) is not None]
                 ).model_dump(),
                 "per_token_latency": summarize(
                     [
