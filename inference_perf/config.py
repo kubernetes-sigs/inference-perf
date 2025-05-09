@@ -76,19 +76,13 @@ class ReportConfig(BaseModel):
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
 
-class PrometheusClientConfig(BaseModel):
+class PrometheusCollectorConfig(BaseModel):
     scrape_interval: int = 15
     url: HttpUrl = "http://localhost:9090"
 
 
 class MetricsClientConfig(BaseModel):
-    prometheus: Optional[PrometheusClientConfig] = None
-
-
-class VLLMConfig(BaseModel):
-    model_name: str
-    api: APIType = APIType.Completion
-    url: str
+    prometheus: Optional[PrometheusCollectorConfig] = None
 
 
 class CustomTokenizerConfig(BaseModel):
@@ -97,14 +91,20 @@ class CustomTokenizerConfig(BaseModel):
     token: Optional[str] = None
 
 
+class VLLMConfig(BaseModel):
+    model_name: str
+    api: APIType = APIType.Completion
+    url: str
+    tokenizer: Optional[CustomTokenizerConfig] = None
+
+
 class Config(BaseModel):
     data: Optional[DataConfig] = DataConfig()
     load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
     report: Optional[ReportConfig] = ReportConfig()
-    metrics_client: Optional[MetricsClientConfig] = None
+    metrics_client: MetricsClientConfig = MetricsClientConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
 
 
 def read_config() -> Config:

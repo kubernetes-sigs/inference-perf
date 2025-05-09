@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple, TypedDict
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 from pydantic import BaseModel
 from build.lib.inference_perf.reportgen.base import RequestMetric
 from inference_perf.config import ObservedMetricsReportConfig
 from inference_perf.datagen import PromptData
-from inference_perf.metrics.base import Metric, MetricsCollector
+from inference_perf.metrics.base import Metric, MetricCollector
 
 
 class FailedResponseData(BaseModel):
@@ -34,10 +34,12 @@ class ResponseData(BaseModel):
 
 class ClientRequestMetric(Metric):
     """Tracks data for a request across its lifecycle"""
+
     start_time: float
     end_time: float
     request: "PromptData"
     response: "ResponseData"
+
 
 class ClientRequestMetricsStatisticalSummary(BaseModel):
     mean: Optional[float]
@@ -58,7 +60,8 @@ def get_summarization(items: List[float]) -> ClientRequestMetricsStatisticalSumm
         max=float(np.max(items)),
     )
 
-class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
+
+class ClientRequestMetricsCollector(MetricCollector[ClientRequestMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:
@@ -84,13 +87,6 @@ class ClientRequestMetricsCollector(MetricsCollector[ClientRequestMetric]):
             report["per_request"] = [metric.model_dump() for metric in self.get_metrics()]
         return report
 
-
-class ModelServerPrometheusMetric:
-    def __init__(self, name: str, ops: List[str], type: str, filters: str) -> None:
-        self.name = name
-        self.ops = ops
-        self.type = type
-        self.filters = filters
 
 
 class ModelServerMetrics(BaseModel):

@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
-from typing import List, Optional
+from typing import List
+from inference_perf.client.client_interfaces.prometheus.prometheus_client import PerfRuntimeParameters
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import DataGenType
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
-from inference_perf.client.client_interfaces.prometheus_client import PerfRuntimeParameters, PrometheusMetricsCollector
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator, ReportFile
 from inference_perf.config import read_config
@@ -50,11 +50,9 @@ def main_cli() -> None:
 
     # Define Model Server Client
     if config.vllm:
-        model_server_client = vLLMModelServerClient(
-            uri=config.vllm.url, model_name=config.vllm.model_name, tokenizer=config.tokenizer, api_type=config.vllm.api
-        )
+        vllm_client = vLLMModelServerClient(config=config.vllm, prometheus_client_config=config.metrics_client.prometheus)
     else:
-        raise Exception("vLLM client config missing")
+        raise Exception("No model server config provided")
 
     # Define DataGenerator
     if config.data:
@@ -72,16 +70,10 @@ def main_cli() -> None:
     else:
         raise Exception("load config missing")
 
-    # Define Metrics Clients
-    prometheus_metrics_client: Optional[PrometheusMetricsCollector] = (
-        PrometheusMetricsCollector(config=config.metrics_client.prometheus)
-        if config.metrics_client is not None and config.metrics_client.prometheus is not None
-        else None
-    )
-
     # Define Report Generator
     reportgen = ReportGenerator(
-        client_request_metrics_collector=model_server_client.collector, prometheus_metrics_collector=prometheus_metrics_client
+        client_request_metrics_collector=vllm_client.collector, 
+        prometheus_metrics_collector=vllm_client.prometheus_metrics_client
     )
 
     # Define Storage Clients
@@ -91,7 +83,7 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
+    perfrunner = InferencePerfRunner(vllm_client, loadgen, reportgen, storage_clients)
 
     start_time = time.time()
 
@@ -101,15 +93,16 @@ def main_cli() -> None:
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
-    # Generate Report after the tests
-    reports = asyncio.run(
-        reportgen.generate_reports(
-            config=config.report, runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client)
+    if config.report:
+        # Generate Report after the tests
+        reports = asyncio.run(
+            reportgen.generate_reports(
+                config=config.report, runtime_parameters=PerfRuntimeParameters(start_time, duration, vllm_client)
+            )
         )
-    )
 
-    # Save Reports
-    perfrunner.save_reports(reports=reports)
+        # Save Reports
+        perfrunner.save_reports(reports=reports)
 
 
 if __name__ == "__main__":

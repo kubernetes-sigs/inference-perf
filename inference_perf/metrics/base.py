@@ -14,7 +14,6 @@
 from abc import ABC, abstractmethod
 from typing import Generic, List, Optional, TypeVar
 
-import numpy as np
 from pydantic import BaseModel
 from build.lib.inference_perf.config import MetricsConfig
 
@@ -28,8 +27,8 @@ class Metric(BaseModel):
 T = TypeVar("T", bound=Metric)
 
 
-class MetricsCollector(ABC, Generic[T]):
-    """Anything that can collect and report metrics"""
+class MetricCollector(ABC, Generic[T]):
+    """Anything that can collect metrics to be included in the output report """
 
     @abstractmethod
     def __init__(self, config: MetricsConfig) -> None:

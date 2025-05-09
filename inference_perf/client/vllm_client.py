@@ -12,17 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from inference_perf.client.client_interfaces.prometheus import PrometheusEnabledModelServerClient
+from inference_perf.client.client_interfaces.prometheus.prometheus import PrometheusEnabledModelServerClient
+from inference_perf.client.client_interfaces.prometheus.prometheus_client import PrometheusCounterMetric, PrometheusGaugeMetric, PrometheusHistogramMetric, PrometheusMetric, PrometheusMetricsCollector
 from inference_perf.datagen import PromptData
-from inference_perf.config import APIType, CustomTokenizerConfig
+from inference_perf.config import APIType, MetricsClientConfig, VLLMConfig
 from inference_perf.datagen.base import ResponseData, ResponsesSummary
 from inference_perf.utils import CustomTokenizer
 from .base import (
     ClientRequestMetric,
     FailedResponseData,
     ModelServerClient,
-    ModelServerPrometheusMetric,
-    PrometheusMetricMetadata,
     RequestMetric,
     get_summarization,
 )
@@ -164,18 +163,32 @@ class VllmChatCompletionPromptData(PromptData):
 
 
 class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClient):
-    def __init__(self, uri: str, model_name: str, tokenizer: Optional[CustomTokenizerConfig], api_type: APIType) -> None:
-        self.model_name = model_name
-        self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
+    def __init__(self, config: VLLMConfig, prometheus_client_config: Optional[MetricsClientConfig]) -> None:
+        self.config = config
+        if(prometheus_client_config):
+            filter = f"model_name='{self.config.model_name}'"
+            metrics : List[PrometheusMetric] = [
+                PrometheusGaugeMetric(name="avg_queue_length", metric="vllm:num_requests_waiting", filter=filter),
+                PrometheusHistogramMetric(name="avg_time_to_first_token", metric="vllm:time_to_first_token_seconds", filter=filter),
+                PrometheusHistogramMetric(name="avg_time_per_output_token", metric="vllm:time_per_output_token_seconds", filter=filter),
+                PrometheusCounterMetric(name="avg_prompt_tokens", metric="vllm:prompt_tokens_total", filter=filter),
+                PrometheusCounterMetric(name="avg_output_tokens", metric="vllm:generation_tokens_total", filter=filter),
+                PrometheusCounterMetric(name="total_requests", metric="vllm:e2e_request_latency_seconds_count", filter=filter),
+                PrometheusHistogramMetric(name="avg_request_latency", metric="vllm:e2e_request_latency_seconds", filter=filter),
+            ]
+            self.prometheus_collector = PrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
+
+        self.model_name = self.config.model_name
+        self.uri = self.config.url + ("/v1/chat/completions" if self.config.api == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
         self.tokenizer_available = False
 
-        if tokenizer and tokenizer.pretrained_model_name_or_path:
+        if self.config.tokenizer and self.config.tokenizer.pretrained_model_name_or_path:
             try:
                 self.custom_tokenizer = CustomTokenizer(
-                    tokenizer.pretrained_model_name_or_path,
-                    tokenizer.token,
-                    tokenizer.trust_remote_code,
+                    self.config.tokenizer.pretrained_model_name_or_path,
+                    self.config.tokenizer.token,
+                    self.config.tokenizer.trust_remote_code,
                 )
                 self.tokenizer_available = True
             except Exception as e:
@@ -185,26 +198,8 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
             print("Tokenizer path is empty. Falling back to usage metrics.")
         self.request_metrics: List[RequestMetric] = list()
 
-    def _create_payload(self, payload: PromptData) -> dict[str, Any]:
-        if payload.type == APIType.Completion:
-            return {
-                "model": self.model_name,
-                "prompt": payload.data.prompt if payload.data else "",
-                "max_tokens": self.max_completion_tokens,
-            }
-        if payload.type == APIType.Chat:
-            return {
-                "model": self.model_name,
-                "messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in (payload.chat.messages if payload.chat else [])
-                ],
-                "max_tokens": self.max_completion_tokens,
-            }
-        raise Exception("api type not supported - has to be completions or chat completions")
-
     async def process_request(self, prompt_data: PromptData, stage_id: int) -> None:
-        payload = self._create_payload(prompt_data)
+        payload = prompt_data.to_payload(model=self.config.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
@@ -213,17 +208,17 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                     if response.status == 200:
                         response_data = await prompt_data.process_response(res=response, tokenizer=self.custom_tokenizer)
                         end = time.monotonic()
-
                         self.collector.record_metric(
                             ClientRequestMetric(
                                 stage_id=stage_id,
                                 request=prompt_data,
                                 response=ResponseData(info=response_data),
-                                time_per_request=end - start,
+                                start_time=start,
+                                end_time=time.monotonic(),
                             )
                         )
                     else:
-                        self.collector.crecord_metric(
+                        self.collector.record_metric(
                             ClientRequestMetric(
                                 stage_id=stage_id,
                                 request=prompt_data,
@@ -247,37 +242,3 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                         end_time=time.monotonic(),
                     )
                 )
-
-    def get_prometheus_metric_metadata(self) -> dict[str, ModelServerPrometheusMetric]:
-        return {
-            "avg_queue_length": ModelServerPrometheusMetric(
-                "vllm:num_requests_waiting", ["mean"], "gauge", "model_name='%s'" % self.model_name
-            ),
-            "avg_time_to_first_token": ModelServerPrometheusMetric(
-                "vllm:time_to_first_token_seconds",
-                ["mean", "median", "p90", "p99"],
-                "histogram",
-                "model_name='%s'" % self.model_name,
-            ),
-            "avg_time_per_output_token": ModelServerPrometheusMetric(
-                "vllm:time_per_output_token_seconds",
-                ["mean", "median", "p90", "p99"],
-                "histogram",
-                "model_name='%s'" % self.model_name,
-            ),
-            "avg_prompt_tokens": ModelServerPrometheusMetric(
-                "vllm:prompt_tokens_total", ["mean", "rate"], "counter", "model_name='%s'" % self.model_name
-            ),
-            "avg_output_tokens": ModelServerPrometheusMetric(
-                "vllm:generation_tokens_total", ["mean", "rate"], "counter", "model_name='%s'" % self.model_name
-            ),
-            "total_requests": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds_count", ["increase", "rate"], "counter", "model_name='%s'" % self.model_name
-            ),
-            "avg_request_latency": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds",
-                ["mean", "median", "p90", "p99"],
-                "histogram",
-                "model_name='%s'" % self.model_name,
-            ),
-        }
