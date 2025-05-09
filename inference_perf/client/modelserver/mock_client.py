@@ -13,14 +13,12 @@
 # limitations under the License.
 import asyncio
 from typing import List
-from inference_perf.config import APIType
 from inference_perf.datagen import InferenceData
 from .base import ModelServerClient, RequestMetric
 
 
 class MockModelServerClient(ModelServerClient):
     def __init__(self) -> None:
-        self.api_type = APIType.Completion
         self.request_metrics: List[RequestMetric] = list()
 
     async def process_request(self, payload: InferenceData, stage_id: int) -> None:

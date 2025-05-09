@@ -16,7 +16,7 @@ from typing import List
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
-from inference_perf.client import ModelServerClient, vLLMModelServerClient
+from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.config import DataGenType, MetricsClientType, ModelServerType
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
@@ -78,7 +78,7 @@ def main_cli() -> None:
             model_server_client = vLLMModelServerClient(
                 uri=config.server.base_url,
                 model_name=config.server.model_name,
-                tokenizer=tokenizer
+                tokenizer=tokenizer,
                 api_type=config.api,
             )
     else:
@@ -97,17 +97,16 @@ def main_cli() -> None:
                 )
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.vllm.api, None, tokenizer)
+            datagen = HFShareGPTDataGenerator(config.api, None, tokenizer)
 
         elif config.data.type == DataGenType.Synthetic:
             if config.data.input_distribution is None:
                 raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
 
             io_distribution = IODistribution(input=config.data.input_distribution)
-            datagen = SyntheticDataGenerator(config.vllm.api, ioDistribution=io_distribution, tokenizer=tokenizer)
-            datagen = HFShareGPTDataGenerator(config.server.api)
+            datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
         else:
-            datagen = MockDataGenerator(config.server.api)
+            datagen = MockDataGenerator(config.api)
     else:
         raise Exception("data config missing")
 
