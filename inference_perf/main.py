@@ -73,10 +73,10 @@ def main_cli() -> None:
                     "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
                 )
             model_server_client = vLLMModelServerClient(
+                api_type=config.api,
                 uri=config.server.base_url,
                 model_name=config.server.model_name,
                 tokenizer=tokenizer,
-                api_type=config.api,
             )
     else:
         raise Exception("model server client config missing")
