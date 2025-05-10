@@ -13,6 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
+from inference_perf.config import APIType
 
 from pydantic import BaseModel
 from inference_perf.datagen import InferenceData
@@ -92,8 +93,15 @@ class PrometheusMetricMetadata(TypedDict):
 
 class ModelServerClient(ABC):
     @abstractmethod
-    def __init__(self, *args: Tuple[int, ...]) -> None:
-        pass
+    def __init__(self, api_type: APIType, *args: Tuple[int, ...]) -> None:
+        if api_type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type {api_type}")
+
+        self.apiType = api_type
+
+    @abstractmethod
+    def get_supported_apis(self) -> List[APIType]:
+        raise NotImplementedError
 
     @abstractmethod
     async def process_request(self, data: InferenceData, stage_id: int) -> None:

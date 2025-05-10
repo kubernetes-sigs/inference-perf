@@ -13,7 +13,7 @@
 # limitations under the License.
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
-from inference_perf.client import ModelServerClient
+from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
 from asyncio import TaskGroup, sleep
 import time

@@ -22,7 +22,8 @@ import time
 
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, uri: str, model_name: str, tokenizer: CustomTokenizer, api_type: APIType) -> None:
+    def __init__(self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_type)
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
@@ -143,6 +144,9 @@ class vLLMModelServerClient(ModelServerClient):
                         print(await response.text())
             except aiohttp.ClientConnectorError as e:
                 print("vLLM Server connection error:\n", str(e))
+
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Completion, APIType.Chat]
 
     def get_request_metrics(self) -> List[RequestMetric]:
         return self.request_metrics

@@ -5,7 +5,8 @@ load:
   stages:
   - rate: 1
     duration: 30
-vllm:
-  api: chat
+api: chat
+server:
+  type: vllm
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
-  url: http://0.0.0.0:8000
+  base_url: http://0.0.0.0:8000
