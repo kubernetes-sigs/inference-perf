@@ -99,9 +99,9 @@ class MetricsClientConfig(BaseModel):
 
 
 class ModelServerClientConfig(BaseModel):
+    type: ModelServerType = ModelServerType.VLLM
     model_name: str
     base_url: str
-    type: ModelServerType = ModelServerType.VLLM
 
 
 class CustomTokenizerConfig(BaseModel):
@@ -114,8 +114,8 @@ class Config(BaseModel):
     api: APIType = APIType.Completion
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
+    metrics: Optional[MetricsClientConfig] = None
     report: Optional[ReportConfig] = ReportConfig()
-    metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
     server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
