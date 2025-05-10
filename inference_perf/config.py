@@ -13,7 +13,7 @@
 # limitations under the License.
 from datetime import datetime
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
@@ -57,14 +57,14 @@ class MetricsClientType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: int = 1
-    duration: int = 1
+    rate: int
+    duration: int
 
 
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
-    interval: Optional[float] = 1.0
-    stages: List[LoadStage]
+    interval: float = 1.0
+    stages: List[LoadStage] = []
 
 
 class StorageConfigBase(BaseModel):
@@ -85,7 +85,7 @@ class ReportConfig(BaseModel):
 
 
 class PrometheusClientConfig(BaseModel):
-    scrape_interval: Optional[int] = 15
+    scrape_interval: int = 15
     url: str = "http://localhost:9090"
 
 
@@ -107,13 +107,23 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    data: Optional[DataConfig] = DataConfig()
-    load: Optional[LoadConfig] = LoadConfig(stages=[LoadStage()])
+    data: DataConfig = DataConfig()
+    load: LoadConfig = LoadConfig()
     report: Optional[ReportConfig] = ReportConfig()
     metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
     vllm: Optional[VLLMConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
 
 
 def read_config() -> Config:
@@ -123,10 +133,15 @@ def read_config() -> Config:
 
     args = parser.parse_args()
     if args.config_file:
-        print("Using configuration from: % s" % args.config_file)
+        print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:
             cfg = yaml.safe_load(stream)
 
-        return Config(**cfg)
+        default_cfg = Config().model_dump(mode="json")
+        merged_cfg = deep_merge(default_cfg, cfg)
 
+        print(
+            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)}\n"
+        )
+        return Config(**merged_cfg)
     return Config()
