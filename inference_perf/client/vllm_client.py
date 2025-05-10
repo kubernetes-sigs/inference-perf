@@ -12,35 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.datagen import InferenceData
-from inference_perf.config import APIType, CustomTokenizerConfig
+from inference_perf.config import APIType
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata, RequestMetric
-from typing import Any, Optional, List
+from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
+from typing import Any, List
 import aiohttp
 import json
 import time
 
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, uri: str, model_name: str, tokenizer: Optional[CustomTokenizerConfig], api_type: APIType) -> None:
+    def __init__(self, uri: str, model_name: str, tokenizer: CustomTokenizer, api_type: APIType) -> None:
         self.model_name = model_name
         self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
-        self.tokenizer_available = False
-
-        if tokenizer and tokenizer.pretrained_model_name_or_path:
-            try:
-                self.custom_tokenizer = CustomTokenizer(
-                    tokenizer.pretrained_model_name_or_path,
-                    tokenizer.token,
-                    tokenizer.trust_remote_code,
-                )
-                self.tokenizer_available = True
-            except Exception as e:
-                print(f"Tokenizer initialization failed: {e}")
-                print("Falling back to usage metrics.")
-        else:
-            print("Tokenizer path is empty. Falling back to usage metrics.")
+        self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
@@ -131,7 +117,6 @@ class vLLMModelServerClient(ModelServerClient):
                     if response.status == 200:
                         content = await response.json()
                         end = time.monotonic()
-                        usage = content.get("usage", {})
                         choices = content.get("choices", [])
 
                         if data.type == APIType.Completion:
@@ -143,12 +128,8 @@ class vLLMModelServerClient(ModelServerClient):
                         else:
                             raise Exception("Unsupported API type")
 
-                        if self.tokenizer_available:
-                            prompt_tokens = self.custom_tokenizer.count_tokens(prompt)
-                            output_tokens = self.custom_tokenizer.count_tokens(output_text)
-                        else:
-                            prompt_tokens = usage.get("prompt_tokens", 0)
-                            output_tokens = usage.get("completion_tokens", 0)
+                        prompt_tokens = self.tokenizer.count_tokens(prompt)
+                        output_tokens = self.tokenizer.count_tokens(output_text)
 
                         self.request_metrics.append(
                             RequestMetric(

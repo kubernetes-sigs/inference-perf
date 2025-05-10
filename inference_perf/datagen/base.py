@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
-from inference_perf.config import APIType
+from inference_perf.config import APIType, Distribution
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List
 
@@ -36,17 +37,34 @@ class InferenceData(BaseModel):
     data: Optional[CompletionData] = None
 
 
+class IODistribution(BaseModel):
+    input: Distribution = Distribution()
+    output: Distribution = Distribution()
+
+
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
     apiType: APIType
+    ioDistribution: Optional[IODistribution]
+    tokenizer: Optional[CustomTokenizer]
 
     """Abstract base class for data generators."""
 
-    def __init__(self, apiType: APIType) -> None:
+    def __init__(
+        self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]
+    ) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
+
+        if ioDistribution is not None and not self.is_io_distribution_supported():
+            raise Exception("IO distribution not supported for this data generator")
+
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+
         self.apiType = apiType
+        self.ioDistribution = ioDistribution
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
@@ -54,4 +72,8 @@ class DataGenerator(ABC):
 
     @abstractmethod
     def get_data(self) -> Generator[InferenceData, None, None]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_io_distribution_supported(self) -> bool:
         raise NotImplementedError
