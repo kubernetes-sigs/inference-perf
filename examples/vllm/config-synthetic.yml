@@ -1,0 +1,19 @@
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+vllm:
+  api: completion
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  url: http://0.0.0.0:8000
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: synthetic
+  input_distribution:
+    min: 10
+    max: 100
+    mean: 50
+    std: 10
+    total_count: 100

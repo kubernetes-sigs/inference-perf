@@ -11,15 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ChatMessage, PromptGenerator, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from .base import IODistribution, ChatMessage, PromptGenerator, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
 from inference_perf.config import APIType
 from typing import Generator, List
 from datasets import load_dataset
 
 
-class HFShareGPTDataGenerator(PromptGenerator):
-    def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType)
+class HFShareGPTDataGenerator(DataGenerator):
+    def __init__(self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
+        super().__init__(apiType, ioDistribution, tokenizer)
         self.sharegpt_dataset = iter(
             load_dataset(
                 "anon8231489123/ShareGPT_Vicuna_unfiltered",
@@ -68,3 +69,6 @@ class HFShareGPTDataGenerator(PromptGenerator):
                     )
                 else:
                     raise Exception("Unsupported API type")
+
+    def is_io_distribution_supported(self) -> bool:
+        return False

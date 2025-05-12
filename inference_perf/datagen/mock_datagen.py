@@ -18,8 +18,7 @@ from inference_perf.config import APIType
 
 class MockDataGenerator(PromptGenerator):
     def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType)
-        pass
+        super().__init__(apiType, ioDistribution=None, tokenizer=None)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
@@ -32,3 +31,6 @@ class MockDataGenerator(PromptGenerator):
                 yield LlmCompletionPrompt(prompt="text" + str(i))
             else:
                 raise Exception("Unsupported API type")
+
+    def is_io_distribution_supported(self) -> bool:
+        return False
