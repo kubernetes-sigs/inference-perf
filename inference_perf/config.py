@@ -94,6 +94,11 @@ class PrometheusClientConfig(BaseModel):
     scrape_interval: int = 15
     url: str = "http://localhost:9090"
 
+class SelfHostedPrometheusCollectorConfig:
+    pass
+
+class GMPCollectorConfig:
+    project_id: str
 
 class PrometheusCollectorConfig(BaseModel):
     scrape_interval: int = 15

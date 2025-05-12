@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Self
 
 from pydantic import model_validator
@@ -20,21 +21,25 @@ from inference_perf.config import PrometheusCollectorConfig, PrometheusMetricsRe
 from inference_perf.metrics.base import MetricCollector
 
 
-class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
+class PrometheusMetricsCollector(ABC, MetricCollector[PrometheusMetric]):
     config: PrometheusCollectorConfig
     metrics: List[PrometheusMetric]
-
-    @model_validator(mode="after")  # type: ignore[misc]
-    def set_metric_urls(self) -> Self:
-        for metric in self.metrics:
-            metric.set_target_url(self.config.url)
-        return self
 
     async def to_report(self, report_config: PrometheusMetricsReportConfig, duration: float) -> dict[str, Any]:
         total_report = {}
         for metric in self.metrics:
-            total_report[metric.name] = await metric.to_report(duration=duration)
+            metric_report = {}
+            queries = metric.get_query_set(duration=duration)
+            for query_name, query in queries.items():
+                result = await self.query_metric(query=query, duration=duration)
+                if result is not None:
+                    metric_report[query_name] = result
+            total_report[metric.name] = metric_report
         return total_report
+
+    @abstractmethod
+    async def query_metric(query: str, duration: float) -> Optional[float]:
+        raise NotImplementedError
 
 
 class PrometheusEnabledModelServerClient:
