@@ -108,7 +108,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                                 response=ResponseData(
                                     info={},
                                     error=FailedResponseData(
-                                        error_msg=(await response_body.text()), error_type="Non 200 reponse"
+                                        error_msg=(await response.text()), error_type="Non 200 reponse"
                                     ),
                                 ),
                                 start_time=start,

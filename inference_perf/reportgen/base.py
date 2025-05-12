@@ -66,7 +66,6 @@ class ReportGenerator(BaseModel):
             else:
                 print("Not reporting prompt metrics")
 
-            print("HERE", self.prometheus_metrics_collector is not None, config.prometheus is not None)
             if self.prometheus_metrics_collector is not None and config.prometheus is not None:
                 print("Reporting prometheus metrics")
                 prometheus_report: dict[str, Any] = {}
