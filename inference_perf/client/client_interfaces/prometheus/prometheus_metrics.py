@@ -31,7 +31,7 @@ class PrometheusMetric(Metric):
     def get_query_set(self, duration: float) -> dict[str, str]:
         raise NotImplementedError
 
-    async def single_query(self, url: HttpUrl, query: str, duration: float) -> float:
+    async def single_query(self, query: str, duration: float) -> float:
         """
         Executes the given query on the Prometheus server and returns the result.
 
@@ -43,7 +43,8 @@ class PrometheusMetric(Metric):
         """
         query_result = 0.0
         try:
-            response = requests.get(f"{url}/api/v1/query", params={"query": query, "time": str(duration)})
+            print("Making request", f"{self.url}/api/v1/query", params={"query": query, "time": str(duration)})
+            response = requests.get(f"{self.url}/api/v1/query", params={"query": query, "time": str(duration)})
             if response is None:
                 print("Error executing query: %s" % (query))
                 return query_result
@@ -99,7 +100,7 @@ class PrometheusMetric(Metric):
             if self.url is None:
                 print(f"Metric {self.name} has no url, skipping")
             else:
-                report[query_name] = await self.single_query(url=self.url, query=query, duration=duration)
+                report[query_name] = await self.single_query(query=query, duration=duration)
         return report
 
 
