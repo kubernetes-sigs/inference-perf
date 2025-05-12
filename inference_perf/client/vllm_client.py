@@ -37,12 +37,21 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
         self,
         config: VLLMConfig,
         prometheus_client_config: Optional[PrometheusCollectorConfig],
-        tokenizer: CustomTokenizer,
-        api_type: APIType,
     ) -> None:
         super().__init__()
         self.config = config
-        self.tokenizer = tokenizer
+        try:
+            self.tokenizer = CustomTokenizer(
+                self.config.tokenizer.pretrained_model_name_or_path,
+                self.config.tokenizer.token,
+                self.config.tokenizer.trust_remote_code,
+            )
+        except Exception as e:
+            raise Exception(
+                "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
+                "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+            ) from e
+
         if prometheus_client_config:
             filter = f"model_name='{self.config.model_name}'"
             metrics: List[PrometheusMetric] = [
