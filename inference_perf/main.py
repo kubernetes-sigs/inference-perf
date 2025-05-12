@@ -62,7 +62,7 @@ def main_cli() -> None:
         datagen: PromptGenerator
 
         # Common checks for generators that require a tokenizer
-        if config.data.type in [PromptGenerator.ShareGPT, PromptGenerator.Synthetic]:
+        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic]:
             if vllm_client.tokenizer is None:
                 raise Exception(
                     f"{config.data.type.value} data generator requires a configured tokenizer. "
