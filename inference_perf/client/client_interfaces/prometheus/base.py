@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Self
 
 from pydantic import model_validator
 
@@ -25,9 +25,10 @@ class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
     metrics: List[PrometheusMetric]
 
     @model_validator(mode="after")  # type: ignore[misc]
-    def set_metric_urls(self) -> None:
+    def set_metric_urls(self) -> Self:
         for metric in self.metrics:
             metric.set_target_url(self.config.url)
+        return self
 
     async def to_report(self, report_config: PrometheusMetricsReportConfig, duration: float) -> dict[str, Any]:
         total_report = {}
