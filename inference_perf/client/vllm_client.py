@@ -124,6 +124,6 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                             info={}, error=FailedResponseData(error_msg=str(e), error_type=type(e).__name__)
                         ),
                         start_time=start,
-                        end_time=end,
+                        end_time=time.monotonic(),
                     )
                 )
