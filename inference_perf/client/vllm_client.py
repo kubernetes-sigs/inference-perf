@@ -90,14 +90,13 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                 async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
                         response_body = await prompt.process_response(res=response, tokenizer=self.custom_tokenizer)
-                        end = time.monotonic()
                         self.prompt_metrics_collector.record_metric(
                             PromptMetric(
                                 stage_id=stage_id,
                                 request=prompt,
                                 response=response_body,
                                 start_time=start,
-                                end_time=end,
+                                end_time=time.monotonic(),
                             )
                         )
                     else:
@@ -112,7 +111,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                                     ),
                                 ),
                                 start_time=start,
-                                end_time=end,
+                                end_time=time.monotonic(),
                             )
                         )
             except Exception as e:
