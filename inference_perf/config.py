@@ -85,12 +85,11 @@ class PrometheusMetricsReportConfig(BaseModel):
     pass
 
 
-
 class ReportConfig(BaseModel):
     prompt: PromptMetricsReportConfig = PromptMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
-      
+
 class PrometheusClientConfig(BaseModel):
     scrape_interval: int = 15
     url: str = "http://localhost:9090"

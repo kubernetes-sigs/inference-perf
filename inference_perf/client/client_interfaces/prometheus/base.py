@@ -24,7 +24,7 @@ class PrometheusMetricsCollector(MetricCollector[PrometheusMetric]):
     config: PrometheusCollectorConfig
     metrics: List[PrometheusMetric]
 
-    @model_validator(mode="after")
+    @model_validator(mode="after")  # type: ignore[misc]
     def set_metric_urls(self) -> None:
         for metric in self.metrics:
             metric.set_target_url(self.config.url)

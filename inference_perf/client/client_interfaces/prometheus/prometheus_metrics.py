@@ -98,7 +98,8 @@ class PrometheusMetric(Metric):
         for query_name, query in queries.items():
             if self.url is None:
                 print(f"Metric {self.name} has no url, skipping")
-            report[query_name] = await self.single_query(url=self.url, query=query, duration=duration)
+            else:
+                report[query_name] = await self.single_query(url=self.url, query=query, duration=duration)
         return report
 
 

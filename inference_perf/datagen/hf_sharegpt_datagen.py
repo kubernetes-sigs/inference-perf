@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import IODistribution, ChatMessage, PromptGenerator, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
+from .base import IODistribution, ChatMessage, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt, PromptGenerator
 from inference_perf.config import APIType
-from typing import Generator, List
+from typing import Generator, List, Optional
 from datasets import load_dataset
 
 
-class HFShareGPTDataGenerator(DataGenerator):
+class HFShareGPTDataGenerator(PromptGenerator):
     def __init__(self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
         super().__init__(apiType, ioDistribution, tokenizer)
         self.sharegpt_dataset = iter(

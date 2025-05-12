@@ -27,18 +27,19 @@ from inference_perf.config import APIType, PrometheusCollectorConfig, VLLMConfig
 from inference_perf.datagen.base import FailedResponseData, PromptMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from typing import Optional, List
-from inference_perf.datagen import InferenceData
-from inference_perf.config import APIType
-from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
-from typing import Any, List
 import aiohttp
 import json
 import time
 
 
 class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClient):
-    def __init__(self, config: VLLMConfig, prometheus_client_config: Optional[PrometheusCollectorConfig], tokenizer: CustomTokenizer, api_type: APIType) -> None:
+    def __init__(
+        self,
+        config: VLLMConfig,
+        prometheus_client_config: Optional[PrometheusCollectorConfig],
+        tokenizer: CustomTokenizer,
+        api_type: APIType,
+    ) -> None:
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer

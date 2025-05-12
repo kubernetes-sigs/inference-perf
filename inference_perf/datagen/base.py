@@ -17,13 +17,11 @@ import numpy as np
 from pydantic import BaseModel
 from inference_perf.config import APIType, PromptMetricsReportConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from pydantic import BaseModel
-from inference_perf.config import APIType, Distribution
+from inference_perf.config import Distribution
 from abc import ABC, abstractmethod
 from typing import Any, Generator, List, Optional
 
 from inference_perf.metrics.base import Metric, MetricCollector
-from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 def safe_float(value: Any) -> float:
@@ -240,17 +238,11 @@ class LlmChatCompletionPrompt(LlmPrompt):
             },
         )
 
+
 class IODistribution(BaseModel):
     input: Distribution = Distribution()
     output: Distribution = Distribution()
 
-
-class DataGenerator(ABC):
-    """Abstract base class for data generators."""
-
-    apiType: APIType
-    ioDistribution: Optional[IODistribution]
-    tokenizer: Optional[CustomTokenizer]
 
 class PromptMetricsCollector(MetricCollector[PromptMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
@@ -281,6 +273,8 @@ class PromptGenerator(ABC):
     """Abstract base class for prompt generators."""
 
     apiType: APIType
+    ioDistribution: Optional[IODistribution]
+    tokenizer: Optional[CustomTokenizer]
 
     def __init__(
         self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]

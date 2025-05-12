@@ -15,7 +15,7 @@ import time
 from typing import List
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType
+from inference_perf.config import DataGenType
 from inference_perf.datagen import PromptGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
 from inference_perf.client import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
@@ -69,8 +69,11 @@ def main_cli() -> None:
                 "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
                 "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
             )
-        model_server_client = vLLMModelServerClient(
-            config=config.vllm, prometheus_client_config=config.metrics_client.prometheus, tokenizer=tokenizer, api_type=config.vllm.api
+        vllm_client = vLLMModelServerClient(
+            config=config.vllm,
+            prometheus_client_config=config.metrics_client.prometheus,
+            tokenizer=tokenizer,
+            api_type=config.vllm.api,
         )
     else:
         raise Exception("No model server config provided")
@@ -94,7 +97,7 @@ def main_cli() -> None:
                 raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
 
             io_distribution = IODistribution(input=config.data.input_distribution)
-            datagen = SyntheticDataGenerator(config.vllm.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+            datagen = SyntheticDataGenerator(apiType=config.vllm.api, ioDistribution=io_distribution, tokenizer=tokenizer)
         else:
             datagen = MockDataGenerator(config.vllm.api)
     else:
