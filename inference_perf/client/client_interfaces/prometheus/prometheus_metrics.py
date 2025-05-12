@@ -43,7 +43,7 @@ class PrometheusMetric(Metric):
         """
         query_result = 0.0
         try:
-            print("Making request", f"{self.url}/api/v1/query", params={"query": query, "time": str(duration)})
+            print("Making request", f"{self.url}/api/v1/query", {"query": query, "time": str(duration)})
             response = requests.get(f"{self.url}/api/v1/query", params={"query": query, "time": str(duration)})
             if response is None:
                 print("Error executing query: %s" % (query))
