@@ -16,9 +16,7 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
         credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
         self.credentials = credentials
         self.project_id = project_id
-        self.url = "https://monitoring.googleapis.com/v1/projects/%s/location/global/prometheus/api/v1/metadata" % (
-            self.project_id
-        )
+        self.url = "https://monitoring.googleapis.com/v1/projects/{self.project_id}/location/global/prometheus/api/v1/query"
         print("Created Google Managed Prometheus Metrics Collector")
 
     async def query_metric(self, query: str, duration: float) -> Optional[float]:
@@ -29,7 +27,7 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
         # params = {"query": query}
         print(f"Evaluating query: {query}")
         request_post = requests.get(
-            url=f"{self.url}/api/v1/query",
+            url=self.url,
             headers=headers_api,
             params={"query": query}
         )
