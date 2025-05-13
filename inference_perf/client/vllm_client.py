@@ -63,7 +63,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                 metrics_client_config.google_managed_prometheus is not None
                 or metrics_client_config.self_hosted_prometheus is not None
             ):
-                filter = f'model_name=~".*"' # f'model_name="{self.config.model_name}"'
+                filter = f'model_name="{self.config.model_name}"'
                 metrics: List[PrometheusMetric] = [
                     PrometheusGaugeMetric(name="avg_queue_length", metric="vllm:num_requests_waiting", filter=filter),
                     PrometheusHistogramMetric(
