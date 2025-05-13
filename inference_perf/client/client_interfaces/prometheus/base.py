@@ -12,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Self
+from typing import Any, List, Optional
 
-from pydantic import model_validator
 
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import PrometheusMetric
 from inference_perf.config import PrometheusCollectorConfig, PrometheusMetricsReportConfig
 from inference_perf.metrics.base import MetricCollector
 
 
-class PrometheusMetricsCollector(ABC, MetricCollector[PrometheusMetric]):
+class PrometheusMetricsCollector(MetricCollector[PrometheusMetric], ABC):
     config: PrometheusCollectorConfig
     metrics: List[PrometheusMetric]
 
@@ -33,6 +32,7 @@ class PrometheusMetricsCollector(ABC, MetricCollector[PrometheusMetric]):
             for query_name, query in queries.items():
                 result = await self.query_metric(query=query, duration=duration)
                 if result is not None:
+
                     metric_report[query_name] = result
             total_report[metric.name] = metric_report
         return total_report
