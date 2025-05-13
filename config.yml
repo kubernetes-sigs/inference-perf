@@ -15,4 +15,3 @@ metrics_client:
   type: prometheus
   prometheus:
     url: http://localhost:9090
-    scrape_interval: 15

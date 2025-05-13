@@ -93,7 +93,7 @@ class ReportConfig(BaseModel):
 
 
 class PrometheusCollectorConfig(ABC, BaseModel):
-    scrape_interval: int = 15
+    pass
 
 
 class SelfHostedPrometheusCollectorConfig(PrometheusCollectorConfig):
