@@ -1,10 +1,9 @@
-
 from typing import Any, List, Optional
 
 import requests
 from inference_perf.client.client_interfaces.prometheus.base import PrometheusMetricsCollector
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import PrometheusMetric
-from inference_perf.config import PrometheusCollectorConfig
+from inference_perf.config import GMPCollectorConfig
 import google.auth
 import google.auth.transport.requests
 
@@ -13,19 +12,21 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
     project_id: str
     credentials: Any
 
-    def __init__(self, metrics: List[PrometheusMetric], config: PrometheusCollectorConfig):
+    def __init__(self, metrics: List[PrometheusMetric], config: GMPCollectorConfig):
         super().__init__(metrics=metrics, config=config)
-        credentials, project_id = google.auth.default()
+        credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
         self.credentials = credentials
         self.project_id = project_id
-        self.url='https://monitoring.googleapis.com/v1/projects/%s/location/global/prometheus/api/v1/metadata' % (self.project_id)
+        self.url = "https://monitoring.googleapis.com/v1/projects/%s/location/global/prometheus/api/v1/metadata" % (
+            self.project_id
+        )
 
     async def query_metric(self, query: str, duration: float) -> Optional[float]:
-        auth_req = google.auth.transport.requests.Request()
+        auth_req = google.auth.transport.requests.Request()  # type: ignore[no-untyped-call]
         self.credentials.refresh(auth_req)
-        
-        headers_api = {'Authorization': 'Bearer ' + self.credentials.token}
-        params = {'query': query}
+
+        headers_api = {"Authorization": "Bearer " + self.credentials.token}
+        params = {"query": query}
         request_post = requests.get(url=self.url, headers=headers_api)
         all_metrics_metadata = request_post.json()
         if request_post.ok is not True:
@@ -58,4 +59,3 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
         else:
             print("HTTP Error: %s" % (response))
             return None
-            

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 class Metric(BaseModel):
     """Abstract type to track categorizable (but not neccesarily summarizable) metrics"""
+
     stage_id: Optional[int] = None
 
 

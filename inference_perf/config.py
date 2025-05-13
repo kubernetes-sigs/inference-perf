@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import ABC
 from datetime import datetime
 
 from pydantic import BaseModel, HttpUrl
@@ -90,23 +91,23 @@ class ReportConfig(BaseModel):
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
 
-class PrometheusClientConfig(BaseModel):
+
+class PrometheusCollectorConfig(ABC, BaseModel):
     scrape_interval: int = 15
-    url: str = "http://localhost:9090"
 
-class SelfHostedPrometheusCollectorConfig:
-    pass
 
-class GMPCollectorConfig:
+class SelfHostedPrometheusCollectorConfig(PrometheusCollectorConfig):
+    url: HttpUrl
+
+
+class GMPCollectorConfig(PrometheusCollectorConfig):
     project_id: str
-
-class PrometheusCollectorConfig(BaseModel):
-    scrape_interval: int = 15
-    url: HttpUrl = HttpUrl(url="http://localhost:9090")
 
 
 class MetricsClientConfig(BaseModel):
     prometheus: Optional[PrometheusCollectorConfig] = None
+    self_hosted_prometheus: Optional[SelfHostedPrometheusCollectorConfig] = None
+    google_managed_prometheus: Optional[GMPCollectorConfig] = None
 
 
 class CustomTokenizerConfig(BaseModel):

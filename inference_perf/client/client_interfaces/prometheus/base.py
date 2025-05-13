@@ -32,14 +32,13 @@ class PrometheusMetricsCollector(MetricCollector[PrometheusMetric], ABC):
             for query_name, query in queries.items():
                 result = await self.query_metric(query=query, duration=duration)
                 if result is not None:
-
                     metric_report[query_name] = result
             total_report[metric.name] = metric_report
         return total_report
 
     @abstractmethod
-    async def query_metric(query: str, duration: float) -> Optional[float]:
-        raise NotImplementedError
+    async def query_metric(self, query: str, duration: float) -> Optional[float]:
+        pass
 
 
 class PrometheusEnabledModelServerClient:

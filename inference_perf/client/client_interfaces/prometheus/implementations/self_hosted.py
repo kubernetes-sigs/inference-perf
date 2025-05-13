@@ -1,13 +1,12 @@
-
 from typing import List, Optional
 import requests
 from inference_perf.client.client_interfaces.prometheus.base import PrometheusMetricsCollector
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import PrometheusMetric
-from inference_perf.config import PrometheusCollectorConfig
+from inference_perf.config import SelfHostedPrometheusCollectorConfig
 
 
 class SelfHostedPrometheusMetricsCollector(PrometheusMetricsCollector):
-    def __init__(self, metrics: List[PrometheusMetric], config: PrometheusCollectorConfig):
+    def __init__(self, metrics: List[PrometheusMetric], config: SelfHostedPrometheusCollectorConfig):
         super().__init__(metrics=metrics, config=config)
         pass
 
@@ -71,4 +70,3 @@ class SelfHostedPrometheusMetricsCollector(PrometheusMetricsCollector):
                     print("Error converting value to float: %s" % (result[0]["value"][1]))
                     return query_result
         return query_result
-

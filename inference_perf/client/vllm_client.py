@@ -14,8 +14,9 @@
 from inference_perf.client.base import ModelServerClient
 from inference_perf.client.client_interfaces.prometheus.base import (
     PrometheusEnabledModelServerClient,
-    PrometheusMetricsCollector,
 )
+from inference_perf.client.client_interfaces.prometheus.implementations.google_managed import GMPMetricsCollector
+from inference_perf.client.client_interfaces.prometheus.implementations.self_hosted import SelfHostedPrometheusMetricsCollector
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import (
     PrometheusCounterMetric,
     PrometheusGaugeMetric,
@@ -23,7 +24,7 @@ from inference_perf.client.client_interfaces.prometheus.prometheus_metrics impor
     PrometheusMetric,
 )
 from inference_perf.datagen import LlmPrompt
-from inference_perf.config import APIType, PrometheusCollectorConfig, VLLMConfig
+from inference_perf.config import APIType, GMPCollectorConfig, PrometheusCollectorConfig, SelfHostedPrometheusCollectorConfig, VLLMConfig
 from inference_perf.datagen.base import FailedResponseData, PromptMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from typing import Optional, List
@@ -69,7 +70,10 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                     name="avg_request_latency", metric="vllm:e2e_request_latency_seconds", filter=filter
                 ),
             ]
-            self.prometheus_collector = PrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
+            if isinstance(prometheus_client_config, GMPCollectorConfig):
+                self.prometheus_collector = GMPMetricsCollector(config=prometheus_client_config, metrics=metrics)
+            elif isinstance(prometheus_client_config, SelfHostedPrometheusCollectorConfig):
+                self.prometheus_collector = SelfHostedPrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
         else:
             print("No prometheus client config passed, not collecting metrics")
         self.model_name = self.config.model_name
@@ -106,9 +110,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                                 request=prompt,
                                 response=ResponseData(
                                     info={},
-                                    error=FailedResponseData(
-                                        error_msg=(await response.text()), error_type="Non 200 reponse"
-                                    ),
+                                    error=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
                                 ),
                                 start_time=start,
                                 end_time=time.monotonic(),
