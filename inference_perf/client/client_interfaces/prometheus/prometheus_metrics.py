@@ -34,7 +34,7 @@ class PrometheusHistogramMetric(PrometheusMetric):
     def get_query_set(self, duration: float) -> dict[str, str]:
         return {
             "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
-            % (self.name, self.filter, duration, self.name, filter, duration),
+            % (self.name, self.filter, duration, self.name, self.filter, duration),
             "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
             "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
             "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
