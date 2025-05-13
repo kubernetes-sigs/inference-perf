@@ -91,7 +91,6 @@ class ReportConfig(BaseModel):
     prometheus: Optional[PrometheusMetricsReportConfig] = None
 
 
-
 class PrometheusCollectorConfig(ABC, BaseModel):
     pass
 

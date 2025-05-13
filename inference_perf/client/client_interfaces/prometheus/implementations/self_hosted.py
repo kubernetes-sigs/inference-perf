@@ -6,9 +6,11 @@ from inference_perf.config import SelfHostedPrometheusCollectorConfig
 
 
 class SelfHostedPrometheusMetricsCollector(PrometheusMetricsCollector):
+    config: SelfHostedPrometheusCollectorConfig
+
     def __init__(self, metrics: List[PrometheusMetric], config: SelfHostedPrometheusCollectorConfig):
-        super().__init__(metrics=metrics, config=config)
-        pass
+        super().__init__(metrics=metrics)
+        self.config = config
 
     async def query_metric(self, query: str, duration: float) -> Optional[float]:
         """

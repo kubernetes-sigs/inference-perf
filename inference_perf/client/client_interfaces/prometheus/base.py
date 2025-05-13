@@ -16,12 +16,11 @@ from typing import Any, List, Optional
 
 
 from inference_perf.client.client_interfaces.prometheus.prometheus_metrics import PrometheusMetric
-from inference_perf.config import PrometheusCollectorConfig, PrometheusMetricsReportConfig
+from inference_perf.config import PrometheusMetricsReportConfig
 from inference_perf.metrics.base import MetricCollector
 
 
 class PrometheusMetricsCollector(MetricCollector[PrometheusMetric], ABC):
-    config: PrometheusCollectorConfig
     metrics: List[PrometheusMetric]
 
     async def to_report(self, report_config: PrometheusMetricsReportConfig, duration: float) -> dict[str, Any]:

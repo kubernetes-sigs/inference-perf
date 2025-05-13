@@ -9,17 +9,20 @@ import google.auth.transport.requests
 
 
 class GMPMetricsCollector(PrometheusMetricsCollector):
+    config: GMPCollectorConfig
     project_id: str
     credentials: Any
 
     def __init__(self, metrics: List[PrometheusMetric], config: GMPCollectorConfig):
-        super().__init__(metrics=metrics, config=config)
+        super().__init__(metrics=metrics)
+        self.config = config
         credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
         self.credentials = credentials
         self.project_id = project_id
         self.url = "https://monitoring.googleapis.com/v1/projects/%s/location/global/prometheus/api/v1/metadata" % (
             self.project_id
         )
+        print("Created Google Managed Prometheus Metrics Collector")
 
     async def query_metric(self, query: str, duration: float) -> Optional[float]:
         auth_req = google.auth.transport.requests.Request()  # type: ignore[no-untyped-call]

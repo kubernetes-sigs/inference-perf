@@ -52,7 +52,7 @@ def main_cli() -> None:
     if config.vllm:
         vllm_client = vLLMModelServerClient(
             config=config.vllm,
-            prometheus_client_config=config.metrics_client.prometheus,
+            metrics_client_config=config.metrics_client,
         )
     else:
         raise Exception("No model server config provided")

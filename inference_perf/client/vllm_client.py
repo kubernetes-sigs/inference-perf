@@ -24,7 +24,11 @@ from inference_perf.client.client_interfaces.prometheus.prometheus_metrics impor
     PrometheusMetric,
 )
 from inference_perf.datagen import LlmPrompt
-from inference_perf.config import APIType, GMPCollectorConfig, PrometheusCollectorConfig, SelfHostedPrometheusCollectorConfig, VLLMConfig
+from inference_perf.config import (
+    APIType,
+    MetricsClientConfig,
+    VLLMConfig,
+)
 from inference_perf.datagen.base import FailedResponseData, PromptMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from typing import Optional, List
@@ -37,7 +41,7 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
     def __init__(
         self,
         config: VLLMConfig,
-        prometheus_client_config: Optional[PrometheusCollectorConfig],
+        metrics_client_config: Optional[MetricsClientConfig],
     ) -> None:
         super().__init__()
         self.config = config
@@ -53,29 +57,39 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
                 "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
             ) from e
 
-        if prometheus_client_config:
-            filter = f"model_name='{self.config.model_name}'"
-            metrics: List[PrometheusMetric] = [
-                PrometheusGaugeMetric(name="avg_queue_length", metric="vllm:num_requests_waiting", filter=filter),
-                PrometheusHistogramMetric(
-                    name="avg_time_to_first_token", metric="vllm:time_to_first_token_seconds", filter=filter
-                ),
-                PrometheusHistogramMetric(
-                    name="avg_time_per_output_token", metric="vllm:time_per_output_token_seconds", filter=filter
-                ),
-                PrometheusCounterMetric(name="avg_prompt_tokens", metric="vllm:prompt_tokens_total", filter=filter),
-                PrometheusCounterMetric(name="avg_output_tokens", metric="vllm:generation_tokens_total", filter=filter),
-                PrometheusCounterMetric(name="total_requests", metric="vllm:e2e_request_latency_seconds_count", filter=filter),
-                PrometheusHistogramMetric(
-                    name="avg_request_latency", metric="vllm:e2e_request_latency_seconds", filter=filter
-                ),
-            ]
-            if isinstance(prometheus_client_config, GMPCollectorConfig):
-                self.prometheus_collector = GMPMetricsCollector(config=prometheus_client_config, metrics=metrics)
-            elif isinstance(prometheus_client_config, SelfHostedPrometheusCollectorConfig):
-                self.prometheus_collector = SelfHostedPrometheusMetricsCollector(config=prometheus_client_config, metrics=metrics)
-        else:
-            print("No prometheus client config passed, not collecting metrics")
+        if metrics_client_config is not None:
+            if (
+                metrics_client_config.google_managed_prometheus is not None
+                or metrics_client_config.self_hosted_prometheus is not None
+            ):
+                filter = f"model_name='{self.config.model_name}'"
+                metrics: List[PrometheusMetric] = [
+                    PrometheusGaugeMetric(name="avg_queue_length", metric="vllm:num_requests_waiting", filter=filter),
+                    PrometheusHistogramMetric(
+                        name="avg_time_to_first_token", metric="vllm:time_to_first_token_seconds", filter=filter
+                    ),
+                    PrometheusHistogramMetric(
+                        name="avg_time_per_output_token", metric="vllm:time_per_output_token_seconds", filter=filter
+                    ),
+                    PrometheusCounterMetric(name="avg_prompt_tokens", metric="vllm:prompt_tokens_total", filter=filter),
+                    PrometheusCounterMetric(name="avg_output_tokens", metric="vllm:generation_tokens_total", filter=filter),
+                    PrometheusCounterMetric(
+                        name="total_requests", metric="vllm:e2e_request_latency_seconds_count", filter=filter
+                    ),
+                    PrometheusHistogramMetric(
+                        name="avg_request_latency", metric="vllm:e2e_request_latency_seconds", filter=filter
+                    ),
+                ]
+                if metrics_client_config.google_managed_prometheus is not None:
+                    self.prometheus_collector = GMPMetricsCollector(
+                        config=metrics_client_config.google_managed_prometheus, metrics=metrics
+                    )
+                elif metrics_client_config.self_hosted_prometheus is not None:
+                    self.prometheus_collector = SelfHostedPrometheusMetricsCollector(
+                        config=metrics_client_config.self_hosted_prometheus, metrics=metrics
+                    )
+            else:
+                print("No metrics client config passed, not collecting metrics")
         self.model_name = self.config.model_name
         self.uri = self.config.url + ("/v1/chat/completions" if self.config.api == APIType.Chat else "/v1/completions")
         self.max_completion_tokens = 30
