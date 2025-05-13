@@ -42,7 +42,7 @@ class ReportFile:
         return self.contents
 
 
-class ReportGenerator(BaseModel):
+class ReportGenerator():
     client_request_metrics_collector: PromptMetricsCollector
     prometheus_metrics_collector: Optional[PrometheusMetricsCollector]
 
