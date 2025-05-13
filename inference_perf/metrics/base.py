@@ -27,6 +27,7 @@ T = TypeVar("T", bound=Metric)
 
 class MetricCollector(ABC, Generic[T]):
     """Anything that can collect metrics to be included in the output report"""
+
     def __init__(self, metrics: List[T]):
         self.metrics = metrics
 

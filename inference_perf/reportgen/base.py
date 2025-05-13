@@ -46,6 +46,14 @@ class ReportGenerator(BaseModel):
     client_request_metrics_collector: PromptMetricsCollector
     prometheus_metrics_collector: Optional[PrometheusMetricsCollector]
 
+    def __init__(
+        self,
+        client_request_metrics_collector: PromptMetricsCollector,
+        prometheus_metrics_collector: Optional[PrometheusMetricsCollector],
+    ):
+        self.client_request_metrics_collector = client_request_metrics_collector
+        self.prometheus_metrics_collector = prometheus_metrics_collector
+
     async def generate_reports(self, config: ReportConfig, duration: float) -> List[ReportFile]:
         print(f"Generating report according to config {config.model_dump_json()}")
         if not hasattr(config, "observed") and not hasattr(config, "prometheus"):
