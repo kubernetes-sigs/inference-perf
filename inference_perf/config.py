@@ -105,7 +105,6 @@ class GMPCollectorConfig(PrometheusCollectorConfig):
 
 
 class MetricsClientConfig(BaseModel):
-    prometheus: Optional[PrometheusCollectorConfig] = None
     self_hosted_prometheus: Optional[SelfHostedPrometheusCollectorConfig] = None
     google_managed_prometheus: Optional[GMPCollectorConfig] = None
 
