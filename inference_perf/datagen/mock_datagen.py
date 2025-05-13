@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData, CompletionData
+from .base import DataGenerator, InferenceData, CompletionData, ChatCompletionData, ChatMessage
 from typing import Generator, List
 from inference_perf.config import APIType
 
@@ -21,14 +21,18 @@ class MockDataGenerator(DataGenerator):
         super().__init__(apiType, ioDistribution=None, tokenizer=None)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
         while True:
             i += 1
             if self.apiType == APIType.Completion:
-                yield InferenceData(data=CompletionData(prompt="text" + str(i)))
+                yield InferenceData(type=APIType.Completion, data=CompletionData(prompt="text" + str(i)))
+            elif self.apiType == APIType.Chat:
+                yield InferenceData(
+                    type=APIType.Chat, chat=ChatCompletionData(messages=[ChatMessage(role="user", content="text" + str(i))])
+                )
             else:
                 raise Exception("Unsupported API type")
 

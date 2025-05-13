@@ -14,7 +14,7 @@
 import time
 from typing import cast
 import requests
-from inference_perf.client.base import ModelServerMetrics, ModelServerPrometheusMetric
+from inference_perf.client.modelserver.base import ModelServerMetrics, ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
 from .base import MetricsClient, PerfRuntimeParameters
 

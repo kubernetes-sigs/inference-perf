@@ -46,6 +46,10 @@ class DataConfig(BaseModel):
     output_distribution: Optional[Distribution] = Distribution()
 
 
+class ModelServerType(Enum):
+    VLLM = "vllm"
+
+
 class LoadType(Enum):
     CONSTANT = "constant"
     POISSON = "poisson"
@@ -104,10 +108,10 @@ class MetricsClientConfig(BaseModel):
     prometheus: Optional[PrometheusClientConfig] = None
 
 
-class VLLMConfig(BaseModel):
+class ModelServerClientConfig(BaseModel):
+    type: ModelServerType = ModelServerType.VLLM
     model_name: str
-    api: APIType = APIType.Completion
-    url: str
+    base_url: str
 
 
 class CustomTokenizerConfig(BaseModel):
@@ -117,12 +121,13 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
+    api: APIType = APIType.Completion
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
+    metrics: Optional[MetricsClientConfig] = None
     report: ReportConfig = ReportConfig()
-    metrics_client: Optional[MetricsClientConfig] = None
     storage: Optional[StorageConfig] = StorageConfig()
-    vllm: Optional[VLLMConfig] = None
+    server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
 
 
