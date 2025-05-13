@@ -13,9 +13,8 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Optional, TypeVar
-
 from pydantic import BaseModel
-from inference_perf.client.base import ModelServerClient, ModelServerMetrics
+from inference_perf.client.modelserver.base import ModelServerClient, ModelServerMetrics
 
 
 class Metric(BaseModel):
