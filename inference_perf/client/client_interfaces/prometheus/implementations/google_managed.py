@@ -26,11 +26,11 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
         self.credentials.refresh(auth_req)
 
         headers_api = {"Authorization": "Bearer " + self.credentials.token}
-        params = {"query": query}
+        # params = {"query": query}
         print(f"Evaluating query: {query}")
-        request_post = requests.get(url=self.url, headers=headers_api, params=params)
+        request_post = requests.get(url=f"{self.url}/query={query}", headers=headers_api)
         response = request_post.json()
-        
+
         print(f"Got response from metrics server: {response}")
         if request_post.ok:
             if response["status"] == "success" and response["data"] and response["data"]["result"]:
