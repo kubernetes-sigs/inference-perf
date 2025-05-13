@@ -10,7 +10,7 @@ import google.auth.transport.requests
 
 class GMPMetricsCollector(PrometheusMetricsCollector):
     def __init__(self, metrics: List[PrometheusMetric], config: GMPCollectorConfig):
-        self.metrics = metrics
+        super().__init__(metrics=metrics)
         self.config = config
         credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
         self.credentials = credentials
