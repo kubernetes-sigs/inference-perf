@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import requests
 from inference_perf.client.client_interfaces.prometheus.base import PrometheusMetricsCollector
@@ -9,8 +9,6 @@ import google.auth.transport.requests
 
 
 class GMPMetricsCollector(PrometheusMetricsCollector):
-    config: GMPCollectorConfig
-
     def __init__(self, metrics: List[PrometheusMetric], config: GMPCollectorConfig):
         self.metrics = metrics
         self.config = config

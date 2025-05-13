@@ -6,8 +6,6 @@ from inference_perf.config import SelfHostedPrometheusCollectorConfig
 
 
 class SelfHostedPrometheusMetricsCollector(PrometheusMetricsCollector):
-    config: SelfHostedPrometheusCollectorConfig
-
     def __init__(self, metrics: List[PrometheusMetric], config: SelfHostedPrometheusCollectorConfig):
         self.metrics = metrics
         self.config = config
