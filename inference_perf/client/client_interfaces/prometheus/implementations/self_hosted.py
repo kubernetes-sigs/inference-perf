@@ -9,6 +9,7 @@ class SelfHostedPrometheusMetricsCollector(PrometheusMetricsCollector):
     def __init__(self, metrics: List[PrometheusMetric], config: SelfHostedPrometheusCollectorConfig):
         super().__init__(metrics=metrics)
         self.config = config
+        print("Created Self Hosted Prometheus Metrics Collector")
 
     async def query_metric(self, query: str, duration: float) -> Optional[float]:
         """

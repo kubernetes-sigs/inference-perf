@@ -246,8 +246,8 @@ class IODistribution(BaseModel):
 
 class PromptMetricsCollector(MetricCollector[PromptMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
-
-    metrics: List[PromptMetric] = []
+    def __init__(self):
+        self.metrics = []
 
     def record_metric(self, metric: PromptMetric) -> None:
         self.metrics.append(metric)

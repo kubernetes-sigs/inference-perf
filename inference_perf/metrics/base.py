@@ -25,10 +25,10 @@ class Metric(BaseModel):
 T = TypeVar("T", bound=Metric)
 
 
-class MetricCollector(ABC, BaseModel, Generic[T]):
+class MetricCollector(ABC, Generic[T]):
     """Anything that can collect metrics to be included in the output report"""
-
-    metrics: List[T]
+    def __init__(self, metrics: List[T]):
+        self.metrics = metrics
 
     @abstractmethod
     async def to_report(self, report_config: Any, duration: float) -> dict[str, Any]:

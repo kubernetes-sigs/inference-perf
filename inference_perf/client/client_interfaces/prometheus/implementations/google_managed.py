@@ -12,6 +12,7 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
     def __init__(self, metrics: List[PrometheusMetric], config: GMPCollectorConfig):
         super().__init__(metrics=metrics)
         self.config = config
+
         credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
         self.credentials = credentials
         self.project_id = project_id

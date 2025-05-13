@@ -21,7 +21,8 @@ from inference_perf.metrics.base import MetricCollector
 
 
 class PrometheusMetricsCollector(MetricCollector[PrometheusMetric], ABC):
-    metrics: List[PrometheusMetric]
+    def __init__(self, metrics: List[PrometheusMetric]):
+        super().__init__(metrics=metrics)
 
     async def to_report(self, report_config: PrometheusMetricsReportConfig, duration: float) -> dict[str, Any]:
         total_report = {}
