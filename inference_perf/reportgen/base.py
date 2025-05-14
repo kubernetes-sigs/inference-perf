@@ -65,7 +65,7 @@ class ReportGenerator():
             if (
                 self.client_request_metrics_collector is not None
                 and config.prompt is not None
-                and len(self.client_request_metrics_collector.list_metrics()) != 0
+                and len(self.client_request_metrics_collector.metrics) != 0
             ):
                 print("Reporting prompt metrics")
                 report["observed"] = await self.client_request_metrics_collector.to_report(
