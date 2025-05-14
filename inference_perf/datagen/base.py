@@ -246,7 +246,7 @@ class PromptMetricsCollector(MetricCollector[PromptMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:
-        self.metrics : List[PromptMetric] = []
+        self.metrics: List[PromptMetric] = []
 
     def record_metric(self, metric: PromptMetric) -> None:
         self.metrics.append(metric)

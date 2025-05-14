@@ -14,7 +14,6 @@
 import json
 from typing import Any, List, Optional
 
-from pydantic import BaseModel
 from inference_perf.client.client_interfaces.prometheus.base import PrometheusMetricsCollector
 from inference_perf.config import ReportConfig
 from inference_perf.datagen.base import PromptMetricsCollector
@@ -42,7 +41,7 @@ class ReportFile:
         return self.contents
 
 
-class ReportGenerator():
+class ReportGenerator:
     client_request_metrics_collector: PromptMetricsCollector
     prometheus_metrics_collector: Optional[PrometheusMetricsCollector]
 

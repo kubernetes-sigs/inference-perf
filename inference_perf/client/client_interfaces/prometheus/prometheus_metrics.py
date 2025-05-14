@@ -35,7 +35,8 @@ class PrometheusHistogramMetric(PrometheusMetric):
         return {
             "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
             % (self.metric, self.filter, duration, self.metric, self.filter, duration),
-            "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.metric, self.filter, duration),
+            "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
+            % (self.metric, self.filter, duration),
             "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.metric, self.filter, duration),
             "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.metric, self.filter, duration),
             "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.metric, self.filter, duration),
@@ -59,11 +60,14 @@ class PrometheusGaugeMetric(PrometheusMetric):
 class PrometheusCounterMetric(PrometheusMetric):
     def get_query_set(self, duration: float) -> dict[str, str]:
         return {
-            "rate": "sum(rate(%s{%s}[%.0fs]))" % (self.metric,self.filter, duration),
+            "rate": "sum(rate(%s{%s}[%.0fs]))" % (self.metric, self.filter, duration),
             "increase": "sum(increase(%s{%s}[%.0fs]))" % (self.metric, self.filter, duration),
-            "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.metric, self.filter, duration, duration, duration),
-            "max": "max_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.metric, self.filter, duration, duration, duration),
-            "min": "min_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.metric, self.filter, duration, duration, duration),
+            "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.metric, self.filter, duration, duration, duration),
+            "max": "max_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.metric, self.filter, duration, duration, duration),
+            "min": "min_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.metric, self.filter, duration, duration, duration),
             "p90": "quantile_over_time(0.9, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
             % (self.metric, self.filter, duration, duration, duration),
             "p99": "quantile_over_time(0.99, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"

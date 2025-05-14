@@ -58,7 +58,6 @@ class vLLMModelServerClient(ModelServerClient, PrometheusEnabledModelServerClien
             ) from e
 
         if metrics_client_config is not None:
-            print("MCC", metrics_client_config)
             if (
                 metrics_client_config.google_managed_prometheus is not None
                 or metrics_client_config.self_hosted_prometheus is not None
