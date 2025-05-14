@@ -24,7 +24,6 @@ class GMPMetricsCollector(PrometheusMetricsCollector):
         self.credentials.refresh(auth_req)
 
         headers_api = {"Authorization": "Bearer " + self.credentials.token}
-        # params = {"query": query}
         print(f"Evaluating query: {query}")
         request_post = requests.get(
             url=self.url,

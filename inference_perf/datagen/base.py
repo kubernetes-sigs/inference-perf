@@ -145,7 +145,6 @@ class LlmCompletionPrompt(LlmPrompt):
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "time_per_request": summarize([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
             },
             successes={
                 "count": len(all_successful),
@@ -209,7 +208,6 @@ class LlmChatCompletionPrompt(LlmPrompt):
         return ResponsesSummary(
             load_summary={
                 "count": len(metrics),
-                "time_per_request": summarize([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
             },
             successes={
                 "count": len(all_successful),
@@ -248,25 +246,22 @@ class PromptMetricsCollector(MetricCollector[PromptMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:
-        self.metrics = []
+        self.metrics : List[PromptMetric] = []
 
     def record_metric(self, metric: PromptMetric) -> None:
         self.metrics.append(metric)
 
-    def list_metrics(self) -> List[PromptMetric]:
-        return self.metrics
-
     async def to_report(self, report_config: PromptMetricsReportConfig, duration: float) -> dict[str, Any]:
         report: dict[str, Any] = {}
         if report_config.summary:
-            request_metrics = self.list_metrics()
-            if len(self.list_metrics()) != 0:
+            request_metrics = self.metrics
+            if len(self.metrics) != 0:
                 report["summary"] = (
                     # Assumes all requests are of the same type
                     request_metrics[0].request.summarize_requests(request_metrics).model_dump()
                 )
         if report_config.per_request:
-            report["per_request"] = [metric.model_dump() for metric in self.list_metrics()]
+            report["per_request"] = [metric.model_dump() for metric in self.metrics]
         return report
 
 
