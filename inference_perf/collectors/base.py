@@ -14,21 +14,11 @@
 
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, Optional, TypeVar
+from typing import Any, Generic, List, TypeVar
 from pydantic import BaseModel
 
+from inference_perf.colletor_metrics.base import Metric
 from inference_perf.reportgen.base import ReportFile
-
-
-class Metric(BaseModel):
-    """Abstract type to track reportable (but not neccesarily summarizable) metrics"""
-
-    stage_id: Optional[int] = None
-
-    @abstractmethod
-    async def to_report(self) -> dict[str, Any]:
-        """Create the report for this metric"""
-        raise NotImplementedError
 
 
 T = TypeVar("T", bound=Metric)

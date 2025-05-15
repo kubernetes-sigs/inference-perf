@@ -13,10 +13,11 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
-from inference_perf.collectors.request_lifecycle import LlmPrompt
 from inference_perf.config import APIType
 
 from pydantic import BaseModel
+
+from inference_perf.prompts.base import LlmPrompt
 
 
 class RequestMetric(BaseModel):
