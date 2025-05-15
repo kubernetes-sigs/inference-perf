@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Generic, List, Optional, TypeVar
 from pydantic import BaseModel
 from inference_perf.client.modelserver.base import ModelServerClient, ModelServerMetrics
+from inference_perf.reportgen.base import ReportFile
 
 
 class Metric(BaseModel):
@@ -37,7 +38,7 @@ class MetricCollector(ABC, BaseModel, Generic[T]):
     metrics: List[T]
 
     @abstractmethod
-    async def to_report(self, report_config: Any, duration: float) -> dict[str, Any]:
+    async def to_report(self, report_config: Any) -> List[ReportFile]:
         raise NotImplementedError
 
 
