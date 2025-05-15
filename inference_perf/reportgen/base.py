@@ -53,7 +53,7 @@ class ReportGenerator:
 
         return [
             ReportFile(name="request_summary_report", contents=request_summary.model_dump()),
-            ReportFile(name="metrics_client_report", contents=metrics_client_summary),
+            ReportFile(name="metrics_client_report", contents=metrics_client_summary.model_dump()),
         ]
 
     def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
