@@ -45,5 +45,4 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
             print("Generating a per request report of request lifecycle summary metrics")
             reports.append(ReportFile(name="per_request", contents=[metric.model_dump() for metric in self.metrics]))
 
-        print("DEBUG", [metric.model_dump() for metric in self.metrics])
         return reports
