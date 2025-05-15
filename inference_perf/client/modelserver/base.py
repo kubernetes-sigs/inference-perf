@@ -13,10 +13,10 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
+from inference_perf.collectors.request_lifecycle import LlmPrompt
 from inference_perf.config import APIType
 
 from pydantic import BaseModel
-from inference_perf.datagen import InferenceData
 
 
 class RequestMetric(BaseModel):
@@ -104,7 +104,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+    async def process_request(self, data: LlmPrompt, stage_id: int) -> None:
         raise NotImplementedError
 
     @abstractmethod

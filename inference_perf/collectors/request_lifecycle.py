@@ -80,6 +80,18 @@ class ResponsesSummary(BaseModel):
     failures: dict[str, Any]
 
 
+
+class PromptLifecycleMetric(Metric):
+    """Tracks data for a request across its lifecycle"""
+
+    start_time: float
+    end_time: float
+    request: 'LlmPrompt'
+    response: ResponseData
+
+    async def to_report(self) -> dict[str, Any]:
+        return self.model_dump()
+
 class LlmPrompt(ABC, BaseModel):
     @abstractmethod
     def to_payload(
@@ -95,23 +107,11 @@ class LlmPrompt(ABC, BaseModel):
 
     @abstractmethod
     def summarize_requests(
-        self, responses: List["PromptMetric"]
+        self, responses: List[PromptLifecycleMetric]
     ) -> (
         ResponsesSummary
     ):  # Generates a summary report from all response metrics with distinct summaries for successes and failures
         raise NotImplementedError
-
-
-class PromptMetric(Metric):
-    """Tracks data for a request across its lifecycle"""
-
-    start_time: float
-    end_time: float
-    request: LlmPrompt
-    response: ResponseData
-
-    async def to_report(self) -> dict[str, Any]:
-        return self.model_dump()
 
 
 class LlmCompletionPrompt(LlmPrompt):
@@ -140,9 +140,9 @@ class LlmCompletionPrompt(LlmPrompt):
             error=None,
         )
 
-    def summarize_requests(self, metrics: List[PromptMetric]) -> ResponsesSummary:
-        all_successful: List[PromptMetric] = [x for x in metrics if x.response.error is None]
-        all_failed: List[PromptMetric] = [x for x in metrics if x.response.error is not None]
+    def summarize_requests(self, metrics: List[PromptLifecycleMetric]) -> ResponsesSummary:
+        all_successful: List[PromptLifecycleMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[PromptLifecycleMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
@@ -203,9 +203,9 @@ class LlmChatCompletionPrompt(LlmPrompt):
             error=None,
         )
 
-    def summarize_requests(self, metrics: List[PromptMetric]) -> ResponsesSummary:
-        all_successful: List[PromptMetric] = [x for x in metrics if x.response.error is None]
-        all_failed: List[PromptMetric] = [x for x in metrics if x.response.error is not None]
+    def summarize_requests(self, metrics: List[PromptLifecycleMetric]) -> ResponsesSummary:
+        all_successful: List[PromptLifecycleMetric] = [x for x in metrics if x.response.error is None]
+        all_failed: List[PromptLifecycleMetric] = [x for x in metrics if x.response.error is not None]
 
         return ResponsesSummary(
             load_summary={
@@ -239,13 +239,13 @@ class LlmChatCompletionPrompt(LlmPrompt):
         )
 
 
-class PromptMetricsCollector(MetricsCollector[PromptMetric]):
+class PromptMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:
-        self.metrics: List[PromptMetric] = []
+        self.metrics: List[PromptLifecycleMetric] = []
 
-    def record_metric(self, metric: PromptMetric) -> None:
+    def record_metric(self, metric: PromptLifecycleMetric) -> None:
         self.metrics.append(metric)
 
     async def to_report(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
