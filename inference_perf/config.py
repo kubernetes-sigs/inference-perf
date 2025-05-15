@@ -84,8 +84,13 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
+class RequestLifecycleMetricsReportConfig(BaseModel):
+    summary: Optional[bool] = True
+    per_request: Optional[bool] = False
+
+
 class ReportConfig(BaseModel):
-    pass
+    request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
 
 
 class PrometheusClientConfig(BaseModel):

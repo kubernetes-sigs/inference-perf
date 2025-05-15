@@ -13,7 +13,6 @@
 # limitations under the License.
 import json
 import statistics
-from pydantic import BaseModel
 from typing import Any, List
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
@@ -22,9 +21,9 @@ from inference_perf.metrics.base import PerfRuntimeParameters
 
 class ReportFile:
     name: str
-    contents: BaseModel
+    contents: dict[str, Any]
 
-    def __init__(self, name: str, contents: BaseModel):
+    def __init__(self, name: str, contents: Any):
         self.name = f"{name}.json"
         self.contents = contents
         self._store_locally()
@@ -38,8 +37,8 @@ class ReportFile:
     def get_filename(self) -> str:
         return self.name
 
-    def get_contents(self) -> dict[str, Any]:
-        return self.contents.model_dump()
+    def get_contents(self) -> Any:
+        return self.contents
 
 
 class ReportGenerator:
