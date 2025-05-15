@@ -13,6 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
+from inference_perf.collectors.request_lifecycle import PromptMetricsCollector
 from inference_perf.config import APIType
 
 from pydantic import BaseModel
@@ -99,6 +100,7 @@ class ModelServerClient(ABC):
             raise Exception(f"Unsupported API type {api_type}")
 
         self.apiType = api_type
+        self.prompt_metrics_collector = PromptMetricsCollector()
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
