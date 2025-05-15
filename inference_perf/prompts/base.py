@@ -3,7 +3,8 @@ from typing import Any, List, Optional
 import aiohttp
 import numpy as np
 from pydantic import BaseModel
-from inference_perf.collectors.request_lifecycle import PromptLifecycleMetric, ResponseData
+from inference_perf.collectors.request_lifecycle import PromptLifecycleMetric
+from inference_perf.colletor_metrics.base import ResponseData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
