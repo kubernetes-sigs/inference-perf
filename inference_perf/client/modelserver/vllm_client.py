@@ -11,9 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.collectors.request_lifecycle import FailedResponseData, PromptLifecycleMetric, ResponseData
 from inference_perf.config import APIType
-from inference_perf.prompts.base import LlmPrompt
+from inference_perf.prompts.base import FailedResponseData, LlmPrompt, PromptLifecycleMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
 from typing import List
