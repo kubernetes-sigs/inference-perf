@@ -33,6 +33,7 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
     async def to_reports(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
         reports: List[ReportFile] = []
         if report_config.summary:
+            print("Generating a summary report of request lifecycle metrics")
             request_metrics = self.metrics
             if len(self.metrics) != 0:
                 reports.append(
@@ -41,5 +42,6 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
                     )
                 )
         if report_config.per_request:
+            print("Generating a per request report of request lifecycle summary metrics")
             reports.append(ReportFile(name="per_request", contents=[metric.model_dump() for metric in self.metrics]))
         return reports
