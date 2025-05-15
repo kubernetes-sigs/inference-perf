@@ -15,7 +15,6 @@
 
 from abc import ABC, abstractmethod
 from typing import Any, Generic, List, TypeVar
-from pydantic import BaseModel
 
 from inference_perf.colletor_metric.base import Metric
 from inference_perf.reportgen.base import ReportFile
@@ -24,10 +23,11 @@ from inference_perf.reportgen.base import ReportFile
 T = TypeVar("T", bound=Metric)
 
 
-class MetricsCollector(ABC, BaseModel, Generic[T]):
+class MetricsCollector(ABC, Generic[T]):
     """Anything that can collect metrics to be included in the output report"""
-
-    metrics: List[T]
+ 
+    def __init__(self) -> None:
+        self.metrics: List[T] = []
 
     @abstractmethod
     async def to_report(self, report_config: Any) -> List[ReportFile]:
