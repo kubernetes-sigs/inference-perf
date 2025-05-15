@@ -21,7 +21,7 @@ from inference_perf.metrics.base import PerfRuntimeParameters
 
 class ReportFile:
     name: str
-    contents: dict[str, Any]
+    contents: Any
 
     def __init__(self, name: str, contents: Any):
         self.name = f"{name}.json"
