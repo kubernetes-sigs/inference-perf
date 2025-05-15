@@ -21,7 +21,7 @@ from inference_perf.client.modelserver import ModelServerClient, vLLMModelServer
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
-from inference_perf.report.base import ReportFile
+from inference_perf.report import ReportFile
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import read_config
 from inference_perf.utils.custom_tokenizer import CustomTokenizer

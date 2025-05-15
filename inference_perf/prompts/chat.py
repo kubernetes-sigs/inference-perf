@@ -15,7 +15,8 @@
 from typing import Any, List
 import aiohttp
 from pydantic import BaseModel
-from inference_perf.prompts.base import LlmPrompt, PromptLifecycleMetric, ResponseData, ResponsesSummary, safe_float, summarize
+from inference_perf.prompts import LlmPrompt, PromptLifecycleMetric, ResponseData, ResponsesSummary
+from inference_perf.prompts.base import safe_float, summarize
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 

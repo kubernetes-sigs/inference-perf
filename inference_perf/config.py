@@ -86,6 +86,7 @@ class StorageConfig(BaseModel):
 
 class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
+    per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
 
 

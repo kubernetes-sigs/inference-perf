@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
 from typing import List
 
 
-from inference_perf.collectors.base import MetricsCollector
+from inference_perf.collectors import MetricsCollector
 from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.prompts.base import PromptLifecycleMetric
-from inference_perf.report.base import ReportFile
+from inference_perf.report import ReportFile
 
 
 class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
@@ -33,6 +34,7 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
     async def to_reports(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
         reports: List[ReportFile] = []
         if report_config.summary:
+            print("Generating a summary report of request lifecycle metrics")
             request_metrics = self.metrics
             if len(self.metrics) != 0:
                 reports.append(
@@ -40,6 +42,20 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
                         name="summary", contents=request_metrics[0].request.summarize_requests(request_metrics).model_dump()
                     )
                 )
+
+        if report_config.per_stage:
+            print("Generating a per stage report of request lifecycle summary metrics")
+            stage_buckets: dict[int, List[PromptLifecycleMetric]] = defaultdict(list)
+            for metric in self.metrics:
+                if metric.stage_id is not None:
+                    stage_buckets[metric.stage_id].append(metric)
+            for stage_id, metrics in stage_buckets.items():
+                reports.append(
+                    ReportFile(name=f"stage_{stage_id}", contents=metrics[0].request.summarize_requests(metrics).model_dump())
+                )
+
         if report_config.per_request:
+            print("Generating a per request report of request lifecycle summary metrics")
             reports.append(ReportFile(name="per_request", contents=[metric.model_dump() for metric in self.metrics]))
+
         return reports

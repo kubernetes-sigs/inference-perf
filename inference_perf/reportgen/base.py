@@ -19,7 +19,7 @@ from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
-from inference_perf.report.base import ReportFile
+from inference_perf.report import ReportFile
 
 
 class ReportGenerator:

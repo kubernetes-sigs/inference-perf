@@ -15,7 +15,7 @@
 from abc import ABC, abstractmethod
 from typing import List
 from inference_perf.config import StorageConfigBase
-from inference_perf.report.base import ReportFile
+from inference_perf.report import ReportFile
 
 
 class StorageClient(ABC):
