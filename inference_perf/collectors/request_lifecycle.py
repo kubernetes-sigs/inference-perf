@@ -47,10 +47,12 @@ class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
             print("Generating a per stage report of request lifecycle summary metrics")
             stage_buckets: dict[int, List[PromptLifecycleMetric]] = defaultdict(list)
             for metric in self.metrics:
-                stage_buckets[metric.stage_id].append(metric)
-
+                if metric.stage_id is not None:
+                    stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
-                reports.append(ReportFile(name=f"stage_{stage_id}", contents=metrics[0].request.summarize_requests(metrics).model_dump()))
+                reports.append(
+                    ReportFile(name=f"stage_{stage_id}", contents=metrics[0].request.summarize_requests(metrics).model_dump())
+                )
 
         if report_config.per_request:
             print("Generating a per request report of request lifecycle summary metrics")
