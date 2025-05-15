@@ -13,9 +13,9 @@
 # limitations under the License.
 from typing import Generator, List
 from inference_perf.config import APIType
-from inference_perf.datagen.base import ChatMessage, DataGenerator
+from inference_perf.datagen.base import DataGenerator
 from inference_perf.prompts.base import LlmPrompt
-from inference_perf.prompts.chat import LlmChatCompletionPrompt
+from inference_perf.prompts.chat import LlmChatCompletionPrompt, ChatMessage
 from inference_perf.prompts.completion import LlmCompletionPrompt
 
 

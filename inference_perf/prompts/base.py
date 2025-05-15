@@ -89,7 +89,7 @@ class ResponsesSummary(BaseModel):
 
 class LlmPrompt(ABC, BaseModel):
     @abstractmethod
-    def get_route() -> str:
+    def get_route(self) -> str:
         raise NotImplementedError
 
     @abstractmethod

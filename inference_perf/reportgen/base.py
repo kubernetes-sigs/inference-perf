@@ -13,8 +13,10 @@
 # limitations under the License.
 import json
 import statistics
-from typing import Any, List
+from typing import Any, List, Optional
 
+from inference_perf.collectors.request_lifecycle import PromptLifecycleMetricsCollector
+from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
@@ -43,16 +45,20 @@ class ReportFile:
 
 
 class ReportGenerator:
-    def __init__(self, metrics_client: MetricsClient | None) -> None:
+    def __init__(
+        self, lifecycle_metrics_collector: PromptLifecycleMetricsCollector, metrics_client: Optional[MetricsClient]
+    ) -> None:
+        self.lifecycle_metrics_collector = lifecycle_metrics_collector
         self.metrics_client = metrics_client
 
-    async def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        print("\n\nGenerating Report ..")
-        request_summary = self.report_request_summary(runtime_parameters)
+    async def generate_reports(
+        self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
+    ) -> List[ReportFile]:
+        print("\n\nGenerating Reports ..")
+        lifecycle_reports = await self.lifecycle_metrics_collector.to_reports(report_config=request_lifecycle_metrics_config)
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)
-
         return [
-            ReportFile(name="request_summary_report", contents=request_summary.model_dump()),
+            *lifecycle_reports,
             ReportFile(name="metrics_client_report", contents=metrics_client_summary.model_dump()),
         ]
 

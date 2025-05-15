@@ -21,7 +21,7 @@ from inference_perf.prompts.base import PromptLifecycleMetric
 from inference_perf.reportgen.base import ReportFile
 
 
-class PromptMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
+class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:
@@ -30,7 +30,7 @@ class PromptMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
     def record_metric(self, metric: PromptLifecycleMetric) -> None:
         self.metrics.append(metric)
 
-    async def to_report(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
+    async def to_reports(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
         reports: List[ReportFile] = []
         if report_config.summary:
             request_metrics = self.metrics

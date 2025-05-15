@@ -22,7 +22,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 class LlmCompletionPrompt(LlmPrompt):
     prompt: str
 
-    def get_route() -> str:
+    def get_route(self) -> str:
         return "/v1/completions"
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
@@ -81,5 +81,3 @@ class LlmCompletionPrompt(LlmPrompt):
                 else None,
             },
         )
-
-

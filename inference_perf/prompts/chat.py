@@ -27,7 +27,7 @@ class ChatMessage(BaseModel):
 class LlmChatCompletionPrompt(LlmPrompt):
     messages: List[ChatMessage]
 
-    def get_route() -> str:
+    def get_route(self) -> str:
         return "/v1/chat/completions"
 
     def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:

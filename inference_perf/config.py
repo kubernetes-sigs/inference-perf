@@ -120,7 +120,7 @@ class Config(BaseModel):
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
-    report: Optional[ReportConfig] = ReportConfig()
+    report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None

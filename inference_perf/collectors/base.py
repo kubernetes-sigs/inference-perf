@@ -25,10 +25,10 @@ T = TypeVar("T", bound=Metric)
 
 class MetricsCollector(ABC, Generic[T]):
     """Anything that can collect metrics to be included in the output report"""
- 
+
     def __init__(self) -> None:
         self.metrics: List[T] = []
 
     @abstractmethod
-    async def to_report(self, report_config: Any) -> List[ReportFile]:
+    async def to_reports(self, report_config: Any) -> List[ReportFile]:
         raise NotImplementedError
