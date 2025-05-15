@@ -52,7 +52,7 @@ class ReportGenerator:
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)
 
         return [
-            ReportFile(name="request_summary_report", contents=request_summary),
+            ReportFile(name="request_summary_report", contents=request_summary.model_dump()),
             ReportFile(name="metrics_client_report", contents=metrics_client_summary),
         ]
 
