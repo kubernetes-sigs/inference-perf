@@ -16,7 +16,7 @@ from typing import List
 
 
 from inference_perf.collectors.base import MetricsCollector
-from inference_perf.colletor_metrics.base import PromptLifecycleMetric
+from inference_perf.colletor_metric.base import PromptLifecycleMetric
 from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.reportgen.base import ReportFile
 
