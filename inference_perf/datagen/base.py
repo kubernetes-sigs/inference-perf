@@ -11,23 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import aiohttp
-import numpy as np
-from inference_perf.collectors.base import Metric, MetricsCollector
-from inference_perf.reportgen.base import ReportFile
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
-from inference_perf.config import APIType, Distribution, RequestLifecycleMetricsReportConfig
+from inference_perf.config import APIType, Distribution
 from abc import ABC, abstractmethod
-from typing import Any, Generator, Optional, List
+from typing import Generator, Optional, List
 
 
 class CompletionData(BaseModel):
     prompt: str
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ChatCompletionData(BaseModel):
-    messages: List["ChatMessage"]
+    messages: List[ChatMessage]
 
 
 class InferenceData(BaseModel):
