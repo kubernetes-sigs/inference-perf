@@ -12,37 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, List, Optional
-
-from pydantic import BaseModel
+from typing import List
 
 
-from inference_perf.collectors.base import Metric, MetricsCollector
+from inference_perf.collectors.base import MetricsCollector
+from inference_perf.colletor_metrics.base import PromptLifecycleMetric
 from inference_perf.config import RequestLifecycleMetricsReportConfig
-from inference_perf.prompts.base import LlmPrompt
 from inference_perf.reportgen.base import ReportFile
-
-
-class FailedResponseData(BaseModel):
-    error_type: str
-    error_msg: str
-
-
-class ResponseData(BaseModel):
-    info: dict[str, Any]
-    error: Optional[FailedResponseData]
-
-
-class PromptLifecycleMetric(Metric):
-    """Tracks data for a request across its lifecycle"""
-
-    start_time: float
-    end_time: float
-    request: LlmPrompt
-    response: ResponseData
-
-    async def to_report(self) -> dict[str, Any]:
-        return self.model_dump()
 
 
 class PromptMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
