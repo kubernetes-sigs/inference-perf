@@ -26,7 +26,7 @@ class vLLMModelServerClient(ModelServerClient):
     def __init__(self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer) -> None:
         super().__init__(api_type)
         self.model_name = model_name
-        self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
+        self.uri = uri
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
@@ -98,7 +98,7 @@ class vLLMModelServerClient(ModelServerClient):
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
             try:
-                async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
+                async with session.post(self.uri + prompt.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
                         response_body = await prompt.process_response(res=response, tokenizer=self.custom_tokenizer)
                         self.prompt_metrics_collector.record_metric(
