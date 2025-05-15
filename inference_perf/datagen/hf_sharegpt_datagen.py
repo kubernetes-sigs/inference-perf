@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.collectors.request_lifecycle import LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt, ChatMessage
+from inference_perf.prompts.base import ChatMessage, LlmChatCompletionPrompt, LlmCompletionPrompt, LlmPrompt
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution, Optional
 from inference_perf.config import APIType

@@ -13,7 +13,7 @@
 # limitations under the License.
 import numpy as np
 
-from inference_perf.collectors.request_lifecycle import LlmCompletionPrompt, LlmPrompt
+from inference_perf.prompts.base import LlmCompletionPrompt, LlmPrompt
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution
 from typing import Generator, List
