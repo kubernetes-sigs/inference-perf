@@ -101,7 +101,7 @@ class vLLMModelServerClient(ModelServerClient):
             try:
                 async with session.post(self.uri + prompt.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        response_body = await prompt.process_response(res=response, tokenizer=self.custom_tokenizer)
+                        response_body = await prompt.process_response(res=response, tokenizer=self.tokenizer)
                         self.prompt_metrics_collector.record_metric(
                             PromptLifecycleMetric(
                                 stage_id=stage_id,
