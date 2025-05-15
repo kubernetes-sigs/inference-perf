@@ -17,7 +17,7 @@ from typing import Any, List, Optional
 import aiohttp
 import numpy as np
 from pydantic import BaseModel
-from inference_perf.colletor_metric.base import Metric
+from inference_perf.colletor_metric import Metric
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
