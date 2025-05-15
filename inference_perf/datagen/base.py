@@ -13,7 +13,8 @@
 # limitations under the License.
 import aiohttp
 import numpy as np
-from inference_perf.reportgen.base import Metric, MetricsCollector, ReportFile
+from inference_perf.collectors.base import Metric, MetricsCollector
+from inference_perf.reportgen.base import ReportFile
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
 from inference_perf.config import APIType, Distribution, RequestLifecycleMetricsReportConfig
