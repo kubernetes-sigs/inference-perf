@@ -11,37 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import json
 import statistics
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from inference_perf.collectors.request_lifecycle import PromptLifecycleMetricsCollector
 from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
-
-
-class ReportFile:
-    name: str
-    contents: Any
-
-    def __init__(self, name: str, contents: Any):
-        self.name = f"{name}.json"
-        self.contents = contents
-        self._store_locally()
-
-    def _store_locally(self) -> None:
-        filename = self.get_filename()
-        contents = self.get_contents()
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(json.dumps(contents, indent=2))
-
-    def get_filename(self) -> str:
-        return self.name
-
-    def get_contents(self) -> Any:
-        return self.contents
+from inference_perf.report.base import ReportFile
 
 
 class ReportGenerator:

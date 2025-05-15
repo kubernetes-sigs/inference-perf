@@ -18,7 +18,7 @@ from typing import List
 from inference_perf.collectors.base import MetricsCollector
 from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.prompts.base import PromptLifecycleMetric
-from inference_perf.reportgen.base import ReportFile
+from inference_perf.report.base import ReportFile
 
 
 class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):

@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Generic, List, TypeVar
 
 from inference_perf.colletor_metric.base import Metric
-from inference_perf.reportgen.base import ReportFile
+from inference_perf.report.base import ReportFile
 
 
 T = TypeVar("T", bound=Metric)
