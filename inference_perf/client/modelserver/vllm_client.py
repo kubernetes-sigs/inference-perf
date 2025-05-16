@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from inference_perf.collector_reporters.request_lifecycle import PromptLifecycleMetricsCollectorReporter
+from inference_perf.collector_reporters.request_lifecycle import RequestLifecycleMetricsCollectorReporter
 from inference_perf.config import APIType
 from inference_perf.prompts.base import FailedResponseData, LlmPrompt, PromptLifecycleMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
@@ -31,7 +31,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
-        self.prompt_metrics_collector_reporter = PromptLifecycleMetricsCollectorReporter()
+        self.prompt_metrics_collector_reporter = RequestLifecycleMetricsCollectorReporter()
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
