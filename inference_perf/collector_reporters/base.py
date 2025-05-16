@@ -12,17 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from abc import ABC, abstractmethod
-from typing import List
-from inference_perf.config import StorageConfigBase
+from typing import Any, List
+
 from inference_perf.report import ReportFile
 
 
-class StorageClient(ABC):
-    def __init__(self, config: StorageConfigBase) -> None:
-        self.config = config
-        print(f"Report files will be stored at: {self.config.path}")
+class MetricsCollectorReporter(ABC):
+    """
+    Responsible for collecting information for and generating reports for a particicular report subtype
+    (i.e. request lifecycle metrics, model server metrics, accelerator metrics, etc)
+    """
 
     @abstractmethod
-    def save_report(self, reports: List[ReportFile]) -> None:
-        raise NotImplementedError()
+    async def reports(self, report_config: Any) -> List[ReportFile]:
+        raise NotImplementedError

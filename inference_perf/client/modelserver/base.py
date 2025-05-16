@@ -16,7 +16,8 @@ from typing import List, Tuple, TypedDict
 from inference_perf.config import APIType
 
 from pydantic import BaseModel
-from inference_perf.datagen import InferenceData
+
+from inference_perf.prompts.base import LlmPrompt
 
 
 class RequestMetric(BaseModel):
@@ -104,7 +105,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+    async def process_request(self, data: LlmPrompt, stage_id: int) -> None:
         raise NotImplementedError
 
     @abstractmethod

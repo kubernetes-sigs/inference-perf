@@ -15,13 +15,14 @@ import time
 from typing import List, Optional
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType, ModelServerType
+from inference_perf.config import DataGenType, MetricsClientType, ModelServerType, RequestLifecycleMetricsReportConfig
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
-from inference_perf.reportgen import ReportGenerator, ReportFile
+from inference_perf.report import ReportFile
+from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import read_config
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 import asyncio
@@ -43,8 +44,14 @@ class InferencePerfRunner:
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        return asyncio.run(self.reportgen.generate_reports(runtime_parameters=runtime_parameters))
+    def generate_reports(
+        self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
+    ) -> List[ReportFile]:
+        return asyncio.run(
+            self.reportgen.generate_reports(
+                request_lifecycle_metrics_config=request_lifecycle_metrics_config, runtime_parameters=runtime_parameters
+            )
+        )
 
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
@@ -125,7 +132,7 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Define Report Generator
-    reportgen = ReportGenerator(metrics_client)
+    reportgen = ReportGenerator(model_server_client.prompt_metrics_collector_reporter, metrics_client)
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
@@ -138,8 +145,11 @@ def main_cli() -> None:
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
-    # Generate Report after the tests
-    reports = perfrunner.generate_reports(PerfRuntimeParameters(start_time, duration, model_server_client))
+    # Generate Reports after the tests
+    reports = perfrunner.generate_reports(
+        request_lifecycle_metrics_config=config.report.request_lifecycle,
+        runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client),
+    )
 
     # Save Reports
     perfrunner.save_reports(reports=reports)

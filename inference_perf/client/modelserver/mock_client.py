@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import asyncio
 from typing import List
-from inference_perf.datagen import InferenceData
 from inference_perf.config import APIType
+from inference_perf.prompts.base import LlmPrompt
 from .base import ModelServerClient, RequestMetric
 
 
@@ -23,8 +24,8 @@ class MockModelServerClient(ModelServerClient):
         super().__init__(api_type)
         self.request_metrics: List[RequestMetric] = list()
 
-    async def process_request(self, payload: InferenceData, stage_id: int) -> None:
-        print("Processing request - " + str(payload.data) + " for stage - " + str(stage_id))
+    async def process_request(self, payload: LlmPrompt, stage_id: int) -> None:
+        print("Processing mock request for stage - " + str(stage_id))
         await asyncio.sleep(3)
         self.request_metrics.append(
             RequestMetric(
