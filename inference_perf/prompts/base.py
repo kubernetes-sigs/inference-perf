@@ -30,21 +30,8 @@ class ResponseData(BaseModel):
     error: Optional[FailedResponseData]
 
 
-class PromptLifecycleMetric(BaseModel):
-    """Tracks data for a request across its lifecycle"""
-
-    stage_id: Optional[int] = None
-    start_time: float
-    end_time: float
-    request: "LlmPrompt"
-    response: ResponseData
-
-    async def to_report(self) -> dict[str, Any]:
-        return self.model_dump()
-
-
 def safe_float(value: Any) -> float:
-    """ NOTE: Only for use in summarizeRequests after validating safe access"""
+    """NOTE: Only for use in summarizeRequests after validating safe access"""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -91,8 +78,18 @@ class LlmPrompt(ABC, BaseModel):
 
     @abstractmethod
     def summarize_requests(
-        self, responses: List[PromptLifecycleMetric]
+        self, responses: List["PromptLifecycleMetric"]
     ) -> (
         ResponsesSummary
     ):  # Generates a summary report from all response metrics with distinct summaries for successes and failures
         raise NotImplementedError
+
+
+class PromptLifecycleMetric(BaseModel):
+    """Tracks data for a request across its lifecycle"""
+
+    stage_id: Optional[int] = None
+    start_time: float
+    end_time: float
+    request: LlmPrompt
+    response: ResponseData
