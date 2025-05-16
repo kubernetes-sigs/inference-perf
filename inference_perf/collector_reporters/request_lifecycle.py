@@ -56,6 +56,12 @@ class PromptLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
 
         if report_config.per_request:
             print("Generating a per request report of request lifecycle metrics")
-            reports.append(ReportFile(name="per_request", contents=[metric.model_dump() for metric in self.metrics]))
+            reports.append(ReportFile(name="per_request", contents=[{
+                "start_time": metric.start_time,
+                "request": metric.end_time,
+                "prompt": metric.request.model_dump(),
+                "response": metric.response.model_dump(),
+            }
+            for metric in self.metrics]))
 
         return reports
