@@ -59,7 +59,7 @@ class PromptLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
             reports.append(ReportFile(name="per_request", contents=[{
                 "start_time": metric.start_time,
                 "request": metric.end_time,
-                "prompt": metric.request.model_dump(),
+                "request": metric.request.model_dump(),
                 "response": metric.response.model_dump(),
             }
             for metric in self.metrics]))
