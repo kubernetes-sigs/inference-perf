@@ -31,7 +31,7 @@ class PromptLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
     def record_metric(self, metric: PromptLifecycleMetric) -> None:
         self.metrics.append(metric)
 
-    async def to_reports(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
+    async def reports(self, report_config: RequestLifecycleMetricsReportConfig) -> List[ReportFile]:
         reports: List[ReportFile] = []
         if report_config.summary:
             print("Generating a summary report of request lifecycle metrics")

@@ -35,7 +35,7 @@ class ReportGenerator:
         self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
     ) -> List[ReportFile]:
         print("\n\nGenerating Reports ..")
-        lifecycle_reports = await self.lifecycle_metrics_collector_reporter.to_reports(
+        lifecycle_reports = await self.lifecycle_metrics_collector_reporter.reports(
             report_config=request_lifecycle_metrics_config
         )
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)

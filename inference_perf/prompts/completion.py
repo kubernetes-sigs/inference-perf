@@ -59,7 +59,7 @@ class LlmCompletionPrompt(LlmPrompt):
             },
             successes={
                 "count": len(all_successful),
-                "request_latency": summarize([(metric.end_time - metric.start_time) for metric in metrics]),
+                "request_latency": summarize([(success.end_time - success.start_time) for success in all_successful]),
                 "prompt_len": summarize([safe_float(success.response.info.get("prompt_len")) for success in all_successful]),
                 "output_len": summarize(
                     [float(v) for success in all_successful if (v := success.response.info.get("output_len")) is not None]

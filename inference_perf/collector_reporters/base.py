@@ -26,5 +26,5 @@ class MetricsCollectorReporter(ABC):
     """
 
     @abstractmethod
-    async def to_reports(self, report_config: Any) -> List[ReportFile]:
+    async def reports(self, report_config: Any) -> List[ReportFile]:
         raise NotImplementedError
