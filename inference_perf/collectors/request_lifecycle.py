@@ -22,7 +22,7 @@ from inference_perf.prompts.base import PromptLifecycleMetric
 from inference_perf.report import ReportFile
 
 
-class PromptLifecycleMetricsCollector(MetricsCollector[PromptLifecycleMetric]):
+class PromptLifecycleMetricsCollector(MetricsCollector):
     """Responsible for accumulating client request metrics and generating corresponding reports"""
 
     def __init__(self) -> None:

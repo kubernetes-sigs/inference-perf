@@ -17,7 +17,6 @@ from typing import Any, List, Optional
 import aiohttp
 import numpy as np
 from pydantic import BaseModel
-from inference_perf.colletor_metric import Metric
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -31,9 +30,10 @@ class ResponseData(BaseModel):
     error: Optional[FailedResponseData]
 
 
-class PromptLifecycleMetric(Metric):
+class PromptLifecycleMetric(BaseModel):
     """Tracks data for a request across its lifecycle"""
 
+    stage_id: Optional[int] = None
     start_time: float
     end_time: float
     request: "LlmPrompt"

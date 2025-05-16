@@ -14,20 +14,13 @@
 
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, TypeVar
+from typing import Any, List
 
-from inference_perf.colletor_metric import Metric
 from inference_perf.report import ReportFile
 
 
-T = TypeVar("T", bound=Metric)
-
-
-class MetricsCollector(ABC, Generic[T]):
+class MetricsCollector(ABC):
     """Anything that can collect metrics to be included in the output report"""
-
-    def __init__(self) -> None:
-        self.metrics: List[T] = []
 
     @abstractmethod
     async def to_reports(self, report_config: Any) -> List[ReportFile]:
