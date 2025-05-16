@@ -59,26 +59,21 @@ class LlmCompletionPrompt(LlmPrompt):
             },
             successes={
                 "count": len(all_successful),
-                "time_per_request": summarize([(metric.end_time - metric.start_time) for metric in metrics]).model_dump(),
-                "prompt_len": summarize(
-                    [safe_float(success.response.info.get("prompt_len")) for success in all_successful]
-                ).model_dump(),
+                "request_latency": summarize([(metric.end_time - metric.start_time) for metric in metrics]),
+                "prompt_len": summarize([safe_float(success.response.info.get("prompt_len")) for success in all_successful]),
                 "output_len": summarize(
                     [float(v) for success in all_successful if (v := success.response.info.get("output_len")) is not None]
-                ).model_dump(),
-                "per_token_latency": summarize(
+                ),
+                "normalized_time_per_output_token": summarize(
                     [
                         ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
                         for metric in all_successful
                         for output_len in [safe_float(metric.response.info.get("output_len"))]
                     ]
-                ).model_dump(),
+                ),
             },
             failures={
                 "count": len(all_failed),
-                # need to filter to only the failures, currently dont do that, same for successes
-                "time_per_request": summarize([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump()
-                if len(all_failed) != 0
-                else None,
+                "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed]),
             },
         )

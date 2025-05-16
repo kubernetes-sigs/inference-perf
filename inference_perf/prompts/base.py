@@ -50,34 +50,18 @@ def safe_float(value: Any) -> float:
         return 0
 
 
-class PromptMetricsStatisticalSummary(BaseModel):
-    mean: Optional[float]
-    min: Optional[float]
-    p10: Optional[float]
-    p50: Optional[float]
-    p90: Optional[float]
-    max: Optional[float]
-
-
-def summarize(items: List[float]) -> PromptMetricsStatisticalSummary:
+def summarize(items: List[float]) -> Optional[dict[str, float]]:
     return (
-        PromptMetricsStatisticalSummary(
-            mean=float(np.mean(items)),
-            min=float(np.min(items)),
-            p10=float(np.percentile(items, 10)),
-            p50=float(np.percentile(items, 50)),
-            p90=float(np.percentile(items, 90)),
-            max=float(np.max(items)),
-        )
+        {
+            "mean": float(np.mean(items)),
+            "min": float(np.min(items)),
+            "p10": float(np.percentile(items, 10)),
+            "p50": float(np.percentile(items, 50)),
+            "p90": float(np.percentile(items, 90)),
+            "max": float(np.max(items)),
+        }
         if len(items) != 0
-        else PromptMetricsStatisticalSummary(
-            mean=None,
-            min=None,
-            p10=None,
-            p50=None,
-            p90=None,
-            max=None,
-        )
+        else None
     )
 
 

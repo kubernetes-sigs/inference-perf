@@ -61,27 +61,25 @@ class LlmChatCompletionPrompt(LlmPrompt):
             },
             successes={
                 "count": len(all_successful),
-                "time_per_request": summarize(
-                    [(successful.end_time - successful.start_time) for successful in all_successful]
-                ).model_dump(),
+                "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
                 "output_len": summarize(
                     [
                         float(v)
                         for success in all_successful
                         if (v := safe_float(success.response.info.get("output_len"))) is not None
                     ]
-                ).model_dump(),
-                "per_token_latency": summarize(
+                ),
+                "normalized_time_per_output_token": summarize(
                     [
                         (success.end_time - success.start_time) / success.response.output_len
                         if success.response.output_len != 0
                         else 0
                         for success in all_successful
                     ]
-                ).model_dump(),
+                ),
             },
             failures={
                 "count": len(all_failed),
-                "time_per_request": summarize([(failed.end_time - failed.start_time) for failed in all_failed]).model_dump(),
+                "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed]),
             },
         )
