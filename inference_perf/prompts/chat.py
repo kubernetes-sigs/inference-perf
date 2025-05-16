@@ -63,18 +63,13 @@ class LlmChatCompletionPrompt(LlmPrompt):
                 "count": len(all_successful),
                 "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
                 "output_len": summarize(
-                    [
-                        float(v)
-                        for success in all_successful
-                        if (v := safe_float(success.response.info.get("output_len"))) is not None
-                    ]
+                    [v for success in all_successful if (v := safe_float(success.response.info.get("output_len"))) is not None]
                 ),
                 "normalized_time_per_output_token": summarize(
                     [
-                        (success.end_time - success.start_time) / success.response.output_len
-                        if success.response.output_len != 0
-                        else 0
-                        for success in all_successful
+                        ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
+                        for metric in all_successful
+                        for output_len in [safe_float(metric.response.info.get("output_len"))]
                     ]
                 ),
             },

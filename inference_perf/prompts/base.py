@@ -44,6 +44,7 @@ class PromptLifecycleMetric(BaseModel):
 
 
 def safe_float(value: Any) -> float:
+    """ NOTE: Only for use in summarizeRequests after validating safe access"""
     try:
         return float(value)
     except (TypeError, ValueError):
