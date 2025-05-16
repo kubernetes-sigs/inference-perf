@@ -58,7 +58,7 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
             print("Generating a per request report of request lifecycle metrics")
             reports.append(ReportFile(name="per_request", contents=[{
                 "start_time": metric.start_time,
-                "request": metric.end_time,
+                "end_time": metric.end_time,
                 "request": metric.request.model_dump(),
                 "response": metric.response.model_dump(),
             }
