@@ -14,7 +14,7 @@
 import statistics
 from typing import List, Optional
 
-from inference_perf.collectors.request_lifecycle import PromptLifecycleMetricsCollector
+from inference_perf.collector_reporters.request_lifecycle import PromptLifecycleMetricsCollectorReporter
 from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
@@ -24,16 +24,20 @@ from inference_perf.report import ReportFile
 
 class ReportGenerator:
     def __init__(
-        self, lifecycle_metrics_collector: PromptLifecycleMetricsCollector, metrics_client: Optional[MetricsClient]
+        self,
+        lifecycle_metrics_collector_reporter: PromptLifecycleMetricsCollectorReporter,
+        metrics_client: Optional[MetricsClient],
     ) -> None:
-        self.lifecycle_metrics_collector = lifecycle_metrics_collector
+        self.lifecycle_metrics_collector_reporter = lifecycle_metrics_collector_reporter
         self.metrics_client = metrics_client
 
     async def generate_reports(
         self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
     ) -> List[ReportFile]:
         print("\n\nGenerating Reports ..")
-        lifecycle_reports = await self.lifecycle_metrics_collector.to_reports(report_config=request_lifecycle_metrics_config)
+        lifecycle_reports = await self.lifecycle_metrics_collector_reporter.to_reports(
+            report_config=request_lifecycle_metrics_config
+        )
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)
         return [
             *lifecycle_reports,

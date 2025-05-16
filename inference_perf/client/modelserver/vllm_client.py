@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from inference_perf.collectors.request_lifecycle import PromptLifecycleMetricsCollector
+from inference_perf.collector_reporters.request_lifecycle import PromptLifecycleMetricsCollectorReporter
 from inference_perf.config import APIType
 from inference_perf.prompts.base import FailedResponseData, LlmPrompt, PromptLifecycleMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
@@ -31,7 +31,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
-        self.prompt_metrics_collector = PromptLifecycleMetricsCollector()
+        self.prompt_metrics_collector_reporter = PromptLifecycleMetricsCollectorReporter()
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
@@ -102,7 +102,7 @@ class vLLMModelServerClient(ModelServerClient):
                 async with session.post(self.uri + prompt.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
                         response_body = await prompt.process_response(res=response, tokenizer=self.tokenizer)
-                        self.prompt_metrics_collector.record_metric(
+                        self.prompt_metrics_collector_reporter.record_metric(
                             PromptLifecycleMetric(
                                 stage_id=stage_id,
                                 request=prompt,
@@ -112,7 +112,7 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
                     else:
-                        self.prompt_metrics_collector.record_metric(
+                        self.prompt_metrics_collector_reporter.record_metric(
                             PromptLifecycleMetric(
                                 stage_id=stage_id,
                                 request=prompt,
@@ -125,7 +125,7 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
             except Exception as e:
-                self.prompt_metrics_collector.record_metric(
+                self.prompt_metrics_collector_reporter.record_metric(
                     PromptLifecycleMetric(
                         stage_id=stage_id,
                         request=prompt,

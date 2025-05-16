@@ -132,7 +132,7 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Define Report Generator
-    reportgen = ReportGenerator(model_server_client.prompt_metrics_collector, metrics_client)
+    reportgen = ReportGenerator(model_server_client.prompt_metrics_collector_reporter, metrics_client)
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
