@@ -39,7 +39,8 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
             if len(self.metrics) != 0:
                 reports.append(
                     ReportFile(
-                        name="summary", contents=request_metrics[0].request.summarize_requests(request_metrics).model_dump()
+                        name="summary_lifecycle_metrics",
+                        contents=request_metrics[0].request.summarize_requests(request_metrics).model_dump(),
                     )
                 )
 
@@ -51,17 +52,27 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
                 reports.append(
-                    ReportFile(name=f"stage_{stage_id}", contents=metrics[0].request.summarize_requests(metrics).model_dump())
+                    ReportFile(
+                        name=f"stage_{stage_id}_lifecycle_metrics",
+                        contents=metrics[0].request.summarize_requests(metrics).model_dump(),
+                    )
                 )
 
         if report_config.per_request:
             print("Generating a per request report of request lifecycle metrics")
-            reports.append(ReportFile(name="per_request", contents=[{
-                "start_time": metric.start_time,
-                "end_time": metric.end_time,
-                "request": metric.request.model_dump(),
-                "response": metric.response.model_dump(),
-            }
-            for metric in self.metrics]))
+            reports.append(
+                ReportFile(
+                    name="per_request_lifecycle_metrics",
+                    contents=[
+                        {
+                            "start_time": metric.start_time,
+                            "end_time": metric.end_time,
+                            "request": metric.request.model_dump(),
+                            "response": metric.response.model_dump(),
+                        }
+                        for metric in self.metrics
+                    ],
+                )
+            )
 
         return reports
