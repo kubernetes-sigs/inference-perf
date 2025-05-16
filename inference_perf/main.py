@@ -145,9 +145,10 @@ def main_cli() -> None:
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
 
-    # Generate Report after the tests
+    # Generate Reports after the tests
     reports = perfrunner.generate_reports(
-        config.report.request_lifecycle, PerfRuntimeParameters(start_time, duration, model_server_client)
+        request_lifecycle_metrics_config=config.report.request_lifecycle,
+        runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client),
     )
 
     # Save Reports
