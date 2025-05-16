@@ -31,7 +31,7 @@ class ResponseData(BaseModel):
 
 
 def safe_float(value: Any) -> float:
-    """NOTE: Only for use in summarizeRequests after validating safe access"""
+    """NOTE: Only for use in summarize_requests after validating safe access"""
     try:
         return float(value)
     except (TypeError, ValueError):
