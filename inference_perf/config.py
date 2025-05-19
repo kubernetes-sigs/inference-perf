@@ -131,7 +131,7 @@ class VllmModelServerConfig(ModelServerConfig):
 
 
 class ModelServerClientConfig(BaseModel):
-    vllm: VllmModelServerConfig = VllmModelServerConfig()
+    vllm: Optional[VllmModelServerConfig] = None
 
 
 class Config(BaseModel):
