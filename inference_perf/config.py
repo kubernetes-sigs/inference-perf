@@ -120,7 +120,7 @@ class ModelWithTokenizerBase(BaseModel):
         return values
 
 
-class ModelServerConfig:
+class ModelServerConfig(BaseModel):
     api: APIType
     base_url: str
     model: ModelWithTokenizerBase
