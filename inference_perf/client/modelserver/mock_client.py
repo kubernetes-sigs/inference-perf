@@ -15,7 +15,7 @@
 import asyncio
 from typing import List
 from inference_perf.config import APIType
-from inference_perf.prompts.base import LlmPrompt
+from inference_perf.prompts.base import InferenceData
 from .base import ModelServerClient, RequestMetric
 
 
@@ -24,7 +24,7 @@ class MockModelServerClient(ModelServerClient):
         super().__init__(api_type)
         self.request_metrics: List[RequestMetric] = list()
 
-    async def process_request(self, payload: LlmPrompt, stage_id: int) -> None:
+    async def process_request(self, payload: InferenceData, stage_id: int) -> None:
         print("Processing mock request for stage - " + str(stage_id))
         await asyncio.sleep(3)
         self.request_metrics.append(

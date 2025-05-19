@@ -14,9 +14,9 @@
 from typing import Generator, List
 from inference_perf.config import APIType
 from inference_perf.datagen.base import DataGenerator
-from inference_perf.prompts.base import LlmPrompt
-from inference_perf.prompts.chat import LlmChatCompletionPrompt, ChatMessage
-from inference_perf.prompts.completion import LlmCompletionPrompt
+from inference_perf.prompts.base import InferenceData
+from inference_perf.prompts.chat import LlmChatCompletionInferenceData, ChatMessage
+from inference_perf.prompts.completion import LlmCompletionInferenceData
 
 
 class MockDataGenerator(DataGenerator):
@@ -26,14 +26,14 @@ class MockDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
 
-    def get_data(self) -> Generator[LlmPrompt, None, None]:
+    def get_data(self) -> Generator[InferenceData, None, None]:
         i = 0
         while True:
             i += 1
             if self.apiType == APIType.Completion:
-                yield LlmCompletionPrompt(prompt="text" + str(i))
+                yield LlmCompletionInferenceData(prompt="text" + str(i))
             elif self.apiType == APIType.Chat:
-                yield LlmChatCompletionPrompt(messages=[ChatMessage(role="user", content="text" + str(i))])
+                yield LlmChatCompletionInferenceData(messages=[ChatMessage(role="user", content="text" + str(i))])
             else:
                 raise Exception("Unsupported API type")
 

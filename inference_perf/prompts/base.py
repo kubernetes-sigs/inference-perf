@@ -59,7 +59,7 @@ class ResponsesSummary(BaseModel):
     failures: dict[str, Any]
 
 
-class LlmPrompt(ABC, BaseModel):
+class InferenceData(ABC, BaseModel):
     @abstractmethod
     def get_route(self) -> str:
         raise NotImplementedError
@@ -91,5 +91,5 @@ class PromptLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     start_time: float
     end_time: float
-    request: LlmPrompt
+    request: InferenceData
     response: ResponseData

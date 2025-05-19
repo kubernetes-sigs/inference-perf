@@ -15,12 +15,12 @@
 
 from typing import Any, List
 import aiohttp
-from inference_perf.prompts import LlmPrompt, PromptLifecycleMetric, ResponseData, ResponsesSummary
+from inference_perf.prompts import InferenceData, PromptLifecycleMetric, ResponseData, ResponsesSummary
 from inference_perf.prompts.base import safe_float, summarize
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
-class LlmCompletionPrompt(LlmPrompt):
+class LlmCompletionInferenceData(InferenceData):
     prompt: str
 
     def get_route(self) -> str:

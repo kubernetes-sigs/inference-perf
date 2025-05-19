@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import LlmPrompt, PromptLifecycleMetric, ResponseData, ResponsesSummary
+from .base import InferenceData, PromptLifecycleMetric, ResponseData, ResponsesSummary
 
-__all__ = ["LlmPrompt", "PromptLifecycleMetric", "ResponseData", "ResponsesSummary"]
+__all__ = ["InferenceData", "PromptLifecycleMetric", "ResponseData", "ResponsesSummary"]

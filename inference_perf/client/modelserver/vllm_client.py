@@ -14,7 +14,7 @@
 
 from inference_perf.collector_reporters.request_lifecycle import RequestLifecycleMetricsCollectorReporter
 from inference_perf.config import APIType
-from inference_perf.prompts.base import FailedResponseData, LlmPrompt, PromptLifecycleMetric, ResponseData
+from inference_perf.prompts.base import FailedResponseData, InferenceData, PromptLifecycleMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
 from typing import List
@@ -93,7 +93,7 @@ class vLLMModelServerClient(ModelServerClient):
             ),
         }
 
-    async def process_request(self, prompt: LlmPrompt, stage_id: int) -> None:
+    async def process_request(self, prompt: InferenceData, stage_id: int) -> None:
         payload = prompt.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:

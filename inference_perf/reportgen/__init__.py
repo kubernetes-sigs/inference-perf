@@ -14,4 +14,4 @@
 from .base import ReportGenerator
 
 
-__all__ = ["ReportGenerator", "ReportGenerator"]
+__all__ = ["ReportGenerator"]

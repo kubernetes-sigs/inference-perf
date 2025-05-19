@@ -11,31 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.prompts.base import LlmPrompt
+from inference_perf.prompts.base import InferenceData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
 from inference_perf.config import APIType, Distribution
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List
-
-
-class CompletionData(BaseModel):
-    prompt: str
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionData(BaseModel):
-    messages: List[ChatMessage]
-
-
-class InferenceData(BaseModel):
-    type: APIType = APIType.Completion
-    chat: Optional[ChatCompletionData] = None
-    data: Optional[CompletionData] = None
 
 
 class IODistribution(BaseModel):
@@ -72,7 +53,7 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[LlmPrompt, None, None]:
+    def get_data(self) -> Generator[InferenceData, None, None]:
         raise NotImplementedError
 
     @abstractmethod

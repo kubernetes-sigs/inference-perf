@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import MetricsCollectorReporter
+from .request_lifecycle import RequestLifecycleMetricsCollectorReporter
 
 
-__all__ = ["MetricsCollectorReporter"]
+__all__ = ["MetricsCollectorReporter", "RequestLifecycleMetricsCollectorReporter"]
