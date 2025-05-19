@@ -23,8 +23,8 @@ from numpy.typing import NDArray
 
 
 class SyntheticDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, ioDistribution, tokenizer)
+    def __init__(self, api_type: APIType, io_distribution: IODistribution, tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_type, io_distribution, tokenizer)
 
         if self.ioDistribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
