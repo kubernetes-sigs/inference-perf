@@ -9,19 +9,19 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 class LlmModelServerClient(ModelServerClient, ABC):
     @abstractmethod
     def __init__(self, config: ModelServerConfig, *args: Tuple[int, ...]) -> None:
-        super().__init__(api_type=config.api)
+        super().__init__(api_type=config.api.type)
         if config.model.tokenizer and config.model.tokenizer.pretrained_model_name_or_path:
             try:
                 self.tokenizer = CustomTokenizer(config.model.tokenizer)
             except Exception as e:
                 raise Exception("Tokenizer initialization failed") from e
 
-        if config.api not in self.get_supported_apis():
-            raise Exception(f"Unsupported API type {config.api}")
+        if config.api.type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type {config.api.type}")
 
         self.model_name = config.model.name
         self.uri = config.base_url
-        self.api_type = config.api
+        self.api_type = config.api.type
 
     def get_tokenizer(self) -> CustomTokenizer:
         return self.tokenizer

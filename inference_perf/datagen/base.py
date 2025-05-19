@@ -27,7 +27,7 @@ class IODistribution(BaseModel):
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
-    apiType: APIType
+    api_type: APIType
     ioDistribution: Optional[IODistribution]
     tokenizer: Optional[CustomTokenizer]
 
@@ -45,7 +45,7 @@ class DataGenerator(ABC):
         if tokenizer is not None:
             self.tokenizer = tokenizer
 
-        self.apiType = apiType
+        self.api_type = apiType
         self.ioDistribution = ioDistribution
 
     @abstractmethod
