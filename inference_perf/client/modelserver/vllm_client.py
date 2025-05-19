@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.datagen import InferenceData
+
+from inference_perf.collector_reporters.request_lifecycle import RequestLifecycleMetricsCollectorReporter
 from inference_perf.config import APIType
+from inference_perf.prompts.base import FailedResponseData, InferenceData, PromptLifecycleMetric, ResponseData
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
-from typing import Any, List
+from typing import List
 import aiohttp
 import json
 import time
@@ -25,10 +27,11 @@ class vLLMModelServerClient(ModelServerClient):
     def __init__(self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer) -> None:
         super().__init__(api_type)
         self.model_name = model_name
-        self.uri = uri + ("/v1/chat/completions" if api_type == APIType.Chat else "/v1/completions")
+        self.uri = uri
         self.max_completion_tokens = 30
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
+        self.prompt_metrics_collector_reporter = RequestLifecycleMetricsCollectorReporter()
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
@@ -90,60 +93,49 @@ class vLLMModelServerClient(ModelServerClient):
             ),
         }
 
-    def _create_payload(self, payload: InferenceData) -> dict[str, Any]:
-        if payload.type == APIType.Completion:
-            return {
-                "model": self.model_name,
-                "prompt": payload.data.prompt if payload.data else "",
-                "max_tokens": self.max_completion_tokens,
-            }
-        if payload.type == APIType.Chat:
-            return {
-                "model": self.model_name,
-                "messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in (payload.chat.messages if payload.chat else [])
-                ],
-                "max_tokens": self.max_completion_tokens,
-            }
-        raise Exception("api type not supported - has to be completions or chat completions")
-
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
-        payload = self._create_payload(data)
+    async def process_request(self, prompt: InferenceData, stage_id: int) -> None:
+        payload = prompt.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
             try:
-                async with session.post(self.uri, headers=headers, data=json.dumps(payload)) as response:
+                async with session.post(self.uri + prompt.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        content = await response.json()
-                        end = time.monotonic()
-                        choices = content.get("choices", [])
-
-                        if data.type == APIType.Completion:
-                            prompt = data.data.prompt if data.data else ""
-                            output_text = choices[0].get("text", "")
-                        elif data.type == APIType.Chat:
-                            prompt = " ".join([msg.content for msg in data.chat.messages]) if data.chat else ""
-                            output_text = choices[0].get("message", {}).get("content", "")
-                        else:
-                            raise Exception("Unsupported API type")
-
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
-                        output_tokens = self.tokenizer.count_tokens(output_text)
-
-                        self.request_metrics.append(
-                            RequestMetric(
+                        response_body = await prompt.process_response(res=response, tokenizer=self.tokenizer)
+                        self.prompt_metrics_collector_reporter.record_metric(
+                            PromptLifecycleMetric(
                                 stage_id=stage_id,
-                                prompt_tokens=prompt_tokens,
-                                output_tokens=output_tokens,
-                                time_per_request=end - start,
+                                request=prompt,
+                                response=response_body,
+                                start_time=start,
+                                end_time=time.monotonic(),
                             )
                         )
                     else:
-                        print(await response.text())
-            except aiohttp.ClientConnectorError as e:
-                print("vLLM Server connection error:\n", str(e))
+                        self.prompt_metrics_collector_reporter.record_metric(
+                            PromptLifecycleMetric(
+                                stage_id=stage_id,
+                                request=prompt,
+                                response=ResponseData(
+                                    info={},
+                                    error=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
+                                ),
+                                start_time=start,
+                                end_time=time.monotonic(),
+                            )
+                        )
+            except Exception as e:
+                self.prompt_metrics_collector_reporter.record_metric(
+                    PromptLifecycleMetric(
+                        stage_id=stage_id,
+                        request=prompt,
+                        response=ResponseData(
+                            info={}, error=FailedResponseData(error_msg=str(e), error_type=type(e).__name__)
+                        ),
+                        start_time=start,
+                        end_time=time.monotonic(),
+                    )
+                )
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]

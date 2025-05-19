@@ -11,49 +11,37 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import json
 import statistics
-from pydantic import BaseModel
-from typing import Any, List
+from typing import List, Optional
+
+from inference_perf.collector_reporters.request_lifecycle import RequestLifecycleMetricsCollectorReporter
+from inference_perf.config import RequestLifecycleMetricsReportConfig
 from inference_perf.metrics import MetricsClient
 from inference_perf.client.modelserver.base import ModelServerMetrics
 from inference_perf.metrics.base import PerfRuntimeParameters
-
-
-class ReportFile:
-    name: str
-    contents: BaseModel
-
-    def __init__(self, name: str, contents: BaseModel):
-        self.name = f"{name}.json"
-        self.contents = contents
-        self._store_locally()
-
-    def _store_locally(self) -> None:
-        filename = self.get_filename()
-        contents = self.get_contents()
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(json.dumps(contents, indent=2))
-
-    def get_filename(self) -> str:
-        return self.name
-
-    def get_contents(self) -> dict[str, Any]:
-        return self.contents.model_dump()
+from inference_perf.report import ReportFile
 
 
 class ReportGenerator:
-    def __init__(self, metrics_client: MetricsClient | None) -> None:
+    def __init__(
+        self,
+        lifecycle_metrics_collector_reporter: RequestLifecycleMetricsCollectorReporter,
+        metrics_client: Optional[MetricsClient],
+    ) -> None:
+        self.lifecycle_metrics_collector_reporter = lifecycle_metrics_collector_reporter
         self.metrics_client = metrics_client
 
-    async def generate_reports(self, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
-        print("\n\nGenerating Report ..")
-        request_summary = self.report_request_summary(runtime_parameters)
+    async def generate_reports(
+        self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
+    ) -> List[ReportFile]:
+        print("\n\nGenerating Reports ..")
+        lifecycle_reports = await self.lifecycle_metrics_collector_reporter.reports(
+            report_config=request_lifecycle_metrics_config
+        )
         metrics_client_summary = self.report_metrics_summary(runtime_parameters)
-
         return [
-            ReportFile(name="request_summary_report", contents=request_summary),
-            ReportFile(name="metrics_client_report", contents=metrics_client_summary),
+            *lifecycle_reports,
+            ReportFile(name="metrics_client_report", contents=metrics_client_summary.model_dump()),
         ]
 
     def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:

@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, InferenceData, CompletionData, ChatCompletionData, ChatMessage
 from typing import Generator, List
 from inference_perf.config import APIType
+from inference_perf.datagen.base import DataGenerator
+from inference_perf.prompts.base import InferenceData
+from inference_perf.prompts.chat import LlmChatCompletionInferenceData, ChatMessage
+from inference_perf.prompts.completion import LlmCompletionInferenceData
 
 
 class MockDataGenerator(DataGenerator):
@@ -28,11 +31,9 @@ class MockDataGenerator(DataGenerator):
         while True:
             i += 1
             if self.apiType == APIType.Completion:
-                yield InferenceData(type=APIType.Completion, data=CompletionData(prompt="text" + str(i)))
+                yield LlmCompletionInferenceData(prompt="text" + str(i))
             elif self.apiType == APIType.Chat:
-                yield InferenceData(
-                    type=APIType.Chat, chat=ChatCompletionData(messages=[ChatMessage(role="user", content="text" + str(i))])
-                )
+                yield LlmChatCompletionInferenceData(messages=[ChatMessage(role="user", content="text" + str(i))])
             else:
                 raise Exception("Unsupported API type")
 

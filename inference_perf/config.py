@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
@@ -84,13 +84,19 @@ class StorageConfig(BaseModel):
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
+class RequestLifecycleMetricsReportConfig(BaseModel):
+    summary: Optional[bool] = True
+    per_stage: Optional[bool] = True
+    per_request: Optional[bool] = False
+
+
 class ReportConfig(BaseModel):
-    pass
+    request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
 
 
 class PrometheusClientConfig(BaseModel):
     scrape_interval: int = 15
-    url: str = "http://localhost:9090"
+    url: HttpUrl = HttpUrl(url="http://localhost:9090")
 
 
 class MetricsClientConfig(BaseModel):
@@ -115,7 +121,7 @@ class Config(BaseModel):
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
-    report: Optional[ReportConfig] = ReportConfig()
+    report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
     server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None

@@ -16,7 +16,8 @@ from typing import List, Tuple, TypedDict
 from inference_perf.config import APIType
 
 from pydantic import BaseModel
-from inference_perf.datagen import InferenceData
+
+from inference_perf.prompts.base import InferenceData
 
 
 class RequestMetric(BaseModel):

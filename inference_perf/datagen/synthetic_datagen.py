@@ -13,8 +13,10 @@
 # limitations under the License.
 import numpy as np
 
+from inference_perf.prompts.base import InferenceData
+from inference_perf.prompts.completion import LlmCompletionInferenceData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator, IODistribution, InferenceData, CompletionData
+from .base import DataGenerator, IODistribution
 from typing import Generator, List
 from inference_perf.config import APIType
 from numpy.typing import NDArray
@@ -49,8 +51,9 @@ class SyntheticDataGenerator(DataGenerator):
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
             if self.apiType == APIType.Completion:
-                prompt = self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]])
-                yield InferenceData(data=CompletionData(prompt=prompt))
+                yield LlmCompletionInferenceData(
+                    prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]])
+                )
                 i += 1
             else:
                 raise Exception("Unsupported API type")

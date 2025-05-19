@@ -17,7 +17,7 @@ from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from inference_perf.client.storage import StorageClient
 from inference_perf.config import GoogleCloudStorageConfig
-from inference_perf.reportgen import ReportFile
+from inference_perf.report import ReportFile
 
 
 class GoogleCloudStorageClient(StorageClient):
