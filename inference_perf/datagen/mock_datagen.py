@@ -30,9 +30,9 @@ class MockDataGenerator(DataGenerator):
         i = 0
         while True:
             i += 1
-            if self.apiType == APIType.Completion:
+            if self.api_type == APIType.Completion:
                 yield LlmCompletionInferenceData(prompt="text" + str(i))
-            elif self.apiType == APIType.Chat:
+            elif self.api_type == APIType.Chat:
                 yield LlmChatCompletionInferenceData(messages=[ChatMessage(role="user", content="text" + str(i))])
             else:
                 raise Exception("Unsupported API type")

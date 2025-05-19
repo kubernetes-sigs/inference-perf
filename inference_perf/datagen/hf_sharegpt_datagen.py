@@ -54,7 +54,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 ):
                     continue
 
-                if self.apiType == APIType.Completion:
+                if self.api_type == APIType.Completion:
                     try:
                         prompt = data[self.data_key][0].get(self.content_key)
                         if not prompt:
@@ -63,7 +63,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     except (KeyError, TypeError) as e:
                         print(f"Skipping invalid completion data: {e}")
                         continue
-                elif self.apiType == APIType.Chat:
+                elif self.api_type == APIType.Chat:
                     yield LlmChatCompletionInferenceData(
                         messages=[
                             ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])

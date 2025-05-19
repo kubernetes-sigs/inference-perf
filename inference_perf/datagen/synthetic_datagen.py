@@ -57,7 +57,7 @@ class SyntheticDataGenerator(DataGenerator):
         while True:
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-            if self.apiType == APIType.Completion:
+            if self.api_type == APIType.Completion:
                 yield LlmCompletionInferenceData(
                     prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
                     max_tokens=self.output_lengths[i],
