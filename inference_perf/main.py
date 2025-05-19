@@ -83,7 +83,7 @@ def main_cli() -> None:
                 )
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.server.api, None, model_server_client.get_tokenizer())
+            datagen = HFShareGPTDataGenerator(model_server_client.api_type, None, model_server_client.get_tokenizer())
 
         elif config.data.type == DataGenType.Synthetic:
             if config.data.input_distribution is None:
