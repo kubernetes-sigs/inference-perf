@@ -124,7 +124,7 @@ class ApiConfig(BaseModel):
     streaming: bool = False
 
 class ModelServerConfig(BaseModel):
-    api: ApiConfig = ApiConfig()
+    api: ApiConfig
     base_url: str
     model: ModelWithTokenizerBase
 
