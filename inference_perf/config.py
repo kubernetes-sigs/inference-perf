@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, model_validator
 from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
@@ -44,10 +44,6 @@ class DataConfig(BaseModel):
     # Distributions are only supported for synthetic dataset at this moment
     input_distribution: Optional[Distribution] = Distribution()
     output_distribution: Optional[Distribution] = Distribution()
-
-
-class ModelServerType(Enum):
-    VLLM = "vllm"
 
 
 class LoadType(Enum):
@@ -104,27 +100,47 @@ class MetricsClientConfig(BaseModel):
     prometheus: Optional[PrometheusClientConfig] = None
 
 
-class ModelServerClientConfig(BaseModel):
-    type: ModelServerType = ModelServerType.VLLM
-    model_name: str
-    base_url: str
-
-
 class CustomTokenizerConfig(BaseModel):
     pretrained_model_name_or_path: str
     trust_remote_code: Optional[bool] = None
     token: Optional[str] = None
 
 
+class ModelWithTokenizerBase(BaseModel):
+    name: str
+    tokenizer: Optional[CustomTokenizerConfig] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_tokenizer(cls, values: dict[str, Any]) -> dict[str, Any]:
+        if "tokenizer" not in values or values["tokenizer"] is None:
+            if "name" not in values or values["name"] is None:
+                raise ValueError("'name' is required if 'tokenizer' is not provided.")
+            values["tokenizer"] = CustomTokenizerConfig(pretrained_model_name_or_path=values["name"])
+        return values
+
+
+class ModelServerConfig:
+    api: APIType
+    base_url: str
+    model: ModelWithTokenizerBase
+
+
+class VllmModelServerConfig(ModelServerConfig):
+    pass
+
+
+class ModelServerClientConfig(BaseModel):
+    vllm: VllmModelServerConfig = VllmModelServerConfig()
+
+
 class Config(BaseModel):
-    api: APIType = APIType.Completion
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
     report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
-    server: Optional[ModelServerClientConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
+    server: ModelServerClientConfig = ModelServerClientConfig()
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
