@@ -119,9 +119,12 @@ class ModelWithTokenizerBase(BaseModel):
             values["tokenizer"] = CustomTokenizerConfig(pretrained_model_name_or_path=values["name"])
         return values
 
+class ApiConfig(BaseModel):
+    type: APIType
+    streaming: bool = False
 
 class ModelServerConfig(BaseModel):
-    api: APIType
+    api: ApiConfig = ApiConfig()
     base_url: str
     model: ModelWithTokenizerBase
 
