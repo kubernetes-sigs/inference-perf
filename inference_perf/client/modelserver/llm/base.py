@@ -21,7 +21,7 @@ class LlmModelServerClient(ModelServerClient, ABC):
 
         self.model_name = config.model.name
         self.uri = config.base_url
-        self.apiType = config.api
+        self.api_type = config.api
 
     def get_tokenizer(self) -> CustomTokenizer:
         return self.tokenizer
