@@ -2,13 +2,13 @@ from abc import ABC, abstractmethod
 from typing import Tuple
 
 from inference_perf.client.modelserver.base import ModelServerClient
-from inference_perf.config import ModelServerConfig
+from inference_perf.config import LlmModelServerConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 class LlmModelServerClient(ModelServerClient, ABC):
     @abstractmethod
-    def __init__(self, config: ModelServerConfig, *args: Tuple[int, ...]) -> None:
+    def __init__(self, config: LlmModelServerConfig, *args: Tuple[int, ...]) -> None:
         super().__init__(api_type=config.load.api.type)
         if config.model.tokenizer and config.model.tokenizer.pretrained_model_name_or_path:
             try:
