@@ -1,7 +1,10 @@
 load:
   type: constant
+  interval: 15
   stages:
   - rate: 1
+    duration: 30
+  - rate: 2
     duration: 30
 api: completion
 server:
@@ -18,3 +21,19 @@ data:
     mean: 50
     std: 10
     total_count: 100
+  output_distribution:
+    min: 10
+    max: 100
+    mean: 50
+    std: 10
+    total_count: 100
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
