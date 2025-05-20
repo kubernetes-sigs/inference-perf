@@ -110,18 +110,17 @@ class ModelWithTokenizerBase(BaseModel):
     name: str
     tokenizer: Optional[CustomTokenizerConfig] = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def set_tokenizer(cls, values: dict[str, Any]) -> dict[str, Any]:
-        if "tokenizer" not in values or values["tokenizer"] is None:
-            if "name" not in values or values["name"] is None:
-                raise ValueError("'name' is required if 'tokenizer' is not provided.")
-            values["tokenizer"] = CustomTokenizerConfig(pretrained_model_name_or_path=values["name"])
-        return values
+    def model_post_init(self, __context: Any) -> None:
+        if self.tokenizer is None:
+            self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
+        elif self.tokenizer.pretrained_model_name_or_path is None:
+            self.tokenizer.pretrained_model_name_or_path = self.name
+
 
 class ApiConfig(BaseModel):
     type: APIType
     streaming: bool = False
+
 
 class ModelServerConfig(BaseModel):
     api: ApiConfig
