@@ -9,7 +9,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 class LlmModelServerClient(ModelServerClient, ABC):
     @abstractmethod
     def __init__(self, config: ModelServerConfig, *args: Tuple[int, ...]) -> None:
-        super().__init__(api_type=config.api.type)
+        super().__init__(api_type=config.load.api.type)
         if config.model.tokenizer and config.model.tokenizer.pretrained_model_name_or_path:
             try:
                 self.tokenizer = CustomTokenizer(config.model.tokenizer)
