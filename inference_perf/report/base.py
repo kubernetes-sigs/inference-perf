@@ -32,7 +32,6 @@ class ReportFile:
         contents = self.get_contents()
         with open(filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(contents, indent=2))
-            print(f"set path to {self.path}")
             self.path = os.path.abspath(filename)
 
     def get_filename(self) -> str:
