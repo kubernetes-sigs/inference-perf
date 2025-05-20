@@ -102,6 +102,7 @@ class MetricsClientConfig(BaseModel):
 
 class CustomTokenizerConfig(BaseModel):
     pretrained_model_name_or_path: Optional[str] = None
+    token: Optional[str] = None
     trust_remote_code: Optional[bool] = None
 
 
@@ -114,9 +115,11 @@ class ModelWithTokenizerBase(BaseModel):
     def populate_tokenizer_path(self) -> "ModelWithTokenizerBase":
         if self.tokenizer is None:
             self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
-        elif self.tokenizer.pretrained_model_name_or_path is None:
-            print(f"Tokenizer has no pretrained_model_name_or_path specified, defaulting to '{self.name}'")
+
+        if self.tokenizer.pretrained_model_name_or_path is None and self.tokenizer.token is None:
+            print(f"Tokenizer has no pretrained_model_name_or_path specified, defaulting to pretrained_model_name_or_path:'{self.name}' and token{self.token}")
             self.tokenizer.pretrained_model_name_or_path = self.name
+            self.tokenizer.token = self.token
         return self
 
 

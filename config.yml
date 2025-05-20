@@ -5,11 +5,15 @@ load:
     duration: 30
 api: chat
 server:
-  type: vllm
-  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
-  base_url: http://0.0.0.0:8000
-tokenizer:
-  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+  vllm:
+    base_url: http://0.0.0.0:8000
+    api:
+      type: completion
+      streaming: false
+    model:
+      name: HuggingFaceTB/SmolLM2-135M-Instruct
+      tokenizer:
+        trust_remote_code: true
 data:
   type: shareGPT
 metrics:
