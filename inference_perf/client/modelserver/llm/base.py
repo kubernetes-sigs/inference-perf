@@ -16,12 +16,12 @@ class LlmModelServerClient(ModelServerClient, ABC):
             except Exception as e:
                 raise Exception("Tokenizer initialization failed") from e
 
-        if config.api.type not in self.get_supported_apis():
-            raise Exception(f"Unsupported API type {config.api.type}")
+        if config.load.api.type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type {config.load.api.type}")
 
         self.model_name = config.model.name
         self.uri = config.base_url
-        self.api = config.api
+        self.load = config.load
 
     def get_tokenizer(self) -> CustomTokenizer:
         return self.tokenizer

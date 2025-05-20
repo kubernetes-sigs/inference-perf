@@ -24,6 +24,11 @@ class APIType(Enum):
     Chat = "chat"
 
 
+class ApiConfig(BaseModel):
+    type: APIType
+    streaming: bool = False
+
+
 class DataGenType(Enum):
     Mock = "mock"
     ShareGPT = "shareGPT"
@@ -62,6 +67,7 @@ class LoadStage(BaseModel):
 
 
 class LoadConfig(BaseModel):
+    api: ApiConfig
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
@@ -125,16 +131,10 @@ class ModelWithTokenizerBase(BaseModel):
         return self
 
 
-class ApiConfig(BaseModel):
-    type: APIType
-    streaming: bool = False
-    load: LoadConfig = LoadConfig()
-
-
 class ModelServerConfig(BaseModel):
-    api: ApiConfig
-    base_url: str
     model: ModelWithTokenizerBase
+    base_url: str
+    load: LoadConfig
 
 
 class VllmModelServerConfig(ModelServerConfig):
