@@ -15,7 +15,11 @@ import time
 from typing import List, Optional
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
-from inference_perf.config import DataGenType, MetricsClientType, ModelServerType, RequestLifecycleMetricsReportConfig
+from inference_perf.config import (
+    DataGenType,
+    MetricsClientType,
+    RequestLifecycleMetricsReportConfig,
+)
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
@@ -24,7 +28,6 @@ from inference_perf.client.storage import StorageClient, GoogleCloudStorageClien
 from inference_perf.report import ReportFile
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.config import read_config
-from inference_perf.utils.custom_tokenizer import CustomTokenizer
 import asyncio
 
 
@@ -61,30 +64,10 @@ class InferencePerfRunner:
 def main_cli() -> None:
     config = read_config()
 
-    # Create tokenizer based on tokenizer config
-    tokenizer: Optional[CustomTokenizer] = None
-    if config.tokenizer and config.tokenizer.pretrained_model_name_or_path:
-        try:
-            tokenizer = CustomTokenizer(config.tokenizer)
-        except Exception as e:
-            raise Exception("Tokenizer initialization failed") from e
-
     # Define Model Server Client
     model_server_client: ModelServerClient
-    if config.server:
-        if config.server.type == ModelServerType.VLLM:
-            # The type error for vLLMModelServerClient's tokenizer argument indicates it expects CustomTokenizer, not Optional.
-            if tokenizer is None:
-                raise Exception(
-                    "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
-                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
-                )
-            model_server_client = vLLMModelServerClient(
-                api_type=config.api,
-                uri=config.server.base_url,
-                model_name=config.server.model_name,
-                tokenizer=tokenizer,
-            )
+    if config.server.vllm is not None:
+        model_server_client = vLLMModelServerClient(config=config.server.vllm)
     else:
         raise Exception("model server client config missing")
 
@@ -93,23 +76,23 @@ def main_cli() -> None:
     if config.data:
         # Common checks for generators that require a tokenizer
         if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic]:
-            if tokenizer is None:
+            if model_server_client.get_tokenizer() is None:
                 raise Exception(
                     f"{config.data.type.value} data generator requires a configured tokenizer. "
                     "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
                 )
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.api, None, tokenizer)
+            datagen = HFShareGPTDataGenerator(config.api, None, model_server_client.get_tokenizer())
 
         elif config.data.type == DataGenType.Synthetic:
             if config.data.input_distribution is None:
                 raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
-            if config.data.output_distribution is None:
-                raise Exception("SyntheticDataGenerator requires 'output_distribution' to be configured")
 
-            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)
-            datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+            io_distribution = IODistribution(input=config.data.input_distribution)
+            datagen = SyntheticDataGenerator(
+                config.api, ioDistribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
+            )
         else:
             datagen = MockDataGenerator(config.api)
     else:
