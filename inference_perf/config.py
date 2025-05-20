@@ -103,11 +103,11 @@ class MetricsClientConfig(BaseModel):
 class CustomTokenizerConfig(BaseModel):
     pretrained_model_name_or_path: Optional[str] = None
     trust_remote_code: Optional[bool] = None
-    token: Optional[str] = None
 
 
 class ModelWithTokenizerBase(BaseModel):
     name: str
+    token: Optional[str] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
 
     @model_validator(mode="after")
@@ -173,7 +173,7 @@ def read_config() -> Config:
         merged_cfg = Config(**deep_merge(default_cfg, cfg))
 
         print(
-            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg.model_dump(mode="json"), sort_keys=False, default_flow_style=False)}\n"
+            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg.model_dump(mode='json'), sort_keys=False, default_flow_style=False)}\n"
         )
         return merged_cfg
     return Config()
