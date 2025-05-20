@@ -13,12 +13,14 @@
 # limitations under the License.
 
 import json
-from typing import Any
+import os
+from typing import Any, Optional
 
 
 class ReportFile:
     name: str
     contents: Any
+    path: Optional[str] = None
 
     def __init__(self, name: str, contents: Any):
         self.name = f"{name}.json"
@@ -30,6 +32,7 @@ class ReportFile:
         contents = self.get_contents()
         with open(filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(contents, indent=2))
+            self.path = os.path.abspath(filename)
 
     def get_filename(self) -> str:
         return self.name
