@@ -83,7 +83,7 @@ def main_cli() -> None:
                 )
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(model_server_client.api_type, None, model_server_client.get_tokenizer())
+            datagen = HFShareGPTDataGenerator(model_server_client.api, None, model_server_client.get_tokenizer())
 
         elif config.data.type == DataGenType.Synthetic:
             if config.data.input_distribution is None:
@@ -91,10 +91,10 @@ def main_cli() -> None:
 
             io_distribution = IODistribution(input=config.data.input_distribution)
             datagen = SyntheticDataGenerator(
-                model_server_client.api_type, io_distribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
+                model_server_client.api, io_distribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
             )
         else:
-            datagen = MockDataGenerator(model_server_client.api_type)
+            datagen = MockDataGenerator(model_server_client.api)
     else:
         raise Exception("data config missing")
 
