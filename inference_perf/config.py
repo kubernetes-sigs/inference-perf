@@ -128,6 +128,7 @@ class ModelWithTokenizerBase(BaseModel):
 class ApiConfig(BaseModel):
     type: APIType
     streaming: bool = False
+    load: LoadConfig = LoadConfig()
 
 
 class ModelServerConfig(BaseModel):
@@ -146,7 +147,6 @@ class ModelServerClientConfig(BaseModel):
 
 class Config(BaseModel):
     data: DataConfig = DataConfig()
-    load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
     report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
