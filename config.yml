@@ -1,14 +1,15 @@
-load:
-  type: constant
-  stages:
-  - rate: 1
-    duration: 30
+
 server:
   vllm:
     base_url: http://0.0.0.0:8000
-    api:
-      type: completion
-      streaming: false
+    load:
+      api:
+        type: completion
+        streaming: false
+      type: constant
+      stages:
+      - rate: 1
+        duration: 30
     model:
       name: HuggingFaceTB/SmolLM2-135M-Instruct
       tokenizer:
