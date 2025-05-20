@@ -36,12 +36,13 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
         if report_config.summary:
             request_metrics = self.metrics
             if len(self.metrics) != 0:
-                reports.append(
-                    ReportFile(
-                        name="summary_lifecycle_metrics",
-                        contents=request_metrics[0].request.summarize_requests(request_metrics).model_dump(),
-                    )
+                report_file = ReportFile(
+                    name="summary_lifecycle_metrics",
+                    contents=request_metrics[0].request.summarize_requests(request_metrics).model_dump(),
                 )
+                reports.append(report_file)
+                if report_file.path is not None:
+                    print(f"Successfully saved summary report of request lifecycle metrics to {report_file.path}")
 
         if report_config.per_stage:
             stage_buckets: dict[int, List[PromptLifecycleMetric]] = defaultdict(list)
@@ -49,27 +50,28 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
-                reports.append(
-                    ReportFile(
-                        name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=metrics[0].request.summarize_requests(metrics).model_dump(),
-                    )
+                report_file = ReportFile(
+                    name=f"stage_{stage_id}_lifecycle_metrics",
+                    contents=metrics[0].request.summarize_requests(metrics).model_dump(),
                 )
+                reports.append(report_file)
+                if report_file is not None:
+                    print(f"Successfully saved per stage report of request lifecycle metrics to {report_file.path}")
 
         if report_config.per_request:
-            reports.append(
-                ReportFile(
-                    name="per_request_lifecycle_metrics",
-                    contents=[
-                        {
-                            "start_time": metric.start_time,
-                            "end_time": metric.end_time,
-                            "request": metric.request.model_dump(),
-                            "response": metric.response.model_dump(),
-                        }
-                        for metric in self.metrics
-                    ],
-                )
+            report_file = ReportFile(
+                name="per_request_lifecycle_metrics",
+                contents=[
+                    {
+                        "start_time": metric.start_time,
+                        "end_time": metric.end_time,
+                        "request": metric.request.model_dump(),
+                        "response": metric.response.model_dump(),
+                    }
+                    for metric in self.metrics
+                ],
             )
-
+            reports.append(report_file)
+            if report_file is not None:
+                print(f"Successfully saved per request report of request lifecycle metrics to {report_file.path}")
         return reports
