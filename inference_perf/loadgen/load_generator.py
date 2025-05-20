@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Any
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client.modelserver import ModelServerClient
@@ -20,7 +21,7 @@ import time
 
 
 class LoadGenerator:
-    def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+    def __init__(self, datagen: DataGenerator, load_config: LoadConfig[Any]) -> None:
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type

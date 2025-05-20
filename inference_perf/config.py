@@ -13,7 +13,7 @@
 # limitations under the License.
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl, model_validator
-from typing import Any, Optional, List
+from typing import Any, Generic, Optional, List, TypeVar
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
@@ -26,6 +26,12 @@ class APIType(Enum):
 
 class ApiConfig(BaseModel):
     type: APIType
+
+
+APIConfigGeneric = TypeVar("APIConfigGeneric", bound="ApiConfig")
+
+
+class LlmApiConfig(ApiConfig):
     streaming: bool = False
 
 
@@ -66,11 +72,15 @@ class LoadStage(BaseModel):
     duration: int
 
 
-class LoadConfig(BaseModel):
-    api: ApiConfig
+class LoadConfig(BaseModel, Generic[APIConfigGeneric]):
+    api: APIConfigGeneric
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
+
+
+class LlmLoadConfig(LoadConfig[LlmApiConfig]):
+    pass
 
 
 class StorageConfigBase(BaseModel):
@@ -131,13 +141,16 @@ class ModelWithTokenizerBase(BaseModel):
         return self
 
 
-class ModelServerConfig(BaseModel):
-    model: ModelWithTokenizerBase
+class ModelServerConfig(BaseModel, Generic[APIConfigGeneric]):
     base_url: str
-    load: LoadConfig
+    load: LoadConfig[APIConfigGeneric]
 
 
-class VllmModelServerConfig(ModelServerConfig):
+class LlmModelServerConfig(ModelServerConfig[LlmApiConfig]):
+    model: ModelWithTokenizerBase
+
+
+class VllmModelServerConfig(LlmModelServerConfig):
     pass
 
 
