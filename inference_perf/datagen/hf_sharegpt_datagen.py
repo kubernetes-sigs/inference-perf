@@ -16,14 +16,14 @@ from inference_perf.prompts.chat import ChatMessage, LlmChatCompletionInferenceD
 from inference_perf.prompts.completion import LlmCompletionInferenceData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution, Optional
-from inference_perf.config import APIType
+from inference_perf.config import APIType, ApiConfig
 from typing import Generator, List
 from datasets import load_dataset
 
 
 class HFShareGPTDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, ioDistribution, tokenizer)
+    def __init__(self, api_config: ApiConfig, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_config, ioDistribution, tokenizer)
         self.sharegpt_dataset = iter(
             load_dataset(
                 "anon8231489123/ShareGPT_Vicuna_unfiltered",
@@ -54,7 +54,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 ):
                     continue
 
-                if self.api_type == APIType.Completion:
+                if self.api_config.type == APIType.Completion:
                     try:
                         prompt = data[self.data_key][0].get(self.content_key)
                         if not prompt:
@@ -63,7 +63,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     except (KeyError, TypeError) as e:
                         print(f"Skipping invalid completion data: {e}")
                         continue
-                elif self.api_type == APIType.Chat:
+                elif self.api_config.type == APIType.Chat:
                     yield LlmChatCompletionInferenceData(
                         messages=[
                             ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
