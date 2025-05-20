@@ -172,7 +172,7 @@ def read_config() -> Config:
         merged_cfg = Config(**deep_merge(default_cfg, cfg))
 
         print(
-            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg.model_dump(), mode="json", sort_keys=False, default_flow_style=False)}\n"
+            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg.model_dump(mode="json"), sort_keys=False, default_flow_style=False)}\n"
         )
         return merged_cfg
     return Config()
