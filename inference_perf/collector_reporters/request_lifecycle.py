@@ -56,7 +56,7 @@ class RequestLifecycleMetricsCollectorReporter(MetricsCollectorReporter):
                 )
                 reports.append(report_file)
                 if report_file is not None:
-                    print(f"Successfully saved per stage report of request lifecycle metrics to {report_file.path}")
+                    print(f"Successfully saved stage {stage_id} report of request lifecycle metrics to {report_file.path}")
 
         if report_config.per_request:
             report_file = ReportFile(
