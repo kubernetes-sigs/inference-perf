@@ -99,10 +99,7 @@ def main_cli() -> None:
         raise Exception("data config missing")
 
     # Define LoadGenerator
-    if config.load:
-        loadgen = LoadGenerator(datagen, config.load)
-    else:
-        raise Exception("load config missing")
+    loadgen = LoadGenerator(datagen, model_server_client.api.load)
 
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
