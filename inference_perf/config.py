@@ -112,7 +112,6 @@ class ModelWithTokenizerBase(BaseModel):
 
     @model_validator(mode="after")
     def populate_tokenizer_path(self) -> "ModelWithTokenizerBase":
-        print("Populating tokenizer path")
         if self.tokenizer is None:
             self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
         elif self.tokenizer.pretrained_model_name_or_path is None:
@@ -170,10 +169,10 @@ def read_config() -> Config:
             cfg = yaml.safe_load(stream)
 
         default_cfg = Config().model_dump(mode="json")
-        merged_cfg = deep_merge(default_cfg, cfg)
+        merged_cfg = Config(**deep_merge(default_cfg, cfg))
 
         print(
             f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)}\n"
         )
-        return Config(**merged_cfg)
+        return merged_cfg
     return Config()
