@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 from typing import Any
 
 
@@ -30,6 +31,7 @@ class ReportFile:
         contents = self.get_contents()
         with open(filename, "w", encoding="utf-8") as f:
             f.write(json.dumps(contents, indent=2))
+            print(f"Finished writing file: '{os.path.abspath(filename)}'")
 
     def get_filename(self) -> str:
         return self.name
