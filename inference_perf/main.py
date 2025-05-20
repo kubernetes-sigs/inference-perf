@@ -105,8 +105,10 @@ def main_cli() -> None:
         elif config.data.type == DataGenType.Synthetic:
             if config.data.input_distribution is None:
                 raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
+            if config.data.output_distribution is None:
+                raise Exception("SyntheticDataGenerator requires 'output_distribution' to be configured")
 
-            io_distribution = IODistribution(input=config.data.input_distribution)
+            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)
             datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
         else:
             datagen = MockDataGenerator(config.api)

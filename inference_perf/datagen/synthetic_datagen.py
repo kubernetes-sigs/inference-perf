@@ -36,6 +36,13 @@ class SyntheticDataGenerator(DataGenerator):
             self.ioDistribution.input.std_dev,
             self.ioDistribution.input.total_count,
         )
+        self.output_lengths = self.generate_distribution(
+            self.ioDistribution.output.min,
+            self.ioDistribution.output.max,
+            self.ioDistribution.output.mean,
+            self.ioDistribution.output.std_dev,
+            self.ioDistribution.output.total_count,
+        )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self.token_ids = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
 
@@ -52,7 +59,8 @@ class SyntheticDataGenerator(DataGenerator):
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
             if self.apiType == APIType.Completion:
                 yield LlmCompletionInferenceData(
-                    prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]])
+                    prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
+                    max_tokens=self.output_lengths[i],
                 )
                 i += 1
             else:

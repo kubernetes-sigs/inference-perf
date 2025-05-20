@@ -28,7 +28,7 @@ class vLLMModelServerClient(ModelServerClient):
         super().__init__(api_type)
         self.model_name = model_name
         self.uri = uri
-        self.max_completion_tokens = 30
+        self.max_completion_tokens = 30  # default to use when not set at the request level
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
         self.prompt_metrics_collector_reporter = RequestLifecycleMetricsCollectorReporter()
