@@ -72,15 +72,10 @@ class LoadStage(BaseModel):
     duration: int
 
 
-class LoadConfig(BaseModel, Generic[APIConfigGeneric]):
-    api: APIConfigGeneric
+class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
-
-
-class LlmLoadConfig(LoadConfig[LlmApiConfig]):
-    pass
 
 
 class StorageConfigBase(BaseModel):
@@ -143,7 +138,7 @@ class ModelWithTokenizerBase(BaseModel):
 
 class ModelServerConfig(BaseModel, Generic[APIConfigGeneric]):
     base_url: str
-    load: LoadConfig[APIConfigGeneric]
+    api: APIConfigGeneric
 
 
 class LlmModelServerConfig(ModelServerConfig[LlmApiConfig]):
@@ -161,6 +156,7 @@ class ModelServerClientConfig(BaseModel):
 
 class Config(BaseModel):
     data: DataConfig = DataConfig()
+    load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
     report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
