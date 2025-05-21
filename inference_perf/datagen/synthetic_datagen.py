@@ -13,8 +13,7 @@
 # limitations under the License.
 import numpy as np
 
-from inference_perf.prompts.base import InferenceData
-from inference_perf.prompts.completion import LlmCompletionInferenceData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution
 from typing import Generator, List
@@ -52,13 +51,13 @@ class SyntheticDataGenerator(DataGenerator):
     def is_io_distribution_supported(self) -> bool:
         return True
 
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
         while True:
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
             if self.apiType == APIType.Completion:
-                yield LlmCompletionInferenceData(
+                yield CompletionAPIData(
                     prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
                     max_tokens=self.output_lengths[i],
                 )

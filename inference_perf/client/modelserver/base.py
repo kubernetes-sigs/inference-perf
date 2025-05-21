@@ -17,7 +17,7 @@ from inference_perf.config import APIType
 
 from pydantic import BaseModel
 
-from inference_perf.prompts.base import InferenceData
+from inference_perf.apis import InferenceAPIData
 
 
 class RequestMetric(BaseModel):
@@ -105,7 +105,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         raise NotImplementedError
 
     @abstractmethod

@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .custom_tokenizer import CustomTokenizer
+from .report_file import ReportFile
 
-__all__ = ["CustomTokenizer"]
+__all__ = ["CustomTokenizer", "ReportFile"]

@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from inference_perf.collector_reporters.request_lifecycle import RequestLifecycleMetricsCollectorReporter
+from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIType
-from inference_perf.prompts.base import FailedResponseData, InferenceData, PromptLifecycleMetric, ResponseData
+from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
 from typing import List
@@ -25,7 +25,13 @@ import time
 
 class vLLMModelServerClient(ModelServerClient):
     def __init__(
-        self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer, ignore_eos: bool = True
+        self,
+        metrics_collector: RequestDataCollector,
+        api_type: APIType,
+        uri: str,
+        model_name: str,
+        tokenizer: CustomTokenizer,
+        ignore_eos: bool = True,
     ) -> None:
         super().__init__(api_type)
         self.model_name = model_name
@@ -34,7 +40,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.ignore_eos = ignore_eos
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
-        self.prompt_metrics_collector_reporter = RequestLifecycleMetricsCollectorReporter()
+        self.metrics_collector = metrics_collector
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
@@ -96,46 +102,51 @@ class vLLMModelServerClient(ModelServerClient):
             ),
         }
 
-    async def process_request(self, prompt: InferenceData, stage_id: int) -> None:
-        payload = prompt.to_payload(
+    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
+        payload = data.to_payload(
             model_name=self.model_name, max_tokens=self.max_completion_tokens, ignore_eos=self.ignore_eos
         )
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
             try:
-                async with session.post(self.uri + prompt.get_route(), headers=headers, data=json.dumps(payload)) as response:
+                async with session.post(self.uri + data.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        response_body = await prompt.process_response(res=response, tokenizer=self.tokenizer)
-                        self.prompt_metrics_collector_reporter.record_metric(
-                            PromptLifecycleMetric(
+                        content = await response.json()
+                        response_info = data.process_response(data=content, tokenizer=self.tokenizer)
+                        self.metrics_collector.record_metric(
+                            RequestLifecycleMetric(
                                 stage_id=stage_id,
-                                request=prompt,
-                                response=response_body,
+                                request_data=json.dumps(payload),
+                                response_data=json.dumps(content),
+                                info=response_info,
+                                error=None,
                                 start_time=start,
                                 end_time=time.monotonic(),
                             )
                         )
                     else:
-                        self.prompt_metrics_collector_reporter.record_metric(
-                            PromptLifecycleMetric(
+                        content = await response.text()
+                        self.metrics_collector.record_metric(
+                            RequestLifecycleMetric(
                                 stage_id=stage_id,
-                                request=prompt,
-                                response=ResponseData(
-                                    info={},
-                                    error=FailedResponseData(error_msg=(await response.text()), error_type="Non 200 reponse"),
-                                ),
+                                request_data=json.dumps(payload),
+                                response_data=content,
+                                info=InferenceInfo(),
+                                error=ErrorResponseInfo(error_msg=content, error_type="Non 200 reponse"),
                                 start_time=start,
                                 end_time=time.monotonic(),
                             )
                         )
             except Exception as e:
-                self.prompt_metrics_collector_reporter.record_metric(
-                    PromptLifecycleMetric(
+                self.metrics_collector.record_metric(
+                    RequestLifecycleMetric(
                         stage_id=stage_id,
-                        request=prompt,
-                        response=ResponseData(
-                            info={}, error=FailedResponseData(error_msg=str(e), error_type=type(e).__name__)
+                        request_data=json.dumps(payload),
+                        info=InferenceInfo(),
+                        error=ErrorResponseInfo(
+                            error_msg=str(e),
+                            error_type=type(e).__name__,
                         ),
                         start_time=start,
                         end_time=time.monotonic(),

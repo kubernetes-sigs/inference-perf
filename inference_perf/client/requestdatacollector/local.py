@@ -11,6 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import InferenceData, PromptLifecycleMetric, ResponseData, ResponsesSummary
 
-__all__ = ["InferenceData", "PromptLifecycleMetric", "ResponseData", "ResponsesSummary"]
+from typing import List
+from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.apis import RequestLifecycleMetric
+
+
+class LocalRequestDataCollector(RequestDataCollector):
+    """Responsible for accumulating client request metrics"""
+
+    def __init__(self) -> None:
+        self.metrics: List[RequestLifecycleMetric] = []
+
+    def record_metric(self, metric: RequestLifecycleMetric) -> None:
+        self.metrics.append(metric)
+
+    def get_metrics(self) -> List[RequestLifecycleMetric]:
+        return self.metrics

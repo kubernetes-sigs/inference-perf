@@ -13,5 +13,4 @@
 # limitations under the License.
 from .base import ReportGenerator
 
-
 __all__ = ["ReportGenerator"]
