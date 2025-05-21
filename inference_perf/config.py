@@ -108,6 +108,7 @@ class ModelServerClientConfig(BaseModel):
     type: ModelServerType = ModelServerType.VLLM
     model_name: str
     base_url: str
+    ignore_eos: bool
 
 
 class CustomTokenizerConfig(BaseModel):

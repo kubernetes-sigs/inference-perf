@@ -66,7 +66,7 @@ class InferenceData(ABC, BaseModel):
 
     @abstractmethod
     def to_payload(
-        self, model_name: str, max_tokens: int
+        self, model_name: str, max_tokens: int, ignore_eos: bool
     ) -> dict[str, Any]:  # Defines the HTTP request body for this request type
         raise NotImplementedError
 

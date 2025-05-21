@@ -84,6 +84,7 @@ def main_cli() -> None:
                 uri=config.server.base_url,
                 model_name=config.server.model_name,
                 tokenizer=tokenizer,
+                ignore_eos=config.server.ignore_eos,
             )
     else:
         raise Exception("model server client config missing")
