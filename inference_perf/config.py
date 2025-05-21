@@ -132,7 +132,7 @@ class ModelWithTokenizerBase(BaseModel):
         if self.tokenizer is None:
             self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
 
-        if self.tokenizer.pretrained_model_name_or_path is None and self.tokenizer.token is None:
+        if self.tokenizer.pretrained_model_name_or_path is None:
             print(
                 f"Tokenizer has no pretrained_model_name_or_path specified, defaulting to '{self.name}' and using access token '{self.token}'"
             )
