@@ -1,8 +1,4 @@
-
 load:
-  api:
-    type: completion
-    streaming: false
   type: constant
   stages:
   - rate: 1
@@ -10,6 +6,9 @@ load:
 server:
   vllm:
     base_url: http://0.0.0.0:8000
+    api:
+      type: completion
+      streaming: false
     ignore_eos: false
     model:
       name: HuggingFaceTB/SmolLM2-135M-Instruct
