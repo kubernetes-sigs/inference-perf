@@ -16,7 +16,7 @@ from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIType
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, PrometheusMetricMetadata, RequestMetric, ModelServerPrometheusMetric
+from .base import ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List
 import aiohttp
 import json
@@ -39,7 +39,6 @@ class vLLMModelServerClient(ModelServerClient):
         self.max_completion_tokens = 30  # default to use when not set at the request level
         self.ignore_eos = ignore_eos
         self.tokenizer = tokenizer
-        self.request_metrics: List[RequestMetric] = list()
         self.metrics_collector = metrics_collector
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
@@ -155,9 +154,6 @@ class vLLMModelServerClient(ModelServerClient):
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
-
-    def get_request_metrics(self) -> List[RequestMetric]:
-        return self.request_metrics
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return self.prometheus_metric_metadata

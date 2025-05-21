@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient, PerfRuntimeParameters
+from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 from .mock_client import MockMetricsClient
 from .prometheus_client import PrometheusMetricsClient
 
-__all__ = ["MetricsClient", "MockMetricsClient", "PerfRuntimeParameters", "PrometheusMetricsClient"]
+__all__ = ["MetricsClient", "MockMetricsClient", "PerfRuntimeParameters", "PrometheusMetricsClient", "ModelServerMetrics"]

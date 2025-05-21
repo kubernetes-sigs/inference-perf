@@ -15,13 +15,11 @@ from typing import List, Optional, Any
 from pydantic import BaseModel
 from collections import defaultdict
 from inference_perf.config import RequestLifecycleMetricsReportConfig
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
-from inference_perf.client.modelserver.base import ModelServerMetrics
+from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 from inference_perf.utils import ReportFile
 from inference_perf.client.requestdatacollector import LocalRequestDataCollector, RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
 import numpy as np
-import statistics
 
 
 def safe_float(value: Any) -> float:
@@ -147,56 +145,6 @@ class ReportGenerator:
             lifecycle_reports.append(ReportFile(name="metrics_client_report", contents=metrics_client_summary.model_dump()))
 
         return lifecycle_reports
-
-    def report_request_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
-        """
-        report request metrics collected by the model server client during the run.
-        Args:
-            runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
-        """
-        request_metrics = runtime_parameters.model_server_client.get_request_metrics()
-        request_summary = ModelServerMetrics()
-        if len(request_metrics) > 0:
-            total_prompt_tokens = sum([x.prompt_tokens for x in request_metrics])
-            total_output_tokens = sum([x.output_tokens for x in request_metrics])
-            if runtime_parameters.duration > 0:
-                prompt_tokens_per_second = total_prompt_tokens / runtime_parameters.duration
-                output_tokens_per_second = total_output_tokens / runtime_parameters.duration
-                requests_per_second = len(request_metrics) / runtime_parameters.duration
-            else:
-                prompt_tokens_per_second = 0.0
-                output_tokens_per_second = 0.0
-                requests_per_second = 0.0
-
-            request_summary = ModelServerMetrics(
-                total_requests=len(request_metrics),
-                requests_per_second=requests_per_second,
-                prompt_tokens_per_second=prompt_tokens_per_second,
-                output_tokens_per_second=output_tokens_per_second,
-                avg_prompt_tokens=int(statistics.mean([x.prompt_tokens for x in request_metrics])),
-                avg_output_tokens=int(statistics.mean([x.output_tokens for x in request_metrics])),
-                avg_request_latency=statistics.mean([x.time_per_request for x in request_metrics]),
-                median_request_latency=statistics.median([x.time_per_request for x in request_metrics]),
-                p90_request_latency=statistics.quantiles([x.time_per_request for x in request_metrics], n=10)[8],
-                p99_request_latency=statistics.quantiles([x.time_per_request for x in request_metrics], n=100)[98],
-                avg_time_to_first_token=0.0,
-                median_time_to_first_token=0.0,
-                p90_time_to_first_token=0.0,
-                p99_time_to_first_token=0.0,
-                median_time_per_output_token=0.0,
-                p90_time_per_output_token=0.0,
-                p99_time_per_output_token=0.0,
-                avg_time_per_output_token=0.0,
-                avg_queue_length=0,
-            )
-            print("-" * 50)
-            print("Request Summary")
-            print("-" * 50)
-            for field_name, value in request_summary:
-                print(f"{field_name}: {value}")
-        else:
-            print("Report generation failed - no request metrics collected")
-        return request_summary
 
     def report_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
         """

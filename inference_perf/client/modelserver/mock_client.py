@@ -16,7 +16,7 @@ from inference_perf.client.requestdatacollector import RequestDataCollector
 from typing import List
 from inference_perf.config import APIType
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric
-from .base import ModelServerClient, RequestMetric
+from .base import ModelServerClient
 import asyncio
 import time
 
@@ -24,21 +24,12 @@ import time
 class MockModelServerClient(ModelServerClient):
     def __init__(self, metrics_collector: RequestDataCollector, api_type: APIType) -> None:
         super().__init__(api_type)
-        self.request_metrics: List[RequestMetric] = list()
         self.metrics_collector = metrics_collector
 
     async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         start = time.monotonic()
         print("Processing mock request for stage - " + str(stage_id))
         await asyncio.sleep(3)
-        self.request_metrics.append(
-            RequestMetric(
-                stage_id=stage_id,
-                prompt_tokens=0,
-                output_tokens=0,
-                time_per_request=3,
-            )
-        )
         self.metrics_collector.record_metric(
             RequestLifecycleMetric(
                 stage_id=stage_id,
@@ -55,6 +46,3 @@ class MockModelServerClient(ModelServerClient):
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
-
-    def get_request_metrics(self) -> List[RequestMetric]:
-        return self.request_metrics
