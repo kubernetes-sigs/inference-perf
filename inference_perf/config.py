@@ -148,6 +148,7 @@ class ModelServerConfig(BaseModel, Generic[APIConfigGeneric]):
 
 class LlmModelServerConfig(ModelServerConfig[LlmApiConfig]):
     model: ModelWithTokenizerBase
+    ignore_eos: bool = False
 
 
 class VllmModelServerConfig(LlmModelServerConfig):

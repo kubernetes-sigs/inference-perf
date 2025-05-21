@@ -22,6 +22,7 @@ class LlmModelServerClient(ModelServerClient, ABC):
         self.model_name = config.model.name
         self.uri = config.base_url
         self.load = config.load
+        self.ignore_eos = config.ignore_eos
 
     def get_tokenizer(self) -> CustomTokenizer:
         return self.tokenizer
