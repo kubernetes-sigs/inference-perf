@@ -31,11 +31,12 @@ class LlmChatCompletionInferenceData(InferenceData):
     def get_route(self) -> str:
         return "/v1/chat/completions"
 
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool) -> dict[str, Any]:
         return {
             "model": model_name,
             "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": max_tokens,
+            "ignore_eos": ignore_eos,
         }
 
     async def process_response(self, res: aiohttp.ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:

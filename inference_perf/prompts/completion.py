@@ -27,13 +27,14 @@ class LlmCompletionInferenceData(InferenceData):
     def get_route(self) -> str:
         return "/v1/completions"
 
-    def to_payload(self, model_name: str, max_tokens: int) -> dict[str, Any]:
+    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {
             "model": model_name,
             "prompt": self.prompt,
             "max_tokens": self.max_tokens,
+            "ignore_eos": ignore_eos,
         }
 
     async def process_response(self, res: aiohttp.ClientResponse, tokenizer: CustomTokenizer) -> ResponseData:

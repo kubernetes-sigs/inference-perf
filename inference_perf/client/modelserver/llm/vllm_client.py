@@ -91,7 +91,9 @@ class vLLMModelServerClient(LlmModelServerClient):
         }
 
     async def process_request(self, prompt: InferenceData, stage_id: int) -> None:
-        payload = prompt.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
+        payload = prompt.to_payload(
+            model_name=self.model_name, max_tokens=self.max_completion_tokens, ignore_eos=self.ignore_eos
+        )
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
