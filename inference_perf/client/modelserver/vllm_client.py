@@ -24,11 +24,14 @@ import time
 
 
 class vLLMModelServerClient(ModelServerClient):
-    def __init__(self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer) -> None:
+    def __init__(
+        self, api_type: APIType, uri: str, model_name: str, tokenizer: CustomTokenizer, ignore_eos: bool = True
+    ) -> None:
         super().__init__(api_type)
         self.model_name = model_name
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
+        self.ignore_eos = ignore_eos
         self.tokenizer = tokenizer
         self.request_metrics: List[RequestMetric] = list()
         self.prompt_metrics_collector_reporter = RequestLifecycleMetricsCollectorReporter()
@@ -94,7 +97,9 @@ class vLLMModelServerClient(ModelServerClient):
         }
 
     async def process_request(self, prompt: InferenceData, stage_id: int) -> None:
-        payload = prompt.to_payload(model_name=self.model_name, max_tokens=self.max_completion_tokens)
+        payload = prompt.to_payload(
+            model_name=self.model_name, max_tokens=self.max_completion_tokens, ignore_eos=self.ignore_eos
+        )
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             start = time.monotonic()
