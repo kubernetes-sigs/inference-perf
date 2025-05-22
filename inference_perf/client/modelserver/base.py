@@ -15,16 +15,7 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
 from inference_perf.config import APIType
 
-from pydantic import BaseModel
-
-from inference_perf.prompts.base import InferenceData
-
-
-class RequestMetric(BaseModel):
-    stage_id: int
-    prompt_tokens: int
-    output_tokens: int
-    time_per_request: float
+from inference_perf.apis import InferenceAPIData
 
 
 class ModelServerPrometheusMetric:
@@ -33,33 +24,6 @@ class ModelServerPrometheusMetric:
         self.op = op
         self.type = type
         self.filters = filters
-
-
-class ModelServerMetrics(BaseModel):
-    # Throughput
-    prompt_tokens_per_second: float = 0.0
-    output_tokens_per_second: float = 0.0
-    requests_per_second: float = 0.0
-
-    # Latency
-    avg_request_latency: float = 0.0
-    median_request_latency: float = 0.0
-    p90_request_latency: float = 0.0
-    p99_request_latency: float = 0.0
-    avg_time_to_first_token: float = 0.0
-    median_time_to_first_token: float = 0.0
-    p90_time_to_first_token: float = 0.0
-    p99_time_to_first_token: float = 0.0
-    avg_time_per_output_token: float = 0.0
-    median_time_per_output_token: float = 0.0
-    p90_time_per_output_token: float = 0.0
-    p99_time_per_output_token: float = 0.0
-
-    # Request
-    total_requests: int = 0
-    avg_prompt_tokens: int = 0
-    avg_output_tokens: int = 0
-    avg_queue_length: int = 0
 
 
 # PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
@@ -105,11 +69,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceData, stage_id: int) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_request_metrics(self) -> List[RequestMetric]:
+    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         raise NotImplementedError
 
     @abstractmethod

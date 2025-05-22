@@ -11,9 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.prompts.base import InferenceData
-from inference_perf.prompts.chat import ChatMessage, LlmChatCompletionInferenceData
-from inference_perf.prompts.completion import LlmCompletionInferenceData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution, Optional
 from inference_perf.config import APIType
@@ -42,7 +40,7 @@ class HFShareGPTDataGenerator(DataGenerator):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.sharegpt_dataset is not None:
             while True:
                 data = next(self.sharegpt_dataset)
@@ -59,12 +57,12 @@ class HFShareGPTDataGenerator(DataGenerator):
                         prompt = data[self.data_key][0].get(self.content_key)
                         if not prompt:
                             continue
-                        yield LlmCompletionInferenceData(prompt=prompt)
+                        yield CompletionAPIData(prompt=prompt)
                     except (KeyError, TypeError) as e:
                         print(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.apiType == APIType.Chat:
-                    yield LlmChatCompletionInferenceData(
+                    yield ChatCompletionAPIData(
                         messages=[
                             ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
                             for conversation in data[self.data_key]

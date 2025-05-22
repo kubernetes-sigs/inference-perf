@@ -11,7 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient
-from .mock_client import MockMetricsClient
+from .base import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
+from .chat import ChatCompletionAPIData, ChatMessage
+from .completion import CompletionAPIData
 
-__all__ = ["MetricsClient", "MockMetricsClient"]
+__all__ = [
+    "InferenceAPIData",
+    "InferenceInfo",
+    "RequestLifecycleMetric",
+    "ErrorResponseInfo",
+    "ChatCompletionAPIData",
+    "ChatMessage",
+    "CompletionAPIData",
+]

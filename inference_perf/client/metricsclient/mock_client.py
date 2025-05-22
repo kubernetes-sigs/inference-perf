@@ -11,20 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 
 
-from abc import ABC, abstractmethod
-from typing import Any, List
+class MockMetricsClient(MetricsClient):
+    def __init__(self) -> None:
+        pass
 
-from inference_perf.report import ReportFile
+    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+        return None
 
-
-class MetricsCollectorReporter(ABC):
-    """
-    Responsible for collecting information for and generating reports for a particicular report subtype
-    (i.e. request lifecycle metrics, model server metrics, accelerator metrics, etc)
-    """
-
-    @abstractmethod
-    async def reports(self, report_config: Any) -> List[ReportFile]:
-        raise NotImplementedError
+    def wait(self) -> None:
+        pass
