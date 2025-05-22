@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl
-from typing import Any, Optional, List
+from pydantic import BaseModel, HttpUrl, model_validator
+from typing import Any, Generic, Optional, List, TypeVar
 from argparse import ArgumentParser
 from enum import Enum
 import yaml
@@ -22,6 +22,17 @@ import yaml
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
+
+
+class ApiConfig(BaseModel):
+    type: APIType
+
+
+APIConfigGeneric = TypeVar("APIConfigGeneric", bound="ApiConfig")
+
+
+class LlmApiConfig(ApiConfig):
+    streaming: bool = False
 
 
 class DataGenType(Enum):
@@ -44,10 +55,6 @@ class DataConfig(BaseModel):
     # Distributions are only supported for synthetic dataset at this moment
     input_distribution: Optional[Distribution] = Distribution()
     output_distribution: Optional[Distribution] = Distribution()
-
-
-class ModelServerType(Enum):
-    VLLM = "vllm"
 
 
 class LoadType(Enum):
@@ -104,28 +111,56 @@ class MetricsClientConfig(BaseModel):
     prometheus: Optional[PrometheusClientConfig] = None
 
 
-class ModelServerClientConfig(BaseModel):
-    type: ModelServerType = ModelServerType.VLLM
-    model_name: str
-    base_url: str
-    ignore_eos: bool
-
-
 class CustomTokenizerConfig(BaseModel):
-    pretrained_model_name_or_path: str
-    trust_remote_code: Optional[bool] = None
+    pretrained_model_name_or_path: Optional[str] = None
     token: Optional[str] = None
+    trust_remote_code: Optional[bool] = None
+
+
+class ModelWithTokenizerBase(BaseModel):
+    name: str
+    token: Optional[str] = None
+    tokenizer: Optional[CustomTokenizerConfig] = None
+
+    @model_validator(mode="after")
+    def populate_tokenizer_path(self) -> "ModelWithTokenizerBase":
+        if self.tokenizer is None:
+            self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
+
+        if self.tokenizer.pretrained_model_name_or_path is None:
+            print(
+                f"Tokenizer has no pretrained_model_name_or_path specified, defaulting to '{self.name}' and using access token '{self.token}'"
+            )
+            self.tokenizer.pretrained_model_name_or_path = self.name
+            self.tokenizer.token = self.token
+        return self
+
+
+class ModelServerConfig(BaseModel, Generic[APIConfigGeneric]):
+    base_url: str
+    api: APIConfigGeneric
+
+
+class LlmModelServerConfig(ModelServerConfig[LlmApiConfig]):
+    model: ModelWithTokenizerBase
+    ignore_eos: bool = False
+
+
+class VllmModelServerConfig(LlmModelServerConfig):
+    pass
+
+
+class ModelServerClientConfig(BaseModel):
+    vllm: Optional[VllmModelServerConfig] = None
 
 
 class Config(BaseModel):
-    api: APIType = APIType.Completion
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None
     report: ReportConfig = ReportConfig()
     storage: Optional[StorageConfig] = StorageConfig()
-    server: Optional[ModelServerClientConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
+    server: ModelServerClientConfig = ModelServerClientConfig()
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -150,10 +185,10 @@ def read_config() -> Config:
             cfg = yaml.safe_load(stream)
 
         default_cfg = Config().model_dump(mode="json")
-        merged_cfg = deep_merge(default_cfg, cfg)
+        merged_cfg = Config(**deep_merge(default_cfg, cfg))
 
         print(
-            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)}\n"
+            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg.model_dump(mode='json'), sort_keys=False, default_flow_style=False)}\n"
         )
-        return Config(**merged_cfg)
+        return merged_cfg
     return Config()

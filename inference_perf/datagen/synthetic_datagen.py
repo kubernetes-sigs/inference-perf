@@ -18,13 +18,13 @@ from inference_perf.prompts.completion import LlmCompletionInferenceData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, IODistribution
 from typing import Generator, List
-from inference_perf.config import APIType
+from inference_perf.config import APIType, ApiConfig
 from numpy.typing import NDArray
 
 
 class SyntheticDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, ioDistribution: IODistribution, tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, ioDistribution, tokenizer)
+    def __init__(self, api_config: ApiConfig, io_distribution: IODistribution, tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_config, io_distribution, tokenizer)
 
         if self.ioDistribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
@@ -57,7 +57,7 @@ class SyntheticDataGenerator(DataGenerator):
         while True:
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-            if self.apiType == APIType.Completion:
+            if self.api_config.type == APIType.Completion:
                 yield LlmCompletionInferenceData(
                     prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
                     max_tokens=self.output_lengths[i],

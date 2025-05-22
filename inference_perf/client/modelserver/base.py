@@ -98,8 +98,6 @@ class ModelServerClient(ABC):
         if api_type not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {api_type}")
 
-        self.apiType = api_type
-
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
         raise NotImplementedError
