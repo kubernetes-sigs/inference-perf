@@ -15,10 +15,12 @@ from .base import DataGenerator
 from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
+from .random_datagen import RandomDataGenerator
 
 __all__ = [
     "DataGenerator",
     "MockDataGenerator",
     "HFShareGPTDataGenerator",
     "SyntheticDataGenerator",
+    "RandomDataGenerator",
 ]

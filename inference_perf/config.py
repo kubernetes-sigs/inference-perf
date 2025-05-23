@@ -28,6 +28,7 @@ class DataGenType(Enum):
     Mock = "mock"
     ShareGPT = "shareGPT"
     Synthetic = "synthetic"
+    Random = "random"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -41,7 +42,7 @@ class Distribution(BaseModel):
 
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
-    # Distributions are only supported for synthetic dataset at this moment
+    # Distributions are only supported for synthetic/random dataset at this moment
     input_distribution: Optional[Distribution] = Distribution()
     output_distribution: Optional[Distribution] = Distribution()
 
