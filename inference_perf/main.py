@@ -21,7 +21,13 @@ from inference_perf.config import (
     RequestLifecycleMetricsReportConfig,
     read_config,
 )
-from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
+from inference_perf.datagen import (
+    DataGenerator,
+    MockDataGenerator,
+    HFShareGPTDataGenerator,
+    SyntheticDataGenerator,
+    RandomDataGenerator,
+)
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
@@ -107,25 +113,27 @@ def main_cli() -> None:
     # Define DataGenerator
     datagen: DataGenerator
     if config.data:
-        # Common checks for generators that require a tokenizer
-        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic]:
+        # Common checks for generators that require a tokenizer / distribution
+        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic, DataGenType.Random]:
             if tokenizer is None:
                 raise Exception(
                     f"{config.data.type.value} data generator requires a configured tokenizer. "
                     "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
                 )
+        if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
+            if config.data.input_distribution is None:
+                raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured")
+            if config.data.output_distribution is None:
+                raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
 
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, None, tokenizer)
-
         elif config.data.type == DataGenType.Synthetic:
-            if config.data.input_distribution is None:
-                raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
-            if config.data.output_distribution is None:
-                raise Exception("SyntheticDataGenerator requires 'output_distribution' to be configured")
-
-            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)
+            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
             datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+        elif config.data.type == DataGenType.Random:
+            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
+            datagen = RandomDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
         else:
             datagen = MockDataGenerator(config.api)
     else:
