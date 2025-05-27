@@ -13,13 +13,17 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from inference_perf.client.modelserver.base import ModelServerClient
+from inference_perf.loadgen.load_generator import StageRuntimeInfo
 from pydantic import BaseModel
 
 
 class PerfRuntimeParameters:
-    def __init__(self, start_time: float, duration: float, model_server_client: ModelServerClient) -> None:
+    def __init__(
+        self, start_time: float, duration: float, model_server_client: ModelServerClient, stages: dict[int, StageRuntimeInfo]
+    ) -> None:
         self.start_time = start_time
         self.duration = duration
+        self.stages = stages
         self.model_server_client = model_server_client
 
 
@@ -56,7 +60,11 @@ class MetricsClient(ABC):
         pass
 
     @abstractmethod
-    def collect_model_server_metrics(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
         raise NotImplementedError
 
     @abstractmethod

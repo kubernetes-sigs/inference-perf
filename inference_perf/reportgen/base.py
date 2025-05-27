@@ -14,8 +14,9 @@
 from typing import List, Optional, Any
 from pydantic import BaseModel
 from collections import defaultdict
-from inference_perf.config import RequestLifecycleMetricsReportConfig
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
+from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
+from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig
+from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.utils import ReportFile
 from inference_perf.client.requestdatacollector import LocalRequestDataCollector, RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
@@ -94,12 +95,12 @@ class ReportGenerator:
         return self.metrics_collector
 
     async def generate_reports(
-        self, report_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
+        self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters
     ) -> List[ReportFile]:
         print("\n\nGenerating Reports ..")
         lifecycle_reports = []
         request_metrics = self.metrics_collector.get_metrics()
-        if report_config.summary:
+        if report_config.request_lifecycle.summary:
             if len(request_metrics) != 0:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
@@ -109,7 +110,7 @@ class ReportGenerator:
                 if report_file.path is not None:
                     print(f"Successfully saved summary report of request lifecycle metrics to {report_file.path}")
 
-        if report_config.per_stage:
+        if report_config.request_lifecycle.per_stage:
             stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
             for metric in request_metrics:
                 if metric.stage_id is not None:
@@ -123,7 +124,7 @@ class ReportGenerator:
                 if report_file is not None:
                     print(f"Successfully saved stage {stage_id} report of request lifecycle metrics to {report_file.path}")
 
-        if report_config.per_request:
+        if report_config.request_lifecycle.per_request:
             report_file = ReportFile(
                 name="per_request_lifecycle_metrics",
                 contents=[
@@ -140,28 +141,54 @@ class ReportGenerator:
             if report_file is not None:
                 print(f"Successfully saved per request report of request lifecycle metrics to {report_file.path}")
 
-        if self.metrics_client is not None:
-            metrics_client_summary = self.report_metrics_summary(runtime_parameters)
-            lifecycle_reports.append(ReportFile(name="metrics_client_report", contents=metrics_client_summary.model_dump()))
 
+        lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
         return lifecycle_reports
 
-    def report_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics:
+    def generate_prometheus_metrics_report(
+        self, runtime_parameters: PerfRuntimeParameters, report_config: PrometheusMetricsReportConfig
+    ) -> List[ReportFile]:
         """
         Report summary of the metrics collected by the metrics client during the run.
         Args:
             runtime_parameters (PerfRuntimeParameters): The runtime parameters containing the model server client, query eval time in the metrics db, duration.
         """
-        metrics_client_summary = ModelServerMetrics()
-        if self.metrics_client is not None:
-            print("-" * 50)
-            print("Metrics Client Summary")
-            print("-" * 50)
-            collected_metrics = self.metrics_client.collect_model_server_metrics(runtime_parameters)
+        prometheus_metrics_reports: List[ReportFile] = []
+
+        if self.metrics_client is None or not isinstance(self.metrics_client, PrometheusMetricsClient):
+            print("Prometheus Metrics Client is not configured or not of type PrometheusMetricsClient")
+            return prometheus_metrics_reports
+
+        if report_config.summary:
+            collected_metrics = self.metrics_client.collect_metrics_summary(runtime_parameters)
             if collected_metrics is not None:
-                metrics_client_summary = collected_metrics
-                for field_name, value in metrics_client_summary:
+                report_file = ReportFile(
+                    name="summary_prometheus_metrics",
+                    contents=collected_metrics.model_dump(),
+                )
+                if report_file is not None:
+                    print(f"Successfully saved summary report of prometheus metrics to {report_file.path}")
+                prometheus_metrics_reports.append(report_file)
+                for field_name, value in collected_metrics:
                     print(f"{field_name}: {value}")
             else:
                 print("Report generation failed - no metrics collected by metrics client")
-        return metrics_client_summary
+
+        if report_config.per_stage:
+            for stage_id, _stage_info in runtime_parameters.stages.items():
+                collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
+                if collected_metrics is not None:
+                    report_file = ReportFile(
+                        name=f"stage_{stage_id}_prometheus_metrics",
+                        contents=collected_metrics.model_dump(),
+                    )
+                    if report_file is not None:
+                        print(f"Successfully saved stage {stage_id} report of prometheus metrics to {report_file.path}")
+                    prometheus_metrics_reports.append(report_file)
+                    print(f"Metrics for Stage {stage_id}:")
+                    for field_name, value in collected_metrics:
+                        print(f"{field_name}: {value}")
+                else:
+                    print(f"No metrics collected for Stage {stage_id}")
+
+        return prometheus_metrics_reports

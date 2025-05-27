@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pydantic import BaseModel
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.client.modelserver import ModelServerClient
@@ -19,12 +20,19 @@ from asyncio import TaskGroup, sleep
 import time
 
 
+class StageRuntimeInfo(BaseModel):
+    stage_id: int
+    start_time: float
+    duration: float
+
+
 class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
         self.stages = load_config.stages
+        self.stage_runtime_info = dict[int, StageRuntimeInfo]()
 
     def get_timer(self, rate: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -49,6 +57,9 @@ class LoadGenerator:
                         continue
                     else:
                         break
+            self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+                stage_id=stage_id, start_time=start_time, duration=time.time() - start_time
+            )
             print(f"Stage {stage_id} - run completed")
             if self.stageInterval:
                 await sleep(self.stageInterval)

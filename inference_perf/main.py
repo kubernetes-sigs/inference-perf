@@ -18,7 +18,7 @@ from inference_perf.config import (
     DataGenType,
     MetricsClientType,
     ModelServerType,
-    RequestLifecycleMetricsReportConfig,
+    ReportConfig,
     read_config,
 )
 from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
@@ -47,9 +47,7 @@ class InferencePerfRunner:
     def run(self) -> None:
         asyncio.run(self.loadgen.run(self.client))
 
-    def generate_reports(
-        self, report_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
-    ) -> List[ReportFile]:
+    def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
 
     def save_reports(self, reports: List[ReportFile]) -> None:
@@ -133,6 +131,8 @@ def main_cli() -> None:
 
     # Define LoadGenerator
     if config.load:
+        if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus.per_stage:
+            config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
         loadgen = LoadGenerator(datagen, config.load)
     else:
         raise Exception("load config missing")
@@ -150,8 +150,13 @@ def main_cli() -> None:
 
     # Generate Reports after the tests
     reports = perfrunner.generate_reports(
-        report_config=config.report.request_lifecycle,
-        runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client),
+        report_config=config.report,
+        runtime_parameters=PerfRuntimeParameters(
+            start_time=start_time,
+            duration=duration,
+            model_server_client=model_server_client,
+            stages=loadgen.stage_runtime_info,
+        ),
     )
 
     # Save Reports
