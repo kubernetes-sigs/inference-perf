@@ -1,0 +1,37 @@
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+api: completion
+server:
+  type: vllm
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: random
+  input_distribution:
+    min: 10
+    max: 100
+    mean: 50
+    std: 10
+    total_count: 100
+  output_distribution:
+    min: 10
+    max: 512
+    mean: 256
+    std: 100
+    total_count: 100
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
