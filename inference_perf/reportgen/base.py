@@ -55,14 +55,11 @@ class ResponsesSummary(BaseModel):
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
-        load_summary={
-            "count": metrics.total_requests,
-        },
+        load_summary={},  # model server doesn't report failed requests
+        failures={},
         successes={
-            "request": {
-                "count": metrics.total_requests,
-                "rate": metrics.requests_per_second,
-            },
+            "count": metrics.total_requests,
+            "rate": metrics.requests_per_second,
             "prompt_len": {
                 "mean": metrics.avg_prompt_tokens,
                 "rate": metrics.prompt_tokens_per_second,
@@ -93,7 +90,6 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 "p99": metrics.p99_time_per_output_token,
             },
         },
-        failures={},
     )
 
 
@@ -216,8 +212,6 @@ class ReportGenerator:
                 if report_file is not None:
                     print(f"Successfully saved summary report of prometheus metrics to {report_file.path}")
                 prometheus_metrics_reports.append(report_file)
-                for field_name, value in collected_metrics:
-                    print(f"{field_name}: {value}")
             else:
                 print("Report generation failed - no metrics collected by metrics client")
 
@@ -232,9 +226,6 @@ class ReportGenerator:
                     if report_file is not None:
                         print(f"Successfully saved stage {stage_id} report of prometheus metrics to {report_file.path}")
                     prometheus_metrics_reports.append(report_file)
-                    print(f"Metrics for Stage {stage_id}:")
-                    for field_name, value in collected_metrics:
-                        print(f"{field_name}: {value}")
                 else:
                     print(f"No metrics collected for Stage {stage_id}")
 

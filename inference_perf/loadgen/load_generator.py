@@ -58,7 +58,7 @@ class LoadGenerator:
                     else:
                         break
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, start_time=start_time,  end_time=time.time()
+                stage_id=stage_id, start_time=start_time, end_time=time.time()
             )
             print(f"Stage {stage_id} - run completed")
             if self.stageInterval and stage_id < len(self.stages) - 1:
