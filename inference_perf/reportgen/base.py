@@ -14,6 +14,7 @@
 from typing import List, Optional, Any
 from pydantic import BaseModel
 from collections import defaultdict
+from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
 from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
@@ -50,6 +51,50 @@ class ResponsesSummary(BaseModel):
     load_summary: dict[str, Any]
     successes: dict[str, Any]
     failures: dict[str, Any]
+
+
+def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
+    return ResponsesSummary(
+        load_summary={
+            "count": metrics.total_requests,
+        },
+        successes={
+            "request": {
+                "count": metrics.total_requests,
+                "rate": metrics.requests_per_second,
+            },
+            "prompt_len": {
+                "mean": metrics.avg_prompt_tokens,
+                "rate": metrics.prompt_tokens_per_second,
+            },
+            "output_len": {
+                "mean": metrics.avg_output_tokens,
+                "rate": metrics.output_tokens_per_second,
+            },
+            "queue_len": {
+                "mean": metrics.avg_queue_length,
+            },
+            "request_latency": {
+                "mean": metrics.avg_request_latency,
+                "p50": metrics.median_request_latency,
+                "p90": metrics.p90_request_latency,
+                "p99": metrics.p99_request_latency,
+            },
+            "time_to_first_token": {
+                "mean": metrics.avg_time_to_first_token,
+                "p50": metrics.median_time_to_first_token,
+                "p90": metrics.p90_time_to_first_token,
+                "p99": metrics.p99_time_to_first_token,
+            },
+            "time_per_output_token": {
+                "mean": metrics.avg_time_per_output_token,
+                "p50": metrics.median_time_per_output_token,
+                "p90": metrics.p90_time_per_output_token,
+                "p99": metrics.p99_time_per_output_token,
+            },
+        },
+        failures={},
+    )
 
 
 def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummary:
@@ -141,7 +186,6 @@ class ReportGenerator:
             if report_file is not None:
                 print(f"Successfully saved per request report of request lifecycle metrics to {report_file.path}")
 
-
         lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
         return lifecycle_reports
 
@@ -159,12 +203,15 @@ class ReportGenerator:
             print("Prometheus Metrics Client is not configured or not of type PrometheusMetricsClient")
             return prometheus_metrics_reports
 
+        # Wait for Prometheus to collect metrics for the last stage
+        self.metrics_client.wait()
+
         if report_config.summary:
             collected_metrics = self.metrics_client.collect_metrics_summary(runtime_parameters)
             if collected_metrics is not None:
                 report_file = ReportFile(
                     name="summary_prometheus_metrics",
-                    contents=collected_metrics.model_dump(),
+                    contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                 )
                 if report_file is not None:
                     print(f"Successfully saved summary report of prometheus metrics to {report_file.path}")
@@ -180,7 +227,7 @@ class ReportGenerator:
                 if collected_metrics is not None:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_prometheus_metrics",
-                        contents=collected_metrics.model_dump(),
+                        contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                     )
                     if report_file is not None:
                         print(f"Successfully saved stage {stage_id} report of prometheus metrics to {report_file.path}")

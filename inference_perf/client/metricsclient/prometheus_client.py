@@ -18,7 +18,7 @@ from inference_perf.client.modelserver.base import ModelServerClient, ModelServe
 from inference_perf.config import PrometheusClientConfig
 from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 
-PROMETHEUS_SCRAPE_BUFFER_SEC = 5
+PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
 
 class PrometheusQueryBuilder:
@@ -106,7 +106,6 @@ class PrometheusMetricsClient(MetricsClient):
         We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
         """
         wait_time = self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
-        print(f"Waiting for {wait_time} seconds for Prometheus to collect metrics...")
         time.sleep(wait_time)
 
     def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
@@ -122,11 +121,6 @@ class PrometheusMetricsClient(MetricsClient):
         if runtime_parameters is None:
             print("Perf Runtime parameters are not set, skipping metrics collection")
             return None
-
-        # Wait for the Prometheus server to scrape the metrics
-        # We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
-        # This is to ensure that the metrics are collected before we query them
-        self.wait()
 
         # Get the duration and model server client from the runtime parameters
         query_eval_time = time.time()
@@ -153,15 +147,11 @@ class PrometheusMetricsClient(MetricsClient):
             print(f"Stage ID {stage_id} is not present in the runtime parameters, skipping metrics collection for this stage")
             return None
 
-        # Wait for the Prometheus server to scrape the metrics
-        # We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
-        # This is to ensure that the metrics are collected before we query them
-        self.wait()
-
-        # Get the duration and model server client from the runtime parameters
-        query_eval_time = time.time()
+        # Get the query evaluation time and duration for the stage
+        # The query evaluation time is the end time of the stage plus the scrape interval and a buffer to ensure metrics are collected
+        # Duration is calculated as the difference between the eval time and start time of the stage
+        query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
-
         return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
 
     def get_model_server_metrics(
