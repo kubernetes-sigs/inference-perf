@@ -31,6 +31,7 @@ class vLLMModelServerClient(ModelServerClient):
         uri: str,
         model_name: str,
         tokenizer: CustomTokenizer,
+        max_tcp_connections: int,
         ignore_eos: bool = True,
     ) -> None:
         super().__init__(api_type)
@@ -40,6 +41,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.ignore_eos = ignore_eos
         self.tokenizer = tokenizer
         self.metrics_collector = metrics_collector
+        self.max_tcp_connections = max_tcp_connections
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
@@ -106,7 +108,7 @@ class vLLMModelServerClient(ModelServerClient):
             model_name=self.model_name, max_tokens=self.max_completion_tokens, ignore_eos=self.ignore_eos
         )
         headers = {"Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
             start = time.monotonic()
             try:
                 async with session.post(self.uri + data.get_route(), headers=headers, data=json.dumps(payload)) as response:

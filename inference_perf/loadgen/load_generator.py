@@ -75,7 +75,6 @@ class Worker(mp.Process):
             except mp.queues.Empty:
                 status = self.check_status()
                 if status is not None:
-                    print(f"Worker {self.id} awaiting {len(tasks)} tasks")
                     await gather(*tasks)
                     tasks = []
                     self.status_queue.task_done()
@@ -185,4 +184,4 @@ class LoadGenerator:
             worker.join(timeout=1.0)
             if worker.is_alive():
                 worker.terminate()
-                worker.join(timeout=1.0)
+                worker.join(timeout=0.0)
