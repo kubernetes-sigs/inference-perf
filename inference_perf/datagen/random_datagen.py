@@ -15,9 +15,10 @@ import numpy as np
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator, IODistribution
+from .base import DataGenerator
 from typing import Generator, List
-from inference_perf.config import APIType
+from inference_perf.config import APIType, DataConfig
+
 
 # Random data generator generates random tokens from the model's
 # vocabulary for the desired input and output distribution.
@@ -25,27 +26,27 @@ class RandomDataGenerator(DataGenerator):
     def __init__(
         self,
         apiType: APIType,
-        ioDistribution: IODistribution,
+        config: DataConfig,
         tokenizer: CustomTokenizer,
     ) -> None:
-        super().__init__(apiType, ioDistribution, tokenizer)
+        super().__init__(apiType, config, tokenizer)
 
-        if self.ioDistribution is None:
-            raise ValueError("IODistribution is required for RandomDataGenerator")
+        if self.input_distribution is None or self.output_distribution is None:
+            raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
 
         self.input_lengths = generate_distribution(
-            self.ioDistribution.input.min,
-            self.ioDistribution.input.max,
-            self.ioDistribution.input.mean,
-            self.ioDistribution.input.std_dev,
-            self.ioDistribution.input.total_count,
+            self.input_distribution.min,
+            self.input_distribution.max,
+            self.input_distribution.mean,
+            self.input_distribution.std_dev,
+            self.input_distribution.total_count,
         )
         self.output_lengths = generate_distribution(
-            self.ioDistribution.output.min,
-            self.ioDistribution.output.max,
-            self.ioDistribution.output.mean,
-            self.ioDistribution.output.std_dev,
-            self.ioDistribution.output.total_count,
+            self.output_distribution.min,
+            self.output_distribution.max,
+            self.output_distribution.mean,
+            self.output_distribution.std_dev,
+            self.output_distribution.total_count,
         )
 
         if self.tokenizer is None:
@@ -72,6 +73,9 @@ class RandomDataGenerator(DataGenerator):
 
     def is_io_distribution_supported(self) -> bool:
         return True
+
+    def is_shared_prefix_supported(self) -> bool:
+        return False
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0

@@ -16,6 +16,7 @@ from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
 from .random_datagen import RandomDataGenerator
+from .shared_prefix_datagen import SharedPrefixDataGenerator
 
 __all__ = [
     "DataGenerator",
@@ -23,4 +24,5 @@ __all__ = [
     "HFShareGPTDataGenerator",
     "SyntheticDataGenerator",
     "RandomDataGenerator",
+    "SharedPrefixDataGenerator",
 ]

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import List, Optional
-from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
     DataGenType,
@@ -27,6 +26,7 @@ from inference_perf.datagen import (
     HFShareGPTDataGenerator,
     SyntheticDataGenerator,
     RandomDataGenerator,
+    SharedPrefixDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
@@ -125,17 +125,19 @@ def main_cli() -> None:
                 raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured")
             if config.data.output_distribution is None:
                 raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
+        if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.api, None, tokenizer)
+            datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Synthetic:
-            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
-            datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+            datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Random:
-            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
-            datagen = RandomDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=tokenizer)
+            datagen = RandomDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.SharedPrefix:
+            datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
         else:
-            datagen = MockDataGenerator(config.api)
+            datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:
         raise Exception("data config missing")
 

@@ -11,15 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Generator, List
-from inference_perf.config import APIType
+from typing import Generator, List, Optional
+from inference_perf.config import APIType, DataConfig
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 class MockDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType, ioDistribution=None, tokenizer=None)
+    def __init__(self, apiType: APIType, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
+        super().__init__(apiType, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
@@ -36,4 +37,7 @@ class MockDataGenerator(DataGenerator):
                 raise Exception("Unsupported API type")
 
     def is_io_distribution_supported(self) -> bool:
+        return False
+
+    def is_shared_prefix_supported(self) -> bool:
         return False
