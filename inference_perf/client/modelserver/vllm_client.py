@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
@@ -27,13 +27,13 @@ class vLLMModelServerClient(ModelServerClient):
     def __init__(
         self,
         metrics_collector: RequestDataCollector,
-        api_type: APIType,
+        api_config: APIConfig,
         uri: str,
         model_name: str,
         tokenizer: CustomTokenizer,
         ignore_eos: bool = True,
     ) -> None:
-        super().__init__(api_type)
+        super().__init__(api_config)
         self.model_name = model_name
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
@@ -103,7 +103,10 @@ class vLLMModelServerClient(ModelServerClient):
 
     async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         payload = data.to_payload(
-            model_name=self.model_name, max_tokens=self.max_completion_tokens, ignore_eos=self.ignore_eos
+            model_name=self.model_name,
+            max_tokens=self.max_completion_tokens,
+            ignore_eos=self.ignore_eos,
+            streaming=self.api_config.streaming,
         )
         headers = {"Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
@@ -111,13 +114,14 @@ class vLLMModelServerClient(ModelServerClient):
             try:
                 async with session.post(self.uri + data.get_route(), headers=headers, data=json.dumps(payload)) as response:
                     if response.status == 200:
-                        content = await response.json()
-                        response_info = data.process_response(data=content, tokenizer=self.tokenizer)
+                        response_info = await data.process_response(
+                            response=response, config=self.api_config, tokenizer=self.tokenizer
+                        )
                         self.metrics_collector.record_metric(
                             RequestLifecycleMetric(
                                 stage_id=stage_id,
                                 request_data=json.dumps(payload),
-                                response_data=json.dumps(content),
+                                response_data=json.dumps(await response.text()),
                                 info=response_info,
                                 error=None,
                                 start_time=start,
@@ -138,6 +142,7 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
             except Exception as e:
+                print(f"exception: {e}")
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,

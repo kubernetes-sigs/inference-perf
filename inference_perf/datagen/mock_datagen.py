@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Generator, List
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 
 
 class MockDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType) -> None:
-        super().__init__(apiType, ioDistribution=None, tokenizer=None)
+    def __init__(self, api_config: APIConfig) -> None:
+        super().__init__(api_config, ioDistribution=None, tokenizer=None)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
@@ -28,9 +28,9 @@ class MockDataGenerator(DataGenerator):
         i = 0
         while True:
             i += 1
-            if self.apiType == APIType.Completion:
+            if self.api_config.type == APIType.Completion:
                 yield CompletionAPIData(prompt="text" + str(i))
-            elif self.apiType == APIType.Chat:
+            elif self.api_config.type == APIType.Chat:
                 yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="text" + str(i))])
             else:
                 raise Exception("Unsupported API type")

@@ -14,7 +14,7 @@
 from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
-from inference_perf.config import APIType, Distribution
+from inference_perf.config import APIConfig, APIType, Distribution
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List
 
@@ -27,17 +27,17 @@ class IODistribution(BaseModel):
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
-    apiType: APIType
+    api_config: APIConfig
     ioDistribution: Optional[IODistribution]
     tokenizer: Optional[CustomTokenizer]
 
     """Abstract base class for data generators."""
 
     def __init__(
-        self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]
+        self, api_config: APIConfig, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]
     ) -> None:
-        if apiType not in self.get_supported_apis():
-            raise Exception(f"Unsupported API type {apiType}")
+        if api_config.type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type {api_config}")
 
         if ioDistribution is not None and not self.is_io_distribution_supported():
             raise Exception("IO distribution not supported for this data generator")
@@ -45,7 +45,7 @@ class DataGenerator(ABC):
         if tokenizer is not None:
             self.tokenizer = tokenizer
 
-        self.apiType = apiType
+        self.api_config = api_config
         self.ioDistribution = ioDistribution
 
     @abstractmethod
