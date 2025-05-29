@@ -29,6 +29,7 @@ class DataGenType(Enum):
     ShareGPT = "shareGPT"
     Synthetic = "synthetic"
     Random = "random"
+    SharedPrefix = "shared_prefix"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -40,11 +41,21 @@ class Distribution(BaseModel):
     total_count: int = 1000
 
 
+# Configuration for shared prefix datagen which allows users to specify shared prefixes.
+class SharedPrefix(BaseModel):
+    num_groups: int = 10
+    num_prompts_per_group: int = 10
+    system_prompt_len: int = 100
+    question_len: int = 50
+    output_len: int = 50
+
+
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
     # Distributions are only supported for synthetic/random dataset at this moment
-    input_distribution: Optional[Distribution] = Distribution()
-    output_distribution: Optional[Distribution] = Distribution()
+    input_distribution: Optional[Distribution] = None
+    output_distribution: Optional[Distribution] = None
+    shared_prefix: Optional[SharedPrefix] = None
 
 
 class ModelServerType(Enum):
@@ -115,7 +126,7 @@ class ModelServerClientConfig(BaseModel):
     type: ModelServerType = ModelServerType.VLLM
     model_name: str
     base_url: str
-    ignore_eos: bool
+    ignore_eos: bool = True
 
 
 class CustomTokenizerConfig(BaseModel):

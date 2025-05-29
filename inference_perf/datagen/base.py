@@ -13,40 +13,41 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from pydantic import BaseModel
-from inference_perf.config import APIType, Distribution
+from inference_perf.config import APIType, DataConfig, Distribution, SharedPrefix
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List
-
-
-class IODistribution(BaseModel):
-    input: Distribution = Distribution()
-    output: Distribution = Distribution()
 
 
 class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
     apiType: APIType
-    ioDistribution: Optional[IODistribution]
+    input_distribution: Optional[Distribution]
+    output_distribution: Optional[Distribution]
+    shared_prefix: Optional[SharedPrefix]
     tokenizer: Optional[CustomTokenizer]
 
     """Abstract base class for data generators."""
 
-    def __init__(
-        self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: Optional[CustomTokenizer]
-    ) -> None:
+    def __init__(self, apiType: APIType, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         if apiType not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {apiType}")
 
-        if ioDistribution is not None and not self.is_io_distribution_supported():
+        if (
+            config.input_distribution is not None or config.output_distribution is not None
+        ) and not self.is_io_distribution_supported():
             raise Exception("IO distribution not supported for this data generator")
+
+        if config.shared_prefix is not None and not self.is_shared_prefix_supported():
+            raise Exception("Shared prefix not supported for this data generator")
 
         if tokenizer is not None:
             self.tokenizer = tokenizer
 
         self.apiType = apiType
-        self.ioDistribution = ioDistribution
+        self.input_distribution = config.input_distribution
+        self.output_distribution = config.output_distribution
+        self.shared_prefix = config.shared_prefix
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
@@ -58,4 +59,8 @@ class DataGenerator(ABC):
 
     @abstractmethod
     def is_io_distribution_supported(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_shared_prefix_supported(self) -> bool:
         raise NotImplementedError

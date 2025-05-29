@@ -13,15 +13,15 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator, IODistribution, Optional
-from inference_perf.config import APIType
+from .base import DataGenerator
+from inference_perf.config import APIType, DataConfig
 from typing import Generator, List
 from datasets import load_dataset
 
 
 class HFShareGPTDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, ioDistribution: Optional[IODistribution], tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, ioDistribution, tokenizer)
+    def __init__(self, apiType: APIType, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+        super().__init__(apiType, config, tokenizer)
         self.sharegpt_dataset = iter(
             load_dataset(
                 "anon8231489123/ShareGPT_Vicuna_unfiltered",
@@ -72,4 +72,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     raise Exception("Unsupported API type")
 
     def is_io_distribution_supported(self) -> bool:
+        return False
+
+    def is_shared_prefix_supported(self) -> bool:
         return False
