@@ -17,7 +17,6 @@ from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
     DataGenType,
     MetricsClientType,
-    ModelServerType,
     RequestLifecycleMetricsReportConfig,
     read_config,
 )
@@ -32,7 +31,7 @@ from inference_perf.client.modelserver import ModelServerClient, vLLMModelServer
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.utils import CustomTokenizer, ReportFile
+from inference_perf.utils import ReportFile
 import asyncio
 import time
 
@@ -84,7 +83,9 @@ def main_cli() -> None:
     # Define Model Server Client
     model_server_client: ModelServerClient
     if config.server.vllm is not None:
-        model_server_client = vLLMModelServerClient(config=config.server.vllm)
+        model_server_client = vLLMModelServerClient(
+            config=config.server.vllm, metrics_collector=reportgen.get_metrics_collector()
+        )
     else:
         raise Exception("model server client config missing")
 
@@ -109,10 +110,14 @@ def main_cli() -> None:
 
         elif config.data.type == DataGenType.Synthetic:
             io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
-            datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=model_server_client.get_tokenizer())
+            datagen = SyntheticDataGenerator(
+                config.api, io_distribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
+            )
         elif config.data.type == DataGenType.Random:
             io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
-            datagen = RandomDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=model_server_client.get_tokenizer())
+            datagen = RandomDataGenerator(
+                config.api, io_distribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
+            )
         else:
             datagen = MockDataGenerator(config.server.vllm.api)
     else:
