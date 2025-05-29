@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from inference_perf.client.modelserver.base import ModelServerPrometheusMetric, PrometheusMetricMetadata
+from inference_perf.client.modelserver.llm.base import LlmModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIType
+from inference_perf.config import APIType, VllmModelServerConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
-from inference_perf.utils import CustomTokenizer
-from .base import LlmModelServerClient, ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List
 import aiohttp
 import json
@@ -26,19 +26,11 @@ import time
 class vLLMModelServerClient(LlmModelServerClient):
     def __init__(
         self,
+        config: VllmModelServerConfig,
         metrics_collector: RequestDataCollector,
-        api_type: APIType,
-        uri: str,
-        model_name: str,
-        tokenizer: CustomTokenizer,
-        ignore_eos: bool = True,
     ) -> None:
-        super().__init__(api_type)
-        self.model_name = model_name
-        self.uri = uri
+        super().__init__(config)
         self.max_completion_tokens = 30  # default to use when not set at the request level
-        self.ignore_eos = ignore_eos
-        self.tokenizer = tokenizer
         self.metrics_collector = metrics_collector
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
