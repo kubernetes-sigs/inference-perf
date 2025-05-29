@@ -175,6 +175,7 @@ class ReportGenerator:
                         "end_time": metric.end_time,
                         "request": metric.request_data,
                         "response": metric.response_data,
+                        "error": metric.error.model_dump() if metric.error else None,
                     }
                     for metric in request_metrics
                 ],

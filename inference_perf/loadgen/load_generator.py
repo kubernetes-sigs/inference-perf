@@ -33,15 +33,13 @@ class Status(Enum):
 
 
 class Worker(mp.Process):
-    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int, max_tcp_connections: int):
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int):
         super().__init__()
         self.id = id
         self.client = client
         self.request_queue = request_queue
         self.status_queue: mp.JoinableQueue[Status] = mp.JoinableQueue()
         self.max_concurrency = max_concurrency
-        # TODO: Plumb max_tcp_connections to client
-        self.max_tcp_connections = max_tcp_connections
     
     def check_status(self) -> Union[Status, None]:
         try:
@@ -52,7 +50,11 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
         tasks = []
-        await sleep(0)
+
+        # Allow the request_queue to begin populating
+        while self.request_queue.qsize() > 0:
+            await sleep(0.1)
+
         while True:
             try:
                 await semaphore.acquire()
@@ -111,7 +113,6 @@ class LoadGenerator:
         self.num_workers = load_config.num_workers
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
-        self.worker_max_tcp_connections = load_config.worker_max_tcp_connections
 
     def get_timer(self, rate: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -122,7 +123,7 @@ class LoadGenerator:
         request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
 
         for id in range(self.num_workers):
-            self.workers.append(Worker(id, client, request_queue, self.worker_max_concurrency, self.worker_max_tcp_connections))
+            self.workers.append(Worker(id, client, request_queue, self.worker_max_concurrency))
             self.workers[-1].start()
 
         for stage_id, stage in enumerate(self.stages):
@@ -138,6 +139,7 @@ class LoadGenerator:
                     break
                 request_queue.put((stage_id, request_data, request_time))
 
+            await sleep(stage.duration)
             for worker in self.workers:
                 worker.status_queue.put(Status.STAGE_END)
 
