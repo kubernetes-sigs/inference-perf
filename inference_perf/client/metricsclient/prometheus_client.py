@@ -267,7 +267,7 @@ class PrometheusMetricsClient(MetricsClient):
                 # and return it
                 # Convert the value to float
                 try:
-                    query_result = float(result[0]["value"][1])
+                    query_result = round(float(result[0]["value"][1]), 6)
                 except ValueError:
                     print("Error converting value to float: %s" % (result[0]["value"][1]))
                     return query_result
