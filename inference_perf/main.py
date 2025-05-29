@@ -52,7 +52,7 @@ class InferencePerfRunner:
         self.storage_clients = storage_clients
 
     def run(self) -> None:
-        async def _run():
+        async def _run() -> None:
             collector = self.reportgen.get_metrics_collector()
             if isinstance(collector, MultiprocessRequestDataCollector):
                 collector.start()
@@ -68,7 +68,7 @@ class InferencePerfRunner:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
     
-    def stop(self):
+    def stop(self) -> None:
         asyncio.run(self.loadgen.stop())
 
 

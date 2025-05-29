@@ -15,7 +15,7 @@
 import multiprocessing as mp
 
 from asyncio import create_task, sleep
-from typing import List, Union
+from typing import List
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
 
@@ -24,13 +24,13 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
-        self.queue = mp.JoinableQueue()
-        self.metrics: List[Union[RequestLifecycleMetric, str]] = []
+        self.queue: mp.JoinableQueue[RequestLifecycleMetric] = mp.JoinableQueue()
+        self.metrics: List[RequestLifecycleMetric] = []
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.queue.put(metric)
 
-    async def collect_metrics(self):
+    async def collect_metrics(self) -> None:
         while True:
             try:
                 item = self.queue.get_nowait()

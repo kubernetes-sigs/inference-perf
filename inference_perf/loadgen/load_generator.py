@@ -14,13 +14,16 @@
 from pydantic import BaseModel
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
+from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
 from asyncio import Semaphore, TaskGroup, create_task, gather, run, sleep
 from enum import Enum, auto
-from typing import Union
+from typing import List, Union, Tuple, TypeAlias
 import time
 import multiprocessing as mp
+
+RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData, float]
 
 class Status(Enum):
     UNKNOWN = auto()
@@ -35,18 +38,18 @@ class Worker(mp.Process):
         self.id = id
         self.client = client
         self.request_queue = request_queue
-        self.status_queue = mp.JoinableQueue()
+        self.status_queue: mp.JoinableQueue[Status] = mp.JoinableQueue()
         self.max_concurrency = max_concurrency
         # TODO: Plumb max_tcp_connections to client
         self.max_tcp_connections = max_tcp_connections
     
-    def check_status(self) -> Union[str, None]:
+    def check_status(self) -> Union[Status, None]:
         try:
             return self.status_queue.get_nowait()
         except mp.queues.Empty:
             return None
 
-    async def loop(self):
+    async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
         tasks = []
         await sleep(0)
@@ -55,7 +58,7 @@ class Worker(mp.Process):
                 await semaphore.acquire()
                 item = self.request_queue.get_nowait()
 
-                async def schedule_client(queue, data, request_time, stage_id):
+                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:
                     current_time = time.time()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
@@ -83,7 +86,7 @@ class Worker(mp.Process):
                 await sleep(0.1)
         print(f"Worker {self.id} stopped")
     
-    def run(self):
+    def run(self) -> None:
         run(self.loop())
 
 
@@ -107,7 +110,7 @@ class LoadGenerator:
         self.stages = load_config.stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
         self.num_workers = load_config.num_workers
-        self.workers = []
+        self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
         self.worker_max_tcp_connections = load_config.worker_max_tcp_connections
 
@@ -117,7 +120,7 @@ class LoadGenerator:
         return ConstantLoadTimer(rate=rate)
 
     async def mp_run(self, client: ModelServerClient) -> None:
-        request_queue: mp.Queue = mp.JoinableQueue()
+        request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
 
         for id in range(self.num_workers):
             self.workers.append(Worker(id, client, request_queue, self.worker_max_concurrency, self.worker_max_tcp_connections))
@@ -177,7 +180,7 @@ class LoadGenerator:
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
     
-    async def stop(self):
+    async def stop(self) -> None:
         for worker in self.workers:
             worker.join(timeout=1.0)
             if worker.is_alive():
