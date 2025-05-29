@@ -146,8 +146,13 @@ class LoadGenerator:
             # Join on request queue to ensure that all workers have completed
             # their requests for the stage
             request_queue.join()
-            await sleep(self.stageInterval)
+
+            self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+                stage_id=stage_id, start_time=start_time, end_time=time.time()
+            )
             print(f"Stage {stage_id} - run completed")
+            if self.stageInterval and stage_id < len(self.stages) - 1:
+                await sleep(self.stageInterval)
 
         for worker in self.workers:
             worker.status_queue.put(Status.WORKER_STOP)
