@@ -24,6 +24,11 @@ class APIType(Enum):
     Chat = "chat"
 
 
+class APIConfig(BaseModel):
+    type: APIType = APIType.Completion
+    streaming: bool = False
+
+
 class DataGenType(Enum):
     Mock = "mock"
     ShareGPT = "shareGPT"
@@ -136,7 +141,7 @@ class CustomTokenizerConfig(BaseModel):
 
 
 class Config(BaseModel):
-    api: APIType = APIType.Completion
+    api: APIConfig = APIConfig()
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()
     metrics: Optional[MetricsClientConfig] = None

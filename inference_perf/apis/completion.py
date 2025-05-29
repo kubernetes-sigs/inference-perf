@@ -13,10 +13,14 @@
 # limitations under the License.
 
 
-from typing import Any
+import json
+import time
+from typing import Any, List
+
+from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -29,7 +33,7 @@ class CompletionAPIData(InferenceAPIData):
     def get_route(self) -> str:
         return "/v1/completions"
 
-    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool) -> dict[str, Any]:
+    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {
@@ -37,11 +41,31 @@ class CompletionAPIData(InferenceAPIData):
             "prompt": self.prompt,
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
+            "stream": streaming,
         }
 
-    def process_response(self, data: dict[str, Any], tokenizer: CustomTokenizer) -> InferenceInfo:
-        choices = data.get("choices", [])
-        prompt_len = tokenizer.count_tokens(self.prompt)
-        output_text = choices[0].get("text", "")
-        output_len = tokenizer.count_tokens(output_text)
-        return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)
+    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+        if config.streaming:
+            output_text = ""
+            output_token_times: List[float] = []
+            async for chunk_bytes in response.content.iter_chunks():
+                chunk_bytes_stripped = chunk_bytes[0].strip()
+                output_token_times.append(time.perf_counter())
+                if not chunk_bytes_stripped:
+                    continue
+                if chunk_bytes_stripped.decode("utf-8")[6:] != "[DONE]":
+                    output_text += json.loads(chunk_bytes_stripped.decode("utf-8")[6:])["choices"][0]["text"]
+            prompt_len = tokenizer.count_tokens(self.prompt)
+            output_len = tokenizer.count_tokens(output_text)
+            return InferenceInfo(
+                input_tokens=prompt_len,
+                output_tokens=output_len,
+                output_token_times=output_token_times,
+            )
+        else:
+            data = await response.json()
+            choices = data.get("choices", [])
+            prompt_len = tokenizer.count_tokens(self.prompt)
+            output_text = choices[0].get("text", "")
+            output_len = tokenizer.count_tokens(output_text)
+            return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)

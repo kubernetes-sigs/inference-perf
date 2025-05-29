@@ -17,7 +17,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List
-from inference_perf.config import APIType, DataConfig
+from inference_perf.config import APIType, APIConfig, DataConfig
 
 
 
@@ -27,11 +27,11 @@ from inference_perf.config import APIType, DataConfig
 class RandomDataGenerator(DataGenerator):
     def __init__(
         self,
-        apiType: APIType,
+        api_config: APIConfig,
         config: DataConfig,
         tokenizer: CustomTokenizer,
     ) -> None:
-        super().__init__(apiType, config, tokenizer)
+        super().__init__(api_config, config, tokenizer)
 
         if self.input_distribution is None or self.output_distribution is None:
             raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
@@ -86,7 +86,7 @@ class RandomDataGenerator(DataGenerator):
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-            if self.apiType == APIType.Completion:
+            if self.api_config.type == APIType.Completion:
                 prompt_text: str
                 if self.input_lengths[i] <= 0:
                     random_token_ids_list = []
@@ -101,4 +101,4 @@ class RandomDataGenerator(DataGenerator):
                 )
                 i += 1
             else:
-                raise Exception(f"Unsupported API type: {self.apiType}. RandomDataGenerator only supports Completion.")
+                raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
