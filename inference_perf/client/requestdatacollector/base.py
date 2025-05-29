@@ -11,8 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsCollectorReporter
-from .request_lifecycle import RequestLifecycleMetricsCollectorReporter
+from abc import ABC, abstractmethod
+from typing import List
+
+from inference_perf.apis import RequestLifecycleMetric
 
 
-__all__ = ["MetricsCollectorReporter", "RequestLifecycleMetricsCollectorReporter"]
+class RequestDataCollector(ABC):
+    """
+    Responsible for collecting request information
+    """
+
+    @abstractmethod
+    def record_metric(self, metric: RequestLifecycleMetric) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_metrics(self) -> List[RequestLifecycleMetric]:
+        raise NotImplementedError

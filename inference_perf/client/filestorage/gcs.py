@@ -15,9 +15,9 @@ import json
 from typing import List
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
-from inference_perf.client.storage import StorageClient
+from inference_perf.client.filestorage import StorageClient
 from inference_perf.config import GoogleCloudStorageConfig
-from inference_perf.report import ReportFile
+from inference_perf.utils import ReportFile
 
 
 class GoogleCloudStorageClient(StorageClient):

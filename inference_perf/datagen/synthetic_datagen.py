@@ -11,15 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import numpy as np
-
-from inference_perf.prompts.base import InferenceData
-from inference_perf.prompts.completion import LlmCompletionInferenceData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator, IODistribution
 from typing import Generator, List
-from inference_perf.config import APIType, ApiConfig
-from numpy.typing import NDArray
+from inference_perf.config import APIType
 
 
 class SyntheticDataGenerator(DataGenerator):
@@ -29,14 +26,14 @@ class SyntheticDataGenerator(DataGenerator):
         if self.ioDistribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
 
-        self.input_lengths = self.generate_distribution(
+        self.input_lengths = generate_distribution(
             self.ioDistribution.input.min,
             self.ioDistribution.input.max,
             self.ioDistribution.input.mean,
             self.ioDistribution.input.std_dev,
             self.ioDistribution.input.total_count,
         )
-        self.output_lengths = self.generate_distribution(
+        self.output_lengths = generate_distribution(
             self.ioDistribution.output.min,
             self.ioDistribution.output.max,
             self.ioDistribution.output.mean,
@@ -52,63 +49,19 @@ class SyntheticDataGenerator(DataGenerator):
     def is_io_distribution_supported(self) -> bool:
         return True
 
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
         while True:
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-            if self.api_config.type == APIType.Completion:
-                yield LlmCompletionInferenceData(
+            if self.apiType == APIType.Completion:
+                yield CompletionAPIData(
                     prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
                     max_tokens=self.output_lengths[i],
                 )
                 i += 1
             else:
                 raise Exception("Unsupported API type")
-
-    def generate_distribution(self, min: int, max: int, mean: float, std_dev: float, total_count: int) -> NDArray[np.int_]:
-        """
-        Generates an array of lengths in integer adhering to the specified distribution constraints.
-
-        Args:
-            min: The minimum allowed length.
-            max: The maximum allowed length.
-            mean: The target mean of the distribution.
-            std_dev: The target standard deviation of the distribution.
-            total_count: The total number of lengths to generate.
-
-        Returns:
-            A numpy array of integers representing lengths for input prompts or output generations.
-
-        Raises:
-            ValueError: If constraints are impossible (e.g., min_val > max_val).
-        """
-        if min > max:
-            raise ValueError("Minimum value cannot be greater than maximum value.")
-        if total_count <= 0:
-            raise ValueError("Total count must be a positive integer.")
-        if std_dev < 0:
-            raise ValueError("Standard deviation cannot be negative.")
-        if mean < min or mean > max:
-            raise ValueError("Mean cannot be outside min and max range.")
-
-        # Generate floating-point numbers from a normal distribution
-        # Use a large enough intermediate pool if std_dev is high relative to range
-        # to increase chances of getting values within bounds after generation.
-        # This is a heuristic; perfect adherence isn't guaranteed.
-        generated_numbers = np.random.normal(loc=mean, scale=std_dev, size=total_count)
-
-        # Clip the numbers to the specified min/max range
-        clipped_numbers = np.clip(generated_numbers, min, max)
-
-        # Round to the nearest integer and convert type
-        generated_lengths = np.round(clipped_numbers).astype(int)
-
-        # Ensure integer values are strictly within bounds after rounding
-        # (e.g., rounding 4.6 when max is 4 could result in 5 without this)
-        generated_lengths = np.clip(generated_lengths, min, max)
-
-        return generated_lengths
 
     # Hardcoded sonnet data that we can use for synthetic benchmarks.
     def get_sonnet_data(self) -> str:

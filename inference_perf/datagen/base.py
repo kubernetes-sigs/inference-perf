@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.prompts.base import InferenceData
+from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from pydantic import BaseModel
 from inference_perf.config import APIType, ApiConfig, Distribution
@@ -53,7 +53,7 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_data(self) -> Generator[InferenceData, None, None]:
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
         raise NotImplementedError
 
     @abstractmethod

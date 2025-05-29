@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from inference_perf.client.modelserver.base import ModelServerClient, ModelServerMetrics
+from inference_perf.client.modelserver.base import ModelServerClient
+from pydantic import BaseModel
 
 
 class PerfRuntimeParameters:
@@ -20,6 +21,33 @@ class PerfRuntimeParameters:
         self.start_time = start_time
         self.duration = duration
         self.model_server_client = model_server_client
+
+
+class ModelServerMetrics(BaseModel):
+    # Throughput
+    prompt_tokens_per_second: float = 0.0
+    output_tokens_per_second: float = 0.0
+    requests_per_second: float = 0.0
+
+    # Latency
+    avg_request_latency: float = 0.0
+    median_request_latency: float = 0.0
+    p90_request_latency: float = 0.0
+    p99_request_latency: float = 0.0
+    avg_time_to_first_token: float = 0.0
+    median_time_to_first_token: float = 0.0
+    p90_time_to_first_token: float = 0.0
+    p99_time_to_first_token: float = 0.0
+    avg_time_per_output_token: float = 0.0
+    median_time_per_output_token: float = 0.0
+    p90_time_per_output_token: float = 0.0
+    p99_time_per_output_token: float = 0.0
+
+    # Request
+    total_requests: int = 0
+    avg_prompt_tokens: int = 0
+    avg_output_tokens: int = 0
+    avg_queue_length: int = 0
 
 
 class MetricsClient(ABC):

@@ -11,24 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import time
 from typing import List, Optional
 from inference_perf.datagen.base import IODistribution
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
     DataGenType,
     MetricsClientType,
+    ModelServerType,
     RequestLifecycleMetricsReportConfig,
+    read_config,
 )
-from inference_perf.datagen import DataGenerator, MockDataGenerator, HFShareGPTDataGenerator, SyntheticDataGenerator
+from inference_perf.datagen import (
+    DataGenerator,
+    MockDataGenerator,
+    HFShareGPTDataGenerator,
+    SyntheticDataGenerator,
+    RandomDataGenerator,
+)
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
-from inference_perf.metrics.base import MetricsClient, PerfRuntimeParameters
-from inference_perf.metrics.prometheus_client import PrometheusMetricsClient
-from inference_perf.client.storage import StorageClient, GoogleCloudStorageClient
-from inference_perf.report import ReportFile
+from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
+from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.config import read_config
+from inference_perf.utils import CustomTokenizer, ReportFile
 import asyncio
+import time
 
 
 class InferencePerfRunner:
@@ -48,13 +54,9 @@ class InferencePerfRunner:
         asyncio.run(self.loadgen.run(self.client))
 
     def generate_reports(
-        self, request_lifecycle_metrics_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
+        self, report_config: RequestLifecycleMetricsReportConfig, runtime_parameters: PerfRuntimeParameters
     ) -> List[ReportFile]:
-        return asyncio.run(
-            self.reportgen.generate_reports(
-                request_lifecycle_metrics_config=request_lifecycle_metrics_config, runtime_parameters=runtime_parameters
-            )
-        )
+        return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
 
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
@@ -63,43 +65,6 @@ class InferencePerfRunner:
 
 def main_cli() -> None:
     config = read_config()
-
-    # Define Model Server Client
-    model_server_client: ModelServerClient
-    if config.server.vllm is not None:
-        model_server_client = vLLMModelServerClient(config=config.server.vllm)
-    else:
-        raise Exception("model server client config missing")
-
-    # Define DataGenerator
-    datagen: DataGenerator
-    if config.data:
-        # Common checks for generators that require a tokenizer
-        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic]:
-            if model_server_client.get_tokenizer() is None:
-                raise Exception(
-                    f"{config.data.type.value} data generator requires a configured tokenizer. "
-                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
-                )
-
-        if config.data.type == DataGenType.ShareGPT:
-            datagen = HFShareGPTDataGenerator(config.server.vllm.api, None, model_server_client.get_tokenizer())
-
-        elif config.data.type == DataGenType.Synthetic:
-            if config.data.input_distribution is None:
-                raise Exception("SyntheticDataGenerator requires 'input_distribution' to be configured")
-
-            io_distribution = IODistribution(input=config.data.input_distribution)
-            datagen = SyntheticDataGenerator(
-                config.server.vllm.api, io_distribution=io_distribution, tokenizer=model_server_client.get_tokenizer()
-            )
-        else:
-            datagen = MockDataGenerator(config.server.vllm.api)
-    else:
-        raise Exception("data config missing")
-
-    # Define LoadGenerator
-    loadgen = LoadGenerator(datagen, config.load)
 
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
@@ -114,7 +79,47 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Define Report Generator
-    reportgen = ReportGenerator(model_server_client.prompt_metrics_collector_reporter, metrics_client)
+    reportgen = ReportGenerator(metrics_client)
+
+    # Define Model Server Client
+    model_server_client: ModelServerClient
+    if config.server.vllm is not None:
+        model_server_client = vLLMModelServerClient(config=config.server.vllm)
+    else:
+        raise Exception("model server client config missing")
+
+    # Define DataGenerator
+    datagen: DataGenerator
+    if config.data:
+        # Common checks for generators that require a tokenizer / distribution
+        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic, DataGenType.Random]:
+            if model_server_client.get_tokenizer() is None:
+                raise Exception(
+                    f"{config.data.type.value} data generator requires a configured tokenizer. "
+                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
+                )
+        if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
+            if config.data.input_distribution is None:
+                raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured")
+            if config.data.output_distribution is None:
+                raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
+
+        if config.data.type == DataGenType.ShareGPT:
+            datagen = HFShareGPTDataGenerator(config.server.vllm.api, None, model_server_client.get_tokenizer())
+
+        elif config.data.type == DataGenType.Synthetic:
+            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
+            datagen = SyntheticDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=model_server_client.get_tokenizer())
+        elif config.data.type == DataGenType.Random:
+            io_distribution = IODistribution(input=config.data.input_distribution, output=config.data.output_distribution)  # type: ignore
+            datagen = RandomDataGenerator(config.api, ioDistribution=io_distribution, tokenizer=model_server_client.get_tokenizer())
+        else:
+            datagen = MockDataGenerator(config.server.vllm.api)
+    else:
+        raise Exception("data config missing")
+
+    # Define LoadGenerator
+    loadgen = LoadGenerator(datagen, config.load)
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
@@ -129,7 +134,7 @@ def main_cli() -> None:
 
     # Generate Reports after the tests
     reports = perfrunner.generate_reports(
-        request_lifecycle_metrics_config=config.report.request_lifecycle,
+        report_config=config.report.request_lifecycle,
         runtime_parameters=PerfRuntimeParameters(start_time, duration, model_server_client),
     )
 
