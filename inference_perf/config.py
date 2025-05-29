@@ -126,7 +126,7 @@ class ModelWithTokenizerBase(BaseModel):
     @model_validator(mode="after")
     def populate_tokenizer_path(self) -> "ModelWithTokenizerBase":
         if self.tokenizer is None:
-            self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name)
+            self.tokenizer = CustomTokenizerConfig(pretrained_model_name_or_path=self.name, token=self.token)
 
         if self.tokenizer.pretrained_model_name_or_path is None:
             print(
