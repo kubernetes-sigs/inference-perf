@@ -32,7 +32,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
