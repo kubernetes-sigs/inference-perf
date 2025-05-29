@@ -31,6 +31,7 @@ from inference_perf.datagen import (
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
+from inference_perf.client.requestdatacollector import RequestDataCollector, LocalRequestDataCollector, MultiprocessRequestDataCollector
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile
 import asyncio
@@ -51,7 +52,14 @@ class InferencePerfRunner:
         self.storage_clients = storage_clients
 
     def run(self) -> None:
-        asyncio.run(self.loadgen.run(self.client))
+        async def _run():
+            collector = self.reportgen.get_metrics_collector()
+            if isinstance(collector, MultiprocessRequestDataCollector):
+                collector.start()
+            await self.loadgen.run(self.client)
+            if isinstance(collector, MultiprocessRequestDataCollector):
+                await collector.stop()
+        asyncio.run(_run())
 
     def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
@@ -59,6 +67,9 @@ class InferencePerfRunner:
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
+    
+    def stop(self):
+        asyncio.run(self.loadgen.stop())
 
 
 def main_cli() -> None:
@@ -77,7 +88,12 @@ def main_cli() -> None:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
     # Define Report Generator
-    reportgen = ReportGenerator(metrics_client)
+    collector: RequestDataCollector
+    if config.load.num_workers > 0:
+        collector = MultiprocessRequestDataCollector()
+    else:
+        collector = LocalRequestDataCollector()
+    reportgen = ReportGenerator(metrics_client, collector)
 
     # Create tokenizer based on tokenizer config
     tokenizer: Optional[CustomTokenizer] = None
@@ -171,6 +187,8 @@ def main_cli() -> None:
 
     # Save Reports
     perfrunner.save_reports(reports=reports)
+
+    perfrunner.stop()
 
 
 if __name__ == "__main__":
