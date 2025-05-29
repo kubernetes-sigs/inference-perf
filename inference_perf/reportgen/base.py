@@ -67,7 +67,7 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
                 "input_tokens_per_sec": sum(x.info.input_tokens for x in all_successful) / total_time,
                 "output_tokens_per_sec": sum(x.info.output_tokens for x in all_successful) / total_time,
                 "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
-                "requests_per_sec": len(metrics) / total_time,
+                "requests_per_sec": len(all_successful) / total_time,
             },
             "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful]),
