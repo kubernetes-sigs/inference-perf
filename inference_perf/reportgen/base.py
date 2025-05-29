@@ -97,12 +97,20 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
+    total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
+
     return ResponsesSummary(
         load_summary={
             "count": len(metrics),
         },
         successes={
             "count": len(all_successful),
+            "throughput": {
+                "input_tokens_per_sec": sum(x.info.input_tokens for x in all_successful) / total_time,
+                "output_tokens_per_sec": sum(x.info.output_tokens for x in all_successful) / total_time,
+                "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
+                "requests_per_sec": len(all_successful) / total_time,
+            },
             "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful]),
             "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None]),
