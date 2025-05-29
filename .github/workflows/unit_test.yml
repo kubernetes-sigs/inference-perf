@@ -19,4 +19,4 @@ jobs:
           python-version: '3.13'
       - name: Do Linting and Type Checks
         run: |
-          make unit-test
+          make test

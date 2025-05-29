@@ -156,12 +156,12 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def read_config() -> Config:
+def read_config(arg_list: Optional[list[str]] = None) -> Config:
     parser = ArgumentParser()
 
     parser.add_argument("-c", "--config_file", help="Config File", required=True)
 
-    args = parser.parse_args()
+    args = parser.parse_args(arg_list)
     if args.config_file:
         print("Using configuration from: %s" % args.config_file)
         with open(args.config_file, "r") as stream:

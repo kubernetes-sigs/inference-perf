@@ -16,7 +16,7 @@ lint:
 .PHONY: type-check
 type-check:
 	@echo "Running type checking with mypy..."
-	$(VENV)/bin/mypy --strict ./inference_perf
+	$(VENV)/bin/mypy --strict ./inference_perf ./tests
 
 # Check for and install dependencies
 .PHONY: all-deps
@@ -38,7 +38,7 @@ install-dev-deps: install-deps
 	$(VENV)/bin/pip install -e .[dev]
 
 .PHONY: unit-test
-unit-test: install-dev-deps
+unit-test:
 	$(VENV)/bin/pytest
 
 .PHONY: validate
