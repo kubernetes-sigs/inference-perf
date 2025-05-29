@@ -52,7 +52,7 @@ class ResponsesSummary(BaseModel):
 
 
 def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummary:
-    all_successful: List[RequestLifecycleMetric] = [x.get for x in metrics if x.error is None]
+    all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
