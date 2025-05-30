@@ -33,7 +33,7 @@ class Status(Enum):
 
 
 class Worker(mp.Process):
-    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int):
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int): # type: ignore[type-arg]
         super().__init__()
         self.id = id
         self.client = client
@@ -50,17 +50,15 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
         tasks = []
-
         # Allow the request_queue to begin populating
         while self.request_queue.qsize() == 0:
             await sleep(0.1)
-
         while True:
             try:
                 await semaphore.acquire()
                 item = self.request_queue.get_nowait()
 
-                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:
+                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None: # type: ignore[type-arg]
                     current_time = time.time()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
