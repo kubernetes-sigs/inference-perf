@@ -8,6 +8,8 @@ on:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    env:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,7 +28,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: quay.io/${{ secrets.QUAY_USERNAME }}/inference-perf
+          images: quay.io/${{ env.QUAY_USERNAME }}/inference-perf
           tags: |
             type=ref,event=branch
             type=sha,format=short
