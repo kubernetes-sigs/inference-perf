@@ -36,6 +36,8 @@ class ChatCompletionAPIData(InferenceAPIData):
         return "/v1/chat/completions"
 
     def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+        if streaming:
+            raise Exception("Generating streaming request payloads for the Chat API is not currently supported.")
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {
@@ -47,11 +49,7 @@ class ChatCompletionAPIData(InferenceAPIData):
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
-            print("Decoding streaming responses currently not supported for Chat API")
-            return InferenceInfo(
-                input_tokens=0,
-                output_tokens=0,
-            )
+            raise Exception("Decoding responses from the Chat API is not currently supported")
         else:
             data = await response.json()
             choices = data.get("choices", [])
