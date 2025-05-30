@@ -119,7 +119,7 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
                     [
                         (x.info.output_token_times[-1] - x.info.output_token_times[0]) / (len(x.info.output_token_times) - 1)
                         for x in streamable
-                        if len(x.info.output_token_times) > 2
+                        if len(x.info.output_token_times) > 1
                     ]
                 ),
                 "time_to_first_token": summarize([x.info.output_token_times[0] - x.start_time for x in streamable]),
