@@ -142,7 +142,6 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
             except Exception as e:
-                print(f"exception: {e}")
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
