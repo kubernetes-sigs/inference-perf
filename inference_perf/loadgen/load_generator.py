@@ -52,7 +52,7 @@ class Worker(mp.Process):
         tasks = []
 
         # Allow the request_queue to begin populating
-        while self.request_queue.qsize() > 0:
+        while self.request_queue.qsize() == 0:
             await sleep(0.1)
 
         while True:
@@ -140,13 +140,15 @@ class LoadGenerator:
                 request_queue.put((stage_id, request_data, request_time))
 
             await sleep(stage.duration)
+            while request_queue.qsize() > 0:
+                await sleep(1)
+
             for worker in self.workers:
                 worker.status_queue.put(Status.STAGE_END)
 
             # Join on request queue to ensure that all workers have completed
             # their requests for the stage
             request_queue.join()
-
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                 stage_id=stage_id, start_time=start_time, end_time=time.time()
             )
