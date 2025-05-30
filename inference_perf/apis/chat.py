@@ -49,7 +49,7 @@ class ChatCompletionAPIData(InferenceAPIData):
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
-            raise Exception("Decoding responses from the Chat API is not currently supported")
+            raise Exception("Decoding streamed responses from the Chat API is not currently supported")
         else:
             data = await response.json()
             choices = data.get("choices", [])
