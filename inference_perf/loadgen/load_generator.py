@@ -97,12 +97,6 @@ class StageRuntimeInfo(BaseModel):
     start_time: float
 
 
-class StageRuntimeInfo(BaseModel):
-    stage_id: int
-    end_time: float
-    start_time: float
-
-
 class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
         self.datagen = datagen
