@@ -13,7 +13,7 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIConfig, APIType, DataConfig, Distribution, SharedPrefix
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List
 

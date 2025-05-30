@@ -20,8 +20,6 @@ from typing import Generator, List
 from inference_perf.config import APIType, APIConfig, DataConfig
 
 
-
-
 # Random data generator generates random tokens from the model's
 # vocabulary for the desired input and output distribution.
 class RandomDataGenerator(DataGenerator):

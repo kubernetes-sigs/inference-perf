@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Generator, List, Optional
-from inference_perf.config import APIConfig, APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer

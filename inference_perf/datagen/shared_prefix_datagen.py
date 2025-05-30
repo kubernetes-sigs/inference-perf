@@ -4,7 +4,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.config import APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 
@@ -12,8 +12,8 @@ from .base import DataGenerator
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
 # This can be used to benchmark prefix caching cases.
 class SharedPrefixDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, config: DataConfig, tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, config, tokenizer)
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_config, config, tokenizer)
 
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SharedPrefixDataGenerator but was not initialized.")

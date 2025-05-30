@@ -16,7 +16,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List
-from inference_perf.config import APIConfig, APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig
 
 
 class SyntheticDataGenerator(DataGenerator):
