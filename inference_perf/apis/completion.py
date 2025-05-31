@@ -53,8 +53,8 @@ class CompletionAPIData(InferenceAPIData):
                 output_token_times.append(time.perf_counter())
                 if not chunk_bytes_stripped:
                     continue
-                print(chunk_bytes_stripped.decode("utf-8"))
-                if chunk_bytes_stripped.decode("utf-8")[6:] != "[DONE]":
+                # Each chunk decodes to "data: <token>" or "[DONE]" if end of stream
+                if chunk_bytes_stripped.decode("utf-8")[6:] != "[DONE]": #  Remove "data:" prefix
                     output_text += json.loads(chunk_bytes_stripped.decode("utf-8")[6:])["choices"][0]["text"]
             prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
