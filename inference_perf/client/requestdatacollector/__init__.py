@@ -13,9 +13,11 @@
 # limitations under the License.
 from .base import RequestDataCollector
 from .local import LocalRequestDataCollector
+from .multiprocess import MultiprocessRequestDataCollector
 
 
 __all__ = [
     "RequestDataCollector",
     "LocalRequestDataCollector",
+    "MultiprocessRequestDataCollector",
 ]
