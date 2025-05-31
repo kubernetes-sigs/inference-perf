@@ -13,15 +13,17 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import Any, Optional
+from typing import Any, List, Optional
+from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 
 class InferenceInfo(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    output_token_times: List[float] = []
 
 
 class ErrorResponseInfo(BaseModel):
@@ -49,9 +51,9 @@ class InferenceAPIData(BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool) -> dict[str, Any]:
+    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    def process_response(self, data: dict[str, Any], tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         raise NotImplementedError

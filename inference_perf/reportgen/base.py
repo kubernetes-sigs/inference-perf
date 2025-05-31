@@ -98,6 +98,7 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
+    streamable = [x for x in all_successful if x.info.output_token_times and len(x.info.output_token_times) > 1]
 
     return ResponsesSummary(
         load_summary={
@@ -105,22 +106,39 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
         },
         successes={
             "count": len(all_successful),
+            "latency": {
+                "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
+                "normalized_time_per_output_token": summarize(
+                    [
+                        ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
+                        for metric in all_successful
+                        for output_len in [safe_float(metric.info.output_tokens)]
+                    ]
+                ),
+                "time_per_output_token": summarize(
+                    [
+                        (x.info.output_token_times[-1] - x.info.output_token_times[0]) / (len(x.info.output_token_times) - 1)
+                        for x in streamable
+                        if len(x.info.output_token_times) > 1
+                    ]
+                ),
+                "time_to_first_token": summarize([x.info.output_token_times[0] - x.start_time for x in streamable]),
+                "inter_token_latency": summarize(
+                    [
+                        t2 - t1
+                        for x in streamable
+                        for t1, t2 in zip(x.info.output_token_times, x.info.output_token_times[1:], strict=False)
+                    ]
+                ),
+            },
             "throughput": {
                 "input_tokens_per_sec": sum(x.info.input_tokens for x in all_successful) / total_time,
                 "output_tokens_per_sec": sum(x.info.output_tokens for x in all_successful) / total_time,
                 "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
                 "requests_per_sec": len(all_successful) / total_time,
             },
-            "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful]),
             "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None]),
-            "normalized_time_per_output_token": summarize(
-                [
-                    ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
-                    for metric in all_successful
-                    for output_len in [safe_float(metric.info.output_tokens)]
-                ]
-            ),
         },
         failures={
             "count": len(all_failed),

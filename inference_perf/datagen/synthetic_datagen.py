@@ -16,12 +16,12 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List
-from inference_perf.config import APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig
 
 
 class SyntheticDataGenerator(DataGenerator):
-    def __init__(self, apiType: APIType, config: DataConfig, tokenizer: CustomTokenizer) -> None:
-        super().__init__(apiType, config, tokenizer)
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+        super().__init__(api_config, config, tokenizer)
 
         if self.input_distribution is None or self.output_distribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
@@ -57,7 +57,7 @@ class SyntheticDataGenerator(DataGenerator):
         while True:
             if self.tokenizer is None:
                 raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-            if self.apiType == APIType.Completion:
+            if self.api_config.type == APIType.Completion:
                 yield CompletionAPIData(
                     prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
                     max_tokens=self.output_lengths[i],

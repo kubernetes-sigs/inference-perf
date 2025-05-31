@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 from inference_perf.apis import InferenceAPIData
 
@@ -58,11 +58,11 @@ class PrometheusMetricMetadata(TypedDict):
 
 class ModelServerClient(ABC):
     @abstractmethod
-    def __init__(self, api_type: APIType, *args: Tuple[int, ...]) -> None:
-        if api_type not in self.get_supported_apis():
-            raise Exception(f"Unsupported API type {api_type}")
+    def __init__(self, api_config: APIConfig, *args: Tuple[int, ...]) -> None:
+        if api_config.type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type {api_config}")
 
-        self.apiType = api_type
+        self.api_config = api_config
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
