@@ -50,9 +50,6 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
         tasks = []
-        # Allow the request_queue to begin populating
-        while self.request_queue.qsize() == 0:
-            await sleep(0.1)
         while True:
             try:
                 await semaphore.acquire()
@@ -71,8 +68,8 @@ class Worker(mp.Process):
                 stage_id, data, request_time = item
                 task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
                 tasks.append(task)
-                await sleep(0)
             except mp.queues.Empty:
+                semaphore.release()
                 status = self.check_status()
                 if status is not None:
                     await gather(*tasks)
@@ -82,8 +79,6 @@ class Worker(mp.Process):
                     continue
                 if status == Status.WORKER_STOP:
                     break
-                await sleep(0.1)
-        print(f"Worker {self.id} stopped")
     
     def run(self) -> None:
         run(self.loop())
@@ -130,10 +125,7 @@ class LoadGenerator:
                 if request_number >= num_requests:
                     break
                 request_queue.put((stage_id, request_data, request_time))
-
             await sleep(stage.duration)
-            while request_queue.qsize() > 0:
-                await sleep(1)
 
             for worker in self.workers:
                 worker.status_queue.put(Status.STAGE_END)
