@@ -60,7 +60,8 @@ class Worker(mp.Process):
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
                         await sleep(sleep_time)
-                    # TODO: Add observability into missed timing
+                    else:
+                        print(f"Worker {self.id} missed scheduled request time")
                     await self.client.process_request(data, stage_id)
                     semaphore.release()
                     queue.task_done()
@@ -116,7 +117,10 @@ class LoadGenerator:
         for stage_id, stage in enumerate(self.stages):
             print(f"Stage {stage_id} - run started")
             timer = self.get_timer(stage.rate)
-            start_time = time.time()
+
+            # Allow generation a second to begin populating the queue so the workers
+            # don't miss the initial scheuled request times
+            start_time = time.time() + 1
             num_requests = stage.rate * stage.duration
 
             for request_number, (request_data, request_time) in enumerate(
