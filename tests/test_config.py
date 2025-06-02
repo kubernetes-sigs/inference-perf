@@ -7,7 +7,7 @@ def test_read_config() -> None:
     config = read_config(["-c", config_path])
 
     assert isinstance(config, Config)
-    assert config.api == APIType.Chat
+    assert config.api.type == APIType.Chat
     assert config.data.type == DataGenType.ShareGPT
     assert config.load.type == LoadType.CONSTANT
     if config.metrics:

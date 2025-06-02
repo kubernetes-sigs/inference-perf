@@ -99,7 +99,7 @@ def main_cli() -> None:
                 )
             model_server_client = vLLMModelServerClient(
                 reportgen.get_metrics_collector(),
-                api_type=config.api,
+                api_config=config.api,
                 uri=config.server.base_url,
                 model_name=config.server.model_name,
                 tokenizer=tokenizer,
