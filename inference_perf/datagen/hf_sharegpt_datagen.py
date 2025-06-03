@@ -58,9 +58,13 @@ class HFShareGPTDataGenerator(DataGenerator):
                 if self.api_config.type == APIType.Completion:
                     try:
                         prompt = data[self.data_key][0].get(self.content_key)
+                        completion = data[self.data_key][1].get(self.content_key)
                         if not prompt:
                             continue
-                        yield CompletionAPIData(prompt=prompt)
+                        # Ensured by main.py logic and __init__ type hint for this class
+                        assert self.tokenizer is not None
+                        completion_tokens = self.tokenizer.count_tokens(completion)
+                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
