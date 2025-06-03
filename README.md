@@ -6,19 +6,18 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 
 ![Architecture Diagram](docs/images/architecture.png)
 
-
 ## Key Features
 
-* Highly scalable benchmarking tool which can hit accurate QPS of up to X.
+* Highly scalable and can support benchmarking large inference production deployments.
+* Reports the key metrics needed to measure LLM performance.
 * Supports different real world and synthetic datasets.
 * Supports different APIs and can support multiple model servers.
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
-* Reports all the key metrics needed to measure LLM performance.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
 
 ## Roadmap
 
-* Accelerator metrics (GPU utilization, memory usage, power usage, etc.).
+* Accelerator metrics collection during benchmarks (GPU utilization, memory usage, power usage, etc.).
 * Support for more model servers.
 * Deployment API to help deploy different inference stacks.
 * Traffic splitting among different use cases or LoRA adapters.
@@ -59,7 +58,7 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 
     ```
 
-### Run in Kubernetes cluster
+### Run in a Kubernetes cluster
 
 Refer to the [guide](./deploy/README.md) in `/deploy`.
 
@@ -70,10 +69,10 @@ You can configure inference-perf to run with different data generation and load 
 ### Datasets
 
 Supported datasets include the following:
-- ShareGPT (for a real world conversational dataset)
-- Synthetic (for specific input / output distributions with Sonnet data)
-- Random (for specific input / output distributions with random data)
-- SharedPrefix (for prefix caching scenarios)
+- [ShareGPT](./examples/vllm/config.yml) (for a real world conversational dataset)
+- [Synthetic](./examples/vllm/config-synthetic.yml) (for specific input / output distributions with Sonnet data)
+- [Random](./examples/vllm/config-random.yml) (for specific input / output distributions with random data)
+- [SharedPrefix](./examples/vllm/config-shared-prefix.yml) (for prefix caching scenarios)
 - Mock (for testing)
 
 ### Load Generators
