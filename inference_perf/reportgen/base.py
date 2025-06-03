@@ -19,7 +19,7 @@ from inference_perf.client.metricsclient.prometheus_client import PrometheusMetr
 from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.utils import ReportFile
-from inference_perf.client.requestdatacollector import LocalRequestDataCollector, RequestDataCollector
+from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
 import numpy as np
 
@@ -151,8 +151,9 @@ class ReportGenerator:
     def __init__(
         self,
         metrics_client: Optional[MetricsClient],
+        metrics_collector: RequestDataCollector,
     ) -> None:
-        self.metrics_collector = LocalRequestDataCollector()
+        self.metrics_collector = metrics_collector
         self.metrics_client = metrics_client
 
     def get_metrics_collector(self) -> RequestDataCollector:
@@ -200,6 +201,7 @@ class ReportGenerator:
                         "end_time": metric.end_time,
                         "request": metric.request_data,
                         "response": metric.response_data,
+                        "error": metric.error.model_dump() if metric.error else None,
                     }
                     for metric in request_metrics
                 ],

@@ -14,10 +14,75 @@
 from pydantic import BaseModel
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
+from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
-from asyncio import TaskGroup, sleep
+from asyncio import Semaphore, TaskGroup, create_task, gather, run, sleep
+from enum import Enum, auto
+from typing import List, Union, Tuple, TypeAlias
 import time
+import multiprocessing as mp
+
+RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData, float]
+
+class Status(Enum):
+    UNKNOWN = auto()
+    STAGE_END = auto()
+    WORKER_STOP = auto()
+    WORKER_STOPPED = auto()
+
+
+class Worker(mp.Process):
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int): # type: ignore[type-arg]
+        super().__init__()
+        self.id = id
+        self.client = client
+        self.request_queue = request_queue
+        self.status_queue: mp.JoinableQueue[Status] = mp.JoinableQueue()
+        self.max_concurrency = max_concurrency
+    
+    def check_status(self) -> Union[Status, None]:
+        try:
+            return self.status_queue.get_nowait()
+        except mp.queues.Empty:
+            return None
+
+    async def loop(self) -> None:
+        semaphore = Semaphore(self.max_concurrency)
+        tasks = []
+        while True:
+            try:
+                await semaphore.acquire()
+                item = self.request_queue.get_nowait()
+
+                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None: # type: ignore[type-arg]
+                    current_time = time.time()
+                    sleep_time = request_time - current_time
+                    if sleep_time > 0:
+                        await sleep(sleep_time)
+                    else:
+                        print(f"Worker {self.id} missed scheduled request time")
+                    await self.client.process_request(data, stage_id)
+                    semaphore.release()
+                    queue.task_done()
+                
+                stage_id, data, request_time = item
+                task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
+                tasks.append(task)
+            except mp.queues.Empty:
+                semaphore.release()
+                status = self.check_status()
+                if status is not None:
+                    await gather(*tasks)
+                    tasks = []
+                    self.status_queue.task_done()
+                if status == Status.STAGE_END:
+                    continue
+                if status == Status.WORKER_STOP:
+                    break
+    
+    def run(self) -> None:
+        run(self.loop())
 
 
 class StageRuntimeInfo(BaseModel):
@@ -33,13 +98,60 @@ class LoadGenerator:
         self.load_type = load_config.type
         self.stages = load_config.stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
+        self.num_workers = load_config.num_workers
+        self.workers: List[Worker] = []
+        self.worker_max_concurrency = load_config.worker_max_concurrency
 
     def get_timer(self, rate: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate)
         return ConstantLoadTimer(rate=rate)
 
+    async def mp_run(self, client: ModelServerClient) -> None:
+        request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
+
+        for id in range(self.num_workers):
+            self.workers.append(Worker(id, client, request_queue, self.worker_max_concurrency))
+            self.workers[-1].start()
+
+        for stage_id, stage in enumerate(self.stages):
+            print(f"Stage {stage_id} - run started")
+            timer = self.get_timer(stage.rate)
+
+            # Allow generation a second to begin populating the queue so the workers
+            # don't miss the initial scheuled request times
+            start_time = time.time() + 1
+            num_requests = stage.rate * stage.duration
+
+            for request_number, (request_data, request_time) in enumerate(
+                zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
+            ):
+                if request_number >= num_requests:
+                    break
+                request_queue.put((stage_id, request_data, request_time))
+            await sleep(stage.duration)
+
+            for worker in self.workers:
+                worker.status_queue.put(Status.STAGE_END)
+
+            # Join on request queue to ensure that all workers have completed
+            # their requests for the stage
+            request_queue.join()
+            self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+                stage_id=stage_id, start_time=start_time, end_time=time.time()
+            )
+            print(f"Stage {stage_id} - run completed")
+            if self.stageInterval and stage_id < len(self.stages) - 1:
+                await sleep(self.stageInterval)
+
+        for worker in self.workers:
+            worker.status_queue.put(Status.WORKER_STOP)
+
+
     async def run(self, client: ModelServerClient) -> None:
+        if self.num_workers > 0:
+            return await self.mp_run(client)
+
         for stage_id, stage in enumerate(self.stages):
             timer = self.get_timer(stage.rate)
             start_time = time.time()
@@ -63,3 +175,10 @@ class LoadGenerator:
             print(f"Stage {stage_id} - run completed")
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
+    
+    async def stop(self) -> None:
+        for worker in self.workers:
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=0.0)

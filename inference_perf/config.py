@@ -16,6 +16,7 @@ from pydantic import BaseModel, HttpUrl
 from typing import Any, Optional, List
 from argparse import ArgumentParser
 from enum import Enum
+from os import cpu_count
 import yaml
 
 
@@ -86,6 +87,9 @@ class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
+    num_workers: int = max(1, cpu_count() // 2) # type: ignore
+    worker_max_concurrency: int = 10
+    worker_max_tcp_connections: int = 2500
 
 
 class StorageConfigBase(BaseModel):
