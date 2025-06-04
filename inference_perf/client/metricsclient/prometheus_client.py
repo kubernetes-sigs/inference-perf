@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import time
 from typing import cast
 import requests
@@ -19,6 +20,8 @@ from inference_perf.config import PrometheusClientConfig
 from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
+
+logger = logging.getLogger(__name__)
 
 
 class PrometheusQueryBuilder:
@@ -82,10 +85,10 @@ class PrometheusQueryBuilder:
 
         queries = self.get_queries()
         if metric_type not in queries:
-            print("Invalid metric type: %s" % (metric_type))
+            logger.warning("Invalid metric type: %s" % (metric_type))
             return ""
         if query_op not in queries[metric_type]:
-            print("Invalid query operation: %s" % (query_op))
+            logger.warning("Invalid query operation: %s" % (query_op))
             return ""
         return queries[metric_type][query_op]
 
@@ -119,7 +122,7 @@ class PrometheusMetricsClient(MetricsClient):
         A ModelServerMetrics object containing the summary metrics.
         """
         if runtime_parameters is None:
-            print("Perf Runtime parameters are not set, skipping metrics collection")
+            logger.warning("Perf Runtime parameters are not set, skipping metrics collection")
             return None
 
         # Get the duration and model server client from the runtime parameters
@@ -140,11 +143,13 @@ class PrometheusMetricsClient(MetricsClient):
         A ModelServerMetrics object containing the summary metrics for the specified stage.
         """
         if runtime_parameters is None:
-            print("Perf Runtime parameters are not set, skipping metrics collection")
+            logger.warning("Perf Runtime parameters are not set, skipping metrics collection")
             return None
 
         if runtime_parameters.stages is None or stage_id not in runtime_parameters.stages:
-            print(f"Stage ID {stage_id} is not present in the runtime parameters, skipping metrics collection for this stage")
+            logger.warning(
+                f"Stage ID {stage_id} is not present in the runtime parameters, skipping metrics collection for this stage"
+            )
             return None
 
         # Get the query evaluation time and duration for the stage
@@ -172,21 +177,21 @@ class PrometheusMetricsClient(MetricsClient):
 
         # Get the engine and model from the model server client
         if not model_server_client:
-            print("Model server client is not set")
+            logger.warning("Model server client is not set")
             return None
 
         metrics_metadata = model_server_client.get_prometheus_metric_metadata()
         if not metrics_metadata:
-            print("Metrics metadata is not present for the runtime")
+            logger.warning("Metrics metadata is not present for the runtime")
             return None
         for summary_metric_name in metrics_metadata:
             summary_metric_metadata = metrics_metadata.get(summary_metric_name)
             if summary_metric_metadata is None:
-                print("Metric metadata is not present for metric: %s. Skipping this metric." % (summary_metric_name))
+                logger.warning("Metric metadata is not present for metric: %s. Skipping this metric." % (summary_metric_name))
                 continue
             summary_metric_metadata = cast(ModelServerPrometheusMetric, summary_metric_metadata)
             if summary_metric_metadata is None:
-                print(
+                logger.warning(
                     "Metric metadata for %s is missing or has an incorrect format. Skipping this metric."
                     % (summary_metric_name)
                 )
@@ -195,13 +200,13 @@ class PrometheusMetricsClient(MetricsClient):
             query_builder = PrometheusQueryBuilder(summary_metric_metadata, query_duration)
             query = query_builder.build_query()
             if not query:
-                print("No query found for metric: %s. Skipping metric." % (summary_metric_name))
+                logger.warning("No query found for metric: %s. Skipping metric." % (summary_metric_name))
                 continue
 
             # Execute the query and get the result
             result = self.execute_query(query, str(query_eval_time))
             if result is None:
-                print("Error executing query: %s" % (query))
+                logger.error("Error executing query: %s" % (query))
                 continue
             # Set the result in metrics summary
             attr = getattr(model_server_metrics, summary_metric_name)
@@ -226,12 +231,12 @@ class PrometheusMetricsClient(MetricsClient):
         try:
             response = requests.get(f"{self.url}/api/v1/query", params={"query": query, "time": eval_time})
             if response is None:
-                print("Error executing query: %s" % (query))
+                logger.error("Error executing query: %s" % (query))
                 return query_result
 
             response.raise_for_status()
         except Exception as e:
-            print("Error executing query: %s" % (e))
+            logger.error("Error executing query: %s" % (e))
             return query_result
 
         # Check if the response is valid
@@ -253,7 +258,7 @@ class PrometheusMetricsClient(MetricsClient):
         # }
         response_obj = response.json()
         if response_obj.get("status") != "success":
-            print("Error executing query: %s" % (response_obj))
+            logger.error("Error executing query: %s" % (response_obj))
             return query_result
 
         data = response_obj.get("data", {})
@@ -269,6 +274,6 @@ class PrometheusMetricsClient(MetricsClient):
                 try:
                     query_result = round(float(result[0]["value"][1]), 6)
                 except ValueError:
-                    print("Error converting value to float: %s" % (result[0]["value"][1]))
+                    logger.error("Error converting value to float: %s" % (result[0]["value"][1]))
                     return query_result
         return query_result

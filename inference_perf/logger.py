@@ -13,19 +13,23 @@
 # limitations under the License.
 
 import logging
-from abc import ABC, abstractmethod
-from typing import List
-from inference_perf.config import StorageConfigBase
-from inference_perf.utils import ReportFile
-
-logger = logging.getLogger(__name__)
+import sys
 
 
-class StorageClient(ABC):
-    def __init__(self, config: StorageConfigBase) -> None:
-        self.config = config
-        logger.info(f"Report files will be stored at: {self.config.path}")
+def setup_logging(level: str) -> None:
+    """
+    Setup logging configuration for inference_perf.
 
-    @abstractmethod
-    def save_report(self, reports: List[ReportFile]) -> None:
-        raise NotImplementedError()
+    Args:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    """
+    numeric_level = getattr(logging, level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {level}")
+
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )

@@ -22,8 +22,13 @@ from enum import Enum, auto
 from typing import List, Union, Tuple, TypeAlias
 import time
 import multiprocessing as mp
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData, float]
+
 
 class Status(Enum):
     UNKNOWN = auto()
@@ -33,14 +38,14 @@ class Status(Enum):
 
 
 class Worker(mp.Process):
-    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int): # type: ignore[type-arg]
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int):  # type: ignore[type-arg]
         super().__init__()
         self.id = id
         self.client = client
         self.request_queue = request_queue
         self.status_queue: mp.JoinableQueue[Status] = mp.JoinableQueue()
         self.max_concurrency = max_concurrency
-    
+
     def check_status(self) -> Union[Status, None]:
         try:
             return self.status_queue.get_nowait()
@@ -55,17 +60,17 @@ class Worker(mp.Process):
                 await semaphore.acquire()
                 item = self.request_queue.get_nowait()
 
-                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None: # type: ignore[type-arg]
+                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:  # type: ignore[type-arg]
                     current_time = time.time()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
                         await sleep(sleep_time)
                     else:
-                        print(f"Worker {self.id} missed scheduled request time")
+                        logger.warning("Worker %d missed scheduled request time", self.id)
                     await self.client.process_request(data, stage_id)
                     semaphore.release()
                     queue.task_done()
-                
+
                 stage_id, data, request_time = item
                 task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
                 tasks.append(task)
@@ -80,7 +85,7 @@ class Worker(mp.Process):
                     continue
                 if status == Status.WORKER_STOP:
                     break
-    
+
     def run(self) -> None:
         run(self.loop())
 
@@ -115,7 +120,7 @@ class LoadGenerator:
             self.workers[-1].start()
 
         for stage_id, stage in enumerate(self.stages):
-            print(f"Stage {stage_id} - run started")
+            logger.info("Stage %d - run started", stage_id)
             timer = self.get_timer(stage.rate)
 
             # Allow generation a second to begin populating the queue so the workers
@@ -140,13 +145,12 @@ class LoadGenerator:
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                 stage_id=stage_id, start_time=start_time, end_time=time.time()
             )
-            print(f"Stage {stage_id} - run completed")
+            logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
 
         for worker in self.workers:
             worker.status_queue.put(Status.WORKER_STOP)
-
 
     async def run(self, client: ModelServerClient) -> None:
         if self.num_workers > 0:
@@ -156,7 +160,7 @@ class LoadGenerator:
             timer = self.get_timer(stage.rate)
             start_time = time.time()
             end_time = start_time + stage.duration
-            print(f"Stage {stage_id} - run started")
+            logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 for _, (data, time_index) in enumerate(
                     zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
@@ -172,10 +176,10 @@ class LoadGenerator:
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                 stage_id=stage_id, start_time=start_time, end_time=time.time()
             )
-            print(f"Stage {stage_id} - run completed")
+            logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
-    
+
     async def stop(self) -> None:
         for worker in self.workers:
             worker.join(timeout=1.0)

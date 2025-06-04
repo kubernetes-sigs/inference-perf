@@ -14,10 +14,10 @@
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl
 from typing import Any, Optional, List
-from argparse import ArgumentParser
 from enum import Enum
 from os import cpu_count
 import yaml
+import logging
 
 
 class APIType(Enum):
@@ -87,7 +87,7 @@ class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
-    num_workers: int = max(1, cpu_count() // 2) # type: ignore
+    num_workers: int = max(1, cpu_count() // 2)  # type: ignore
     worker_max_concurrency: int = 10
     worker_max_tcp_connections: int = 2500
 
@@ -165,22 +165,16 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def read_config(arg_list: Optional[list[str]] = None) -> Config:
-    parser = ArgumentParser()
+def read_config(config_file: str) -> Config:
+    logger = logging.getLogger(__name__)
+    logger.info("Using configuration from: %s", config_file)
+    with open(config_file, "r") as stream:
+        cfg = yaml.safe_load(stream)
 
-    parser.add_argument("-c", "--config_file", help="Config File", required=True)
+    default_cfg = Config().model_dump(mode="json")
+    merged_cfg = deep_merge(default_cfg, cfg)
 
-    args = parser.parse_args(arg_list)
-    if args.config_file:
-        print("Using configuration from: %s" % args.config_file)
-        with open(args.config_file, "r") as stream:
-            cfg = yaml.safe_load(stream)
-
-        default_cfg = Config().model_dump(mode="json")
-        merged_cfg = deep_merge(default_cfg, cfg)
-
-        print(
-            f"Benchmarking with the following config:\n\n{yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)}\n"
-        )
-        return Config(**merged_cfg)
-    return Config()
+    logger.info(
+        "Benchmarking with the following config:\n\n%s\n", yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)
+    )
+    return Config(**merged_cfg)

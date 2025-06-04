@@ -11,12 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Generator, List
 from datasets import load_dataset
+
+logger = logging.getLogger(__name__)
 
 
 class HFShareGPTDataGenerator(DataGenerator):
@@ -59,7 +62,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                             continue
                         yield CompletionAPIData(prompt=prompt)
                     except (KeyError, TypeError) as e:
-                        print(f"Skipping invalid completion data: {e}")
+                        logger.warning(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.api_config.type == APIType.Chat:
                     yield ChatCompletionAPIData(

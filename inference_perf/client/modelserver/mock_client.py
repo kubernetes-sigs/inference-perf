@@ -19,6 +19,9 @@ from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycl
 from .base import ModelServerClient
 import asyncio
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MockModelServerClient(ModelServerClient):
@@ -28,7 +31,7 @@ class MockModelServerClient(ModelServerClient):
 
     async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         start = time.monotonic()
-        print("Processing mock request for stage - " + str(stage_id))
+        logger.debug("Processing mock request for stage %d", stage_id)
         await asyncio.sleep(3)
         self.metrics_collector.record_metric(
             RequestLifecycleMetric(

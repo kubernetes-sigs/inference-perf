@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from argparse import ArgumentParser
 from typing import List, Optional
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
@@ -31,9 +32,14 @@ from inference_perf.datagen import (
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
-from inference_perf.client.requestdatacollector import RequestDataCollector, LocalRequestDataCollector, MultiprocessRequestDataCollector
+from inference_perf.client.requestdatacollector import (
+    RequestDataCollector,
+    LocalRequestDataCollector,
+    MultiprocessRequestDataCollector,
+)
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile
+from inference_perf.logger import setup_logging
 import asyncio
 import time
 
@@ -59,6 +65,7 @@ class InferencePerfRunner:
             await self.loadgen.run(self.client)
             if isinstance(collector, MultiprocessRequestDataCollector):
                 await collector.stop()
+
         asyncio.run(_run())
 
     def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
@@ -67,13 +74,22 @@ class InferencePerfRunner:
     def save_reports(self, reports: List[ReportFile]) -> None:
         for storage_client in self.storage_clients:
             storage_client.save_report(reports)
-    
+
     def stop(self) -> None:
         asyncio.run(self.loadgen.stop())
 
 
 def main_cli() -> None:
-    config = read_config()
+    # Parse command line arguments
+    parser = ArgumentParser()
+    parser.add_argument("-c", "--config_file", help="Config File", required=True)
+    parser.add_argument(
+        "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    )
+    args = parser.parse_args()
+
+    setup_logging(args.log_level)
+    config = read_config(args.config_file)
 
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
@@ -120,7 +136,7 @@ def main_cli() -> None:
                 model_name=config.server.model_name,
                 tokenizer=tokenizer,
                 ignore_eos=config.server.ignore_eos,
-                max_tcp_connections=config.load.worker_max_tcp_connections
+                max_tcp_connections=config.load.worker_max_tcp_connections,
             )
     else:
         raise Exception("model server client config missing")

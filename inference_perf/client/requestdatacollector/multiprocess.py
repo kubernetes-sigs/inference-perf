@@ -41,7 +41,7 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
 
     def start(self) -> None:
         self.collection = create_task(self.collect_metrics())
-    
+
     async def stop(self) -> None:
         # Ensure that the collection queue is empty before joining
         while self.queue.qsize() > 0:
