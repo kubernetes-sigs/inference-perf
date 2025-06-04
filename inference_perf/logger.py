@@ -16,7 +16,7 @@ import logging
 import sys
 
 
-def setup_logging(level) -> None:
+def setup_logging(level: str) -> None:
     """
     Setup logging configuration for inference_perf.
 
