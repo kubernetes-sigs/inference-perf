@@ -22,6 +22,9 @@ from inference_perf.utils import ReportFile
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def safe_float(value: Any) -> float:
@@ -165,7 +168,7 @@ class ReportGenerator:
     async def generate_reports(
         self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters
     ) -> List[ReportFile]:
-        print("\n\nGenerating Reports ..")
+        logger.info("Generating Reports...")
         lifecycle_reports = []
         request_metrics = self.metrics_collector.get_metrics()
         if report_config.request_lifecycle.summary:
@@ -176,7 +179,7 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
                 if report_file.path is not None:
-                    print(f"Successfully saved summary report of request lifecycle metrics to {report_file.path}")
+                    logger.info("Successfully saved summary report of request lifecycle metrics to %s", report_file.path)
 
         if report_config.request_lifecycle.per_stage:
             stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
@@ -190,7 +193,7 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
                 if report_file is not None:
-                    print(f"Successfully saved stage {stage_id} report of request lifecycle metrics to {report_file.path}")
+                    logger.info("Successfully saved stage %d report of request lifecycle metrics to %s", stage_id, report_file.path)
 
         if report_config.request_lifecycle.per_request:
             report_file = ReportFile(
@@ -208,7 +211,7 @@ class ReportGenerator:
             )
             lifecycle_reports.append(report_file)
             if report_file is not None:
-                print(f"Successfully saved per request report of request lifecycle metrics to {report_file.path}")
+                logger.info("Successfully saved per request report of request lifecycle metrics to %s", report_file.path)
 
         lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
         return lifecycle_reports
@@ -224,7 +227,7 @@ class ReportGenerator:
         prometheus_metrics_reports: List[ReportFile] = []
 
         if self.metrics_client is None or not isinstance(self.metrics_client, PrometheusMetricsClient):
-            print("Prometheus Metrics Client is not configured or not of type PrometheusMetricsClient")
+            logger.warning("Prometheus Metrics Client is not configured or not of type PrometheusMetricsClient")
             return prometheus_metrics_reports
 
         # Wait for Prometheus to collect metrics for the last stage
@@ -238,10 +241,10 @@ class ReportGenerator:
                     contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                 )
                 if report_file is not None:
-                    print(f"Successfully saved summary report of prometheus metrics to {report_file.path}")
+                    logger.info("Successfully saved summary report of prometheus metrics to %s", report_file.path)
                 prometheus_metrics_reports.append(report_file)
             else:
-                print("Report generation failed - no metrics collected by metrics client")
+                logger.warning("Report generation failed - no metrics collected by metrics client")
 
         if report_config.per_stage:
             for stage_id, _stage_info in runtime_parameters.stages.items():
@@ -252,9 +255,9 @@ class ReportGenerator:
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                     )
                     if report_file is not None:
-                        print(f"Successfully saved stage {stage_id} report of prometheus metrics to {report_file.path}")
+                        logger.info("Successfully saved stage %d report of prometheus metrics to %s", stage_id, report_file.path)
                     prometheus_metrics_reports.append(report_file)
                 else:
-                    print(f"No metrics collected for Stage {stage_id}")
+                    logger.warning("No metrics collected for Stage %d", stage_id)
 
         return prometheus_metrics_reports

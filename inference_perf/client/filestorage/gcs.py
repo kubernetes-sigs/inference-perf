@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
 from typing import List
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
@@ -19,11 +20,13 @@ from inference_perf.client.filestorage import StorageClient
 from inference_perf.config import GoogleCloudStorageConfig
 from inference_perf.utils import ReportFile
 
+logger = logging.getLogger(__name__)
+
 
 class GoogleCloudStorageClient(StorageClient):
     def __init__(self, config: GoogleCloudStorageConfig) -> None:
         super().__init__(config=config)
-        print("Created new GCS client")
+        logger.info("Created new GCS client")
         self.output_bucket = config.bucket_name
         self.client = storage.Client()
 
@@ -42,11 +45,11 @@ class GoogleCloudStorageClient(StorageClient):
             blob = self.bucket.blob(blob_path)
 
             if blob.exists():
-                print(f"Skipping upload: gs://{self.output_bucket}/{blob_path} already exists")
+                logger.info(f"Skipping upload: gs://{self.output_bucket}/{blob_path} already exists")
                 continue
 
             try:
                 blob.upload_from_string(json.dumps(report.get_contents()), content_type="application/json")
-                print(f"Uploaded gs://{self.output_bucket}/{blob_path}")
+                logger.info(f"Uploaded gs://{self.output_bucket}/{blob_path}")
             except GoogleCloudError as e:
-                print(f"Failed to upload {blob_path}: {e}")
+                logger.error(f"Failed to upload {blob_path}: {e}")
