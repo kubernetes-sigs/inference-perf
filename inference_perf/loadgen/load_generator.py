@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData, float]
 
+
 class Status(Enum):
     UNKNOWN = auto()
     STAGE_END = auto()
@@ -37,7 +38,7 @@ class Status(Enum):
 
 
 class Worker(mp.Process):
-    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int): # type: ignore[type-arg]
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int):  # type: ignore[type-arg]
         super().__init__()
         self.id = id
         self.client = client
@@ -59,7 +60,7 @@ class Worker(mp.Process):
                 await semaphore.acquire()
                 item = self.request_queue.get_nowait()
 
-                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None: # type: ignore[type-arg]
+                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:  # type: ignore[type-arg]
                     current_time = time.time()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
@@ -150,7 +151,6 @@ class LoadGenerator:
 
         for worker in self.workers:
             worker.status_queue.put(Status.WORKER_STOP)
-
 
     async def run(self, client: ModelServerClient) -> None:
         if self.num_workers > 0:

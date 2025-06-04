@@ -87,7 +87,7 @@ class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: List[LoadStage] = []
-    num_workers: int = max(1, cpu_count() // 2) # type: ignore
+    num_workers: int = max(1, cpu_count() // 2)  # type: ignore
     worker_max_concurrency: int = 10
     worker_max_tcp_connections: int = 2500
 
@@ -175,7 +175,6 @@ def read_config(config_file: str) -> Config:
     merged_cfg = deep_merge(default_cfg, cfg)
 
     logger.info(
-        "Benchmarking with the following config:\n\n%s\n",
-        yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)
+        "Benchmarking with the following config:\n\n%s\n", yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)
     )
     return Config(**merged_cfg)

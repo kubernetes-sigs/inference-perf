@@ -193,7 +193,9 @@ class ReportGenerator:
                 )
                 lifecycle_reports.append(report_file)
                 if report_file is not None:
-                    logger.info("Successfully saved stage %d report of request lifecycle metrics to %s", stage_id, report_file.path)
+                    logger.info(
+                        "Successfully saved stage %d report of request lifecycle metrics to %s", stage_id, report_file.path
+                    )
 
         if report_config.request_lifecycle.per_request:
             report_file = ReportFile(
@@ -255,7 +257,9 @@ class ReportGenerator:
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                     )
                     if report_file is not None:
-                        logger.info("Successfully saved stage %d report of prometheus metrics to %s", stage_id, report_file.path)
+                        logger.info(
+                            "Successfully saved stage %d report of prometheus metrics to %s", stage_id, report_file.path
+                        )
                     prometheus_metrics_reports.append(report_file)
                 else:
                     logger.warning("No metrics collected for Stage %d", stage_id)

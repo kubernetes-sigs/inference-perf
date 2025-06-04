@@ -147,7 +147,9 @@ class PrometheusMetricsClient(MetricsClient):
             return None
 
         if runtime_parameters.stages is None or stage_id not in runtime_parameters.stages:
-            logger.warning(f"Stage ID {stage_id} is not present in the runtime parameters, skipping metrics collection for this stage")
+            logger.warning(
+                f"Stage ID {stage_id} is not present in the runtime parameters, skipping metrics collection for this stage"
+            )
             return None
 
         # Get the query evaluation time and duration for the stage
