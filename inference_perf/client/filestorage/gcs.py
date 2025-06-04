@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class GoogleCloudStorageClient(StorageClient):
     def __init__(self, config: GoogleCloudStorageConfig) -> None:
         super().__init__(config=config)
-        logger.info("Created new GCS client")
+        logger.debug("Created new GCS client")
         self.output_bucket = config.bucket_name
         self.client = storage.Client()
 
