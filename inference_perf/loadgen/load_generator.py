@@ -34,7 +34,6 @@ class Status(Enum):
     UNKNOWN = auto()
     STAGE_END = auto()
     WORKER_STOP = auto()
-    WORKER_STOPPED = auto()
 
 
 class Worker(mp.Process):
@@ -66,10 +65,10 @@ class Worker(mp.Process):
                     if sleep_time > 0:
                         await sleep(sleep_time)
                     else:
-                        logger.warning("Worker %d missed scheduled request time", self.id)
+                        logger.debug("Worker %d missed scheduled request time", self.id)
                     await self.client.process_request(data, stage_id)
-                    semaphore.release()
                     queue.task_done()
+                    semaphore.release()
 
                 stage_id, data, request_time = item
                 task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
@@ -78,6 +77,7 @@ class Worker(mp.Process):
                 semaphore.release()
                 status = self.check_status()
                 if status is not None:
+                    logger.debug(f"[Worker {self.id}] received {status}, awaiting {len(tasks)} tasks")
                     await gather(*tasks)
                     tasks = []
                     self.status_queue.task_done()
@@ -136,11 +136,23 @@ class LoadGenerator:
                 request_queue.put((stage_id, request_data, request_time))
             await sleep(stage.duration)
 
+            # Join on request queue to ensure that all workers have completed
+            # their requests for the stage
+            while request_queue.qsize() > 0:
+                logger.debug(f"Loadgen awaiting empty request queue, current size: {request_queue.qsize()}")
+                await sleep(1)
+
+            logger.debug("Loadgen sending STAGE_END to workers")
             for worker in self.workers:
                 worker.status_queue.put(Status.STAGE_END)
 
-            # Join on request queue to ensure that all workers have completed
-            # their requests for the stage
+            for worker in self.workers:
+                while worker.status_queue.qsize() > 0:
+                    logger.debug(f"Loadgen waiting for worker {worker.id} to process STAGE_END")
+                    await sleep(1)
+                worker.status_queue.join()
+
+            logger.debug("Loadgen joining request queue")
             request_queue.join()
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                 stage_id=stage_id, start_time=start_time, end_time=time.time()
