@@ -143,8 +143,8 @@ class LoadGenerator:
 
             for worker in self.workers:
                 worker.status_queue.put(Status.STAGE_END)
-            
-            for i, worker in enumerate(self.workers):
+
+            for worker in self.workers:
                 while worker.status_queue.qsize() > 0:
                     await sleep(1)
                 worker.status_queue.join()
