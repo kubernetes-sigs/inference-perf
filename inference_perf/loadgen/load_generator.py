@@ -66,7 +66,7 @@ class Worker(mp.Process):
                     if sleep_time > 0:
                         await sleep(sleep_time)
                     else:
-                        logger.warning("Worker %d missed scheduled request time", self.id)
+                        logger.debug("Worker %d missed scheduled request time", self.id)
                     await self.client.process_request(data, stage_id)
                     semaphore.release()
                     queue.task_done()
