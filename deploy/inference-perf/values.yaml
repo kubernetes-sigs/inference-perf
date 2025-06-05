@@ -1,6 +1,6 @@
 # inference-perf/values.yaml
 job:
-  image: us-central1-docker.pkg.dev/gke-gkit-dev/ai-benchmark/inference-perf:latest
+  image: ""
   memory: "8G"
 
 configMap:
