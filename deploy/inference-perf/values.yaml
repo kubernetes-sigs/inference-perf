@@ -1,0 +1,15 @@
+# inference-perf/values.yaml
+job:
+  image: us-central1-docker.pkg.dev/gke-gkit-dev/ai-benchmark/inference-perf:latest
+  memory: "8G"
+
+configMap:
+  name: inference-perf-config
+  fileName: config.yaml
+  mountPath: /etc/config
+
+logLevel: INFO
+
+# hfToken optionally creates a secret with the specified token.
+# Can be set using helm install --set hftoken=<token>
+hfToken: ""
