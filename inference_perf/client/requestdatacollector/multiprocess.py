@@ -16,8 +16,11 @@ import multiprocessing as mp
 
 from asyncio import create_task, sleep
 from typing import List
+import logging
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
+
+logger = logging.getLogger(__name__)
 
 
 class MultiprocessRequestDataCollector(RequestDataCollector):
@@ -45,6 +48,7 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
     async def stop(self) -> None:
         # Ensure that the collection queue is empty before joining
         while self.queue.qsize() > 0:
+            logger.debug(f"Collector waiting for empty request data queue, current size {self.queue.qsize()}")
             await sleep(1)
         self.queue.join()
 
