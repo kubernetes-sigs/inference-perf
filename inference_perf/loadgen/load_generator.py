@@ -34,7 +34,7 @@ class Status(Enum):
     UNKNOWN = auto()
     STAGE_END = auto()
     WORKER_STOP = auto()
-    WORKER_STOPPED = auto()
+    ACK = auto()
 
 
 class Worker(mp.Process):
@@ -68,8 +68,8 @@ class Worker(mp.Process):
                     else:
                         logger.warning("Worker %d missed scheduled request time", self.id)
                     await self.client.process_request(data, stage_id)
-                    semaphore.release()
                     queue.task_done()
+                    semaphore.release()
 
                 stage_id, data, request_time = item
                 task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
@@ -136,11 +136,19 @@ class LoadGenerator:
                 request_queue.put((stage_id, request_data, request_time))
             await sleep(stage.duration)
 
-            for worker in self.workers:
-                worker.status_queue.put(Status.STAGE_END)
-
             # Join on request queue to ensure that all workers have completed
             # their requests for the stage
+            while request_queue.qsize() > 0:
+                await sleep(1)
+
+            for worker in self.workers:
+                worker.status_queue.put(Status.STAGE_END)
+            
+            for i, worker in enumerate(self.workers):
+                while worker.status_queue.qsize() > 0:
+                    await sleep(1)
+                worker.status_queue.join()
+
             request_queue.join()
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                 stage_id=stage_id, start_time=start_time, end_time=time.time()
