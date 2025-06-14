@@ -146,6 +146,7 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed]),
+            "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed]),
         },
     )
 

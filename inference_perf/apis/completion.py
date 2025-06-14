@@ -72,8 +72,10 @@ class CompletionAPIData(InferenceAPIData):
                     input_tokens=prompt_len,
                     output_tokens=output_len,
                 )
-            choices = data.get("choices", [])
             prompt_len = tokenizer.count_tokens(self.prompt)
+            choices = data.get("choices", [])
+            if len(choices) == 0:
+                return InferenceInfo(input_tokens=prompt_len)
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)

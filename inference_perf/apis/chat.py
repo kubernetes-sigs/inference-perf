@@ -59,10 +59,12 @@ class ChatCompletionAPIData(InferenceAPIData):
                     input_tokens=prompt_len,
                     output_tokens=output_len,
                 )
+            prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
             choices = data.get("choices", [])
+            if len(choices) == 0:
+                return InferenceInfo(input_tokens=prompt_len)
             output_text = choices[0].get("message", {}).get("content", "")
             output_len = tokenizer.count_tokens(output_text)
-            prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
