@@ -178,8 +178,6 @@ class ReportGenerator:
                     contents=summarize_requests(request_metrics).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
-                if report_file.path is not None:
-                    logger.info("Successfully saved summary report of request lifecycle metrics to %s", report_file.path)
 
         if report_config.request_lifecycle.per_stage:
             stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
@@ -192,10 +190,6 @@ class ReportGenerator:
                     contents=summarize_requests(metrics).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
-                if report_file is not None:
-                    logger.info(
-                        "Successfully saved stage %d report of request lifecycle metrics to %s", stage_id, report_file.path
-                    )
 
         if report_config.request_lifecycle.per_request:
             report_file = ReportFile(
@@ -206,16 +200,16 @@ class ReportGenerator:
                         "end_time": metric.end_time,
                         "request": metric.request_data,
                         "response": metric.response_data,
+                        "info": metric.info.model_dump() if metric.info else None,
                         "error": metric.error.model_dump() if metric.error else None,
                     }
                     for metric in request_metrics
                 ],
             )
             lifecycle_reports.append(report_file)
-            if report_file is not None:
-                logger.info("Successfully saved per request report of request lifecycle metrics to %s", report_file.path)
 
-        lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+        if report_config.prometheus:
+            lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
         return lifecycle_reports
 
     def generate_prometheus_metrics_report(
@@ -242,8 +236,6 @@ class ReportGenerator:
                     name="summary_prometheus_metrics",
                     contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                 )
-                if report_file is not None:
-                    logger.info("Successfully saved summary report of prometheus metrics to %s", report_file.path)
                 prometheus_metrics_reports.append(report_file)
             else:
                 logger.warning("Report generation failed - no metrics collected by metrics client")
@@ -256,10 +248,6 @@ class ReportGenerator:
                         name=f"stage_{stage_id}_prometheus_metrics",
                         contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
                     )
-                    if report_file is not None:
-                        logger.info(
-                            "Successfully saved stage %d report of prometheus metrics to %s", stage_id, report_file.path
-                        )
                     prometheus_metrics_reports.append(report_file)
                 else:
                     logger.warning("No metrics collected for Stage %d", stage_id)
