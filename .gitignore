@@ -174,4 +174,4 @@ cython_debug/
 .pypirc
 
 # Test Reports
-*.json
+reports-*/*.json

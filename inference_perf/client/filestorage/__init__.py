@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import StorageClient
+from .local import LocalStorageClient
 from .gcs import GoogleCloudStorageClient
 
 
-__all__ = ["StorageClient", "GoogleCloudStorageClient"]
+__all__ = ["StorageClient", "LocalStorageClient", "GoogleCloudStorageClient"]
