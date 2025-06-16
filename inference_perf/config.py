@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, model_validator
 from typing import Any, Optional, List
 from enum import Enum
 from os import cpu_count
@@ -123,7 +123,15 @@ class ReportConfig(BaseModel):
 
 class PrometheusClientConfig(BaseModel):
     scrape_interval: int = 15
-    url: HttpUrl = HttpUrl(url="http://localhost:9090")
+    url: Optional[HttpUrl] = None
+    filters: List[str] = []
+    google_managed: bool = False
+
+    @model_validator(mode="after")
+    def check_exclusive_fields(self) -> "PrometheusClientConfig":
+        if bool(self.url) == bool(self.google_managed):
+            raise ValueError("Exactly one of 'url' or 'google_managed' must be set.")
+        return self
 
 
 class MetricsClientConfig(BaseModel):

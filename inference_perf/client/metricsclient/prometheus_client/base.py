@@ -17,7 +17,7 @@ from typing import cast
 import requests
 from inference_perf.client.modelserver.base import ModelServerClient, ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
-from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
+from ..base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
@@ -97,6 +97,7 @@ class PrometheusMetricsClient(MetricsClient):
     def __init__(self, config: PrometheusClientConfig) -> None:
         if config:
             self.url = config.url
+            logger.info(f"Prometheus metrics client configured, querying metrics from '{self.url}/api/v1/query'")
             if not self.url:
                 raise Exception("prometheus url missing")
             self.scrape_interval = config.scrape_interval or 30

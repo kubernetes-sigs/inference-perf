@@ -32,6 +32,7 @@ class vLLMModelServerClient(ModelServerClient):
         model_name: str,
         tokenizer: CustomTokenizer,
         max_tcp_connections: int,
+        additional_filters: List[str],
         ignore_eos: bool = True,
     ) -> None:
         super().__init__(api_config)
@@ -42,64 +43,100 @@ class vLLMModelServerClient(ModelServerClient):
         self.tokenizer = tokenizer
         self.metrics_collector = metrics_collector
         self.max_tcp_connections = max_tcp_connections
+        self.additional_filters = additional_filters
 
+        filters = [f"model_name='{self.model_name}'", *self.additional_filters]
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
-            "avg_queue_length": ModelServerPrometheusMetric(
-                "vllm:num_requests_waiting", "mean", "gauge", "model_name='%s'" % self.model_name
-            ),
+            "avg_queue_length": ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
             "avg_time_to_first_token": ModelServerPrometheusMetric(
-                "vllm:time_to_first_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_to_first_token_seconds",
+                "mean",
+                "histogram",
+                filters,
             ),
             "median_time_to_first_token": ModelServerPrometheusMetric(
-                "vllm:time_to_first_token_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_to_first_token_seconds",
+                "median",
+                "histogram",
+                filters,
             ),
             "p90_time_to_first_token": ModelServerPrometheusMetric(
-                "vllm:time_to_first_token_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_to_first_token_seconds",
+                "p90",
+                "histogram",
+                filters,
             ),
             "p99_time_to_first_token": ModelServerPrometheusMetric(
-                "vllm:time_to_first_token_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_to_first_token_seconds",
+                "p99",
+                "histogram",
+                filters,
             ),
             "avg_time_per_output_token": ModelServerPrometheusMetric(
-                "vllm:time_per_output_token_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_per_output_token_seconds",
+                "mean",
+                "histogram",
+                filters,
             ),
             "median_time_per_output_token": ModelServerPrometheusMetric(
-                "vllm:time_per_output_token_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_per_output_token_seconds",
+                "median",
+                "histogram",
+                filters,
             ),
             "p90_time_per_output_token": ModelServerPrometheusMetric(
-                "vllm:time_per_output_token_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_per_output_token_seconds",
+                "p90",
+                "histogram",
+                filters,
             ),
             "p99_time_per_output_token": ModelServerPrometheusMetric(
-                "vllm:time_per_output_token_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+                "vllm:time_per_output_token_seconds",
+                "p99",
+                "histogram",
+                filters,
             ),
-            "avg_prompt_tokens": ModelServerPrometheusMetric(
-                "vllm:prompt_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
-            ),
-            "prompt_tokens_per_second": ModelServerPrometheusMetric(
-                "vllm:prompt_tokens_total", "rate", "counter", "model_name='%s'" % self.model_name
-            ),
-            "avg_output_tokens": ModelServerPrometheusMetric(
-                "vllm:generation_tokens_total", "mean", "counter", "model_name='%s'" % self.model_name
-            ),
+            "avg_prompt_tokens": ModelServerPrometheusMetric("vllm:prompt_tokens_total", "mean", "counter", filters),
+            "prompt_tokens_per_second": ModelServerPrometheusMetric("vllm:prompt_tokens_total", "rate", "counter", filters),
+            "avg_output_tokens": ModelServerPrometheusMetric("vllm:generation_tokens_total", "mean", "counter", filters),
             "output_tokens_per_second": ModelServerPrometheusMetric(
-                "vllm:generation_tokens_total", "rate", "counter", "model_name='%s'" % self.model_name
+                "vllm:generation_tokens_total", "rate", "counter", filters
             ),
             "total_requests": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds_count", "increase", "counter", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds_count",
+                "increase",
+                "counter",
+                filters,
             ),
             "requests_per_second": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds_count", "rate", "counter", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds_count",
+                "rate",
+                "counter",
+                filters,
             ),
             "avg_request_latency": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds", "mean", "histogram", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds",
+                "mean",
+                "histogram",
+                filters,
             ),
             "median_request_latency": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds", "median", "histogram", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds",
+                "median",
+                "histogram",
+                filters,
             ),
             "p90_request_latency": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds", "p90", "histogram", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds",
+                "p90",
+                "histogram",
+                filters,
             ),
             "p99_request_latency": ModelServerPrometheusMetric(
-                "vllm:e2e_request_latency_seconds", "p99", "histogram", "model_name='%s'" % self.model_name
+                "vllm:e2e_request_latency_seconds",
+                "p99",
+                "histogram",
+                filters,
             ),
         }
 
