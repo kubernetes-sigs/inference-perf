@@ -17,7 +17,7 @@ from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
-from typing import List
+from typing import List, Optional
 import aiohttp
 import json
 import time
@@ -33,6 +33,7 @@ class vLLMModelServerClient(ModelServerClient):
         tokenizer: CustomTokenizer,
         max_tcp_connections: int,
         ignore_eos: bool = True,
+        api_key: Optional[str] = None,
     ) -> None:
         super().__init__(api_config)
         self.model_name = model_name
@@ -42,6 +43,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.tokenizer = tokenizer
         self.metrics_collector = metrics_collector
         self.max_tcp_connections = max_tcp_connections
+        self.api_key = api_key
 
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
             "avg_queue_length": ModelServerPrometheusMetric(
@@ -111,6 +113,9 @@ class vLLMModelServerClient(ModelServerClient):
             streaming=self.api_config.streaming,
         )
         headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
             start = time.monotonic()
             try:
@@ -163,3 +168,4 @@ class vLLMModelServerClient(ModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return self.prometheus_metric_metadata
+        
