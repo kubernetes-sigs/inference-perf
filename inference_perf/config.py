@@ -136,6 +136,7 @@ class ModelServerClientConfig(BaseModel):
     model_name: str
     base_url: str
     ignore_eos: bool = True
+    api_key: Optional[str] = None
 
 
 class CustomTokenizerConfig(BaseModel):
