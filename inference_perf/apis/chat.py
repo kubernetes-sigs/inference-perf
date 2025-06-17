@@ -52,18 +52,11 @@ class ChatCompletionAPIData(InferenceAPIData):
             raise Exception("Decoding streamed responses from the Chat API is not currently supported")
         else:
             data = await response.json()
-            if data.get("usage") is not None:
-                prompt_len = data["usage"].get("prompt_tokens", 0)
-                output_len = data["usage"].get("completion_tokens", 0)
-                return InferenceInfo(
-                    input_tokens=prompt_len,
-                    output_tokens=output_len,
-                )
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(input_tokens=prompt_len)
-            output_text = choices[0].get("message", {}).get("content", "")
+            output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
