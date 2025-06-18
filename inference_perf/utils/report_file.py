@@ -12,30 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-import os
-from typing import Any, Optional
+from typing import Any
 
 
 class ReportFile:
     name: str
     contents: Any
-    path: Optional[str] = None
 
     def __init__(self, name: str, contents: Any):
-        self.name = f"{name}.json"
+        self.name = name
         self.contents = contents
-        self._store_locally()
-
-    def _store_locally(self) -> None:
-        filename = self.get_filename()
-        contents = self.get_contents()
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(json.dumps(contents, indent=2))
-            self.path = os.path.abspath(filename)
 
     def get_filename(self) -> str:
-        return self.name
+        return f"{self.name}.json"
 
     def get_contents(self) -> Any:
         return self.contents
