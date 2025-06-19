@@ -139,6 +139,7 @@ def main_cli() -> None:
                 tokenizer=tokenizer,
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
+                api_key=config.server.api_key,
             )
     else:
         raise Exception("model server client config missing")
