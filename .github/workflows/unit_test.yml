@@ -17,6 +17,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Do Linting and Type Checks
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@v4
+      - name: Install dependencies
         run: |
-          make test
+          pdm sync -d
+      - name: Run Unit Tests
+        run: |
+          pdm run test
