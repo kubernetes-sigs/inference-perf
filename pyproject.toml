@@ -29,6 +29,35 @@ dev = [
     "types-requests>=2.32.0.20250328",
 ]
 
+[dependency-groups]
+lint = [
+    "mypy>=1.14.1",
+    "ruff>=0.9.4",
+    "pre-commit>=4.1.0",
+]
+test = [
+    "pytest>=8.3.4",
+    "ipykernel>=6.29.5",
+]
+types = [
+    "types-PyYAML>=6.0.12.20241230",
+    "types-requests>=2.32.0.20250328",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.scripts]
+format = "ruff format"
+lint = "ruff check"
+test = "pytest"
+type-check = "mypy --strict ./inference_perf ./tests"
+validate = {composite = ["format", "lint", "type-check"]}
+
 [tool.ruff]
 # The GitHub editor is 127 chars wide
 line-length = 127
@@ -73,9 +102,6 @@ docstring-code-format = false
 # enabled.
 docstring-code-line-length = "dynamic"
 
-[tool.pdm]
-distribution = true
-
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
@@ -92,7 +118,3 @@ ignore_missing_imports = true
 
 [tool.mypy]
 disable_error_code = ["attr-defined"]
-
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"

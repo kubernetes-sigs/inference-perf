@@ -145,6 +145,7 @@ def main_cli() -> None:
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
+                api_key=config.server.api_key,
             )
     else:
         raise Exception("model server client config missing")
