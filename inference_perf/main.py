@@ -32,8 +32,8 @@ from inference_perf.datagen import (
     SharedPrefixDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
-from inference_perf.client.metricsclient import PerfRuntimeParameters
-from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient
+from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
+from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient
 from inference_perf.client.requestdatacollector import (
     RequestDataCollector,
     LocalRequestDataCollector,
@@ -105,6 +105,8 @@ def main_cli() -> None:
     # Define Storage Clients
     storage_clients: List[StorageClient] = []
     if config.storage:
+        if config.storage.local_storage:
+            storage_clients.append(LocalStorageClient(config=config.storage.local_storage))
         if config.storage.google_cloud_storage:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
 
@@ -143,6 +145,7 @@ def main_cli() -> None:
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
+                api_key=config.server.api_key,
             )
     else:
         raise Exception("model server client config missing")
@@ -180,8 +183,12 @@ def main_cli() -> None:
 
     # Define LoadGenerator
     if config.load:
-        if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus.per_stage:
-            config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
+        if (
+            isinstance(metrics_client, PrometheusMetricsClient)
+            and config.report.prometheus
+            and config.report.prometheus.per_stage
+        ):
+            config.load.intervablob_pathl = max(config.load.interval, metrics_client.scrape_interval)
         loadgen = LoadGenerator(datagen, config.load)
     else:
         raise Exception("load config missing")

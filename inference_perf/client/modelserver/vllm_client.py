@@ -17,7 +17,7 @@ from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
-from typing import List
+from typing import List, Optional
 import aiohttp
 import json
 import time
@@ -34,6 +34,7 @@ class vLLMModelServerClient(ModelServerClient):
         max_tcp_connections: int,
         additional_filters: List[str],
         ignore_eos: bool = True,
+        api_key: Optional[str] = None,
     ) -> None:
         super().__init__(api_config)
         self.model_name = model_name
@@ -44,6 +45,7 @@ class vLLMModelServerClient(ModelServerClient):
         self.metrics_collector = metrics_collector
         self.max_tcp_connections = max_tcp_connections
         self.additional_filters = additional_filters
+        self.api_key = api_key
 
         filters = [f"model_name='{self.model_name}'", *self.additional_filters]
         self.prometheus_metric_metadata: PrometheusMetricMetadata = {
@@ -148,19 +150,26 @@ class vLLMModelServerClient(ModelServerClient):
             streaming=self.api_config.streaming,
         )
         headers = {"Content-Type": "application/json"}
+
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        request_data = json.dumps(payload)
+
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
             start = time.monotonic()
             try:
-                async with session.post(self.uri + data.get_route(), headers=headers, data=json.dumps(payload)) as response:
+                async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
+                    response_info = await data.process_response(
+                        response=response, config=self.api_config, tokenizer=self.tokenizer
+                    )
+                    response_content = await response.text()
                     if response.status == 200:
-                        response_info = await data.process_response(
-                            response=response, config=self.api_config, tokenizer=self.tokenizer
-                        )
                         self.metrics_collector.record_metric(
                             RequestLifecycleMetric(
                                 stage_id=stage_id,
-                                request_data=json.dumps(payload),
-                                response_data=json.dumps(await response.text()),
+                                request_data=request_data,
+                                response_data=response_content,
                                 info=response_info,
                                 error=None,
                                 start_time=start,
@@ -168,14 +177,13 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
                     else:
-                        content = await response.text()
                         self.metrics_collector.record_metric(
                             RequestLifecycleMetric(
                                 stage_id=stage_id,
-                                request_data=json.dumps(payload),
-                                response_data=content,
-                                info=InferenceInfo(),
-                                error=ErrorResponseInfo(error_msg=content, error_type="Non 200 reponse"),
+                                request_data=request_data,
+                                response_data=response_content,
+                                info=response_info,
+                                error=ErrorResponseInfo(error_msg=response_content, error_type="Error response"),
                                 start_time=start,
                                 end_time=time.monotonic(),
                             )
@@ -184,8 +192,9 @@ class vLLMModelServerClient(ModelServerClient):
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
-                        request_data=json.dumps(payload),
-                        info=InferenceInfo(),
+                        request_data=request_data,
+                        response_data=response_content if "response_content" in locals() else "",
+                        info=response_info if "response_info" in locals() else InferenceInfo(),
                         error=ErrorResponseInfo(
                             error_msg=str(e),
                             error_type=type(e).__name__,
@@ -200,3 +209,4 @@ class vLLMModelServerClient(ModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return self.prometheus_metric_metadata
+        

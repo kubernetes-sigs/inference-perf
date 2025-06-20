@@ -102,6 +102,7 @@ class GoogleCloudStorageConfig(StorageConfigBase):
 
 
 class StorageConfig(BaseModel):
+    local_storage: StorageConfigBase = StorageConfigBase()
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
 
 
@@ -118,7 +119,7 @@ class PrometheusMetricsReportConfig(BaseModel):
 
 class ReportConfig(BaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
-    prometheus: PrometheusMetricsReportConfig = PrometheusMetricsReportConfig()
+    prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
 
 
 class PrometheusClientConfig(BaseModel):
@@ -144,6 +145,7 @@ class ModelServerClientConfig(BaseModel):
     model_name: str
     base_url: str
     ignore_eos: bool = True
+    api_key: Optional[str] = None
 
 
 class CustomTokenizerConfig(BaseModel):
