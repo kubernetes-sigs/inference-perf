@@ -230,7 +230,10 @@ class PrometheusMetricsClient(MetricsClient):
         """
         query_result = 0.0
         try:
-            response = requests.get(f"{self.url}/api/v1/query", params={"query": query, "time": eval_time})
+            logger.info(f"Making PromQL query: '{query}'")
+            response = requests.get(
+                f"{self.url}/api/v1/query", headers=self.get_headers(), params={"query": query, "time": eval_time}
+            )
             if response is None:
                 logger.error("Error executing query: %s" % (query))
                 return query_result
