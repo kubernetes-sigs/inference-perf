@@ -209,4 +209,3 @@ class vLLMModelServerClient(ModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return self.prometheus_metric_metadata
-        

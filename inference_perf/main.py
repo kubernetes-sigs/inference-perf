@@ -13,7 +13,7 @@
 # limitations under the License.
 from argparse import ArgumentParser
 from typing import List, Optional
-from inference_perf.client.metricsclient.base import MetricsClient
+from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
@@ -32,7 +32,6 @@ from inference_perf.datagen import (
     SharedPrefixDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient
 from inference_perf.client.requestdatacollector import (
     RequestDataCollector,
