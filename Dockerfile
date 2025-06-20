@@ -1,4 +1,4 @@
-FROM python:3.12.9-slim-bookworm as dev
+FROM python:3.12.9-slim-bookworm AS dev
 
 RUN apt-get update -y \
     && apt-get install -y python3-pip
