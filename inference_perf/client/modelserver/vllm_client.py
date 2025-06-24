@@ -105,7 +105,7 @@ class vLLMModelServerClient(ModelServerClient):
             ),
         }
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         payload = data.to_payload(
             model_name=self.model_name,
             max_tokens=self.max_completion_tokens,
@@ -120,7 +120,7 @@ class vLLMModelServerClient(ModelServerClient):
         request_data = json.dumps(payload)
 
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
-            start = time.monotonic()
+            start = time.perf_counter()
             try:
                 async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
                     response_info = await data.process_response(
@@ -136,7 +136,8 @@ class vLLMModelServerClient(ModelServerClient):
                                 info=response_info,
                                 error=None,
                                 start_time=start,
-                                end_time=time.monotonic(),
+                                end_time=time.perf_counter(),
+                                scheduled_time=scheduled_time,
                             )
                         )
                     else:
@@ -148,7 +149,8 @@ class vLLMModelServerClient(ModelServerClient):
                                 info=response_info,
                                 error=ErrorResponseInfo(error_msg=response_content, error_type="Error response"),
                                 start_time=start,
-                                end_time=time.monotonic(),
+                                end_time=time.perf_counter(),
+                                scheduled_time=scheduled_time,
                             )
                         )
             except Exception as e:
@@ -163,7 +165,8 @@ class vLLMModelServerClient(ModelServerClient):
                             error_type=type(e).__name__,
                         ),
                         start_time=start,
-                        end_time=time.monotonic(),
+                        end_time=time.perf_counter(),
+                        scheduled_time=scheduled_time,
                     )
                 )
 

@@ -33,6 +33,7 @@ class ErrorResponseInfo(BaseModel):
 
 class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
+    scheduled_time: float
     start_time: float
     end_time: float
     request_data: str

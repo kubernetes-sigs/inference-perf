@@ -69,7 +69,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         raise NotImplementedError
 
     @abstractmethod

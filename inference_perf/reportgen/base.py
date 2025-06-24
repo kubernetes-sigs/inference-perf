@@ -103,9 +103,15 @@ def summarize_requests(metrics: List[RequestLifecycleMetric]) -> ResponsesSummar
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
     streamable = [x for x in all_successful if x.info.output_token_times and len(x.info.output_token_times) > 1]
 
+    schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
+    send_duration = max([x.start_time for x in metrics]) - min([x.start_time for x in metrics])
+
     return ResponsesSummary(
         load_summary={
             "count": len(metrics),
+            "schedule_accuracy": summarize(schedule_deltas),
+            "send_duration": send_duration,
+            "achieved_qps": len(metrics) / send_duration
         },
         successes={
             "count": len(all_successful),
