@@ -65,7 +65,7 @@ class Worker(mp.Process):
                     if sleep_time > 0:
                         await sleep(sleep_time)
                     else:
-                        logger.debug(f"Worker {self.id} missed scheduled request time by {-1.0*sleep_time:0.2f}")
+                        logger.debug(f"Worker {self.id} missed scheduled request time by {-1.0 * sleep_time:0.2f}")
                     await self.client.process_request(data, stage_id, request_time)
                     queue.task_done()
                     semaphore.release()
@@ -92,6 +92,7 @@ class Worker(mp.Process):
 
 class StageRuntimeInfo(BaseModel):
     stage_id: int
+    rate: float
     end_time: float
     start_time: float
 
@@ -155,7 +156,7 @@ class LoadGenerator:
             logger.debug("Loadgen joining request queue")
             request_queue.join()
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
@@ -181,12 +182,12 @@ class LoadGenerator:
                     if time_index < end_time and now < end_time:
                         if time_index > now:
                             await sleep(time_index - time.perf_counter())
-                        tg.create_task(client.process_request(data, stage_id))
+                        tg.create_task(client.process_request(data, stage_id, time_index))
                         continue
                     else:
                         break
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:

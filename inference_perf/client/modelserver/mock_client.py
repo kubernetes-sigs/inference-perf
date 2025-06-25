@@ -44,6 +44,7 @@ class MockModelServerClient(ModelServerClient):
                 error=None,
                 start_time=start,
                 end_time=time.monotonic(),
+                scheduled_time=scheduled_time,
             )
         )
 
