@@ -30,7 +30,8 @@ from inference_perf.datagen import (
     SharedPrefixDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters, PrometheusMetricsClient
+from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
+from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
 from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient
 from inference_perf.client.requestdatacollector import (
     RequestDataCollector,
@@ -95,7 +96,10 @@ def main_cli() -> None:
     metrics_client: Optional[MetricsClient] = None
     if config.metrics:
         if config.metrics.type == MetricsClientType.PROMETHEUS and config.metrics.prometheus:
-            metrics_client = PrometheusMetricsClient(config=config.metrics.prometheus)
+            if config.metrics.prometheus.google_managed is not None:
+                metrics_client = GoogleManagedPrometheusMetricsClient(config.metrics.prometheus)
+            else:
+                metrics_client = PrometheusMetricsClient(config=config.metrics.prometheus)
 
     # Define Storage Clients
     storage_clients: List[StorageClient] = []
@@ -139,6 +143,7 @@ def main_cli() -> None:
                 tokenizer=tokenizer,
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
+                additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
             )
     else:

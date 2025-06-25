@@ -19,11 +19,11 @@ from inference_perf.apis import InferenceAPIData
 
 
 class ModelServerPrometheusMetric:
-    def __init__(self, name: str, op: str, type: str, filters: str) -> None:
+    def __init__(self, name: str, op: str, type: str, filters: List[str]) -> None:
         self.name = name
         self.op = op
         self.type = type
-        self.filters = filters
+        self.filters = ",".join(filters)
 
 
 # PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
