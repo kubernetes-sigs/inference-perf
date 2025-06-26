@@ -56,8 +56,9 @@ jobs:
 
       - name: Set image name and tags
         run: |
-          echo "IMAGE_NAME=quay.io/${{ secrets.QUAY_USERNAME }}/inference-perf" >> $GITHUB_ENV
+          # Set the image name directly in the build step to avoid masking issues
           echo "TAG_VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          echo "QUAY_USERNAME=inference-perf" >> $GITHUB_ENV
 
       - name: Show environment variables
         if: ${{ env.DEBUG_MODE == 'true' }}
@@ -65,8 +66,8 @@ jobs:
           echo "=== Environment Variables ==="
           echo "GITHUB_REF: $GITHUB_REF"
           echo "GITHUB_REF_NAME: $GITHUB_REF_NAME"
-          echo "IMAGE_NAME: $IMAGE_NAME"
           echo "TAG_VERSION: $TAG_VERSION"
+          echo "QUAY_USERNAME: $QUAY_USERNAME"
           echo "GITHUB_SHA: $GITHUB_SHA"
           echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
           echo "GITHUB_SERVER_URL: $GITHUB_SERVER_URL"
@@ -74,9 +75,10 @@ jobs:
 
       - name: Debug image configuration
         run: |
-          echo "Image name: ${{ env.IMAGE_NAME }}"
           echo "Tag version: ${{ env.TAG_VERSION }}"
-          echo "Full tags: ${{ env.IMAGE_NAME }}:${{ env.TAG_VERSION }}, ${{ env.IMAGE_NAME }}:latest"
+          echo "Quay username: ${{ env.QUAY_USERNAME }}"
+          echo "Full image name: quay.io/${{ env.QUAY_USERNAME }}/inference-perf"
+          echo "Full tags: quay.io/${{ env.QUAY_USERNAME }}/inference-perf:${{ env.TAG_VERSION }}, quay.io/${{ env.QUAY_USERNAME }}/inference-perf:latest"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -85,8 +87,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.TAG_VERSION }}
-            ${{ env.IMAGE_NAME }}:latest
+            quay.io/${{ env.QUAY_USERNAME }}/inference-perf:${{ env.TAG_VERSION }}
+            quay.io/${{ env.QUAY_USERNAME }}/inference-perf:latest
           labels: |
             org.opencontainers.image.title=inference-perf
             org.opencontainers.image.description=GenAI inference performance benchmarking tool
