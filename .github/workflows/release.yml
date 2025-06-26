@@ -17,6 +17,9 @@ jobs:
     - name: Set env variable for tag name
       run: echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
+    - name: Set image name
+      run: echo "IMAGE_NAME=quay.io/inference-perf/inference-perf" >> $GITHUB_ENV
+
     - name: Generate changelog
       id: github_release
       uses: mikepenz/release-changelog-builder-action@v3
@@ -35,6 +38,14 @@ jobs:
 
           ## What's Changed
           ${{ steps.github_release.outputs.changelog }}
+
+          ## Docker Image
+          
+          `${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}`
+
+          ## Contributors
+          
+          ${{ steps.github_release.outputs.contributors }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -56,27 +67,17 @@ jobs:
 
       - name: Set image name and tags
         run: |
-          echo "IMAGE_NAME=quay.io/${{ secrets.QUAY_USERNAME }}/inference-perf" >> $GITHUB_ENV
+          # Set the image name directly in the build step to avoid masking issues
           echo "TAG_VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
-
-      - name: Show environment variables
-        if: ${{ env.DEBUG_MODE == 'true' }}
-        run: |
-          echo "=== Environment Variables ==="
-          echo "GITHUB_REF: $GITHUB_REF"
-          echo "GITHUB_REF_NAME: $GITHUB_REF_NAME"
-          echo "IMAGE_NAME: $IMAGE_NAME"
-          echo "TAG_VERSION: $TAG_VERSION"
-          echo "GITHUB_SHA: $GITHUB_SHA"
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
-          echo "GITHUB_SERVER_URL: $GITHUB_SERVER_URL"
-          echo "============================="
+          echo "IMAGE_NAME=quay.io/inference-perf/inference-perf" >> $GITHUB_ENV
 
       - name: Debug image configuration
         run: |
-          echo "Image name: ${{ env.IMAGE_NAME }}"
+          echo "=== Docker Build Configuration ==="
           echo "Tag version: ${{ env.TAG_VERSION }}"
+          echo "Image name: ${{ env.IMAGE_NAME }}"
           echo "Full tags: ${{ env.IMAGE_NAME }}:${{ env.TAG_VERSION }}, ${{ env.IMAGE_NAME }}:latest"
+          echo "================================"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
