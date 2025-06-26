@@ -54,14 +54,29 @@ jobs:
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: quay.io/${{ secrets.QUAY_USERNAME }}/inference-perf
-          tags: |
-            type=raw,value=${{ github.ref_name }},enable=true
-            type=raw,value=latest,enable=true
+      - name: Set image name and tags
+        run: |
+          echo "IMAGE_NAME=quay.io/${{ secrets.QUAY_USERNAME }}/inference-perf" >> $GITHUB_ENV
+          echo "TAG_VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+
+      - name: Show environment variables
+        if: ${{ env.DEBUG_MODE == 'true' }}
+        run: |
+          echo "=== Environment Variables ==="
+          echo "GITHUB_REF: $GITHUB_REF"
+          echo "GITHUB_REF_NAME: $GITHUB_REF_NAME"
+          echo "IMAGE_NAME: $IMAGE_NAME"
+          echo "TAG_VERSION: $TAG_VERSION"
+          echo "GITHUB_SHA: $GITHUB_SHA"
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "GITHUB_SERVER_URL: $GITHUB_SERVER_URL"
+          echo "============================="
+
+      - name: Debug image configuration
+        run: |
+          echo "Image name: ${{ env.IMAGE_NAME }}"
+          echo "Tag version: ${{ env.TAG_VERSION }}"
+          echo "Full tags: ${{ env.IMAGE_NAME }}:${{ env.TAG_VERSION }}, ${{ env.IMAGE_NAME }}:latest"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -69,7 +84,16 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.TAG_VERSION }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.title=inference-perf
+            org.opencontainers.image.description=GenAI inference performance benchmarking tool
+            org.opencontainers.image.version=${{ env.TAG_VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
           cache-from: type=gha
           cache-to: type=gha,mode=max 
