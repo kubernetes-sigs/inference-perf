@@ -106,19 +106,19 @@ def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Option
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
     send_duration = max([x.start_time for x in metrics]) - min([x.start_time for x in metrics])
 
-    load_summary = {
+    load_summary: dict[Any, Any] = {
         "count": len(metrics),
         "schedule_accuracy": summarize(schedule_deltas),
     }
 
     if stage_rate is not None:
-        load_summary.update(
-            {
-                "send_duration": send_duration,
-                "requested_rate": stage_rate,
-                "achieved_rate": len(metrics) / send_duration,
-            }
-        )
+        load_summary = {
+            "count": len(metrics),
+            "schedule_accuracy": summarize(schedule_deltas),
+            "send_duration": send_duration,
+            "requested_rate": stage_rate,
+            "achieved_rate": len(metrics) / send_duration,
+        }
 
     return ResponsesSummary(
         load_summary=load_summary,
