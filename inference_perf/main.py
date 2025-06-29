@@ -96,7 +96,7 @@ def main_cli() -> None:
     metrics_client: Optional[MetricsClient] = None
     if config.metrics:
         if config.metrics.type == MetricsClientType.PROMETHEUS and config.metrics.prometheus:
-            if config.metrics.prometheus.google_managed is not None:
+            if config.metrics.prometheus.google_managed:
                 metrics_client = GoogleManagedPrometheusMetricsClient(config.metrics.prometheus)
             else:
                 metrics_client = PrometheusMetricsClient(config=config.metrics.prometheus)
@@ -187,7 +187,7 @@ def main_cli() -> None:
             and config.report.prometheus
             and config.report.prometheus.per_stage
         ):
-            config.load.intervablob_pathl = max(config.load.interval, metrics_client.scrape_interval)
+            config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
         loadgen = LoadGenerator(datagen, config.load)
     else:
         raise Exception("load config missing")

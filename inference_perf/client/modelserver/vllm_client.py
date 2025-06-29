@@ -48,99 +48,97 @@ class vLLMModelServerClient(ModelServerClient):
         self.api_key = api_key
 
         filters = [f"model_name='{self.model_name}'", *self.additional_filters]
-        self.prometheus_metric_metadata: PrometheusMetricMetadata = {
-            "avg_queue_length": ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
-            "avg_time_to_first_token": ModelServerPrometheusMetric(
+        self.prometheus_metric_metadata = PrometheusMetricMetadata(
+            avg_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
+            avg_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "mean",
                 "histogram",
                 filters,
             ),
-            "median_time_to_first_token": ModelServerPrometheusMetric(
+            median_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "median",
                 "histogram",
                 filters,
             ),
-            "p90_time_to_first_token": ModelServerPrometheusMetric(
+            p90_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "p90",
                 "histogram",
                 filters,
             ),
-            "p99_time_to_first_token": ModelServerPrometheusMetric(
+            p99_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "p99",
                 "histogram",
                 filters,
             ),
-            "avg_time_per_output_token": ModelServerPrometheusMetric(
+            avg_time_per_output_token=ModelServerPrometheusMetric(
                 "vllm:time_per_output_token_seconds",
                 "mean",
                 "histogram",
                 filters,
             ),
-            "median_time_per_output_token": ModelServerPrometheusMetric(
+            median_time_per_output_token=ModelServerPrometheusMetric(
                 "vllm:time_per_output_token_seconds",
                 "median",
                 "histogram",
                 filters,
             ),
-            "p90_time_per_output_token": ModelServerPrometheusMetric(
+            p90_time_per_output_token=ModelServerPrometheusMetric(
                 "vllm:time_per_output_token_seconds",
                 "p90",
                 "histogram",
                 filters,
             ),
-            "p99_time_per_output_token": ModelServerPrometheusMetric(
+            p99_time_per_output_token=ModelServerPrometheusMetric(
                 "vllm:time_per_output_token_seconds",
                 "p99",
                 "histogram",
                 filters,
             ),
-            "avg_prompt_tokens": ModelServerPrometheusMetric("vllm:prompt_tokens_total", "mean", "counter", filters),
-            "prompt_tokens_per_second": ModelServerPrometheusMetric("vllm:prompt_tokens_total", "rate", "counter", filters),
-            "avg_output_tokens": ModelServerPrometheusMetric("vllm:generation_tokens_total", "mean", "counter", filters),
-            "output_tokens_per_second": ModelServerPrometheusMetric(
-                "vllm:generation_tokens_total", "rate", "counter", filters
-            ),
-            "total_requests": ModelServerPrometheusMetric(
+            avg_prompt_tokens=ModelServerPrometheusMetric("vllm:prompt_tokens_total", "mean", "counter", filters),
+            prompt_tokens_per_second=ModelServerPrometheusMetric("vllm:prompt_tokens_total", "rate", "counter", filters),
+            avg_output_tokens=ModelServerPrometheusMetric("vllm:generation_tokens_total", "mean", "counter", filters),
+            output_tokens_per_second=ModelServerPrometheusMetric("vllm:generation_tokens_total", "rate", "counter", filters),
+            total_requests=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds_count",
                 "increase",
                 "counter",
                 filters,
             ),
-            "requests_per_second": ModelServerPrometheusMetric(
+            requests_per_second=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds_count",
                 "rate",
                 "counter",
                 filters,
             ),
-            "avg_request_latency": ModelServerPrometheusMetric(
+            avg_request_latency=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds",
                 "mean",
                 "histogram",
                 filters,
             ),
-            "median_request_latency": ModelServerPrometheusMetric(
+            median_request_latency=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds",
                 "median",
                 "histogram",
                 filters,
             ),
-            "p90_request_latency": ModelServerPrometheusMetric(
+            p90_request_latency=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds",
                 "p90",
                 "histogram",
                 filters,
             ),
-            "p99_request_latency": ModelServerPrometheusMetric(
+            p99_request_latency=ModelServerPrometheusMetric(
                 "vllm:e2e_request_latency_seconds",
                 "p99",
                 "histogram",
                 filters,
             ),
-        }
+        )
 
     async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
         payload = data.to_payload(
