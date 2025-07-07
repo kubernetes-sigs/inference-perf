@@ -79,7 +79,7 @@ class MetricsClientType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: int
+    rate: float
     duration: int
 
 

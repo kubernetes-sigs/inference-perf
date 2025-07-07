@@ -29,7 +29,7 @@ class MockModelServerClient(ModelServerClient):
         super().__init__(api_config)
         self.metrics_collector = metrics_collector
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         start = time.monotonic()
         logger.debug("Processing mock request for stage %d", stage_id)
         await asyncio.sleep(3)
@@ -44,6 +44,7 @@ class MockModelServerClient(ModelServerClient):
                 error=None,
                 start_time=start,
                 end_time=time.monotonic(),
+                scheduled_time=scheduled_time,
             )
         )
 
