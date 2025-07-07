@@ -66,6 +66,8 @@ Refer to the [guide](./deploy/README.md) in `/deploy`.
 
 You can configure inference-perf to run with different data generation and load generation configurations today. Please see `config.yml` and examples in `/examples`.
 
+Refer to the [CONFIG.md](./CONFIG.md) for documentation on all supported configuration options.
+
 ### Datasets
 
 Supported datasets include the following:
