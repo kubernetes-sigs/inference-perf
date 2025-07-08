@@ -43,7 +43,6 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
     """Generates and saves a plot with multiple subplots."""
     import matplotlib.pyplot as plt
 
-
     if not charts_to_generate:
         logger.warning(f"No data available to generate chart: {output_path.name}")
         return
@@ -86,7 +85,6 @@ def analyze_reports(report_dir: str) -> None:
             "You can install it via 'pip install .[analysis]'"
         )
         return
-
 
     logger.info(f"Analyzing reports in {report_dir}")
 

@@ -116,8 +116,6 @@ include = ["inference_perf*", "deploy*"]
 [[tool.mypy.overrides]]
 module = [
     "datasets.*",
-    "pytest.*",
-    "transformers.*",
     "matplotlib.*",
 ]
 ignore_missing_imports = true
