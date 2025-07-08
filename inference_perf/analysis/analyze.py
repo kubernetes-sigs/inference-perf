@@ -14,6 +14,7 @@
 
 import json
 import logging
+import operator
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -25,22 +26,24 @@ logger = logging.getLogger(__name__)
 def _extract_latency_metric(latency_data: Dict[str, Any], metric_name: str, convert_to_ms: bool = False) -> float | None:
     """Helper to extract a metric's mean value from latency data."""
     metric_data = latency_data.get(metric_name)
-    if metric_data and "mean" in metric_data and metric_data["mean"] is not None:
-        value = metric_data["mean"]
-        return value * 1000 if convert_to_ms else value
+    if isinstance(metric_data, dict):
+        mean_val = metric_data.get("mean")
+        if isinstance(mean_val, (int, float)):
+            return mean_val * 1000 if convert_to_ms else mean_val
     return None
 
 
 def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str) -> float | None:
     """Helper to extract a throughput metric's value."""
     metric_value = throughput_data.get(metric_name)
-    if metric_value is not None:
+    if isinstance(metric_value, (int, float)):
         return float(metric_value)
     return None
 
 
-def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path):
+def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path) -> None:
     """Generates and saves a plot with multiple subplots."""
+
     if not charts_to_generate:
         logger.warning(f"No data available to generate chart: {output_path.name}")
         return
@@ -61,19 +64,20 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
         ax.set_ylabel(chart_info["ylabel"])
         ax.grid(True)
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    fig.tight_layout(rect=(0, 0.03, 1, 0.95))
     plt.savefig(output_path)
     logger.info(f"Chart saved to {output_path}")
     plt.close(fig)
 
 
-def analyze_reports(report_dir: str):
+def analyze_reports(report_dir: str) -> None:
     """
     Analyzes performance reports to generate charts.
 
     Args:
         report_dir: The directory containing the report files.
     """
+
     logger.info(f"Analyzing reports in {report_dir}")
 
     # Find stage lifecycle metrics files
@@ -168,7 +172,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Time to First Token vs. QPS",
                 "ylabel": "Mean TTFT (ms)",
-                "data": sorted(qps_vs_ttft, key=lambda x: x[0]),
+                "data": sorted(qps_vs_ttft, key=operator.itemgetter(0)),
             }
         )
     if qps_vs_ntpot:
@@ -176,7 +180,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Norm. Time per Output Token vs. QPS",
                 "ylabel": "Mean Norm. Time (ms/token)",
-                "data": sorted(qps_vs_ntpot, key=lambda x: x[0]),
+                "data": sorted(qps_vs_ntpot, key=operator.itemgetter(0)),
             }
         )
     if qps_vs_itl:
@@ -184,7 +188,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Inter-Token Latency vs. QPS",
                 "ylabel": "Mean ITL (ms)",
-                "data": sorted(qps_vs_itl, key=lambda x: x[0]),
+                "data": sorted(qps_vs_itl, key=operator.itemgetter(0)),
             }
         )
 
@@ -201,7 +205,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Input Tokens/sec vs. QPS",
                 "ylabel": "Tokens/sec",
-                "data": sorted(qps_vs_itps, key=lambda x: x[0]),
+                "data": sorted(qps_vs_itps, key=operator.itemgetter(0)),
             }
         )
     if qps_vs_otps:
@@ -209,7 +213,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Output Tokens/sec vs. QPS",
                 "ylabel": "Tokens/sec",
-                "data": sorted(qps_vs_otps, key=lambda x: x[0]),
+                "data": sorted(qps_vs_otps, key=operator.itemgetter(0)),
             }
         )
     if qps_vs_ttps:
@@ -217,7 +221,7 @@ def analyze_reports(report_dir: str):
             {
                 "title": "Total Tokens/sec vs. QPS",
                 "ylabel": "Tokens/sec",
-                "data": sorted(qps_vs_ttps, key=lambda x: x[0]),
+                "data": sorted(qps_vs_ttps, key=operator.itemgetter(0)),
             }
         )
 
@@ -235,7 +239,7 @@ def analyze_reports(report_dir: str):
                 "title": "Throughput vs. Norm. Time per Output Token",
                 "xlabel": "Mean Norm. Time (ms/token)",
                 "ylabel": "Output Tokens/sec",
-                "data": sorted(ntpot_vs_otps, key=lambda x: x[0]),
+                "data": sorted(ntpot_vs_otps, key=operator.itemgetter(0)),
             }
         )
     if ttft_vs_otps:
@@ -244,7 +248,7 @@ def analyze_reports(report_dir: str):
                 "title": "Throughput vs. Time to First Token",
                 "xlabel": "Mean TTFT (ms)",
                 "ylabel": "Output Tokens/sec",
-                "data": sorted(ttft_vs_otps, key=lambda x: x[0]),
+                "data": sorted(ttft_vs_otps, key=operator.itemgetter(0)),
             }
         )
     if itl_vs_otps:
@@ -253,7 +257,7 @@ def analyze_reports(report_dir: str):
                 "title": "Throughput vs. Inter-Token Latency",
                 "xlabel": "Mean ITL (ms)",
                 "ylabel": "Output Tokens/sec",
-                "data": sorted(itl_vs_otps, key=lambda x: x[0]),
+                "data": sorted(itl_vs_otps, key=operator.itemgetter(0)),
             }
         )
 
