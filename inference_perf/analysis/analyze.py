@@ -18,8 +18,6 @@ import operator
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import matplotlib.pyplot as plt
-
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +41,8 @@ def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str
 
 def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path) -> None:
     """Generates and saves a plot with multiple subplots."""
+    import matplotlib.pyplot as plt
+
 
     if not charts_to_generate:
         logger.warning(f"No data available to generate chart: {output_path.name}")
@@ -77,6 +77,16 @@ def analyze_reports(report_dir: str) -> None:
     Args:
         report_dir: The directory containing the report files.
     """
+    try:
+        # Check for matplotlib and provide a helpful error message if it's not installed.
+        import matplotlib  # noqa: F401
+    except ImportError:
+        logger.error(
+            "matplotlib is not installed. Please install it to use the --analyze feature.\n"
+            "You can install it via 'pip install .[analysis]'"
+        )
+        return
+
 
     logger.info(f"Analyzing reports in {report_dir}")
 
