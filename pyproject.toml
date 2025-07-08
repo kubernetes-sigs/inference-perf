@@ -115,7 +115,7 @@ where = ["."]
 include = ["inference_perf*", "deploy*"]
 
 [[tool.mypy.overrides]]
-module = ["datasets.*", "analysis.*"]
+module = ["datasets.*", "analysis"]
 ignore_missing_imports = true
 
 [tool.mypy]
