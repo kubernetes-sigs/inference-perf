@@ -11,7 +11,9 @@ dependencies = [
     "transformers>=4.50.2",
     "google-cloud-storage>=3.1.0",
     "pyyaml>=6.0.2",
-    "matplotlib>=3.9.0",
+    "requests>=2.32.3",
+    "types-PyYAML>=6.0.12.20241230",
+    "types-requests>=2.32.0.20250328",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -21,14 +23,15 @@ license = {text = "Apache-2.0"}
 inference-perf = "inference_perf:main_cli"
 
 [project.optional-dependencies]
+analysis = [
+    "matplotlib>=3.9.0",
+]
 dev = [
     "mypy>=1.14.1",
     "ruff>=0.9.4",
     "pre-commit>=4.1.0",
     "pytest>=8.3.4",
-    "types-PyYAML>=6.0.12.20241230",
     "ipykernel>=6.29.5",
-    "types-requests>=2.32.0.20250328",
 ]
 
 [dependency-groups]
@@ -40,10 +43,6 @@ lint = [
 test = [
     "pytest>=8.3.4",
     "ipykernel>=6.29.5",
-]
-types = [
-    "types-PyYAML>=6.0.12.20241230",
-    "types-requests>=2.32.0.20250328",
 ]
 
 [build-system]
@@ -115,7 +114,12 @@ where = ["."]
 include = ["inference_perf*", "deploy*"]
 
 [[tool.mypy.overrides]]
-module = ["datasets.*", "analysis"]
+module = [
+    "datasets.*",
+    "pytest.*",
+    "transformers.*",
+    "matplotlib.*",
+]
 ignore_missing_imports = true
 
 [tool.mypy]
