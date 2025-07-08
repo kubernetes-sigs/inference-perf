@@ -41,6 +41,10 @@ test = [
     "pytest>=8.3.4",
     "ipykernel>=6.29.5",
 ]
+types = [
+    "types-PyYAML>=6.0.12.20241230",
+    "types-requests>=2.32.0.20250328",
+]
 
 [build-system]
 requires = ["setuptools>=61"]
