@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 import time
-from typing import cast
+from typing import cast, Any
 import requests
 from inference_perf.client.modelserver.base import ModelServerClient, ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
@@ -96,10 +96,10 @@ class PrometheusQueryBuilder:
 class PrometheusMetricsClient(MetricsClient):
     def __init__(self, config: PrometheusClientConfig) -> None:
         if config:
-            self.url = config.url
-            logger.info(f"Prometheus metrics client configured, querying metrics from '{self.url}/api/v1/query'")
-            if not self.url:
+            if not config.url:
                 raise Exception("prometheus url missing")
+            self.query_url = config.url.unicode_string() + "api/v1/query"
+            logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
         else:
             raise Exception("prometheus config missing")
@@ -230,10 +230,8 @@ class PrometheusMetricsClient(MetricsClient):
         """
         query_result = 0.0
         try:
-            logger.info(f"Making PromQL query: '{query}'")
-            response = requests.get(
-                f"{self.url}/api/v1/query", headers=self.get_headers(), params={"query": query, "time": eval_time}
-            )
+            logger.debug(f"Making PromQL query: '{query}'")
+            response = requests.get(self.query_url, headers=self.get_headers(), params={"query": query, "time": eval_time})
             if response is None:
                 logger.error("Error executing query: %s" % (query))
                 return query_result
@@ -281,3 +279,6 @@ class PrometheusMetricsClient(MetricsClient):
                     logger.error("Error converting value to float: %s" % (result[0]["value"][1]))
                     return query_result
         return query_result
+
+    def get_headers(self) -> dict[str, Any]:
+        return {}
