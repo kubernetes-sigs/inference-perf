@@ -22,13 +22,49 @@ import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 
-def _extract_metric(latency_data: Dict[str, Any], metric_name: str, convert_to_ms: bool = False) -> float | None:
+def _extract_latency_metric(latency_data: Dict[str, Any], metric_name: str, convert_to_ms: bool = False) -> float | None:
     """Helper to extract a metric's mean value from latency data."""
     metric_data = latency_data.get(metric_name)
     if metric_data and "mean" in metric_data and metric_data["mean"] is not None:
         value = metric_data["mean"]
         return value * 1000 if convert_to_ms else value
     return None
+
+
+def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str) -> float | None:
+    """Helper to extract a throughput metric's value."""
+    metric_value = throughput_data.get(metric_name)
+    if metric_value is not None:
+        return float(metric_value)
+    return None
+
+
+def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path):
+    """Generates and saves a plot with multiple subplots."""
+    if not charts_to_generate:
+        logger.warning(f"No data available to generate chart: {output_path.name}")
+        return
+
+    num_charts = len(charts_to_generate)
+    fig, axes = plt.subplots(1, num_charts, figsize=(7 * num_charts, 6), squeeze=False)
+    fig.suptitle(suptitle, fontsize=16)
+
+    for i, chart_info in enumerate(charts_to_generate):
+        ax = axes[0, i]
+        data = chart_info["data"]
+        qps_values = [x[0] for x in data]
+        y_values = [x[1] for x in data]
+
+        ax.plot(qps_values, y_values, marker="o", linestyle="-")
+        ax.set_title(chart_info["title"])
+        ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"))
+        ax.set_ylabel(chart_info["ylabel"])
+        ax.grid(True)
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(output_path)
+    logger.info(f"Chart saved to {output_path}")
+    plt.close(fig)
 
 
 def analyze_reports(report_dir: str):
@@ -48,9 +84,18 @@ def analyze_reports(report_dir: str):
         logger.error(f"No stage lifecycle metrics files found in {report_dir}")
         return
 
+    # Latency data
     qps_vs_ttft: List[Tuple[float, float]] = []
     qps_vs_ntpot: List[Tuple[float, float]] = []
     qps_vs_itl: List[Tuple[float, float]] = []
+    # Throughput data
+    qps_vs_itps: List[Tuple[float, float]] = []
+    qps_vs_otps: List[Tuple[float, float]] = []
+    qps_vs_ttps: List[Tuple[float, float]] = []
+    # Throughput vs Latency data
+    ttft_vs_otps: List[Tuple[float, float]] = []
+    ntpot_vs_otps: List[Tuple[float, float]] = []
+    itl_vs_otps: List[Tuple[float, float]] = []
 
     for stage_file in stage_files:
         try:
@@ -63,23 +108,51 @@ def analyze_reports(report_dir: str):
                 logger.warning(f"Could not find requested_rate in {stage_file.name}. Skipping.")
                 continue
 
-            latency_data = report_data.get("successes", {}).get("latency", {})
-            if not latency_data:
-                logger.warning(f"No latency data in successes for {stage_file.name}. Skipping.")
+            success_data = report_data.get("successes", {})
+            if not success_data:
+                logger.warning(f"No success data in {stage_file.name}. Skipping.")
                 continue
 
-            # Extract metrics if they exist
-            ttft = _extract_metric(latency_data, "time_to_first_token", convert_to_ms=True)
-            if ttft is not None:
-                qps_vs_ttft.append((qps, ttft))
+            # Extract latency metrics if they exist
+            ttft, ntpot, itl = None, None, None
+            latency_data = success_data.get("latency", {})
+            if latency_data:
+                ttft = _extract_latency_metric(latency_data, "time_to_first_token", convert_to_ms=True)
+                if ttft is not None:
+                    qps_vs_ttft.append((qps, ttft))
 
-            ntpot = _extract_metric(latency_data, "normalized_time_per_output_token", convert_to_ms=True)
-            if ntpot is not None:
-                qps_vs_ntpot.append((qps, ntpot))
+                ntpot = _extract_latency_metric(latency_data, "normalized_time_per_output_token", convert_to_ms=True)
+                if ntpot is not None:
+                    qps_vs_ntpot.append((qps, ntpot))
 
-            itl = _extract_metric(latency_data, "inter_token_latency", convert_to_ms=True)
-            if itl is not None:
-                qps_vs_itl.append((qps, itl))
+                itl = _extract_latency_metric(latency_data, "inter_token_latency", convert_to_ms=True)
+                if itl is not None:
+                    qps_vs_itl.append((qps, itl))
+
+            # Extract throughput metrics if they exist
+            otps = None
+            throughput_data = success_data.get("throughput", {})
+            if throughput_data:
+                itps = _extract_throughput_metric(throughput_data, "input_tokens_per_sec")
+                if itps is not None:
+                    qps_vs_itps.append((qps, itps))
+
+                otps = _extract_throughput_metric(throughput_data, "output_tokens_per_sec")
+                if otps is not None:
+                    qps_vs_otps.append((qps, otps))
+
+                ttps = _extract_throughput_metric(throughput_data, "total_tokens_per_sec")
+                if ttps is not None:
+                    qps_vs_ttps.append((qps, ttps))
+
+            # Populate latency vs throughput data
+            if otps is not None:
+                if ttft is not None:
+                    ttft_vs_otps.append((ttft, otps))
+                if ntpot is not None:
+                    ntpot_vs_otps.append((ntpot, otps))
+                if itl is not None:
+                    itl_vs_otps.append((itl, otps))
 
         except json.JSONDecodeError:
             logger.error(f"Error decoding JSON from {stage_file.name}")
@@ -88,9 +161,10 @@ def analyze_reports(report_dir: str):
             logger.error(f"An unexpected error occurred while processing {stage_file.name}: {e}")
             continue
 
-    charts_to_generate = []
+    # --- Generate Latency Plot ---
+    latency_charts_to_generate = []
     if qps_vs_ttft:
-        charts_to_generate.append(
+        latency_charts_to_generate.append(
             {
                 "title": "Time to First Token vs. QPS",
                 "ylabel": "Mean TTFT (ms)",
@@ -98,15 +172,15 @@ def analyze_reports(report_dir: str):
             }
         )
     if qps_vs_ntpot:
-        charts_to_generate.append(
+        latency_charts_to_generate.append(
             {
                 "title": "Norm. Time per Output Token vs. QPS",
-                "ylabel": "Mean Norm. Time (ms/output token)",
+                "ylabel": "Mean Norm. Time (ms/token)",
                 "data": sorted(qps_vs_ntpot, key=lambda x: x[0]),
             }
         )
     if qps_vs_itl:
-        charts_to_generate.append(
+        latency_charts_to_generate.append(
             {
                 "title": "Inter-Token Latency vs. QPS",
                 "ylabel": "Mean ITL (ms)",
@@ -114,29 +188,77 @@ def analyze_reports(report_dir: str):
             }
         )
 
-    if not charts_to_generate:
-        logger.error("No data points collected to generate any charts.")
-        return
+    _generate_plot(
+        latency_charts_to_generate,
+        "Latency vs Request Rate",
+        report_path / "latency_vs_qps.png",
+    )
 
-    # Generate plots
-    num_charts = len(charts_to_generate)
-    fig, axes = plt.subplots(1, num_charts, figsize=(7 * num_charts, 6), squeeze=False)
-    fig.suptitle("Latency vs Request Rate", fontsize=16)
+    # --- Generate Throughput Plot ---
+    throughput_charts_to_generate = []
+    if qps_vs_itps:
+        throughput_charts_to_generate.append(
+            {
+                "title": "Input Tokens/sec vs. QPS",
+                "ylabel": "Tokens/sec",
+                "data": sorted(qps_vs_itps, key=lambda x: x[0]),
+            }
+        )
+    if qps_vs_otps:
+        throughput_charts_to_generate.append(
+            {
+                "title": "Output Tokens/sec vs. QPS",
+                "ylabel": "Tokens/sec",
+                "data": sorted(qps_vs_otps, key=lambda x: x[0]),
+            }
+        )
+    if qps_vs_ttps:
+        throughput_charts_to_generate.append(
+            {
+                "title": "Total Tokens/sec vs. QPS",
+                "ylabel": "Tokens/sec",
+                "data": sorted(qps_vs_ttps, key=lambda x: x[0]),
+            }
+        )
 
-    for i, chart_info in enumerate(charts_to_generate):
-        ax = axes[0, i]
-        data = chart_info["data"]
-        qps_values = [x[0] for x in data]
-        y_values = [x[1] for x in data]
+    _generate_plot(
+        throughput_charts_to_generate,
+        "Throughput vs Request Rate",
+        report_path / "throughput_vs_qps.png",
+    )
 
-        ax.plot(qps_values, y_values, marker="o", linestyle="-")
-        ax.set_title(chart_info["title"])
-        ax.set_xlabel("QPS (requested rate)")
-        ax.set_ylabel(chart_info["ylabel"])
-        ax.grid(True)
+    # --- Generate Throughput vs Latency Curve Plot ---
+    throughput_latency_charts_to_generate = []
+    if ntpot_vs_otps:
+        throughput_latency_charts_to_generate.append(
+            {
+                "title": "Throughput vs. Norm. Time per Output Token",
+                "xlabel": "Mean Norm. Time (ms/token)",
+                "ylabel": "Output Tokens/sec",
+                "data": sorted(ntpot_vs_otps, key=lambda x: x[0]),
+            }
+        )
+    if ttft_vs_otps:
+        throughput_latency_charts_to_generate.append(
+            {
+                "title": "Throughput vs. Time to First Token",
+                "xlabel": "Mean TTFT (ms)",
+                "ylabel": "Output Tokens/sec",
+                "data": sorted(ttft_vs_otps, key=lambda x: x[0]),
+            }
+        )
+    if itl_vs_otps:
+        throughput_latency_charts_to_generate.append(
+            {
+                "title": "Throughput vs. Inter-Token Latency",
+                "xlabel": "Mean ITL (ms)",
+                "ylabel": "Output Tokens/sec",
+                "data": sorted(itl_vs_otps, key=lambda x: x[0]),
+            }
+        )
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    chart_path = report_path / "latency_vs_qps.png"
-    plt.savefig(chart_path)
-    logger.info(f"Chart saved to {chart_path}")
+    _generate_plot(
+        throughput_latency_charts_to_generate,
+        "Latency vs Throughput",
+        report_path / "throughput_vs_latency.png",
+    )
