@@ -171,6 +171,28 @@ Model server metrics reports from Prometheus collected during the run is also pr
 - Model server specific metrics like queue size, batch size, latency metrics, etc.
 - Supports querying metrics from OSS Prometheus and Google Managed Prometheus.
 
+## Analysis
+
+Reports can be analyzed using the following command:
+
+```
+inference-perf --analyze <path-to-dir-with-reports>
+```
+
+This should generate the following charts (below charts are for example only):
+
+1. QPS vs Latency (TTFT, NTPOT, ITL)
+
+![qps-latency-chart](./docs/images/latency_vs_qps.png)
+
+2. QPS vs Throughput (input tokens / sec, output tokens / sec, total tokens / sec)
+
+![qps-throughput-chart](./docs/images/throughput_vs_qps.png)
+
+3. Latency vs Throughput (output tokens / sec vs TTFT, NTPOT and ITL)
+
+![latency-throughput-chart](./docs/images/throughput_vs_latency.png)
+
 ## Contributing
 
 Our community meeting is weekly on Thursdays alternating betweem 09:00 and 11:30 PDT ([Zoom Link](https://zoom.us/j/9955436256?pwd=Z2FQWU1jeDZkVC9RRTN4TlZyZTBHZz09), [Meeting Notes](https://docs.google.com/document/d/15XSF8q4DShcXIiExDfyiXxAYQslCmOmO2ARSJErVTak/edit?usp=sharing), [Meeting Recordings](https://www.youtube.com/playlist?list=PL69nYSiGNLP30qNanabU75ayPK7OPNAAS)). 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from argparse import ArgumentParser
+from inference_perf.analysis.analyze import analyze_reports
 from typing import List, Optional
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
@@ -83,13 +84,22 @@ class InferencePerfRunner:
 def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
-    parser.add_argument("-c", "--config_file", help="Config File", required=True)
+    parser.add_argument("-c", "--config_file", help="Config File", required=False)
+    parser.add_argument("-a", "--analyze", help="Path to a report directory to analyze.", required=False)
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
+
+    if args.analyze:
+        analyze_reports(args.analyze)
+        return
+
+    if not args.config_file:
+        parser.error("argument -c/--config_file is required when not using --analyze")
+
     config = read_config(args.config_file)
 
     # Define Metrics Client
