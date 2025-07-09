@@ -64,6 +64,15 @@ class HFShareGPTDataGenerator(DataGenerator):
                         # Ensured by main.py logic and __init__ type hint for this class
                         assert self.tokenizer is not None
                         completion_tokens = self.tokenizer.count_tokens(completion)
+                        prompt_tokens = self.tokenizer.count_tokens(prompt)
+                    
+                        if self.input_distribution:
+                            if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
+                                continue
+                        if self.output_distribution:
+                            if completion_tokens < self.output_distribution.min or completion_tokens > self.output_distribution.max:
+                                continue
+
                         yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
@@ -79,7 +88,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     raise Exception("Unsupported API type")
 
     def is_io_distribution_supported(self) -> bool:
-        return False
+        return True
 
     def is_shared_prefix_supported(self) -> bool:
         return False
