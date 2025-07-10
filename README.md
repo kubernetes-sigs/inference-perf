@@ -75,7 +75,7 @@ Supported datasets include the following:
 - [Synthetic](./examples/vllm/config-synthetic.yml) (for specific input / output distributions with Sonnet data)
 - [Random](./examples/vllm/config-random.yml) (for specific input / output distributions with random data)
 - [SharedPrefix](./examples/vllm/config-shared-prefix.yml) (for prefix caching scenarios)
-- Mock (for testing)
+- mock (for testing)
 
 ### Load Generators
 
