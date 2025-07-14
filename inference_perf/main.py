@@ -139,23 +139,19 @@ def main_cli() -> None:
     model_server_client: ModelServerClient
     if config.server:
         if config.server.type == ModelServerType.VLLM:
-            # The type error for vLLMModelServerClient's tokenizer argument indicates it expects CustomTokenizer, not Optional.
-            if tokenizer is None:
-                raise Exception(
-                    "vLLM client is configured, but it requires a custom tokenizer which was not provided or initialized successfully. "
-                    "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
-                )
             model_server_client = vLLMModelServerClient(
                 reportgen.get_metrics_collector(),
                 api_config=config.api,
                 uri=config.server.base_url,
                 model_name=config.server.model_name,
-                tokenizer=tokenizer,
+                tokenizer_config=config.tokenizer,
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
             )
+            # vllm_client supports inferring the tokenizer
+            tokenizer = model_server_client.tokenizer
     else:
         raise Exception("model server client config missing")
 
