@@ -128,6 +128,10 @@ storage:
     bucket_name: "your-bucket-name"   # Required GCS bucket
     path: "reports-{timestamp}"       # Optional path prefix
     report_file_prefix: null          # Optional filename prefix
+  simple_storage_service:
+    bucket_name: "your-bucket-name"   # Required S3 bucket
+    path: "reports-{timestamp}"       # Optional path prefix
+    report_file_prefix: null          # Optional filename prefix
 ```
 
 ### Tokenizer

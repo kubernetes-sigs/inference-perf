@@ -33,7 +33,7 @@ from inference_perf.datagen import (
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
-from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient
+from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient, SimpleStorageServiceClient
 from inference_perf.client.requestdatacollector import (
     RequestDataCollector,
     LocalRequestDataCollector,
@@ -118,6 +118,8 @@ def main_cli() -> None:
             storage_clients.append(LocalStorageClient(config=config.storage.local_storage))
         if config.storage.google_cloud_storage:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
+        if config.storage.simple_storage_service:
+            storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))            
 
     # Define Report Generator
     collector: RequestDataCollector
