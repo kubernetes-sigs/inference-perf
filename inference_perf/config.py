@@ -145,14 +145,14 @@ class MetricsClientConfig(BaseModel):
 
 class ModelServerClientConfig(BaseModel):
     type: ModelServerType = ModelServerType.VLLM
-    model_name: str
+    model_name: Optional[str] = None
     base_url: str
     ignore_eos: bool = True
     api_key: Optional[str] = None
 
 
 class CustomTokenizerConfig(BaseModel):
-    pretrained_model_name_or_path: str
+    pretrained_model_name_or_path: Optional[str] = None
     trust_remote_code: Optional[bool] = None
     token: Optional[str] = None
 

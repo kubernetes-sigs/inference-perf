@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata, ModelServerPrometheusMetric
@@ -21,6 +21,10 @@ from typing import List, Optional
 import aiohttp
 import json
 import time
+import logging
+import requests
+
+logger = logging.getLogger(__name__)
 
 
 class vLLMModelServerClient(ModelServerClient):
@@ -29,23 +33,39 @@ class vLLMModelServerClient(ModelServerClient):
         metrics_collector: RequestDataCollector,
         api_config: APIConfig,
         uri: str,
-        model_name: str,
-        tokenizer: CustomTokenizer,
+        model_name: Optional[str],
+        tokenizer_config: Optional[CustomTokenizerConfig],
         max_tcp_connections: int,
         additional_filters: List[str],
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
     ) -> None:
         super().__init__(api_config)
-        self.model_name = model_name
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
         self.ignore_eos = ignore_eos
-        self.tokenizer = tokenizer
         self.metrics_collector = metrics_collector
         self.max_tcp_connections = max_tcp_connections
         self.additional_filters = additional_filters
         self.api_key = api_key
+
+        if model_name is None:
+            supported_models = self.get_supported_models()
+            if not supported_models:
+                logger.error("No supported models found")
+                raise Exception("vllm client init failed, no model_name could be found")
+            self.model_name = supported_models[0].get("id")
+            logger.info(f"Inferred model {self.model_name}")
+            if len(supported_models) > 1:
+                logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
+        else:
+            self.model_name = model_name
+
+        if tokenizer_config:
+            tokenizer_config.pretrained_model_name_or_path = self.model_name
+        else:
+            tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
+        self.tokenizer = CustomTokenizer(tokenizer_config)
 
         filters = [f"model_name='{self.model_name}'", *self.additional_filters]
         self.prometheus_metric_metadata = PrometheusMetricMetadata(
@@ -210,3 +230,16 @@ class vLLMModelServerClient(ModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return self.prometheus_metric_metadata
+
+    def get_supported_models(self) -> List[str]:
+        try:
+            response = requests.get(f"{self.uri}/v1/models")
+            response.raise_for_status()
+            data = response.json()
+            if "data" in data and isinstance(data["data"], list):
+                return data["data"]
+            else:
+                return []
+        except Exception as e:
+            logger.error(f"Got exception retrieving supported models {e}")
+            return []
