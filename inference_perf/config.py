@@ -100,10 +100,13 @@ class StorageConfigBase(BaseModel):
 class GoogleCloudStorageConfig(StorageConfigBase):
     bucket_name: str
 
+class SimpleStorageServiceConfig(StorageConfigBase):
+    bucket_name: str
 
 class StorageConfig(BaseModel):
     local_storage: StorageConfigBase = StorageConfigBase()
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
+    simple_storage_service: Optional[SimpleStorageServiceConfig] = None
 
 
 class RequestLifecycleMetricsReportConfig(BaseModel):
