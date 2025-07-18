@@ -23,6 +23,7 @@ from typing import List, Union, Tuple, TypeAlias
 import time
 import multiprocessing as mp
 import logging
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,11 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
         tasks = []
+
+        # Force an early gather for the worker.
+        # This causes workers to send and offset their queue processing from eachother
+        first_jitter = True
+        jitter_at_request = random.randint(1, 4)
         while True:
             try:
                 await semaphore.acquire()
@@ -73,6 +79,11 @@ class Worker(mp.Process):
                 stage_id, data, request_time = item
                 task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
                 tasks.append(task)
+
+                if first_jitter and len(tasks) >= jitter_at_request:
+                    first_jitter = False
+                    await gather(*tasks)
+                    tasks = []
             except mp.queues.Empty:
                 semaphore.release()
                 status = self.check_status()
@@ -135,7 +146,7 @@ class LoadGenerator:
                 if request_number >= num_requests:
                     break
                 request_queue.put((stage_id, request_data, request_time))
-            await sleep(stage.duration)
+            await sleep(start_time + stage.duration - time.perf_counter())
 
             # Join on request queue to ensure that all workers have completed
             # their requests for the stage
