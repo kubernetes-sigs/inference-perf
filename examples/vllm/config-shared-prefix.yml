@@ -6,7 +6,8 @@ load:
     duration: 30
   - rate: 2
     duration: 30
-api: completion
+api:
+  type: completion
 server:
   type: vllm
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
