@@ -37,6 +37,8 @@ Configures the test data generation methodology:
 ```yaml
 data:
   type: mock|shareGPT|synthetic|random|shared_prefix  # Data generation type
+  mode: offline|online                                # For shareGPT type, whether Dataset is offline or online, default mode is online
+  dataset_path: ./data/sharegpt/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type in offline mode, path where dataset to be used is present
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length

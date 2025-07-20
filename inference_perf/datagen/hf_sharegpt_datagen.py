@@ -25,14 +25,26 @@ logger = logging.getLogger(__name__)
 class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
         super().__init__(api_config, config, tokenizer)
-        self.sharegpt_dataset = iter(
-            load_dataset(
-                "anon8231489123/ShareGPT_Vicuna_unfiltered",
-                data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
-                streaming=True,
-                split="train",
+
+        if config.mode == DataMode.Offline:
+            if config.dataset_path is None:
+                raise ValueError("dataset_path is required for offline mode")
+            self.sharegpt_dataset = iter(
+                self.load_offline_dataset(
+                    config.dataset_path, 
+                    streaming=True, 
+                    split="train",
+                )
             )
-        )
+        else:
+            self.sharegpt_dataset = iter(
+                load_dataset(
+                    "anon8231489123/ShareGPT_Vicuna_unfiltered",
+                    data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
+                    streaming=True,
+                    split="train",
+                )
+            )
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
@@ -92,3 +104,14 @@ class HFShareGPTDataGenerator(DataGenerator):
 
     def is_shared_prefix_supported(self) -> bool:
         return False
+
+    def load_offline_dataset(self, dataset_path: str, streaming: bool, split: str) -> None:
+        # depending on whether the dataset is a single file or a directory, we need to load it differently
+        # TODO: add support for other file types
+        if os.path.isfile(dataset_path):
+            return load_dataset("json", data_files=dataset_path, streaming=streaming, split=split)
+        elif os.path.isdir(dataset_path):
+            json_files = [f for f in os.listdir(dataset_path) if f.endswith('.json')]
+            return load_dataset("json", data_files=json_files, streaming=streaming, split=split)
+        else:
+            raise ValueError(f"Invalid dataset path: {dataset_path}")
