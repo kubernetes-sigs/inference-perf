@@ -28,11 +28,11 @@ class HFShareGPTDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
         if config.mode == DataMode.Offline:
-            if config.dataset_path is None:
-                raise ValueError("dataset_path is required for offline mode")
+            if config.path is None:
+                raise ValueError("path is required for offline mode")
             self.sharegpt_dataset = iter(
                 self.load_offline_dataset(
-                    config.dataset_path, 
+                    config.path, 
                     streaming=True, 
                     split="train",
                 )
@@ -106,13 +106,13 @@ class HFShareGPTDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
-    def load_offline_dataset(self, dataset_path: str, streaming: bool, split: str) -> None:
+    def load_offline_dataset(self, path: str, streaming: bool, split: str) -> None:
         # depending on whether the dataset is a single file or a directory, we need to load it differently
         # TODO: add support for other file types
-        if os.path.isfile(dataset_path):
-            return load_dataset("json", data_files=dataset_path, streaming=streaming, split=split)
-        elif os.path.isdir(dataset_path):
-            json_files = [f for f in os.listdir(dataset_path) if f.endswith('.json')]
+        if os.path.isfile(path):
+            return load_dataset("json", data_files=path, streaming=streaming, split=split)
+        elif os.path.isdir(path):
+            json_files = [f for f in os.listdir(path) if f.endswith('.json')]
             return load_dataset("json", data_files=json_files, streaming=streaming, split=split)
         else:
-            raise ValueError(f"Invalid dataset path: {dataset_path}")
+            raise ValueError(f"Invalid dataset path: {path}")

@@ -67,7 +67,7 @@ class DataConfig(BaseModel):
 
     # Valid only for shareGPT type at this moment
     mode: Optional[DataMode] = DataMode.Online  # mode is used to specify if the shareGPT dataset is online or offline
-    dataset_path: Optional[str] = None # dataset_path is used to specify the path to the shareGPT dataset if mode is offline
+    path: Optional[str] = None # path to the downloaded shareGPT dataset if mode is offline
     
     # Distributions are only supported for synthetic/random dataset at this moment
     input_distribution: Optional[Distribution] = None
