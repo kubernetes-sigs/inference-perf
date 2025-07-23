@@ -208,4 +208,43 @@ report:
     summary: true
     per_stage: true
     per_request: true
+  prometheus:
+    summary: true
+    per_stage: true
+```
+
+### To Run Inference Perf Offline
+
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+api: 
+  type: chat
+server:
+  type: vllm
+  model_name: ./models/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: ./models/SmolLM2-135M-Instruct
+data:
+  type: shareGPT
+  mode: offline # mode is used to specify if the shareGPT dataset is online or offline
+  dataset_path: ./data/shareGPT # dataset_path is used to specify the path to the shareGPT dataset if mode is offline
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
+  prometheus:
+    summary: true
+    per_stage: true
 ```

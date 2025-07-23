@@ -15,9 +15,10 @@ import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
-from inference_perf.config import APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, DataMode
 from typing import Generator, List
 from datasets import load_dataset
+import os
 
 logger = logging.getLogger(__name__)
 
