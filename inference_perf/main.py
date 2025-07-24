@@ -119,7 +119,7 @@ def main_cli() -> None:
         if config.storage.google_cloud_storage:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
         if config.storage.simple_storage_service:
-            storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))            
+            storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))
 
     # Define Report Generator
     collector: RequestDataCollector
@@ -178,7 +178,7 @@ def main_cli() -> None:
             if config.data.output_distribution is None:
                 raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
 
-            total_count = int(sum([stage.rate * stage.duration for stage in config.load.stages])) + 1
+            total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
             if config.data.input_distribution.total_count is None:
                 config.data.input_distribution.total_count = total_count
             if config.data.output_distribution.total_count is None:
