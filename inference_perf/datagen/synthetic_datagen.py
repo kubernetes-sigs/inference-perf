@@ -26,6 +26,9 @@ class SyntheticDataGenerator(DataGenerator):
         if self.input_distribution is None or self.output_distribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
 
+        if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
             self.input_distribution.max,
