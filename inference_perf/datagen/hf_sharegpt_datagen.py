@@ -31,14 +31,15 @@ class HFShareGPTDataGenerator(DataGenerator):
             # check if the path is valid
             if not os.path.exists(config.path):
                 raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
-
-            self.sharegpt_dataset = iter(
-                self.load_offline_dataset(
-                    config.path, 
-                    streaming=True, 
-                    split="train",
-                )
-            )
+            # depending on whether the dataset is a single file or a directory, we need to load it differently
+            # TODO: add support for other file types
+            if os.path.isfile(config.path) and config.path.endswith(".json"):
+                self.sharegpt_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+            elif os.path.isdir(config.path):
+                json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
+                self.sharegpt_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+            else:
+                raise ValueError(f"Invalid dataset path: {config.path}")
         else:
             self.sharegpt_dataset = iter(
                 load_dataset(
@@ -80,12 +81,15 @@ class HFShareGPTDataGenerator(DataGenerator):
                         assert self.tokenizer is not None
                         completion_tokens = self.tokenizer.count_tokens(completion)
                         prompt_tokens = self.tokenizer.count_tokens(prompt)
-                    
+
                         if self.input_distribution:
                             if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
                                 continue
                         if self.output_distribution:
-                            if completion_tokens < self.output_distribution.min or completion_tokens > self.output_distribution.max:
+                            if (
+                                completion_tokens < self.output_distribution.min
+                                or completion_tokens > self.output_distribution.max
+                            ):
                                 continue
 
                         yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
@@ -107,14 +111,3 @@ class HFShareGPTDataGenerator(DataGenerator):
 
     def is_shared_prefix_supported(self) -> bool:
         return False
-
-    def load_offline_dataset(self, path: str, streaming: bool, split: str) -> None:
-        # depending on whether the dataset is a single file or a directory, we need to load it differently
-        # TODO: add support for other file types
-        if os.path.isfile(path):
-            return load_dataset("json", data_files=path, streaming=streaming, split=split)
-        elif os.path.isdir(path):
-            json_files = [f for f in os.listdir(path) if f.endswith('.json')]
-            return load_dataset("json", data_files=json_files, streaming=streaming, split=split)
-        else:
-            raise ValueError(f"Invalid dataset path: {path}")
