@@ -44,7 +44,7 @@ class Distribution(BaseModel):
     max: int = 1024
     mean: float = 512
     std_dev: float = 200
-    total_count: int = 1000
+    total_count: Optional[int] = None
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.

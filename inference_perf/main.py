@@ -119,7 +119,7 @@ def main_cli() -> None:
         if config.storage.google_cloud_storage:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
         if config.storage.simple_storage_service:
-            storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))            
+            storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))
 
     # Define Report Generator
     collector: RequestDataCollector
@@ -157,6 +157,11 @@ def main_cli() -> None:
     else:
         raise Exception("model server client config missing")
 
+    # Check load exists so datagen can derive total_count from the
+    # stage configurations.
+    if config.load is None:
+        raise Exception("load config missing")
+
     # Define DataGenerator
     datagen: DataGenerator
     if config.data:
@@ -172,6 +177,13 @@ def main_cli() -> None:
                 raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured")
             if config.data.output_distribution is None:
                 raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
+
+            total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
+            if config.data.input_distribution.total_count is None:
+                config.data.input_distribution.total_count = total_count
+            if config.data.output_distribution.total_count is None:
+                config.data.output_distribution.total_count = total_count
+
         if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 

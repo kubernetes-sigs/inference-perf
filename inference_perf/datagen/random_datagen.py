@@ -34,6 +34,9 @@ class RandomDataGenerator(DataGenerator):
         if self.input_distribution is None or self.output_distribution is None:
             raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
 
+        if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
             self.input_distribution.max,
