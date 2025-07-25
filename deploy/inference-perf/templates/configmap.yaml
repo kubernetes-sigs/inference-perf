@@ -6,5 +6,5 @@ metadata:
   labels:
     {{- include "inference-perf.labels" . | nindent 4 }}
 data:
-  {{ .Values.configMap.fileName }}: |
-    {{ .Files.Get .Values.configMap.fileName | nindent 4 }}
+  config.yml: |
+    {{- toYaml .Values.config | nindent 4 }}

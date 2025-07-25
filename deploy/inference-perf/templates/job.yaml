@@ -20,7 +20,7 @@ spec:
           command: ["inference-perf"]
           args: 
             - "--config_file"
-            - "{{ .Values.configMap.mountPath }}/{{ .Values.configMap.fileName }}"
+            - "config.yml"
             - "--log-level"
             - {{ .Values.logLevel }}
           env:
@@ -33,7 +33,7 @@ spec:
 {{- end }}
           volumeMounts:
             - name: config-volume
-              mountPath: {{ .Values.configMap.mountPath }}
+              mountPath: {{ include "inference-perf.configMount" . }}
               readOnly: true
           resources:
             requests:

@@ -63,3 +63,10 @@ Common Secret Key for HuggingFace credentials
 {{- define "inference-perf.hfKey" -}}
 {{ include "inference-perf.fullname" . }}-hf-key
 {{- end -}}
+
+{{/*
+Mount path for config map
+*/}}
+{{- define "inference-perf.configMount" -}}
+/cfg
+{{- end -}}
