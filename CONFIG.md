@@ -37,8 +37,7 @@ Configures the test data generation methodology:
 ```yaml
 data:
   type: mock|shareGPT|synthetic|random|shared_prefix  # Data generation type
-  mode: offline|online                                # For shareGPT type, whether Dataset is offline or online, default mode is online
-  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type in offline mode, path where dataset to be used is present
+  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
@@ -232,8 +231,7 @@ tokenizer:
   pretrained_model_name_or_path: ./models/SmolLM2-135M-Instruct
 data:
   type: shareGPT
-  mode: offline # mode is used to specify if the shareGPT dataset is online or offline
-  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # path to the downloaded shareGPT dataset if mode is offline
+  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # path to the downloaded shareGPT dataset
 metrics:
   type: prometheus
   prometheus:

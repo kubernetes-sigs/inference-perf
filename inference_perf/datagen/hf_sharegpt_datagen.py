@@ -15,7 +15,7 @@ import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
-from inference_perf.config import APIConfig, APIType, DataConfig, DataMode
+from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Generator, List
 from datasets import load_dataset
 import os
@@ -27,9 +27,11 @@ class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if config.mode == DataMode.Offline:
-            if config.path is None:
-                raise ValueError("path is required for offline mode")
+        if config.path is not None:
+            # check if the path is valid
+            if not os.path.exists(config.path):
+                raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
+
             self.sharegpt_dataset = iter(
                 self.load_offline_dataset(
                     config.path, 
