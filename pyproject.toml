@@ -8,6 +8,8 @@ dependencies = [
     "pydantic>=2.10.6",
     "numpy>=2.2.2",
     "datasets>=3.3.2",
+    "pandas>=2.2.0",
+    "kubernetes>=29.0.0",
     "transformers>=4.50.2",
     "google-cloud-storage>=3.1.0",
     "pyyaml>=6.0.2",
@@ -122,6 +124,9 @@ module = [
     "boto3.*",
 ]
 ignore_missing_imports = true
+
+[tool.setuptools]
+packages = ["inference_perf", "fmperf"]
 
 [tool.mypy]
 disable_error_code = ["attr-defined"]
