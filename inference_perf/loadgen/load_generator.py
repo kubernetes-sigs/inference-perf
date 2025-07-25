@@ -38,13 +38,14 @@ class Status(Enum):
 
 
 class Worker(mp.Process):
-    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, max_concurrency: int):  # type: ignore[type-arg]
+    def __init__(self, id: int, client: ModelServerClient, request_queue: mp.Queue, datagen: DataGenerator, max_concurrency: int):  # type: ignore[type-arg]
         super().__init__()
         self.id = id
         self.client = client
         self.request_queue = request_queue
         self.status_queue: mp.JoinableQueue[Status] = mp.JoinableQueue()
         self.max_concurrency = max_concurrency
+        self.datagen = datagen
 
     def check_status(self) -> Union[Status, None]:
         try:
@@ -65,19 +66,19 @@ class Worker(mp.Process):
                 await semaphore.acquire()
                 item = self.request_queue.get_nowait()
 
-                async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:  # type: ignore[type-arg]
+                async def schedule_client(queue: mp.Queue, request_number: int, request_time: float, stage_id: int) -> None:  # type: ignore[type-arg]
                     current_time = time.perf_counter()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
                         await sleep(sleep_time)
                     else:
                         logger.debug(f"Worker {self.id} missed scheduled request time by {-1.0 * sleep_time:0.2f}")
-                    await self.client.process_request(data, stage_id, request_time)
+                    await self.client.process_request(self.datagen.get_request(request_number), stage_id, request_time)
                     queue.task_done()
                     semaphore.release()
 
-                stage_id, data, request_time = item
-                task = create_task(schedule_client(self.request_queue, data, request_time, stage_id))
+                stage_id, request_number, request_time = item
+                task = create_task(schedule_client(self.request_queue, request_number, request_time, stage_id))
                 tasks.append(task)
 
                 if first_jitter and len(tasks) >= jitter_at_request:
@@ -128,7 +129,7 @@ class LoadGenerator:
         request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
 
         for id in range(self.num_workers):
-            self.workers.append(Worker(id, client, request_queue, self.worker_max_concurrency))
+            self.workers.append(Worker(id, client, request_queue, self.datagen, self.worker_max_concurrency))
             self.workers[-1].start()
 
         for stage_id, stage in enumerate(self.stages):
@@ -139,14 +140,11 @@ class LoadGenerator:
             # don't miss the initial scheuled request times
             start_time_epoch = time.time()
             start_time = time.perf_counter() + 1
-            num_requests = stage.rate * stage.duration
+            num_requests = int(stage.rate * stage.duration)
 
-            for request_number, (request_data, request_time) in enumerate(
-                zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
-            ):
-                if request_number >= num_requests:
-                    break
-                request_queue.put((stage_id, request_data, request_time))
+            for request_number in range(num_requests):
+                request_time = next(timer.start_timer(start_time))
+                request_queue.put((stage_id, request_number, request_time))
             await sleep(start_time + stage.duration - time.perf_counter())
 
             # Join on request queue to ensure that all workers have completed
