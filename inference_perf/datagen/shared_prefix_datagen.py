@@ -56,6 +56,10 @@ class SharedPrefixDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return True
 
+    def get_request(self, n: int) -> InferenceAPIData:
+        i = n % len(self.prompts)
+        return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if not self.prompts:
             return

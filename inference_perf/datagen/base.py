@@ -58,6 +58,10 @@ class DataGenerator(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_request(self, n: int) -> InferenceAPIData:
+        raise NotImplementedError
+
+    @abstractmethod
     def is_io_distribution_supported(self) -> bool:
         raise NotImplementedError
 
