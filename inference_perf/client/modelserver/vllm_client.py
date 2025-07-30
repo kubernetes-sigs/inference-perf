@@ -61,9 +61,9 @@ class vLLMModelServerClient(ModelServerClient):
         else:
             self.model_name = model_name
 
-        if tokenizer_config:
+        if tokenizer_config and not tokenizer_config.pretrained_model_name_or_path:
             tokenizer_config.pretrained_model_name_or_path = self.model_name
-        else:
+        elif not tokenizer_config:
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
