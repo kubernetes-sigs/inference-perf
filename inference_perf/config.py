@@ -92,7 +92,7 @@ class LoadConfig(BaseModel):
     interval: float = 1.0
     stages: List[LoadStage] = []
     num_workers: int = max(1, cpu_count())  # type: ignore
-    worker_max_concurrency: int = 10
+    worker_max_concurrency: int = 100
     worker_max_tcp_connections: int = 2500
 
 
