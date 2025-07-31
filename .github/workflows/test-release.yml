@@ -21,7 +21,7 @@ jobs:
 
       - name: Update version for testing
         run: |
-          sed -i 's/version = ".*"/version = "0.0.1-test"/' pyproject.toml
+          sed -i 's/version = ".*"/version = "0.0.1-dev0"/' pyproject.toml
 
       - name: Build package
         run: python -m build
