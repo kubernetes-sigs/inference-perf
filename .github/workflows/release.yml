@@ -43,11 +43,48 @@ jobs:
           
           `${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}`
 
+          ## Python Package
+          
+          `pip install inference-perf==${{ env.RELEASE_VERSION }}`
+
           ## Contributors
           
           ${{ steps.github_release.outputs.contributors }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python-package:
+    needs: build-and-publish  # Run after the release is created
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade build twine
+
+      - name: Update version in pyproject.toml
+        run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Updating version to: $VERSION"
+          # Use sed to update the version in pyproject.toml
+          sed -i 's/version = ".*"/version = "'$VERSION'"/' pyproject.toml
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish package to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*.whl dist/*.tar.gz
 
   docker:
     needs: build-and-publish  # Run after the release is created
