@@ -29,7 +29,6 @@ class SimpleStorageServiceClient(StorageClient):
         self.output_bucket = config.bucket_name
         self.client = boto3.client("s3")
 
-
     def save_report(self, reports: List[ReportFile]) -> None:
         filenames = [report.get_filename() for report in reports]
         if len(filenames) != len(set(filenames)):
@@ -37,22 +36,24 @@ class SimpleStorageServiceClient(StorageClient):
 
         for _, report in enumerate(reports):
             filename = report.get_filename()
-            blob_path = f"{self.config.path if self.config.path else ''}/{self.config.report_file_prefix if self.config.report_file_prefix else ''}{filename}".lstrip('/') # remove any leading slahes
+            blob_path = f"{self.config.path if self.config.path else ''}/{self.config.report_file_prefix if self.config.report_file_prefix else ''}{filename}".lstrip(
+                "/"
+            )  # remove any leading slahes
             try:
                 try:
                     self.client.head_object(Bucket=self.output_bucket, Key=blob_path)
                     logger.info(f"Skipping upload: s3://{self.output_bucket}/{blob_path} already exists")
                     continue
                 except self.client.exceptions.ClientError as e:
-                    if e.response['Error']['Code'] == '404':
+                    if e.response["Error"]["Code"] == "404":
                         pass
-                
+
                 # Upload the files
                 self.client.put_object(
-                    Bucket = self.output_bucket,
-                    Key = blob_path,
-                    Body = json.dumps(report.get_contents()),
-                    ContentType = "application/json"
+                    Bucket=self.output_bucket,
+                    Key=blob_path,
+                    Body=json.dumps(report.get_contents()),
+                    ContentType="application/json",
                 )
                 logger.info(f"Uploaded s3://{self.output_bucket}/{blob_path}")
             except Exception as e:

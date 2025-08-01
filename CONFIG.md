@@ -37,6 +37,7 @@ Configures the test data generation methodology:
 ```yaml
 data:
   type: mock|shareGPT|synthetic|random|shared_prefix  # Data generation type
+  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
@@ -206,4 +207,42 @@ report:
     summary: true
     per_stage: true
     per_request: true
+  prometheus:
+    summary: true
+    per_stage: true
+```
+
+### To Run Inference Perf Offline
+
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+api: 
+  type: chat
+server:
+  type: vllm
+  model_name: ./models/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: ./models/SmolLM2-135M-Instruct
+data:
+  type: shareGPT
+  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # path to the downloaded shareGPT dataset
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
+  prometheus:
+    summary: true
+    per_stage: true
 ```
