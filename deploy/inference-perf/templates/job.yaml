@@ -20,7 +20,7 @@ spec:
           command: ["inference-perf"]
           args: 
             - "--config_file"
-            - "config.yml"
+            - "{{ include "inference-perf.configMount" . }}/config.yml"
             - "--log-level"
             - {{ .Values.logLevel }}
           env:
