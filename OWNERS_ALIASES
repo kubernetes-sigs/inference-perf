@@ -7,6 +7,10 @@ aliases:
   - wangchen615
   - SachinVarghese
 
+  inference-perf-reviewers:
+  - Bslabe123
+  - jjk-g
+
   wg-serving-leads:
   - ArangoGutierrez
   - Jeffwan
