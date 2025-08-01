@@ -32,7 +32,7 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 - Setup a virtual environment and install inference-perf
 
     ```
-    pip install .
+    pip install inference-perf
     ```
 
 - Run inference-perf CLI with a configuration file
@@ -45,17 +45,10 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 
 ### Run in a Docker container
 
-- Build the container
+- Run the container by mounting your config file.
 
     ```
-    docker build -t inference-perf .
-    ```
-
-- Run the container
-
-    ```
-    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml inference-perf
-
+    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml quay.io/inference-perf/inference-perf
     ```
 
 ### Run in a Kubernetes cluster
