@@ -122,7 +122,7 @@ Configures storage for benchmark results:
 ```yaml
 storage:
   local_storage:
-    path: "reports-{timestamp}"       # Local directory path
+    path: "reports-test"              # Local directory path
     report_file_prefix: null          # Optional filename prefix
   google_cloud_storage:               # Optional GCS configuration
     bucket_name: "your-bucket-name"   # Required GCS bucket
