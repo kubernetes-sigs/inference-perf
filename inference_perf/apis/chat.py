@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import time
+
 from typing import Any, List
 from aiohttp import ClientResponse
 from pydantic import BaseModel
@@ -36,8 +39,6 @@ class ChatCompletionAPIData(InferenceAPIData):
         return "/v1/chat/completions"
 
     def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
-        if streaming:
-            raise Exception("Generating streaming request payloads for the Chat API is not currently supported.")
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {
@@ -45,11 +46,42 @@ class ChatCompletionAPIData(InferenceAPIData):
             "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
+            "stream": streaming,
         }
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
-            raise Exception("Decoding streamed responses from the Chat API is not currently supported")
+
+            output_text = ""
+            output_token_times: List[float] = []
+            async for chunk_bytes in response.content:
+                print("---")
+                print(chunk_bytes)
+                print("----")
+
+                # chunk_bytes = chunk_bytes.strip()
+                # output_token_times.append(time.perf_counter())
+                # if not chunk_bytes:
+                #     continue
+
+                # chunk = chunk_bytes.decode("utf-8").removeprefix("data: ")
+                # if chunk != "[DONE]":
+                #     data = json.loads(chunk)
+                #     if choices := data.get("choices"):
+                #         delta = choices[0].get("delta")
+                #         content = delta.get("content")
+                #         output_text += content
+                        
+            prompt_len = tokenizer.count_tokens(self.prompt)
+            output_len = tokenizer.count_tokens(output_text)
+            raise Exception("HERE")
+        
+            return InferenceInfo(
+                input_tokens=prompt_len,
+                output_tokens=output_len,
+                output_token_times=output_token_times,
+            )
+        
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
