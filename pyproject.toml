@@ -12,6 +12,7 @@ dependencies = [
     "google-cloud-storage>=3.1.0",
     "pyyaml>=6.0.2",
     "boto3>=1.39.0",
+    "omegaconf>=2.3.0",
 ]
 requires-python = ">=3.12"
 readme = "README.md"

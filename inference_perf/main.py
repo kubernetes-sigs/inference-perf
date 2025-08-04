@@ -44,6 +44,8 @@ from inference_perf.utils import CustomTokenizer, ReportFile
 from inference_perf.logger import setup_logging
 import asyncio
 import time
+import os
+from omegaconf import OmegaConf
 
 
 class InferencePerfRunner:
@@ -233,6 +235,14 @@ def main_cli() -> None:
             stages=loadgen.stage_runtime_info,
         ),
     )
+
+    # --- Save a snapshot of the full config into the output directory ---
+    if config.storage and config.storage.local_storage and config.storage.local_storage.path:
+        output_dir = config.storage.local_storage.path
+        os.makedirs(output_dir, exist_ok=True)
+        config_snapshot_path = os.path.join(output_dir, "config_used.yaml")
+        print(f"Saving config to: {os.path.abspath(config_snapshot_path)}")
+        OmegaConf.save(config=OmegaConf.create(config.model_dump(mode="json")), f=config_snapshot_path)
 
     # Save Reports
     perfrunner.save_reports(reports=reports)

@@ -27,3 +27,7 @@ report:
   prometheus:
     summary: true
     per_stage: false
+
+storage:
+  local_storage:
+    path: /workspace/reports-test  
