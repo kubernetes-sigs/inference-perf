@@ -98,7 +98,7 @@ class PrometheusMetricsClient(MetricsClient):
         if config:
             if not config.url:
                 raise Exception("prometheus url missing")
-            self.query_url = config.url.unicode_string() + "api/v1/query"
+            self.query_url = config.url.unicode_string().rstrip('/') + "/api/v1/query"
             logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
         else:
