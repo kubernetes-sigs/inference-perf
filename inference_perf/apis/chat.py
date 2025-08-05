@@ -14,7 +14,6 @@
 
 import json
 import time
-import logging
 
 from typing import Any, List
 from aiohttp import ClientResponse
@@ -22,8 +21,6 @@ from pydantic import BaseModel
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
-
-logger = logging.getLogger(__name__)
 
 class ChatMessage(BaseModel):
     role: str
