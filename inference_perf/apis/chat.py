@@ -14,6 +14,7 @@
 
 import json
 import time
+import logging
 
 from typing import Any, List
 from aiohttp import ClientResponse
@@ -22,6 +23,7 @@ from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
+logger = logging.getLogger(__name__)
 
 class ChatMessage(BaseModel):
     role: str
@@ -51,37 +53,38 @@ class ChatCompletionAPIData(InferenceAPIData):
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
-
             output_text = ""
             output_token_times: List[float] = []
             async for chunk_bytes in response.content:
-                print("---")
-                print(chunk_bytes)
-                print("----")
-
-                # chunk_bytes = chunk_bytes.strip()
-                # output_token_times.append(time.perf_counter())
-                # if not chunk_bytes:
-                #     continue
-
-                # chunk = chunk_bytes.decode("utf-8").removeprefix("data: ")
-                # if chunk != "[DONE]":
-                #     data = json.loads(chunk)
-                #     if choices := data.get("choices"):
-                #         delta = choices[0].get("delta")
-                #         content = delta.get("content")
-                #         output_text += content
-                        
-            prompt_len = tokenizer.count_tokens(self.prompt)
+                try:
+                    chunk_str = chunk_bytes.decode('utf-8')
+                    output_token_times.append(time.perf_counter())
+                except UnicodeDecodeError as e:
+                    continue
+                for line in chunk_str.splitlines():
+                    if line.startswith('data: '):
+                        json_payload = line[6:].strip()
+                        if json_payload == '[DONE]':
+                            break
+                        try:
+                            data = json.loads(json_payload)
+                            delta = data.get('choices', [{}])[0].get('delta', {})
+                            content = delta.get('content')
+                            if content:
+                                output_text += content
+                        except (json.JSONDecodeError, IndexError) as e:
+                            continue
+                else:
+                    continue
+                break
+            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
+            prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)
-            raise Exception("HERE")
-        
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
                 output_token_times=output_token_times,
             )
-        
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
