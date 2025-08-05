@@ -10,8 +10,8 @@ WORKDIR /workspace
 COPY inference_perf/ /workspace/inference_perf/
 COPY pyproject.toml /workspace/
 
-# Install dependencies
-RUN pip install -e .
+# Install dependencies & clean cache
+RUN pip install . && pip cache purge
 
 # Run inference-perf
 CMD ["inference-perf", "--config_file", "config.yml"]
