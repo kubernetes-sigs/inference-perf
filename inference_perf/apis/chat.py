@@ -53,27 +53,16 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_text = ""
             output_token_times: List[float] = []
             async for chunk_bytes in response.content:
-                try:
-                    chunk_str = chunk_bytes.decode('utf-8')
-                    output_token_times.append(time.perf_counter())
-                except UnicodeDecodeError as e:
-                    continue
+                chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
+                output_token_times.append(time.perf_counter())
                 for line in chunk_str.splitlines():
-                    if line.startswith('data: '):
-                        json_payload = line[6:].strip()
-                        if json_payload == '[DONE]':
-                            break
-                        try:
-                            data = json.loads(json_payload)
-                            delta = data.get('choices', [{}])[0].get('delta', {})
-                            content = delta.get('content')
-                            if content:
-                                output_text += content
-                        except (json.JSONDecodeError, IndexError) as e:
-                            continue
-                else:
-                    continue
-                break
+                    if line == '[DONE]':
+                        break
+                    data = json.loads(line)
+                    delta = data.get('choices', [{}])[0].get('delta', {})
+                    content = delta.get('content')
+                    if content:
+                        output_text += content
             prompt_text = "".join([msg.content for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)

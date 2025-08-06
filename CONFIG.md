@@ -26,8 +26,8 @@ Controls the API interaction behavior:
 
 ```yaml
 api:
-  type: completion  # API type (completion|chat)
-  streaming: false  # Enable/disable streaming
+  type: completion  # API type (completion|chat) (default: completion)
+  streaming: false  # Enable/disable streaming, TTFT, TPOT, and ITL metrics are included if true.
 ```  
 
 ### Data Generation

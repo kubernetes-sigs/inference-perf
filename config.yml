@@ -4,7 +4,7 @@ load:
   - rate: 1
     duration: 30
 api: 
-  type: chat
+  type: completion
   streaming: true
 server:
   type: vllm
