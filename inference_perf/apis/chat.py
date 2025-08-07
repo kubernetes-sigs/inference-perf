@@ -56,18 +56,20 @@ class ChatCompletionAPIData(InferenceAPIData):
                 try:
                     chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
                     output_token_times.append(time.perf_counter())
-                except UnicodeDecodeError as e:
+                except UnicodeDecodeError:
                     continue
                 for line in chunk_str.splitlines():
                     if line == '[DONE]':
                         break
                     try:
                         data = json.loads(line)
-                        delta = data.get('choices', [{}])[0].get('delta', {})
-                        content = delta.get('content')
-                        if content:
-                            output_text += content
-                    except (json.JSONDecodeError, IndexError) as e:
+                        choices = data.get('choices', [])
+                        if choices:
+                            delta = choices[0].get('delta', {})
+                            content = delta.get('content')
+                            if content:
+                                output_text += content
+                    except (json.JSONDecodeError, IndexError):
                         continue
                 else:
                     continue
