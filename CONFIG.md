@@ -26,7 +26,7 @@ Controls the API interaction behavior:
 
 ```yaml
 api:
-  type: completion  # API type (completion|chat)
+  type: completion  # API type (completion|chat) (default: completion), completion is the default since the chat API is not typically enabled on model servers such as vLLM by default without additional configuration.
   streaming: false  # Enable/disable streaming (default: false), needs to be enabled for metrics like TTFT, ITL and TPOT to be measured
 ```  
 

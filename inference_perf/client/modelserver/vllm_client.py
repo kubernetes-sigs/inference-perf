@@ -209,6 +209,7 @@ class vLLMModelServerClient(ModelServerClient):
                             )
                         )
             except Exception as e:
+                logger.error("error occured during request processing:", exc_info=True)
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,

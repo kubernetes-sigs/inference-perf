@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import time
+
 from typing import Any, List
 from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
-
 
 class ChatMessage(BaseModel):
     role: str
@@ -36,8 +38,6 @@ class ChatCompletionAPIData(InferenceAPIData):
         return "/v1/chat/completions"
 
     def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
-        if streaming:
-            raise Exception("Generating streaming request payloads for the Chat API is not currently supported.")
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {
@@ -45,11 +45,43 @@ class ChatCompletionAPIData(InferenceAPIData):
             "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
+            "stream": streaming,
         }
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
-            raise Exception("Decoding streamed responses from the Chat API is not currently supported")
+            output_text = ""
+            output_token_times: List[float] = []
+            async for chunk_bytes in response.content:
+                try:
+                    chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
+                    output_token_times.append(time.perf_counter())
+                except UnicodeDecodeError:
+                    continue
+                for line in chunk_str.splitlines():
+                    if line == '[DONE]':
+                        break
+                    try:
+                        data = json.loads(line)
+                        choices = data.get('choices', [])
+                        if choices:
+                            delta = choices[0].get('delta', {})
+                            content = delta.get('content')
+                            if content:
+                                output_text += content
+                    except (json.JSONDecodeError, IndexError):
+                        continue
+                else:
+                    continue
+                break
+            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
+            prompt_len = tokenizer.count_tokens(prompt_text)
+            output_len = tokenizer.count_tokens(output_text)
+            return InferenceInfo(
+                input_tokens=prompt_len,
+                output_tokens=output_len,
+                output_token_times=output_token_times,
+            )
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
