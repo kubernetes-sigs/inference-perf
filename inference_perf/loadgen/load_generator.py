@@ -137,6 +137,7 @@ class LoadGenerator:
 
             # Allow generation a second to begin populating the queue so the workers
             # don't miss the initial scheuled request times
+            start_time_epoch = time.time()
             start_time = time.perf_counter() + 1
             num_requests = stage.rate * stage.duration
 
@@ -167,7 +168,7 @@ class LoadGenerator:
             logger.debug("Loadgen joining request queue")
             request_queue.join()
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
@@ -182,6 +183,7 @@ class LoadGenerator:
 
         for stage_id, stage in enumerate(self.stages):
             timer = self.get_timer(stage.rate)
+            start_time_epoch = time.time()
             start_time = time.perf_counter()
             end_time = start_time + stage.duration
             logger.info("Stage %d - run started", stage_id)
@@ -198,7 +200,7 @@ class LoadGenerator:
                     else:
                         break
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
