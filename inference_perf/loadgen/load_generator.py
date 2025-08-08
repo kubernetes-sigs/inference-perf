@@ -66,7 +66,7 @@ class Worker(mp.Process):
                 item = self.request_queue.get_nowait()
 
                 async def schedule_client(queue: mp.Queue, data: InferenceAPIData, request_time: float, stage_id: int) -> None:  # type: ignore[type-arg]
-                    current_time = time.perf_counter()
+                    current_time = time.time()
                     sleep_time = request_time - current_time
                     if sleep_time > 0:
                         await sleep(sleep_time)
@@ -137,7 +137,7 @@ class LoadGenerator:
 
             # Allow generation a second to begin populating the queue so the workers
             # don't miss the initial scheuled request times
-            start_time = time.perf_counter() + 1
+            start_time = time.time() + 1
             num_requests = stage.rate * stage.duration
 
             for request_number, (request_data, request_time) in enumerate(
@@ -146,7 +146,7 @@ class LoadGenerator:
                 if request_number >= num_requests:
                     break
                 request_queue.put((stage_id, request_data, request_time))
-            await sleep(start_time + stage.duration - time.perf_counter())
+            await sleep(start_time + stage.duration - time.time())
 
             # Join on request queue to ensure that all workers have completed
             # their requests for the stage
@@ -167,7 +167,7 @@ class LoadGenerator:
             logger.debug("Loadgen joining request queue")
             request_queue.join()
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.time()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
@@ -182,23 +182,23 @@ class LoadGenerator:
 
         for stage_id, stage in enumerate(self.stages):
             timer = self.get_timer(stage.rate)
-            start_time = time.perf_counter()
+            start_time = time.time()
             end_time = start_time + stage.duration
             logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 for _, (data, time_index) in enumerate(
                     zip(self.datagen.get_data(), timer.start_timer(start_time), strict=True)
                 ):
-                    now = time.perf_counter()
+                    now = time.time()
                     if time_index < end_time and now < end_time:
                         if time_index > now:
-                            await sleep(time_index - time.perf_counter())
+                            await sleep(time_index - time.time())
                         tg.create_task(client.process_request(data, stage_id, time_index))
                         continue
                     else:
                         break
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.perf_counter()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time, end_time=time.time()
             )
             logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
