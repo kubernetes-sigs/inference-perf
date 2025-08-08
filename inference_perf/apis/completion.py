@@ -50,7 +50,7 @@ class CompletionAPIData(InferenceAPIData):
             output_token_times: List[float] = []
             async for chunk_bytes in response.content:
                 chunk_bytes = chunk_bytes.strip()
-                output_token_times.append(time.perf_counter())
+                output_token_times.append(time.time())
                 if not chunk_bytes:
                     continue
                 # After removing the "data: " prefix, each chunk decodes to a response json for a single token or "[DONE]" if end of stream
