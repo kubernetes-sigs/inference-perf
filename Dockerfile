@@ -1,8 +1,5 @@
 FROM python:3.12.9-slim-bookworm AS dev
 
-RUN apt-get update -y \
-    && apt-get install -y python3-pip
-
 # Upgrade pip
 RUN pip3 install --upgrade pip
 
@@ -10,10 +7,11 @@ RUN pip3 install --upgrade pip
 WORKDIR /workspace
 
 # Copy project files
-COPY . /workspace
+COPY inference_perf/ /workspace/inference_perf/
+COPY pyproject.toml /workspace/
 
-# Install dependencies
-RUN pip install -e .
+# Install dependencies & clean cache
+RUN pip install . && pip cache purge
 
 # Run inference-perf
 CMD ["inference-perf", "--config_file", "config.yml"]
