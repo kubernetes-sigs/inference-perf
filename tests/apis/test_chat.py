@@ -11,4 +11,5 @@ def test_chat_completion_api_data() -> None:
         "messages": [{"role": "user", "content": "Hello, world!"}],
         "max_tokens": 100,
         "ignore_eos": False,
+        "stream": False,
     }
