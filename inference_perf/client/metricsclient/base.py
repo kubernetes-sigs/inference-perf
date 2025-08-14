@@ -54,10 +54,10 @@ class ModelServerMetrics(BaseModel):
     avg_queue_length: int = 0
 
     # Usage
-    avg_kv_cache_usage: float = 0
-    median_kv_cache_usage: float = 0
-    p90_kv_cache_usage: float = 0
-    p99_kv_cache_usage: float = 0
+    avg_kv_cache_usage: float = 0.0
+    median_kv_cache_usage: float = 0.0
+    p90_kv_cache_usage: float = 0.0
+    p99_kv_cache_usage: float = 0.0
 
 
 class MetricsClient(ABC):
