@@ -44,7 +44,7 @@ class ConstantLoadTimer(LoadTimer):
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         # Set start time
-        next_time = time.monotonic() if initial is None else initial
+        next_time = time.perf_counter() if initial is None else initial
 
         # Given a rate, yield a time to wait before the next request
         while True:
@@ -59,7 +59,7 @@ class PoissonLoadTimer(LoadTimer):
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         # Set start time
-        next_time = time.monotonic() if initial is None else initial
+        next_time = time.perf_counter() if initial is None else initial
 
         # Given a rate, yield a time to wait before the next request
         while True:
