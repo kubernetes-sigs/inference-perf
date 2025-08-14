@@ -179,7 +179,7 @@ class vLLMModelServerClient(ModelServerClient):
         request_data = json.dumps(payload)
 
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
-            start = time.time()
+            start = time.perf_counter()
             try:
                 async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
                     response_info = await data.process_response(
@@ -195,7 +195,7 @@ class vLLMModelServerClient(ModelServerClient):
                                 info=response_info,
                                 error=None,
                                 start_time=start,
-                                end_time=time.time(),
+                                end_time=time.perf_counter(),
                                 scheduled_time=scheduled_time,
                             )
                         )
@@ -208,7 +208,7 @@ class vLLMModelServerClient(ModelServerClient):
                                 info=response_info,
                                 error=ErrorResponseInfo(error_msg=response_content, error_type="Error response"),
                                 start_time=start,
-                                end_time=time.time(),
+                                end_time=time.perf_counter(),
                                 scheduled_time=scheduled_time,
                             )
                         )
@@ -225,7 +225,7 @@ class vLLMModelServerClient(ModelServerClient):
                             error_type=type(e).__name__,
                         ),
                         start_time=start,
-                        end_time=time.time(),
+                        end_time=time.perf_counter(),
                         scheduled_time=scheduled_time,
                     )
                 )
