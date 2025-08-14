@@ -158,6 +158,10 @@ class vLLMModelServerClient(ModelServerClient):
                 "histogram",
                 filters,
             ),
+            avg_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "mean", "gauge", filters),
+            median_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "median", "gauge", filters),
+            p90_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "p90", "gauge", filters),
+            p99_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "p99", "gauge", filters),
         )
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:

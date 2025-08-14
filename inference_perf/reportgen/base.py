@@ -92,6 +92,12 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 "p90": metrics.p90_time_per_output_token,
                 "p99": metrics.p99_time_per_output_token,
             },
+            "kv_cache_usage_percentage": {
+                "mean": metrics.avg_kv_cache_usage,
+                "p50": metrics.median_kv_cache_usage,
+                "p90": metrics.p90_kv_cache_usage,
+                "p99": metrics.p99_kv_cache_usage,
+            },
         },
     )
 
