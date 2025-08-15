@@ -37,24 +37,36 @@ class ConstantLoadTimer(LoadTimer):
     Introduces a small amount of random noise in timing.
     """
 
-    def __init__(self, rate: float) -> None:
+    def __init__(self, rate: float, duration: float) -> None:
         self._rate = rate
+        self._duration = duration
         # TODO: Make random state a global seed
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        # Set start time
-        next_time = time.perf_counter() if initial is None else initial
+        num_requests = int(self._rate * self._duration)
+        if num_requests == 0:
+            return
 
-        # Given a rate, yield a time to wait before the next request
-        while True:
-            next_time += self._rand.exponential(1 / self._rate)
+        # Generate random intervals
+        intervals = self._rand.exponential(1 / self._rate, num_requests)
+
+        # Normalize intervals to sum to the duration
+        total_interval_time = np.sum(intervals)
+        scale_factor = self._duration / total_interval_time
+        normalized_intervals = intervals * scale_factor
+
+        # Yield request times
+        next_time = time.monotonic() if initial is None else initial
+        for interval in normalized_intervals:
+            next_time += interval
             yield next_time
 
 
 class PoissonLoadTimer(LoadTimer):
-    def __init__(self, rate: float) -> None:
+    def __init__(self, rate: float, duration: float) -> None:
         self._rate = rate
+        self._duration = duration
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
@@ -68,11 +80,12 @@ class PoissonLoadTimer(LoadTimer):
 
             # If no requests, wait for 1 second
             if req_count < 1:
-                yield next_time + 1.0
+                next_time += 1.0
                 continue
 
             # Schedule the requests over the next second
-            timer = ConstantLoadTimer(req_count)
+            timer = ConstantLoadTimer(req_count, 1.0)
+            time_generator = timer.start_timer(next_time)
             for _ in range(req_count):
-                next_time = next(timer.start_timer(next_time))
+                next_time = next(time_generator)
                 yield next_time
