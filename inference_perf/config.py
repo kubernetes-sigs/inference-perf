@@ -58,6 +58,10 @@ class SharedPrefix(BaseModel):
 
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
+
+    # Valid only for shareGPT type at this moment
+    path: Optional[str] = None  # path to the downloaded shareGPT dataset
+
     # Distributions are only supported for synthetic/random dataset at this moment
     input_distribution: Optional[Distribution] = None
     output_distribution: Optional[Distribution] = None
@@ -100,8 +104,10 @@ class StorageConfigBase(BaseModel):
 class GoogleCloudStorageConfig(StorageConfigBase):
     bucket_name: str
 
+
 class SimpleStorageServiceConfig(StorageConfigBase):
     bucket_name: str
+
 
 class StorageConfig(BaseModel):
     local_storage: StorageConfigBase = StorageConfigBase()

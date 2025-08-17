@@ -33,7 +33,12 @@ from inference_perf.datagen import (
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
-from inference_perf.client.filestorage import StorageClient, GoogleCloudStorageClient, LocalStorageClient, SimpleStorageServiceClient
+from inference_perf.client.filestorage import (
+    StorageClient,
+    GoogleCloudStorageClient,
+    LocalStorageClient,
+    SimpleStorageServiceClient,
+)
 from inference_perf.client.requestdatacollector import (
     RequestDataCollector,
     LocalRequestDataCollector,

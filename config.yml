@@ -4,7 +4,8 @@ load:
   - rate: 1
     duration: 30
 api: 
-  type: chat
+  type: completion
+  streaming: true
 server:
   type: vllm
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
@@ -27,7 +28,6 @@ report:
   prometheus:
     summary: true
     per_stage: false
-
 storage:
   local_storage:
     path: /workspace/reports-test  

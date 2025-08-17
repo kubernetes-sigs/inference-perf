@@ -3,3 +3,6 @@
 approvers:
 - inference-perf-maintainers
 - wg-serving-leads
+
+reviewers:
+- inference-perf-reviewers
