@@ -16,14 +16,12 @@
 import json
 import time
 from typing import Any, List
-import logging
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
-logger = logging.getLogger(__name__)
 
 class CompletionAPIData(InferenceAPIData):
     prompt: str
