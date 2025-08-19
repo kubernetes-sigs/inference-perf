@@ -57,7 +57,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                     chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
                     output_token_times.append(time.perf_counter())
                 except UnicodeDecodeError:
-                    continue
+                    raise Exception(f"failed to decode JSON chunk: '{line}'")
                 for line in chunk_str.splitlines():
                     if line == '[DONE]':
                         break
@@ -70,7 +70,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                             if content:
                                 output_text += content
                     except (json.JSONDecodeError, IndexError):
-                        continue
+                        raise Exception(f"failed to decode JSON line in chunk: '{line}'")
                 else:
                     continue
                 break
@@ -78,7 +78,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)
             if output_len == 0:
-                raise Exception(f"response of length zero inferred from response: {output_text}")
+                raise Exception(f"response of length zero inferred from streamed response: '{output_text}'")
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
@@ -93,7 +93,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
             output_len = tokenizer.count_tokens(output_text)
             if output_len == 0:
-                raise Exception(f"response of length zero inferred from response: {output_text}")
+                raise Exception(f"response of length zero inferred from response: '{output_text}'")
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,

@@ -16,12 +16,14 @@
 import json
 import time
 from typing import Any, List
+import logging
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
+logger = logging.getLogger(__name__)
 
 class CompletionAPIData(InferenceAPIData):
     prompt: str
@@ -66,7 +68,7 @@ class CompletionAPIData(InferenceAPIData):
             prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
             if output_len == 0:
-                raise Exception(f"response of length zero inferred from response: {output_text}")
+                raise Exception(f"response of length zero inferred from streamed response: '{output_text}'")
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
@@ -81,5 +83,5 @@ class CompletionAPIData(InferenceAPIData):
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
             if output_len == 0:
-                raise Exception(f"response of length zero inferred from response: {output_text}")
+                raise Exception(f"response of length zero inferred from response: '{output_text}'")
             return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)
