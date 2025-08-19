@@ -56,12 +56,17 @@ class CompletionAPIData(InferenceAPIData):
                 # After removing the "data: " prefix, each chunk decodes to a response json for a single token or "[DONE]" if end of stream
                 chunk = chunk_bytes.decode("utf-8").removeprefix("data: ")
                 if chunk != "[DONE]":
-                    data = json.loads(chunk)
-                    if choices := data.get("choices"):
-                        text = choices[0].get("text")
-                        output_text += text
+                    try:
+                        data = json.loads(chunk)
+                        if choices := data.get("choices"):
+                            text = choices[0].get("text")
+                            output_text += text
+                    except (json.JSONDecodeError, IndexError):
+                        raise Exception(f"failed to decode JSON response: {chunk}")
             prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
+            if output_len == 0:
+                raise Exception(f"response of length zero inferred from response: {output_text}")
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
@@ -75,4 +80,6 @@ class CompletionAPIData(InferenceAPIData):
                 return InferenceInfo(input_tokens=prompt_len)
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
+            if output_len == 0:
+                raise Exception(f"response of length zero inferred from response: {output_text}")
             return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)
