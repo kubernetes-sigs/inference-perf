@@ -57,7 +57,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                     chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
                     output_token_times.append(time.perf_counter())
                 except UnicodeDecodeError:
-                    raise Exception(f"failed to decode JSON chunk: '{line}'")
+                    continue
                 for line in chunk_str.splitlines():
                     if line == '[DONE]':
                         break
@@ -70,7 +70,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                             if content:
                                 output_text += content
                     except (json.JSONDecodeError, IndexError):
-                        raise Exception(f"failed to decode JSON line in chunk: '{line}'")
+                        continue
                 else:
                     continue
                 break
