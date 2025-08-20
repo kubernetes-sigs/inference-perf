@@ -98,6 +98,12 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 "p90": metrics.p90_kv_cache_usage,
                 "p99": metrics.p99_kv_cache_usage,
             },
+            "num_requests_swapped": {
+                "mean": metrics.num_requests_swapped,
+            },
+            "num_preemptions_total": {
+                "mean": metrics.num_preemptions_total
+            }
         },
     )
 

@@ -52,6 +52,9 @@ class ModelServerMetrics(BaseModel):
     avg_prompt_tokens: int = 0
     avg_output_tokens: int = 0
     avg_queue_length: int = 0
+    num_preemptions_total: int = 0
+    num_requests_swapped: int = 0
+    
 
     # Usage
     avg_kv_cache_usage: float = 0.0

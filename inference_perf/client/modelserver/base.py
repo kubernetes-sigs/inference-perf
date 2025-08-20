@@ -60,6 +60,8 @@ class PrometheusMetricMetadata(TypedDict):
     median_kv_cache_usage: ModelServerPrometheusMetric
     p90_kv_cache_usage: ModelServerPrometheusMetric
     p99_kv_cache_usage: ModelServerPrometheusMetric
+    num_preemptions_total: ModelServerPrometheusMetric
+    num_requests_swapped: ModelServerPrometheusMetric
 
 class ModelServerClient(ABC):
     @abstractmethod
