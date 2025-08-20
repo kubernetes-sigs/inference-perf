@@ -162,6 +162,8 @@ class vLLMModelServerClient(ModelServerClient):
             median_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "median", "gauge", filters),
             p90_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "p90", "gauge", filters),
             p99_kv_cache_usage=ModelServerPrometheusMetric("vllm:gpu_cache_usage_perc", "p99", "gauge", filters),
+            num_preemptions_total=ModelServerPrometheusMetric("vllm:num_preemptions_total", "mean", "gauge", filters),
+            num_requests_swapped=ModelServerPrometheusMetric("vllm:num_requests_swapped", "mean", "gauge", filters),
         )
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
