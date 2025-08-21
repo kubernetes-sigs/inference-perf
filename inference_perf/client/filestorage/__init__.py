@@ -17,4 +17,4 @@ from .gcs import GoogleCloudStorageClient
 from .s3 import SimpleStorageServiceClient
 
 
-__all__ = ["StorageClient", "LocalStorageClient", "GoogleCloudStorageClient","SimpleStorageServiceClient"]
+__all__ = ["StorageClient", "LocalStorageClient", "GoogleCloudStorageClient", "SimpleStorageServiceClient"]

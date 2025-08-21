@@ -16,15 +16,19 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatComplet
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List
+from typing import Generator, List, Optional
 from datasets import load_dataset
 import os
 
 logger = logging.getLogger(__name__)
 
+SHAREGPT_HF_DATASET_URL = "anon8231489123/ShareGPT_Vicuna_unfiltered"
+SHAREGPT_HF_DATAFILES_PATH = "ShareGPT_V3_unfiltered_cleaned_split.json"
+SHAREGPT_HF_CHAT_ROLE_MAP = {"human": "user", "gpt": "assistant"}
+
 
 class HFShareGPTDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if config.path is not None:
@@ -43,8 +47,8 @@ class HFShareGPTDataGenerator(DataGenerator):
         else:
             self.sharegpt_dataset = iter(
                 load_dataset(
-                    "anon8231489123/ShareGPT_Vicuna_unfiltered",
-                    data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
+                    SHAREGPT_HF_DATASET_URL,
+                    data_files=SHAREGPT_HF_DATAFILES_PATH,
                     streaming=True,
                     split="train",
                 )
@@ -99,7 +103,10 @@ class HFShareGPTDataGenerator(DataGenerator):
                 elif self.api_config.type == APIType.Chat:
                     yield ChatCompletionAPIData(
                         messages=[
-                            ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
+                            ChatMessage(
+                                role=SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user"),
+                                content=conversation[self.content_key],
+                            )
                             for conversation in data[self.data_key]
                         ]
                     )
