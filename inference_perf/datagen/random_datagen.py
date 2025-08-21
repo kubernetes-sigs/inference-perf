@@ -11,14 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pathlib import Path
 import numpy as np
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List
-from inference_perf.config import APIType, APIConfig, DataConfig
+from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader, TraceStreamReader
+import logging
 
+logger = logging.getLogger(__name__)
 
 # Random data generator generates random tokens from the model's
 # vocabulary for the desired input and output distribution.
@@ -31,26 +35,38 @@ class RandomDataGenerator(DataGenerator):
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if self.input_distribution is None or self.output_distribution is None:
-            raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
+        if self.trace is None:
+            # let's read the trace file and get the input and output lengths
+            if self.input_distribution is None or self.output_distribution is None:
+                raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
 
-        if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
-            raise ValueError("IODistribution requires total_count to be set")
+            if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
+                raise ValueError("IODistribution requires total_count to be set")
 
-        self.input_lengths = generate_distribution(
-            self.input_distribution.min,
-            self.input_distribution.max,
-            self.input_distribution.mean,
-            self.input_distribution.std_dev,
-            self.input_distribution.total_count,
-        )
-        self.output_lengths = generate_distribution(
-            self.output_distribution.min,
-            self.output_distribution.max,
-            self.output_distribution.mean,
-            self.output_distribution.std_dev,
-            self.output_distribution.total_count,
-        )
+            self.input_lengths = generate_distribution(
+                self.input_distribution.min,
+                self.input_distribution.max,
+                self.input_distribution.mean,
+                self.input_distribution.std_dev,
+                self.input_distribution.total_count,
+            )
+            self.output_lengths = generate_distribution(
+                self.output_distribution.min,
+                self.output_distribution.max,
+                self.output_distribution.mean,
+                self.output_distribution.std_dev,
+                self.output_distribution.total_count,
+            )
+        else:
+            # let's read the trace file and get the input and output lengths
+            if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
+                self.trace_reader = AzurePublicDatasetReader()
+            elif self.trace.format == TraceFormat.JSONL:
+                self.trace_reader = JSONLinesReader()
+            else:
+                raise ValueError(f"Unsupported trace format: {self.trace.format}")
+            
+            logger.info(f"Ignoring input and output distributions configurations as trace file {self.trace.file} is provided")
 
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
@@ -81,6 +97,9 @@ class RandomDataGenerator(DataGenerator):
         return False
 
     def get_request(self, n: int) -> InferenceAPIData:
+        if self.trace is not None:
+            raise ValueError("Trace file is not supported for get_request method")
+
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
@@ -93,24 +112,28 @@ class RandomDataGenerator(DataGenerator):
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
-
-        while True:
-            if self.tokenizer is None:
-                raise ValueError("Tokenizer is required for RandomDataGenerator")
-
-            if self.api_config.type == APIType.Completion:
-                prompt_text: str
-                if self.input_lengths[i] <= 0:
-                    random_token_ids_list = []
-                else:
-                    random_token_ids = np.random.randint(0, self.vocab_size, size=self.input_lengths[i], dtype=np.int64)
-                    random_token_ids_list = random_token_ids.tolist()
-                prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
-
-                yield CompletionAPIData(
-                    prompt=prompt_text,
-                    max_tokens=self.output_lengths[i],
-                )
+        if self.trace is None:
+            while True:
+                yield self.get_data_with_token_count(self.input_lengths[i], self.output_lengths[i])
                 i += 1
+        else:
+            for input_tokens, output_tokens in self.trace_reader.stream_token_entries(Path(self.trace.file)):
+                yield self.get_data_with_token_count(input_tokens, output_tokens)
+    
+    def get_data_with_token_count(self, input: int, output: int) -> InferenceAPIData:
+        if self.tokenizer is None:
+                raise ValueError("Tokenizer is required for RandomDataGenerator")
+        
+        if self.api_config.type == APIType.Completion:
+            if input <= 0:
+                random_token_ids_list = []
             else:
-                raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
+                random_token_ids = np.random.randint(0, self.vocab_size, size=input, dtype=np.int64)
+                random_token_ids_list = random_token_ids.tolist()
+            prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
+            return CompletionAPIData(
+                prompt=prompt_text,
+                max_tokens=output,
+            )
+        else:
+            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")

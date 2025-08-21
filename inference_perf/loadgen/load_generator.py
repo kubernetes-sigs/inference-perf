@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pydantic import BaseModel
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader
+from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
-from inference_perf.config import LoadType, LoadConfig
+from inference_perf.config import LoadType, LoadConfig, TraceFormat
 from asyncio import Semaphore, TaskGroup, create_task, gather, run, sleep, set_event_loop_policy
 from enum import Enum, auto
 from typing import List, Union, Tuple, TypeAlias
@@ -128,9 +129,27 @@ class LoadGenerator:
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
 
+        if self.load_type == LoadType.TRACE_REPLAY:
+            self.trace = load_config.trace
+
+            if self.trace is None:
+                raise ValueError("Trace file is required for trace replay load generator")
+            
+            if self.num_workers > 1:
+                raise ValueError("Trace replay load generator does not support multiple workers")
+
+            if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
+                self.trace_reader = AzurePublicDatasetReader()
+            elif self.trace.format == TraceFormat.JSONL:
+                self.trace_reader = JSONLinesReader()
+            else:
+                raise ValueError(f"Unsupported trace format: {self.trace.format}")
+
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
+        elif self.load_type == LoadType.TRACE_REPLAY:
+            return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=self.trace.file)
         return ConstantLoadTimer(rate=rate, duration=duration)
 
     async def mp_run(self, client: ModelServerClient) -> None:

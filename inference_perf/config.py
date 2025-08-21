@@ -30,6 +30,15 @@ class APIConfig(BaseModel):
     streaming: bool = False
 
 
+class TraceFormat(Enum):
+    AZURE_PUBLIC_DATASET = "AzurePublicDataset"
+    JSONL = "jsonl"
+
+
+class TraceConfig(BaseModel):
+    file: str
+    format: TraceFormat = TraceFormat.JSONL
+
 class DataGenType(Enum):
     Mock = "mock"
     ShareGPT = "shareGPT"
@@ -67,6 +76,9 @@ class DataConfig(BaseModel):
     output_distribution: Optional[Distribution] = None
     shared_prefix: Optional[SharedPrefix] = None
 
+    # Trace file is only supported for random dataset at this moment
+    trace: Optional[TraceConfig] = None
+
 
 class ModelServerType(Enum):
     VLLM = "vllm"
@@ -75,6 +87,7 @@ class ModelServerType(Enum):
 class LoadType(Enum):
     CONSTANT = "constant"
     POISSON = "poisson"
+    TRACE_REPLAY = "trace_replay"
 
 
 class MetricsClientType(Enum):
@@ -94,6 +107,7 @@ class LoadConfig(BaseModel):
     num_workers: int = max(1, cpu_count())  # type: ignore
     worker_max_concurrency: int = 100
     worker_max_tcp_connections: int = 2500
+    trace: Optional[TraceConfig] = None
 
 
 class StorageConfigBase(BaseModel):
