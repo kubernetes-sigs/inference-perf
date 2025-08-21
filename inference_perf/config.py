@@ -36,6 +36,7 @@ class DataGenType(Enum):
     Synthetic = "synthetic"
     Random = "random"
     SharedPrefix = "shared_prefix"
+    CNNDailyMail = "cnn_dailymail"
 
 
 # Represents the distribution for input prompts and output generations.
