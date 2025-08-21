@@ -98,7 +98,7 @@ class PrometheusMetricsClient(MetricsClient):
         if config:
             if not config.url:
                 raise Exception("prometheus url missing")
-            self.query_url = config.url.unicode_string() + "api/v1/query"
+            self.query_url = config.url.unicode_string().rstrip('/') + "/api/v1/query"
             logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
         else:
@@ -156,6 +156,7 @@ class PrometheusMetricsClient(MetricsClient):
         # Get the query evaluation time and duration for the stage
         # The query evaluation time is the end time of the stage plus the scrape interval and a buffer to ensure metrics are collected
         # Duration is calculated as the difference between the eval time and start time of the stage
+        logger.debug(f"runtime parameters for stage {stage_id}: {runtime_parameters}")
         query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
         return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
@@ -230,15 +231,15 @@ class PrometheusMetricsClient(MetricsClient):
         """
         query_result = 0.0
         try:
-            logger.debug(f"Making PromQL query: '{query}'")
+            logger.debug(f"making PromQL query: '{query}'")
             response = requests.get(self.query_url, headers=self.get_headers(), params={"query": query, "time": eval_time})
             if response is None:
-                logger.error("Error executing query: %s" % (query))
+                logger.error("error executing query: %s" % (query))
                 return query_result
 
             response.raise_for_status()
         except Exception as e:
-            logger.error("Error executing query: %s" % (e))
+            logger.error("error executing query: %s" % (e))
             return query_result
 
         # Check if the response is valid
@@ -258,9 +259,11 @@ class PrometheusMetricsClient(MetricsClient):
         #         ]
         #     }
         # }
+        
         response_obj = response.json()
+        logger.debug(f"got result for query '{query}': {response_obj}")
         if response_obj.get("status") != "success":
-            logger.error("Error executing query: %s" % (response_obj))
+            logger.error("error executing query: %s" % (response_obj))
             return query_result
 
         data = response_obj.get("data", {})
@@ -276,8 +279,9 @@ class PrometheusMetricsClient(MetricsClient):
                 try:
                     query_result = round(float(result[0]["value"][1]), 6)
                 except ValueError:
-                    logger.error("Error converting value to float: %s" % (result[0]["value"][1]))
+                    logger.error("error converting value to float: %s" % (result[0]["value"][1]))
                     return query_result
+        logger.debug(f"inferred result from query '{query}': {query_result}")
         return query_result
 
     def get_headers(self) -> dict[str, Any]:

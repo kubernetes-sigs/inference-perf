@@ -55,6 +55,11 @@ class PrometheusMetricMetadata(TypedDict):
     avg_output_tokens: ModelServerPrometheusMetric
     avg_queue_length: ModelServerPrometheusMetric
 
+    # Usage
+    avg_kv_cache_usage: ModelServerPrometheusMetric
+    median_kv_cache_usage: ModelServerPrometheusMetric
+    p90_kv_cache_usage: ModelServerPrometheusMetric
+    p99_kv_cache_usage: ModelServerPrometheusMetric
 
 class ModelServerClient(ABC):
     @abstractmethod

@@ -55,6 +55,18 @@ class SyntheticDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
+    def get_request(self, n: int) -> InferenceAPIData:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for SyntheticDataGenerator")
+
+        if self.api_config.type == APIType.Completion:
+            return CompletionAPIData(
+                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[n]]),
+                max_tokens=self.output_lengths[n]
+            )
+        else:
+            raise Exception("Unsupported API type")
+
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
         while True:

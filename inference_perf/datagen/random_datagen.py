@@ -80,6 +80,17 @@ class RandomDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
+    def get_request(self, n: int) -> InferenceAPIData:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for RandomDataGenerator")
+
+        if self.api_config.type == APIType.Completion:
+            tokens = np.random.randint(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
+            prompt_text = self.tokenizer.get_tokenizer().decode(tokens.tolist())
+            return CompletionAPIData(prompt=prompt_text, max_tokens=self.output_lengths[n])
+        else:
+            raise Exception("Unsupported API type")
+
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
 
