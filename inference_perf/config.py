@@ -28,6 +28,7 @@ class APIType(Enum):
 class APIConfig(BaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
+    headers: Optional[dict[str, str]] = None
 
 
 class DataGenType(Enum):

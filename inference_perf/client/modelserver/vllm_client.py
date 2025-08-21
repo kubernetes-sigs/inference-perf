@@ -176,6 +176,9 @@ class vLLMModelServerClient(ModelServerClient):
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        if self.api_config.headers:
+            headers.update(self.api_config.headers)
+
         request_data = json.dumps(payload)
 
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
