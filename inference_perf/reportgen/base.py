@@ -114,13 +114,13 @@ def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Option
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
-        "schedule_accuracy": summarize(schedule_deltas),
+        "schedule_delay": summarize(schedule_deltas),
     }
 
     if stage_rate is not None:
         load_summary = {
             "count": len(metrics),
-            "schedule_accuracy": summarize(schedule_deltas),
+            "schedule_delay": summarize(schedule_deltas),
             "send_duration": send_duration,
             "requested_rate": stage_rate,
             "achieved_rate": len(metrics) / send_duration,

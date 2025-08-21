@@ -79,6 +79,27 @@ Multiple load generators are supported:
 Multiple load patterns can be specified:
 - Stages with configurable duration and QPS along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
 
+Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not
+the load generator is failing to meet the desired load.
+
+Example:
+```
+"load_summary": {
+"count": 480,
+"schedule_delay": {
+    "mean": 0.0033437913275217094,
+    "min": -0.0008108859183266759,
+    "p10": -2.9846763936802738e-05,
+    "p50": 0.0010809275845531374,
+    "p90": 0.007055185985518622,
+    "max": 0.06699507019948214
+},
+"send_duration": 59.98128472798271,
+"requested_rate": 8.0,
+"achieved_rate": 8.00249614820385
+}
+```
+
 ### API
 
 OpenAI completion and chat completion APIs are supported. It can be pointed to any endpoints which support these APIs - currently verified against vLLM deployments. Other APIs and model server support can be added easily.
