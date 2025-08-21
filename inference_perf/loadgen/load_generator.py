@@ -210,3 +210,13 @@ class LoadGenerator:
             if worker.is_alive():
                 worker.terminate()
                 worker.join(timeout=0.0)
+
+
+class TraceReplayLoadGenerator:
+    def __init__(self, trace_file: str, format: TraceFormat, datagen: DataGenerator) -> None:
+        self.trace_file = trace_file
+        self.format = format
+        self.datagen = datagen
+
+    async def run(self, client: ModelServerClient) -> None:
+        pass

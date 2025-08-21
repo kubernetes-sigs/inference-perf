@@ -76,3 +76,47 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(timer.start_timer(next_time))
                 yield next_time
+
+class TraceLoadTimer(LoadTimer):
+    def __init__(self, trace_data: List[float]) -> None:
+        self._trace_data = trace_data
+        self._current_index = 0
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start_time = time.monotonic() if initial is None else initial
+        
+        # Cycle through trace data indefinitely for continuous load generation
+        data_length = len(self._trace_data)
+        index = 0
+        
+        while True:
+            if index >= data_length:
+                index = 0  # Reset to beginning when trace data is exhausted
+            
+            yield start_time + self._trace_data[index]
+            index += 1
+
+class StreamingTraceLoadTimer(LoadTimer):
+    """Load timer that streams timing data to handle very large trace files."""
+    
+    def __init__(self, trace_analyzer) -> None:
+        self._trace_analyzer = trace_analyzer
+        self._timing_pattern = None
+    
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start_time = time.monotonic() if initial is None else initial
+        
+        # Get timing pattern (cached after first call)
+        if self._timing_pattern is None:
+            self._timing_pattern = self._trace_analyzer.get_timing_pattern()
+        
+        # Cycle through timing pattern indefinitely
+        pattern_length = len(self._timing_pattern)
+        index = 0
+        
+        while True:
+            if index >= pattern_length:
+                index = 0  # Reset to beginning when pattern is exhausted
+            
+            yield start_time + self._timing_pattern[index]
+            index += 1
