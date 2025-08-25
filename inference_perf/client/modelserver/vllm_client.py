@@ -169,4 +169,8 @@ class vLLMModelServerClient(openAIModelServerClient):
             num_requests_swapped=ModelServerPrometheusMetric(
                 "vllm:num_requests_swapped", "mean", "gauge", self.additional_metric_filters
             ),
+            avg_inter_token_latency=None,
+            median_inter_token_latency=None,
+            p90_inter_token_latency=None,
+            p99_inter_token_latency=None,
         )

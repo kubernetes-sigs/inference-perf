@@ -79,25 +79,25 @@ class SGlangModelServerClient(openAIModelServerClient):
                 "histogram",
                 self.additional_metric_filters,
             ),
-            avg_time_per_output_token=ModelServerPrometheusMetric(
+            avg_inter_token_latency=ModelServerPrometheusMetric(
                 "sglang:inter_token_latency_seconds",
                 "mean",
                 "histogram",
                 self.additional_metric_filters,
             ),
-            median_time_per_output_token=ModelServerPrometheusMetric(
+            median_inter_token_latency=ModelServerPrometheusMetric(
                 "sglang:inter_token_latency_seconds",
                 "median",
                 "histogram",
                 self.additional_metric_filters,
             ),
-            p90_time_per_output_token=ModelServerPrometheusMetric(
+            p90_inter_token_latency=ModelServerPrometheusMetric(
                 "sglang:inter_token_latency_seconds",
                 "p90",
                 "histogram",
                 self.additional_metric_filters,
             ),
-            p99_time_per_output_token=ModelServerPrometheusMetric(
+            p99_inter_token_latency=ModelServerPrometheusMetric(
                 "sglang:inter_token_latency_seconds",
                 "p99",
                 "histogram",
@@ -163,6 +163,10 @@ class SGlangModelServerClient(openAIModelServerClient):
             p99_kv_cache_usage=ModelServerPrometheusMetric(
                 "sglang:cache_hit_rate", "p99", "gauge", self.additional_metric_filters
             ),
+            avg_time_per_output_token=None,
+            median_time_per_output_token=None,
+            p90_time_per_output_token=None,
+            p99_time_per_output_token=None,
             num_preemptions_total=None,
             num_requests_swapped=None,
         )
