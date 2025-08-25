@@ -17,6 +17,7 @@ from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
 from .random_datagen import RandomDataGenerator
 from .shared_prefix_datagen import SharedPrefixDataGenerator
+from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
 
 __all__ = [
     "DataGenerator",
@@ -25,4 +26,5 @@ __all__ = [
     "SyntheticDataGenerator",
     "RandomDataGenerator",
     "SharedPrefixDataGenerator",
+    "CNNDailyMailDataGenerator",
 ]

@@ -29,6 +29,7 @@ from inference_perf.datagen import (
     SyntheticDataGenerator,
     RandomDataGenerator,
     SharedPrefixDataGenerator,
+    CNNDailyMailDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
@@ -194,6 +195,8 @@ def main_cli() -> None:
 
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.CNNDailyMail:
+            datagen = CNNDailyMailDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Synthetic:
             datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Random:
