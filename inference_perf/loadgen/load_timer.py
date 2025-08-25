@@ -15,7 +15,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, Tuple
 import numpy as np
-
+from inference_perf.utils.trace_reader import TraceStreamReader
+from pathlib import Path
 
 class LoadTimer(ABC):
     """Abstract base class for load generators."""
@@ -89,3 +90,22 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
+
+class TraceReplayLoadTimer(LoadTimer):
+    def __init__(self, trace_reader: TraceStreamReader, trace_file: Path, has_header: bool = False) -> None:
+        self._trace_reader = trace_reader
+        self._trace_file = trace_file
+        self._has_header = has_header
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        if self._has_header:
+            next(self._trace_reader.stream_timestamp_entries(self._trace_file.path))
+
+        i = 0
+        t_0 = 0
+        for timestamp in self._trace_reader.stream_timestamp_entries(self._trace_file.path):
+            if i == 0:
+                t_0 = timestamp
+            yield initial + (timestamp - t_0)
+            i += 1
+        
