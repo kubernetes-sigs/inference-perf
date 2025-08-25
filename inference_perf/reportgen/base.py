@@ -101,9 +101,7 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             "num_requests_swapped": {
                 "mean": metrics.num_requests_swapped,
             },
-            "num_preemptions_total": {
-                "mean": metrics.num_preemptions_total
-            }
+            "num_preemptions_total": {"mean": metrics.num_preemptions_total},
         },
     )
 

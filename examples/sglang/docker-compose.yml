@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  sglang-server:
+    image: lmsysorg/sglang:v0.4.7-cu124
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command:
+      python3 -m sglang.launch_server
+      --model-path HuggingFaceTB/SmolLM2-135M-Instruct
+      --port 8000
+      --host 0.0.0.0
+      --context-length 550
+      --mem-fraction-static 0.70
+      --enable-metrics
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.listen-address=:9090'

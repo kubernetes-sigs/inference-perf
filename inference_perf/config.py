@@ -71,6 +71,7 @@ class DataConfig(BaseModel):
 
 class ModelServerType(Enum):
     VLLM = "vllm"
+    SGLANG = "sglang"
 
 
 class LoadType(Enum):

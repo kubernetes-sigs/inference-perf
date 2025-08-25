@@ -22,6 +22,7 @@ from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -54,19 +55,19 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_token_times: List[float] = []
             async for chunk_bytes in response.content:
                 try:
-                    chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
+                    chunk_str = chunk_bytes.decode("utf-8").removeprefix("data: ")
                     output_token_times.append(time.perf_counter())
                 except UnicodeDecodeError:
                     continue
                 for line in chunk_str.splitlines():
-                    if line == '[DONE]':
+                    if line == "[DONE]":
                         break
                     try:
                         data = json.loads(line)
-                        choices = data.get('choices', [])
+                        choices = data.get("choices", [])
                         if choices:
-                            delta = choices[0].get('delta', {})
-                            content = delta.get('content')
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
                             if content:
                                 output_text += content
                     except (json.JSONDecodeError, IndexError):
