@@ -38,6 +38,7 @@ class DataGenType(Enum):
     Random = "random"
     SharedPrefix = "shared_prefix"
     CNNDailyMail = "cnn_dailymail"
+    BillsumConversations = "billsum_conversations"
 
 
 # Represents the distribution for input prompts and output generations.
