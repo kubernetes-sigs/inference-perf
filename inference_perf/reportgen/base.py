@@ -73,6 +73,7 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             },
             "queue_len": {
                 "mean": metrics.avg_queue_length,
+                "median": metrics.median_queue_length,
             },
             "request_latency": {
                 "mean": metrics.avg_request_latency,

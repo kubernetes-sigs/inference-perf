@@ -69,7 +69,8 @@ class vLLMModelServerClient(ModelServerClient):
 
         filters = [f"model_name='{self.model_name}'", *self.additional_filters]
         self.prometheus_metric_metadata = PrometheusMetricMetadata(
-            avg_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
+            avg_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "median", "gauge", filters),
+            median_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
             avg_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "mean",

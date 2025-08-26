@@ -54,6 +54,7 @@ class PrometheusMetricMetadata(TypedDict):
     avg_prompt_tokens: ModelServerPrometheusMetric
     avg_output_tokens: ModelServerPrometheusMetric
     avg_queue_length: ModelServerPrometheusMetric
+    median_queue_length: ModelServerPrometheusMetric
 
     # Usage
     avg_kv_cache_usage: ModelServerPrometheusMetric
