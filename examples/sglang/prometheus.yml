@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: "sglang-server"
+    static_configs:
+      - targets: ["sglang-server:8000"]
