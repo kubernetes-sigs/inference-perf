@@ -55,7 +55,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             avg_queue_length=ModelServerPrometheusMetric(
                 "vllm:num_requests_waiting", "mean", "gauge", self.additional_metric_filters
             ),
-            median_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "mean", "gauge", filters),
+            median_queue_length=ModelServerPrometheusMetric("vllm:num_requests_waiting", "median", "gauge", filters),
             avg_time_to_first_token=ModelServerPrometheusMetric(
                 "vllm:time_to_first_token_seconds",
                 "mean",
