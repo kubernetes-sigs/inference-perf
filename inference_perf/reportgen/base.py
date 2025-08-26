@@ -41,7 +41,7 @@ def summarize(items: List[float]) -> Optional[dict[str, float]]:
             "mean": float(np.mean(items)),
             "min": float(np.min(items)),
             "p10": float(np.percentile(items, 10)),
-            "median": float(np.percentile(items, 50)),
+            "p50": float(np.percentile(items, 50)),
             "p90": float(np.percentile(items, 90)),
             "max": float(np.max(items)),
         }
@@ -77,25 +77,25 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             },
             "request_latency": {
                 "mean": metrics.avg_request_latency,
-                "median": metrics.median_request_latency,
+                "p50": metrics.median_request_latency,
                 "p90": metrics.p90_request_latency,
                 "p99": metrics.p99_request_latency,
             },
             "time_to_first_token": {
                 "mean": metrics.avg_time_to_first_token,
-                "median": metrics.median_time_to_first_token,
+                "p50": metrics.median_time_to_first_token,
                 "p90": metrics.p90_time_to_first_token,
                 "p99": metrics.p99_time_to_first_token,
             },
             "time_per_output_token": {
                 "mean": metrics.avg_time_per_output_token,
-                "median": metrics.median_time_per_output_token,
+                "p50": metrics.median_time_per_output_token,
                 "p90": metrics.p90_time_per_output_token,
                 "p99": metrics.p99_time_per_output_token,
             },
             "kv_cache_usage_percentage": {
                 "mean": metrics.avg_kv_cache_usage,
-                "median": metrics.median_kv_cache_usage,
+                "p50": metrics.median_kv_cache_usage,
                 "p90": metrics.p90_kv_cache_usage,
                 "p99": metrics.p99_kv_cache_usage,
             },
