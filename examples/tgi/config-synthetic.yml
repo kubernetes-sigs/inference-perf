@@ -1,0 +1,38 @@
+load:
+  type: constant
+  interval: 15
+  stages:
+  - rate: 1
+    duration: 30
+  - rate: 2
+    duration: 30
+api:
+  type: completion
+server:
+  type: tgi
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: synthetic
+  input_distribution:
+    min: 10             # min length of the synthetic prompts
+    max: 100            # max length of the synthetic prompts
+    mean: 50            # mean length of the synthetic prompts
+    std: 10             # standard deviation of the length of the synthetic prompts
+  output_distribution:
+    min: 10             # min length of the output to be generated
+    max: 100            # max length of the output to be generated
+    mean: 50            # mean length of the output to be generated
+    std: 10             # standard deviation of the length of the output to be generated
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
