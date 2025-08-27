@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pathlib import Path
 from pydantic import BaseModel
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
@@ -149,7 +150,7 @@ class LoadGenerator:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
         elif self.load_type == LoadType.TRACE_REPLAY:
-            return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=self.trace.file)
+            return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         return ConstantLoadTimer(rate=rate, duration=duration)
 
     async def mp_run(self, client: ModelServerClient) -> None:
@@ -171,7 +172,7 @@ class LoadGenerator:
             start_time_epoch = time.time()
 
             time_generator = timer.start_timer(start_time)
-            if hasattr(self.datagen, "get_request"):
+            if self.datagen.trace is None and hasattr(self.datagen, "get_request"):
                 # Datagen supports deferring to workers, enqueue request number
                 for request_number in range(num_requests):
                     request_time = next(time_generator)
@@ -179,8 +180,8 @@ class LoadGenerator:
             else:
                 # Datagen requires queueing request_data
                 data_generator = self.datagen.get_data()
-                for _ in range(num_requests):
-                    request_queue.put((stage_id, next(data_generator), next(time_generator)))
+                for data, request_time in zip(data_generator, time_generator):
+                    request_queue.put((stage_id, data, request_time))
 
             await sleep(start_time + stage.duration - time.perf_counter())
 
@@ -224,7 +225,7 @@ class LoadGenerator:
             logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
-                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator)):
                     now = time.perf_counter()
                     if time_index < end_time and now < end_time:
                         if time_index > now:

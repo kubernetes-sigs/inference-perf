@@ -97,9 +97,6 @@ class RandomDataGenerator(DataGenerator):
         return False
 
     def get_request(self, n: int) -> InferenceAPIData:
-        if self.trace is not None:
-            raise ValueError("Trace file is not supported for get_request method")
-
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 

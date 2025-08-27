@@ -98,14 +98,6 @@ class TraceReplayLoadTimer(LoadTimer):
         self._has_header = has_header
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        if self._has_header:
-            next(self._trace_reader.stream_timestamp_entries(self._trace_file.path))
-
-        i = 0
-        t_0 = 0
-        for timestamp in self._trace_reader.stream_timestamp_entries(self._trace_file.path):
-            if i == 0:
-                t_0 = timestamp
-            yield initial + (timestamp - t_0)
-            i += 1
-        
+        for timestamp in self._trace_reader.stream_timestamp_entries(self._trace_file):
+            print(f"request to be executed at perf counter: {initial + timestamp}, initial: {initial}")
+            yield initial + timestamp

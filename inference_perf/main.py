@@ -184,12 +184,12 @@ def main_cli() -> None:
                     raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured if no trace config is provided")
                 if config.data.output_distribution is None:
                     raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided")                
-
-            total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
-            if config.data.input_distribution.total_count is None:
-                config.data.input_distribution.total_count = total_count
-            if config.data.output_distribution.total_count is None:
-                config.data.output_distribution.total_count = total_count
+            
+                total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
+                if config.data.input_distribution.total_count is None:
+                    config.data.input_distribution.total_count = total_count
+                if config.data.output_distribution.total_count is None:
+                    config.data.output_distribution.total_count = total_count
 
         if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
