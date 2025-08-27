@@ -92,10 +92,9 @@ class PoissonLoadTimer(LoadTimer):
                 yield next_time
 
 class TraceReplayLoadTimer(LoadTimer):
-    def __init__(self, trace_reader: TraceReader, trace_file: Path, has_header: bool = False) -> None:
+    def __init__(self, trace_reader: TraceReader, trace_file: Path) -> None:
         self._trace_reader = trace_reader
         self._trace_file = trace_file
-        self._has_header = has_header
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):

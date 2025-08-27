@@ -19,7 +19,7 @@ from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List, Optional
 from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
-from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader, TraceReader
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 import logging
 
 logger = logging.getLogger(__name__)
@@ -61,8 +61,6 @@ class RandomDataGenerator(DataGenerator):
             # let's read the trace file and get the input and output lengths
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
                 self.trace_reader = AzurePublicDatasetReader()
-            elif self.trace.format == TraceFormat.JSONL:
-                self.trace_reader = JSONLinesReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
             

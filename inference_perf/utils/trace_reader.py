@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Iterator, Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import json
-import numpy as np
+import csv
 from inference_perf.config import Distribution
 import logging
 import time
@@ -24,12 +24,12 @@ class TraceReader(ABC):
     
     @abstractmethod
     def stream_timestamp_entries(self, file_path: Path) -> Iterator[float]:
-        """Stream entries from JSONL format without loading entire file."""
+        """Stream entries from a trace file"""
         raise NotImplementedError
 
     @abstractmethod
     def stream_token_entries(self, file_path: Path) -> Iterator[Tuple[int, int]]:
-        """Stream trace entries one by one without loading entire file."""
+        """Stream trace entries one by one"""
         raise NotImplementedError
     
     @abstractmethod
@@ -38,60 +38,60 @@ class TraceReader(ABC):
         raise NotImplementedError
 
 class AzurePublicDatasetReader(TraceReader):
-    """Streaming reader for Azure Public Dataset format."""
+    """Trace reader for Azure Public Dataset format."""
 
     def __init__(self):
         self.timestamp_format = "%Y-%m-%d %H:%M:%S.%f"
         self.traces = None
-
     
     def stream_timestamp_entries(self, file_path: Path) -> Iterator[float]:
-        """Stream entries from CSV format without loading entire file."""
-        logger.info(f"Streaming trace entries from {file_path}")
-        has_header = True
+        """Stream entries from AzurePublicDataset format"""
+        logger.debug(f"Streaming traces from {file_path}")
         prev_timestamp = 0
-        first_entry = True
+        start_line = 1
+
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                if has_header:
-                    has_header = False
-                    continue
+            if self.has_header(file_path):
+                start_line = 2
+                next(f)
+            for line_num, line in enumerate(f, start_line):
                 try:
                     if line.strip():  # Skip empty lines
                         entry_data = line.split(',')
                         timestamp = self.parse_timestamp(entry_data[0])
-                        if first_entry:
-                            prev_timestamp = timestamp
-                            first_entry = False
-                        print("yielded timestamp: "+str(timestamp - prev_timestamp))
-                        yield (timestamp - prev_timestamp)
+                        # for first line, yield 0 (so that the first request is scheduled immediately)
+                        # for other lines, yield the difference between the current and previous timestamps
+                        if line_num == start_line:
+                            yield 0
+                        else:
+                            yield (timestamp - prev_timestamp)
                         prev_timestamp = timestamp
                 except Exception as e:
                     logger.warning(f"Error processing line {line_num}: {e}")
 
     def load_traces(self, file_path: Path) -> List[Tuple[float, int, int]]:
+        """Load traces from file into memory."""
         if self.traces is not None:
             logger.info(f"Using cached traces")
             return self.traces
         logger.info(f"Loading traces from {file_path}")
         traces = []
-        has_header = True
-        first_entry = True
+        start_line = 1
         prev_timestamp = 0
         before = time.time()
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                if has_header:
-                    has_header = False
-                    continue
+            if self.has_header(file_path):
+                start_line = 2
+                next(f)
+            for line_num, line in enumerate(f, start_line):
                 try:
                     if line.strip():  # Skip empty lines
                         entry_data = line.split(',')
                         timestamp = self.parse_timestamp(entry_data[0])
-                        if first_entry:
-                            prev_timestamp = timestamp
-                            first_entry = False
-                        traces.append((timestamp - prev_timestamp, int(entry_data[1].strip()), int(entry_data[2].strip())))
+                        if line_num == start_line:
+                            traces.append((0, int(entry_data[1].strip()), int(entry_data[2].strip())))
+                        else:
+                            traces.append((timestamp - prev_timestamp, int(entry_data[1].strip()), int(entry_data[2].strip())))
                         prev_timestamp = timestamp
                 except Exception as e:
                     logger.warning(f"Error processing line {line_num}: {e}")
@@ -100,14 +100,13 @@ class AzurePublicDatasetReader(TraceReader):
         return traces
     
     def stream_token_entries(self, file_path: Path) -> Iterator[Tuple[int, int]]:
-        """Stream entries from JSONL format without loading entire file."""
-        logger.info(f"Streaming trace entries from {file_path}")
-        has_header = True
+        """Stream entries from AzurePublicDataset format"""
+        start_line = 1
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                if has_header:
-                    has_header = False
-                    continue
+            if self.has_header(file_path):
+                start_line = 2
+                next(f)
+            for line_num, line in enumerate(f, start_line):
                 try:
                     if line.strip():  # Skip empty lines
                         entry_data = line.split(',')
@@ -130,36 +129,11 @@ class AzurePublicDatasetReader(TraceReader):
         else:
             ts_clean = f"{ts}.00"
         return datetime.strptime(ts_clean, self.timestamp_format).replace(tzinfo=timezone.utc).timestamp()
-
-class JSONLinesReader(TraceReader):
-    """Streaming reader for generic JSONL format."""
     
-    def stream_timestamp_entries(self, file_path: Path) -> Iterator[float]:
-        """Stream entries from JSONL format without loading entire file."""
-        logger.info(f"Streaming trace entries from {file_path}")
-        
+    def has_header(self, file_path: Path) -> bool:
+        """Check if the file has a header."""
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                try:
-                    if line.strip():  # Skip empty lines
-                        entry_data = json.loads(line)
-                        yield entry_data.get('timestamp', 0.0)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Skipping invalid JSON at line {line_num}: {e}")
-                except Exception as e:
-                    logger.warning(f"Error processing line {line_num}: {e}")
-    
-    def stream_token_entries(self, file_path: Path) -> Iterator[Tuple[int, int]]:
-        """Stream entries from JSONL format without loading entire file."""
-        logger.info(f"Streaming trace entries from {file_path}")
-        
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                try:
-                    if line.strip():  # Skip empty lines
-                        entry_data = json.loads(line)
-                        yield entry_data.get('input_tokens', 0), entry_data.get('output_tokens', 0)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Skipping invalid JSON at line {line_num}: {e}")
-                except Exception as e:
-                    logger.warning(f"Error processing line {line_num}: {e}")
+            sniffer = csv.Sniffer()
+            has_header = sniffer.has_header(f.read(2048))
+            f.seek(0)
+            return has_header

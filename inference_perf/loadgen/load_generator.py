@@ -13,7 +13,7 @@
 # limitations under the License.
 from pathlib import Path
 from pydantic import BaseModel
-from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
@@ -138,8 +138,6 @@ class LoadGenerator:
     
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
                 self.trace_reader = AzurePublicDatasetReader()
-            elif self.trace.format == TraceFormat.JSONL:
-                self.trace_reader = JSONLinesReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
 
