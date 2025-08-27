@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Tuple, TypedDict
+from typing import List, Optional, Tuple, TypedDict
 from inference_perf.config import APIConfig, APIType
 
 from inference_perf.apis import InferenceAPIData
@@ -44,10 +44,14 @@ class PrometheusMetricMetadata(TypedDict):
     median_time_to_first_token: ModelServerPrometheusMetric
     p90_time_to_first_token: ModelServerPrometheusMetric
     p99_time_to_first_token: ModelServerPrometheusMetric
-    avg_time_per_output_token: ModelServerPrometheusMetric
-    median_time_per_output_token: ModelServerPrometheusMetric
-    p90_time_per_output_token: ModelServerPrometheusMetric
-    p99_time_per_output_token: ModelServerPrometheusMetric
+    avg_time_per_output_token: Optional[ModelServerPrometheusMetric]
+    median_time_per_output_token: Optional[ModelServerPrometheusMetric]
+    p90_time_per_output_token: Optional[ModelServerPrometheusMetric]
+    p99_time_per_output_token: Optional[ModelServerPrometheusMetric]
+    avg_inter_token_latency: Optional[ModelServerPrometheusMetric]
+    median_inter_token_latency: Optional[ModelServerPrometheusMetric]
+    p90_inter_token_latency: Optional[ModelServerPrometheusMetric]
+    p99_inter_token_latency: Optional[ModelServerPrometheusMetric]
 
     # Request
     total_requests: ModelServerPrometheusMetric
@@ -60,6 +64,9 @@ class PrometheusMetricMetadata(TypedDict):
     median_kv_cache_usage: ModelServerPrometheusMetric
     p90_kv_cache_usage: ModelServerPrometheusMetric
     p99_kv_cache_usage: ModelServerPrometheusMetric
+    num_preemptions_total: Optional[ModelServerPrometheusMetric]
+    num_requests_swapped: Optional[ModelServerPrometheusMetric]
+
 
 class ModelServerClient(ABC):
     @abstractmethod

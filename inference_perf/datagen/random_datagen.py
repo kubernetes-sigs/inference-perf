@@ -17,7 +17,7 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
-from typing import Generator, List
+from typing import Generator, List, Optional
 from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader, TraceStreamReader
 import logging
@@ -31,7 +31,7 @@ class RandomDataGenerator(DataGenerator):
         self,
         api_config: APIConfig,
         config: DataConfig,
-        tokenizer: CustomTokenizer,
+        tokenizer: Optional[CustomTokenizer],
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 

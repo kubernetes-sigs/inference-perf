@@ -29,8 +29,9 @@ from inference_perf.datagen import (
     SyntheticDataGenerator,
     RandomDataGenerator,
     SharedPrefixDataGenerator,
+    CNNDailyMailDataGenerator,
 )
-from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient
+from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient, SGlangModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
 from inference_perf.client.filestorage import (
@@ -159,6 +160,20 @@ def main_cli() -> None:
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
+        if config.server.type == ModelServerType.SGLANG:
+            model_server_client = SGlangModelServerClient(
+                reportgen.get_metrics_collector(),
+                api_config=config.api,
+                uri=config.server.base_url,
+                model_name=config.server.model_name,
+                tokenizer_config=config.tokenizer,
+                ignore_eos=config.server.ignore_eos,
+                max_tcp_connections=config.load.worker_max_tcp_connections,
+                additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
+                api_key=config.server.api_key,
+            )
+            # sglang_client supports inferring the tokenizer
+            tokenizer = model_server_client.tokenizer
     else:
         raise Exception("model server client config missing")
 
@@ -196,6 +211,8 @@ def main_cli() -> None:
 
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.CNNDailyMail:
+            datagen = CNNDailyMailDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Synthetic:
             datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Random:

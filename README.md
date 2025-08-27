@@ -79,6 +79,27 @@ Multiple load generators are supported:
 Multiple load patterns can be specified:
 - Stages with configurable duration and QPS along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
 
+Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not
+the load generator is failing to meet the desired load.
+
+Example:
+```
+"load_summary": {
+"count": 480,
+"schedule_delay": {
+    "mean": 0.0033437913275217094,
+    "min": -0.0008108859183266759,
+    "p10": -2.9846763936802738e-05,
+    "median": 0.0010809275845531374,
+    "p90": 0.007055185985518622,
+    "max": 0.06699507019948214
+},
+"send_duration": 59.98128472798271,
+"requested_rate": 8.0,
+"achieved_rate": 8.00249614820385
+}
+```
+
 ### API
 
 OpenAI completion and chat completion APIs are supported. It can be pointed to any endpoints which support these APIs - currently verified against vLLM deployments. Other APIs and model server support can be added easily.
@@ -92,7 +113,7 @@ Different latency and throughput metrics to analyze the performance of different
         "mean": 3.31325431142327,
         "min": 1.62129471905064,
         "p10": 1.67609986825846,
-        "p50": 2.11507539497688,
+        "median": 2.11507539497688,
         "p90": 5.94717199734878,
         "max": 6.30658466403838
     },
@@ -100,7 +121,7 @@ Different latency and throughput metrics to analyze the performance of different
         "mean": 0.104340420636009,
         "min": 0.0506654599703325,
         "p10": 0.0523781208830769,
-        "p50": 0.0670631669655753,
+        "median": 0.0670631669655753,
         "p90": 0.189047570470012,
         "max": 0.20343821496898
     },
@@ -108,7 +129,7 @@ Different latency and throughput metrics to analyze the performance of different
         "mean": 0.0836929455635872,
         "min": 0.0517028436646797,
         "p10": 0.0530815053513894,
-        "p50": 0.0611870964678625,
+        "median": 0.0611870964678625,
         "p90": 0.152292036800645,
         "max": 0.17837208439984
     },
@@ -116,7 +137,7 @@ Different latency and throughput metrics to analyze the performance of different
         "mean": 0.800974442732916,
         "min": 0.0625283779809251,
         "p10": 0.072068731742911,
-        "p50": 0.203539535985328,
+        "median": 0.203539535985328,
         "p90": 2.26959549135063,
         "max": 4.46773961000145
     },
@@ -124,7 +145,7 @@ Different latency and throughput metrics to analyze the performance of different
         "mean": 0.0836929455635872,
         "min": 0.000007129972800612,
         "p10": 0.0534287681337446,
-        "p50": 0.0591336835059337,
+        "median": 0.0591336835059337,
         "p90": 0.084046097996179,
         "max": 0.614475268055685
     }
@@ -139,7 +160,7 @@ Different latency and throughput metrics to analyze the performance of different
     "mean": 628.606060606061,
     "min": 4,
     "p10": 11.4,
-    "p50": 364,
+    "median": 364,
     "p90": 2427.6,
     "max": 3836
 },
@@ -147,7 +168,7 @@ Different latency and throughput metrics to analyze the performance of different
     "mean": 31.7878787878788,
     "min": 30,
     "p10": 31,
-    "p50": 32,
+    "median": 32,
     "p90": 32,
     "max": 32
 }
