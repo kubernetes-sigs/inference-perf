@@ -135,10 +135,7 @@ class LoadGenerator:
 
             if self.trace is None:
                 raise ValueError("Trace file is required for trace replay load generator")
-            
-            if self.num_workers > 1:
-                raise ValueError("Trace replay load generator does not support multiple workers")
-
+    
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
                 self.trace_reader = AzurePublicDatasetReader()
             elif self.trace.format == TraceFormat.JSONL:
@@ -168,11 +165,15 @@ class LoadGenerator:
             # don't miss the initial scheuled request times
             start_time_epoch = time.time()
             start_time = time.perf_counter() + 1
-            num_requests = int(stage.rate * stage.duration)
+            if self.datagen.trace is not None:
+                num_requests = self.datagen.get_request_count()
+            else:
+                num_requests = int(stage.rate * stage.duration)
+            
             start_time_epoch = time.time()
 
             time_generator = timer.start_timer(start_time)
-            if self.datagen.trace is None and hasattr(self.datagen, "get_request"):
+            if hasattr(self.datagen, "get_request"):
                 # Datagen supports deferring to workers, enqueue request number
                 for request_number in range(num_requests):
                     request_time = next(time_generator)
@@ -247,13 +248,3 @@ class LoadGenerator:
             if worker.is_alive():
                 worker.terminate()
                 worker.join(timeout=0.0)
-
-
-class TraceReplayLoadGenerator:
-    def __init__(self, trace_file: str, format: TraceFormat, datagen: DataGenerator) -> None:
-        self.trace_file = trace_file
-        self.format = format
-        self.datagen = datagen
-
-    async def run(self, client: ModelServerClient) -> None:
-        pass

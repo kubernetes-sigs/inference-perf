@@ -15,7 +15,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, Tuple
 import numpy as np
-from inference_perf.utils.trace_reader import TraceStreamReader
+from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
 
 class LoadTimer(ABC):
@@ -92,12 +92,12 @@ class PoissonLoadTimer(LoadTimer):
                 yield next_time
 
 class TraceReplayLoadTimer(LoadTimer):
-    def __init__(self, trace_reader: TraceStreamReader, trace_file: Path, has_header: bool = False) -> None:
+    def __init__(self, trace_reader: TraceReader, trace_file: Path, has_header: bool = False) -> None:
         self._trace_reader = trace_reader
         self._trace_file = trace_file
         self._has_header = has_header
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        for timestamp in self._trace_reader.stream_timestamp_entries(self._trace_file):
+        for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
             print(f"request to be executed at perf counter: {initial + timestamp}, initial: {initial}")
             yield initial + timestamp

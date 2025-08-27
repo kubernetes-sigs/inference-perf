@@ -19,7 +19,7 @@ from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
 from typing import Generator, List, Optional
 from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
-from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader, TraceStreamReader
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader, JSONLinesReader, TraceReader
 import logging
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,12 @@ class RandomDataGenerator(DataGenerator):
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
             
+            self.input_lengths = []
+            self.output_lengths = []
+            for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
+                self.input_lengths.append(input_tokens)
+                self.output_lengths.append(output_tokens)
+            
             logger.info(f"Ignoring input and output distributions configurations as trace file {self.trace.file} is provided")
 
         if self.tokenizer is None:
@@ -86,6 +92,9 @@ class RandomDataGenerator(DataGenerator):
                 ) from e
         if self.vocab_size <= 0:
             raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
+
+    def get_request_count(self) -> int:
+        return min(len(self.input_lengths), len(self.output_lengths))
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
