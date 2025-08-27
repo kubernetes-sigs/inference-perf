@@ -13,11 +13,19 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict
-from inference_perf.loadgen.load_generator import StageRuntimeInfo
+
+from pydantic import BaseModel
 
 
 class MetricsMetadata(TypedDict):
     pass
+
+
+class StageRuntimeInfo(BaseModel):
+    stage_id: int
+    rate: float
+    end_time: float
+    start_time: float
 
 
 class PerfRuntimeParameters:
