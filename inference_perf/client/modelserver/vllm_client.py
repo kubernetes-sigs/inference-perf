@@ -13,12 +13,12 @@
 # limitations under the License.
 
 from inference_perf.client.metricsclient.prometheus_client.base import (
-    ModelServerPrometheusMetricsMetadata,
     PrometheusCounterMetric,
     PrometheusGaugeMetric,
     PrometheusHistogramMetric,
     PrometheusSingleMetric,
 )
+from inference_perf.client.modelserver.base import ModelServerMetricsMetadata
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
@@ -56,8 +56,8 @@ class vLLMModelServerClient(openAIModelServerClient):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
 
-    def get_prometheus_metric_metadata(self) -> ModelServerPrometheusMetricsMetadata:
-        return ModelServerPrometheusMetricsMetadata(
+    def get_prometheus_metric_metadata(self) -> ModelServerMetricsMetadata:
+        return ModelServerMetricsMetadata(
             # Required metrics
             count=PrometheusSingleMetric(
                 "increase", PrometheusCounterMetric("vllm:e2e_request_latency_seconds_count", self.additional_metric_filters)

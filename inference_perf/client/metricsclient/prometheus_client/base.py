@@ -14,7 +14,7 @@
 from abc import abstractmethod
 import logging
 import time
-from typing import List, Any, Optional, TypedDict
+from typing import List, Any, TypedDict
 import requests
 from inference_perf.config import PrometheusClientConfig
 from ..base import MetricsClient, PerfRuntimeParameters
@@ -98,24 +98,9 @@ class PrometheusHistogramMetric(PrometheusMetric):
         }
 
 
-# PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
-# and the filters to be applied to them.
-# This is used to generate Prometheus query for the metrics.
-class ModelServerPrometheusMetricsMetadata(TypedDict):
-    count: PrometheusSingleMetric
-    rate: PrometheusSingleMetric
-
-    prompt_len: PrometheusMetric
-    output_len: PrometheusMetric
-    queue_len: PrometheusMetric
-    request_latency: PrometheusMetric
-    time_to_first_token: PrometheusMetric
-    kv_cache_usage_percentage: PrometheusMetric
-
-    time_per_output_token: Optional[PrometheusMetric]
-    inter_token_latency: Optional[PrometheusMetric]
-    num_requests_swapped: Optional[PrometheusMetric]
-    num_preemptions_total: Optional[PrometheusMetric]
+# For defining the model server metrics for a given model server
+class MetricsMetadata(TypedDict):
+    pass
 
 
 class PrometheusMetricsClient(MetricsClient):
@@ -187,7 +172,7 @@ class PrometheusMetricsClient(MetricsClient):
         return self.get_model_server_metrics(runtime_parameters.metrics_metadata, query_duration, query_eval_time)
 
     def get_model_server_metrics(
-        self, metrics_metadata: ModelServerPrometheusMetricsMetadata, query_duration: float, query_eval_time: float
+        self, metrics_metadata: MetricsMetadata, query_duration: float, query_eval_time: float
     ) -> dict[str, Any] | None:
         """
         Collects the summary metrics for the given Model Server Client and query duration.

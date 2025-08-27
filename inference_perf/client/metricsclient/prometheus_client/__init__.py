@@ -18,6 +18,7 @@ from .base import (
     PrometheusGaugeMetric,
     PrometheusCounterMetric,
     PrometheusHistogramMetric,
+    MetricsMetadata,
 )
 from .google_managed_prometheus_client import GoogleManagedPrometheusMetricsClient
 
@@ -30,4 +31,5 @@ __all__ = [
     "PrometheusGaugeMetric",
     "PrometheusCounterMetric",
     "PrometheusHistogramMetric",
+    "MetricsMetadata",
 ]
