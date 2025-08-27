@@ -12,31 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple, TypedDict
-from inference_perf.client.metricsclient.prometheus_client.base import PrometheusMetric, PrometheusSingleMetric
+from typing import List, Tuple
+from inference_perf.client.metricsclient.prometheus_client.base import ModelServerPrometheusMetricsMetadata
 from inference_perf.config import APIConfig, APIType
 
 from inference_perf.apis import InferenceAPIData
-
-
-# PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
-# and the filters to be applied to them.
-# This is used to generate Prometheus query for the metrics.
-class PrometheusMetricMetadata(TypedDict):
-    count: PrometheusSingleMetric
-    rate: PrometheusSingleMetric
-
-    prompt_len: PrometheusMetric
-    output_len: PrometheusMetric
-    queue_len: PrometheusMetric
-    request_latency: PrometheusMetric
-    time_to_first_token: PrometheusMetric
-    kv_cache_usage_percentage: PrometheusMetric
-
-    time_per_output_token: Optional[PrometheusMetric]
-    inter_token_latency: Optional[PrometheusMetric]
-    num_requests_swapped: Optional[PrometheusMetric]
-    num_preemptions_total: Optional[PrometheusMetric]
 
 
 class ModelServerClient(ABC):
@@ -56,6 +36,6 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> ModelServerPrometheusMetricsMetadata:
         # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError

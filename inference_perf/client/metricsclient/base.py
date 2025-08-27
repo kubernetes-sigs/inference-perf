@@ -13,18 +13,22 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import Any
-from inference_perf.client.modelserver.base import ModelServerClient
+from inference_perf.client.metricsclient.prometheus_client.base import ModelServerPrometheusMetricsMetadata
 from inference_perf.loadgen.load_generator import StageRuntimeInfo
 
 
 class PerfRuntimeParameters:
     def __init__(
-        self, start_time: float, duration: float, model_server_client: ModelServerClient, stages: dict[int, StageRuntimeInfo]
+        self,
+        start_time: float,
+        duration: float,
+        model_server_metrics: ModelServerPrometheusMetricsMetadata,
+        stages: dict[int, StageRuntimeInfo],
     ) -> None:
         self.start_time = start_time
         self.duration = duration
         self.stages = stages
-        self.model_server_client = model_server_client
+        self.model_server_metrics = model_server_metrics
 
 
 class MetricsClient(ABC):

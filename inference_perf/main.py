@@ -251,7 +251,7 @@ def main_cli() -> None:
         runtime_parameters=PerfRuntimeParameters(
             start_time=start_time,
             duration=duration,
-            model_server_client=model_server_client,
+            model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
             stages=loadgen.stage_runtime_info,
         ),
     )

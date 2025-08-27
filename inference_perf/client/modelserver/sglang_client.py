@@ -21,7 +21,7 @@ from inference_perf.client.metricsclient.prometheus_client.base import (
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
-from .base import PrometheusMetricMetadata
+from .base import ModelServerPrometheusMetricsMetadata
 from typing import List, Optional
 import logging
 
@@ -56,8 +56,8 @@ class SGlangModelServerClient(openAIModelServerClient):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
 
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
-        return PrometheusMetricMetadata(
+    def get_prometheus_metric_metadata(self) -> ModelServerPrometheusMetricsMetadata:
+        return ModelServerPrometheusMetricsMetadata(
             # Required metrics
             count=PrometheusSingleMetric(
                 "increase", PrometheusCounterMetric("sglang:e2e_request_latency_seconds_count", self.additional_metric_filters)

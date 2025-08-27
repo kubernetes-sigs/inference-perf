@@ -17,7 +17,7 @@ from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, PrometheusMetricMetadata
+from .base import ModelServerClient, ModelServerPrometheusMetricsMetadata
 from typing import List, Optional
 import aiohttp
 import json
@@ -143,7 +143,7 @@ class openAIModelServerClient(ModelServerClient):
         return []
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> ModelServerPrometheusMetricsMetadata:
         raise NotImplementedError
 
     def get_supported_models(self) -> List[str]:

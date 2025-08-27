@@ -14,9 +14,8 @@
 from abc import abstractmethod
 import logging
 import time
-from typing import List, Any
+from typing import List, Any, Optional, TypedDict
 import requests
-from inference_perf.client.modelserver.base import ModelServerClient
 from inference_perf.config import PrometheusClientConfig
 from ..base import MetricsClient, PerfRuntimeParameters
 
@@ -99,6 +98,26 @@ class PrometheusHistogramMetric(PrometheusMetric):
         }
 
 
+# PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
+# and the filters to be applied to them.
+# This is used to generate Prometheus query for the metrics.
+class ModelServerPrometheusMetricsMetadata(TypedDict):
+    count: PrometheusSingleMetric
+    rate: PrometheusSingleMetric
+
+    prompt_len: PrometheusMetric
+    output_len: PrometheusMetric
+    queue_len: PrometheusMetric
+    request_latency: PrometheusMetric
+    time_to_first_token: PrometheusMetric
+    kv_cache_usage_percentage: PrometheusMetric
+
+    time_per_output_token: Optional[PrometheusMetric]
+    inter_token_latency: Optional[PrometheusMetric]
+    num_requests_swapped: Optional[PrometheusMetric]
+    num_preemptions_total: Optional[PrometheusMetric]
+
+
 class PrometheusMetricsClient(MetricsClient):
     def __init__(self, config: PrometheusClientConfig) -> None:
         if config:
@@ -136,7 +155,7 @@ class PrometheusMetricsClient(MetricsClient):
         query_eval_time = time.time()
         query_duration = query_eval_time - runtime_parameters.start_time
 
-        return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.metrics_metadata, query_duration, query_eval_time)
 
     def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> dict[str, Any] | None:
         """
@@ -165,16 +184,16 @@ class PrometheusMetricsClient(MetricsClient):
         logger.debug(f"runtime parameters for stage {stage_id}: {runtime_parameters}")
         query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
-        return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.metrics_metadata, query_duration, query_eval_time)
 
     def get_model_server_metrics(
-        self, model_server_client: ModelServerClient, query_duration: float, query_eval_time: float
+        self, metrics_metadata: ModelServerPrometheusMetricsMetadata, query_duration: float, query_eval_time: float
     ) -> dict[str, Any] | None:
         """
         Collects the summary metrics for the given Model Server Client and query duration.
 
         Args:
-        model_server_client: The model server client to use for collecting metrics
+        metrics_metadata: TODO
         query_duration: The duration for which to collect metrics
         query_eval_time: The time at which the query is evaluated, used to ensure we are querying the correct time range
 
@@ -182,13 +201,7 @@ class PrometheusMetricsClient(MetricsClient):
         A map of model server metrics to their results.
         """
 
-        # Get the engine and model from the model server client
-        if not model_server_client:
-            logger.warning("Model server client is not set")
-            return None
-
         metric_to_result: dict[str, Any] = {}
-        metrics_metadata = model_server_client.get_prometheus_metric_metadata()
         if not metrics_metadata:
             logger.warning("Metrics metadata is not present for the runtime")
             return None
