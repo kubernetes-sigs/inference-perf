@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any
-from inference_perf.client.metricsclient.prometheus_client.base import ModelServerMetricsMetadata
+from typing import Any, TypedDict
 from inference_perf.loadgen.load_generator import StageRuntimeInfo
+
+
+class MetricsMetadata(TypedDict):
+    pass
 
 
 class PerfRuntimeParameters:
@@ -22,7 +25,7 @@ class PerfRuntimeParameters:
         self,
         start_time: float,
         duration: float,
-        model_server_metrics: ModelServerMetricsMetadata,
+        model_server_metrics: MetricsMetadata,
         stages: dict[int, StageRuntimeInfo],
     ) -> None:
         self.start_time = start_time

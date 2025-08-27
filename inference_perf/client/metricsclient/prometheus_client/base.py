@@ -14,10 +14,10 @@
 from abc import abstractmethod
 import logging
 import time
-from typing import List, Any, TypedDict
+from typing import List, Any
 import requests
 from inference_perf.config import PrometheusClientConfig
-from ..base import MetricsClient, PerfRuntimeParameters
+from ..base import MetricsClient, MetricsMetadata, PerfRuntimeParameters
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
@@ -96,11 +96,6 @@ class PrometheusHistogramMetric(PrometheusMetric):
             "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
             "p99": "histogram_quantile(0.99, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
         }
-
-
-# For defining the model server metrics for a given model server
-class MetricsMetadata(TypedDict):
-    pass
 
 
 class PrometheusMetricsClient(MetricsClient):
