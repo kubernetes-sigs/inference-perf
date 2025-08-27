@@ -11,17 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
+from typing import Any
+from .base import MetricsClient, PerfRuntimeParameters
 
 
 class MockMetricsClient(MetricsClient):
     def __init__(self) -> None:
         pass
 
-    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> dict[str, Any] | None:
         return None
 
-    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
+    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> dict[str, Any] | None:
         return None
 
     def wait(self) -> None:

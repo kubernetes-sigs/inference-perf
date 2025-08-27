@@ -11,86 +11,92 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import abstractmethod
 import logging
 import time
-from typing import cast, Any
+from typing import List, Any
 import requests
-from inference_perf.client.modelserver.base import ModelServerClient, ModelServerPrometheusMetric
+from inference_perf.client.modelserver.base import ModelServerClient
 from inference_perf.config import PrometheusClientConfig
-from ..base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
+from ..base import MetricsClient, PerfRuntimeParameters
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
 logger = logging.getLogger(__name__)
 
 
-class PrometheusQueryBuilder:
-    def __init__(self, model_server_metric: ModelServerPrometheusMetric, duration: float):
-        self.model_server_metric = model_server_metric
-        self.duration = duration
+# When evaluated, returns a summary of the metric as a map, summary contents depends on the metric type
+class PrometheusMetric:
+    def __init__(self, name: str, filters: List[str]) -> None:
+        self.name = name
+        self.filters = ",".join(filters)
 
-    def get_queries(self) -> dict[str, dict[str, str]]:
-        """
-        Returns a dictionary of queries for each metric type.
-        """
-        metric_name = self.model_server_metric.name
-        filter = self.model_server_metric.filters
+    @abstractmethod
+    def get_queries(self, duration: float) -> dict[str, str]:
+        raise NotImplementedError
+
+
+# When evaluated, returns a single value
+class PrometheusSingleMetric:
+    def __init__(self, op: str, metric: PrometheusMetric) -> None:
+        self.op = op
+        self.metric = metric
+
+    def get_query(self, duration: float) -> str:
+        query = self.metric.get_queries(duration)
+        if self.op in query:
+            return query[self.op]
+        raise Exception(f"query of type {'test'}, does not contain the operation {self.op}")
+
+
+class PrometheusGaugeMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
+
+    def get_queries(self, duration: float) -> dict[str, str]:
         return {
-            "gauge": {
-                "mean": "avg_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "median": "quantile_over_time(0.5, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "sd": "stddev_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "min": "min_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "max": "max_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "p90": "quantile_over_time(0.9, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-                "p99": "quantile_over_time(0.99, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
-            },
-            "histogram": {
-                "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
-                % (metric_name, filter, self.duration, metric_name, filter, self.duration),
-                "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
-                % (metric_name, filter, self.duration),
-                "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (metric_name, filter, self.duration),
-                "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (metric_name, filter, self.duration),
-                "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
-                % (metric_name, filter, self.duration),
-                "p99": "histogram_quantile(0.99, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
-                % (metric_name, filter, self.duration),
-            },
-            "counter": {
-                "rate": "sum(rate(%s{%s}[%.0fs]))" % (metric_name, filter, self.duration),
-                "increase": "sum(increase(%s{%s}[%.0fs]))" % (metric_name, filter, self.duration),
-                "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-                "max": "max_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-                "min": "min_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-                "p90": "quantile_over_time(0.9, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-                "p99": "quantile_over_time(0.99, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
-                % (metric_name, filter, self.duration, self.duration, self.duration),
-            },
+            "mean": "avg_over_time(%s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "median": "quantile_over_time(0.5, %s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "sd": "stddev_over_time(%s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "min": "min_over_time(%s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "max": "max_over_time(%s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "p90": "quantile_over_time(0.9, %s{%s}[%.0fs])" % (self.name, self.filter, duration),
+            "p99": "quantile_over_time(0.99, %s{%s}[%.0fs])" % (self.name, self.filter, duration),
         }
 
-    def build_query(self) -> str:
-        """
-        Builds the PromQL query for the given metric type and query operation.
 
-        Returns:
-        The PromQL query.
-        """
-        metric_type = self.model_server_metric.type
-        query_op = self.model_server_metric.op
+class PrometheusCounterMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
 
-        queries = self.get_queries()
-        if metric_type not in queries:
-            logger.warning("Invalid metric type: %s" % (metric_type))
-            return ""
-        if query_op not in queries[metric_type]:
-            logger.warning("Invalid query operation: %s" % (query_op))
-            return ""
-        return queries[metric_type][query_op]
+    def get_queries(self, duration: float) -> dict[str, str]:
+        return {
+            "rate": "sum(rate(%s{%s}[%.0fs]))" % (self.name, self.filter, duration),
+            "increase": "sum(increase(%s{%s}[%.0fs]))" % (self.name, self.filter, duration),
+            "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.name, self.filter, duration, duration, duration),
+            "max": "max_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.name, self.filter, duration, duration, duration),
+            "min": "min_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])" % (self.name, self.filter, duration, duration, duration),
+            "p90": "quantile_over_time(0.9, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.name, self.filter, duration, duration, duration),
+            "p99": "quantile_over_time(0.99, rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.name, self.filter, duration, duration, duration),
+        }
+
+
+class PrometheusHistogramMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
+
+    def get_queries(self, duration: float) -> dict[str, str]:
+        return {
+            "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
+            % (self.name, self.filter, duration, self.name, self.filter, duration),
+            "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
+            "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
+            "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
+            "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
+            "p99": "histogram_quantile(0.99, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filter, duration),
+        }
 
 
 class PrometheusMetricsClient(MetricsClient):
@@ -112,7 +118,7 @@ class PrometheusMetricsClient(MetricsClient):
         wait_time = self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         time.sleep(wait_time)
 
-    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> dict[str, Any] | None:
         """
         Collects the summary metrics for the given Perf Benchmark run.
 
@@ -120,7 +126,7 @@ class PrometheusMetricsClient(MetricsClient):
         runtime_parameters: The runtime parameters containing details about the Perf Benchmark like the duration and model server client
 
         Returns:
-        A ModelServerMetrics object containing the summary metrics.
+        A map of model server metric names to their results across all stages.
         """
         if runtime_parameters is None:
             logger.warning("Perf Runtime parameters are not set, skipping metrics collection")
@@ -132,7 +138,7 @@ class PrometheusMetricsClient(MetricsClient):
 
         return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
 
-    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
+    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> dict[str, Any] | None:
         """
         Collects the summary metrics for a specific stage.
 
@@ -141,7 +147,7 @@ class PrometheusMetricsClient(MetricsClient):
         stage_id: The ID of the stage for which to collect metrics
 
         Returns:
-        A ModelServerMetrics object containing the summary metrics for the specified stage.
+        A map of model server metric names to their results for the specified stage.
         """
         if runtime_parameters is None:
             logger.warning("Perf Runtime parameters are not set, skipping metrics collection")
@@ -163,7 +169,7 @@ class PrometheusMetricsClient(MetricsClient):
 
     def get_model_server_metrics(
         self, model_server_client: ModelServerClient, query_duration: float, query_eval_time: float
-    ) -> ModelServerMetrics | None:
+    ) -> dict[str, Any] | None:
         """
         Collects the summary metrics for the given Model Server Client and query duration.
 
@@ -173,50 +179,37 @@ class PrometheusMetricsClient(MetricsClient):
         query_eval_time: The time at which the query is evaluated, used to ensure we are querying the correct time range
 
         Returns:
-        A ModelServerMetrics object containing the summary metrics.
+        A map of model server metrics to their results.
         """
-        model_server_metrics: ModelServerMetrics = ModelServerMetrics()
 
         # Get the engine and model from the model server client
         if not model_server_client:
             logger.warning("Model server client is not set")
             return None
 
+        metric_to_result: dict[str, Any] = {}
         metrics_metadata = model_server_client.get_prometheus_metric_metadata()
         if not metrics_metadata:
             logger.warning("Metrics metadata is not present for the runtime")
             return None
-        for summary_metric_name in metrics_metadata:
-            summary_metric_metadata = metrics_metadata.get(summary_metric_name)
-            if summary_metric_metadata is None:
-                logger.warning("Metric metadata is not present for metric: %s. Skipping this metric." % (summary_metric_name))
-                continue
-            summary_metric_metadata = cast(ModelServerPrometheusMetric, summary_metric_metadata)
-            if summary_metric_metadata is None:
-                logger.warning(
-                    "Metric metadata for %s is missing or has an incorrect format. Skipping this metric."
-                    % (summary_metric_name)
-                )
-                continue
-
-            query_builder = PrometheusQueryBuilder(summary_metric_metadata, query_duration)
-            query = query_builder.build_query()
-            if not query:
-                logger.warning("No query found for metric: %s. Skipping metric." % (summary_metric_name))
-                continue
-
-            # Execute the query and get the result
-            result = self.execute_query(query, str(query_eval_time))
-            if result is None:
-                logger.error("Error executing query: %s" % (query))
-                continue
-            # Set the result in metrics summary
-            attr = getattr(model_server_metrics, summary_metric_name)
-            if attr is not None:
-                target_type = type(attr)
-                setattr(model_server_metrics, summary_metric_name, target_type(result))
-
-        return model_server_metrics
+        for metric_name, metric_metadata_item in metrics_metadata.items():
+            if isinstance(metric_metadata_item, PrometheusMetric):
+                metric = {}
+                for key, query in metric_metadata_item.get_queries(query_duration).items():
+                    result = self.execute_query(query, str(query_eval_time))
+                    if result is None:
+                        logger.error("Error executing query: %s", query)
+                        continue
+                    metric[key] = result
+                metric_to_result[metric_name] = metric
+            elif isinstance(metric_metadata_item, PrometheusSingleMetric):
+                query = metric_metadata_item.get_query(query_duration)
+                result = self.execute_query(query, str(query_eval_time))
+                if result is not None:
+                    metric_to_result[metric_name] = result
+                else:
+                    logger.error("Error executing query: %s", query)
+        return metric_to_result
 
     def execute_query(self, query: str, eval_time: str) -> float:
         """

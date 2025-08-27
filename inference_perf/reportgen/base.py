@@ -14,7 +14,6 @@
 from typing import List, Optional, Any
 from pydantic import BaseModel
 from collections import defaultdict
-from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
 from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
@@ -56,54 +55,11 @@ class ResponsesSummary(BaseModel):
     failures: dict[str, Any]
 
 
-def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
+def summarize_prometheus_metrics(metrics: dict[str, Any]) -> ResponsesSummary:
     return ResponsesSummary(
         load_summary={},  # model server doesn't report failed requests
         failures={},
-        successes={
-            "count": metrics.total_requests,
-            "rate": metrics.requests_per_second,
-            "prompt_len": {
-                "mean": metrics.avg_prompt_tokens,
-                "rate": metrics.prompt_tokens_per_second,
-            },
-            "output_len": {
-                "mean": metrics.avg_output_tokens,
-                "rate": metrics.output_tokens_per_second,
-            },
-            "queue_len": {
-                "mean": metrics.avg_queue_length,
-                "median": metrics.median_queue_length,
-            },
-            "request_latency": {
-                "mean": metrics.avg_request_latency,
-                "median": metrics.median_request_latency,
-                "p90": metrics.p90_request_latency,
-                "p99": metrics.p99_request_latency,
-            },
-            "time_to_first_token": {
-                "mean": metrics.avg_time_to_first_token,
-                "median": metrics.median_time_to_first_token,
-                "p90": metrics.p90_time_to_first_token,
-                "p99": metrics.p99_time_to_first_token,
-            },
-            "time_per_output_token": {
-                "mean": metrics.avg_time_per_output_token,
-                "median": metrics.median_time_per_output_token,
-                "p90": metrics.p90_time_per_output_token,
-                "p99": metrics.p99_time_per_output_token,
-            },
-            "kv_cache_usage_percentage": {
-                "mean": metrics.avg_kv_cache_usage,
-                "median": metrics.median_kv_cache_usage,
-                "p90": metrics.p90_kv_cache_usage,
-                "p99": metrics.p99_kv_cache_usage,
-            },
-            "num_requests_swapped": {
-                "mean": metrics.num_requests_swapped,
-            },
-            "num_preemptions_total": {"mean": metrics.num_preemptions_total},
-        },
+        successes=metrics,
     )
 
 
