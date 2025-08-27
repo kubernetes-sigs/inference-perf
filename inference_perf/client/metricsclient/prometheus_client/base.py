@@ -135,7 +135,7 @@ class PrometheusMetricsClient(MetricsClient):
         query_eval_time = time.time()
         query_duration = query_eval_time - runtime_parameters.start_time
 
-        return self.get_model_server_metrics(runtime_parameters.metrics_metadata, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
 
     def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> dict[str, Any] | None:
         """
@@ -164,7 +164,7 @@ class PrometheusMetricsClient(MetricsClient):
         logger.debug(f"runtime parameters for stage {stage_id}: {runtime_parameters}")
         query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
-        return self.get_model_server_metrics(runtime_parameters.metrics_metadata, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
 
     def get_model_server_metrics(
         self, metrics_metadata: MetricsMetadata, query_duration: float, query_eval_time: float
