@@ -45,7 +45,7 @@ class PrometheusSingleMetric:
         query = self.metric.get_queries(duration)
         if self.op in query:
             return query[self.op]
-        raise Exception(f"query of type {'test'}, does not contain the operation {self.op}")
+        raise Exception(f"query of type {type(self.metric).__name__ }, does not contain the operation {self.op}")
 
 
 class PrometheusGaugeMetric(PrometheusMetric):
@@ -72,6 +72,7 @@ class PrometheusCounterMetric(PrometheusMetric):
         return {
             "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
             % (self.name, self.filters, duration, duration, duration),
+            "increase": "sum(increase(%s{%s}[%.0fs]))" % (self.name, self.filters, duration),
         }
 
 
