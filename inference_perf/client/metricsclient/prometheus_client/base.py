@@ -15,9 +15,9 @@ import logging
 import time
 from typing import cast, Any
 import requests
-from inference_perf.client.modelserver.base import ModelServerClient, ModelServerPrometheusMetric
+from inference_perf.client.modelserver.base import ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
-from ..base import MetricsClient, PerfRuntimeParameters, ModelServerMetrics
+from ..base import MetricsClient, MetricsMetadata, PerfRuntimeParameters, ModelServerMetrics
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
@@ -98,7 +98,7 @@ class PrometheusMetricsClient(MetricsClient):
         if config:
             if not config.url:
                 raise Exception("prometheus url missing")
-            self.query_url = config.url.unicode_string().rstrip('/') + "/api/v1/query"
+            self.query_url = config.url.unicode_string().rstrip("/") + "/api/v1/query"
             logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
         else:
@@ -130,7 +130,7 @@ class PrometheusMetricsClient(MetricsClient):
         query_eval_time = time.time()
         query_duration = query_eval_time - runtime_parameters.start_time
 
-        return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
 
     def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
         """
@@ -159,16 +159,16 @@ class PrometheusMetricsClient(MetricsClient):
         logger.debug(f"runtime parameters for stage {stage_id}: {runtime_parameters}")
         query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
-        return self.get_model_server_metrics(runtime_parameters.model_server_client, query_duration, query_eval_time)
+        return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
 
     def get_model_server_metrics(
-        self, model_server_client: ModelServerClient, query_duration: float, query_eval_time: float
+        self, metrics_metadata: MetricsMetadata, query_duration: float, query_eval_time: float
     ) -> ModelServerMetrics | None:
         """
         Collects the summary metrics for the given Model Server Client and query duration.
 
         Args:
-        model_server_client: The model server client to use for collecting metrics
+        model_server_metrics:
         query_duration: The duration for which to collect metrics
         query_eval_time: The time at which the query is evaluated, used to ensure we are querying the correct time range
 
@@ -177,12 +177,6 @@ class PrometheusMetricsClient(MetricsClient):
         """
         model_server_metrics: ModelServerMetrics = ModelServerMetrics()
 
-        # Get the engine and model from the model server client
-        if not model_server_client:
-            logger.warning("Model server client is not set")
-            return None
-
-        metrics_metadata = model_server_client.get_prometheus_metric_metadata()
         if not metrics_metadata:
             logger.warning("Metrics metadata is not present for the runtime")
             return None
@@ -259,7 +253,7 @@ class PrometheusMetricsClient(MetricsClient):
         #         ]
         #     }
         # }
-        
+
         response_obj = response.json()
         logger.debug(f"got result for query '{query}': {response_obj}")
         if response_obj.get("status") != "success":

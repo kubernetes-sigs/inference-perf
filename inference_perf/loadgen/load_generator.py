@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from pydantic import BaseModel
+from inference_perf.client.metricsclient.base import StageRuntimeInfo
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
@@ -108,13 +108,6 @@ class Worker(mp.Process):
     def run(self) -> None:
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
-
-
-class StageRuntimeInfo(BaseModel):
-    stage_id: int
-    rate: float
-    end_time: float
-    start_time: float
 
 
 class LoadGenerator:

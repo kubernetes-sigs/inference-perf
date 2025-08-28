@@ -12,19 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from inference_perf.client.modelserver.base import ModelServerClient
-from inference_perf.loadgen.load_generator import StageRuntimeInfo
+from typing import TypedDict
 from pydantic import BaseModel
+
+
+class MetricsMetadata(TypedDict):
+    pass
+
+
+class StageRuntimeInfo(BaseModel):
+    stage_id: int
+    rate: float
+    end_time: float
+    start_time: float
 
 
 class PerfRuntimeParameters:
     def __init__(
-        self, start_time: float, duration: float, model_server_client: ModelServerClient, stages: dict[int, StageRuntimeInfo]
+        self, start_time: float, duration: float, model_server_metrics: MetricsMetadata, stages: dict[int, StageRuntimeInfo]
     ) -> None:
         self.start_time = start_time
         self.duration = duration
         self.stages = stages
-        self.model_server_client = model_server_client
+        self.model_server_metrics = model_server_metrics
 
 
 class ModelServerMetrics(BaseModel):

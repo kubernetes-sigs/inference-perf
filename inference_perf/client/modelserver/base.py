@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Tuple, TypedDict
+from typing import List, Tuple
+from inference_perf.client.metricsclient.base import MetricsMetadata
 from inference_perf.config import APIConfig, APIType
 
 from inference_perf.apis import InferenceAPIData
@@ -29,7 +30,7 @@ class ModelServerPrometheusMetric:
 # PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
 # and the filters to be applied to them.
 # This is used to generate Prometheus query for the metrics.
-class PrometheusMetricMetadata(TypedDict):
+class PrometheusMetricMetadata(MetricsMetadata):
     # Throughput
     prompt_tokens_per_second: ModelServerPrometheusMetric
     output_tokens_per_second: ModelServerPrometheusMetric
@@ -60,6 +61,7 @@ class PrometheusMetricMetadata(TypedDict):
     median_kv_cache_usage: ModelServerPrometheusMetric
     p90_kv_cache_usage: ModelServerPrometheusMetric
     p99_kv_cache_usage: ModelServerPrometheusMetric
+
 
 class ModelServerClient(ABC):
     @abstractmethod
