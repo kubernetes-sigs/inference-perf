@@ -62,7 +62,6 @@ class PrometheusMetricMetadata(MetricsMetadata):
     p90_kv_cache_usage: ModelServerPrometheusMetric
     p99_kv_cache_usage: ModelServerPrometheusMetric
 
-
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, api_config: APIConfig, *args: Tuple[int, ...]) -> None:
