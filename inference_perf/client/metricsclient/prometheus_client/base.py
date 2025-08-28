@@ -45,7 +45,7 @@ class PrometheusSingleMetric:
         query = self.metric.get_queries(duration)
         if self.op in query:
             return query[self.op]
-        raise Exception(f"query of type {type(self.metric).__name__ }, does not contain the operation {self.op}")
+        raise Exception(f"query of type {type(self.metric).__name__}, does not contain the operation {self.op}")
 
 
 class PrometheusGaugeMetric(PrometheusMetric):
