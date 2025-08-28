@@ -70,6 +70,7 @@ class PrometheusCounterMetric(PrometheusMetric):
 
     def get_queries(self, duration: float) -> dict[str, str]:
         return {
+            "rate": "sum(rate(%s{%s}[%.0fs]))" % (self.name, self.filters, duration),
             "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
             % (self.name, self.filters, duration, duration, duration),
             "increase": "sum(increase(%s{%s}[%.0fs]))" % (self.name, self.filters, duration),
