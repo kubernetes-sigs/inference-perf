@@ -54,7 +54,10 @@ class SGlangModelServerClient(openAIModelServerClient):
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return PrometheusMetricMetadata(
             avg_queue_length=ModelServerPrometheusMetric(
-                "sglang:num_queue_reqs", "mean", "gauge", self.metric_filters
+                "sglang:num_queue_reqs",
+                "mean",
+                "gauge",
+                self.metric_filters,
             ),
             avg_time_to_first_token=ModelServerPrometheusMetric(
                 "sglang:time_to_first_token_seconds",
@@ -153,16 +156,28 @@ class SGlangModelServerClient(openAIModelServerClient):
                 self.metric_filters,
             ),
             avg_kv_cache_usage=ModelServerPrometheusMetric(
-                "sglang:cache_hit_rate", "mean", "gauge", self.metric_filters
+                "sglang:cache_hit_rate",
+                "mean",
+                "gauge",
+                self.metric_filters,
             ),
             median_kv_cache_usage=ModelServerPrometheusMetric(
-                "sglang:cache_hit_rate", "median", "gauge", self.metric_filters
+                "sglang:cache_hit_rate",
+                "median",
+                "gauge",
+                self.metric_filters,
             ),
             p90_kv_cache_usage=ModelServerPrometheusMetric(
-                "sglang:cache_hit_rate", "p90", "gauge", self.metric_filters
+                "sglang:cache_hit_rate",
+                "p90",
+                "gauge",
+                self.metric_filters,
             ),
             p99_kv_cache_usage=ModelServerPrometheusMetric(
-                "sglang:cache_hit_rate", "p99", "gauge", self.metric_filters
+                "sglang:cache_hit_rate",
+                "p99",
+                "gauge",
+                self.metric_filters,
             ),
             avg_time_per_output_token=None,
             median_time_per_output_token=None,

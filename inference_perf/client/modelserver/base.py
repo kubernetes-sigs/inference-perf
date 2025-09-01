@@ -40,10 +40,10 @@ class PrometheusMetricMetadata(TypedDict):
     median_request_latency: ModelServerPrometheusMetric
     p90_request_latency: ModelServerPrometheusMetric
     p99_request_latency: ModelServerPrometheusMetric
-    avg_time_to_first_token: ModelServerPrometheusMetric
-    median_time_to_first_token: ModelServerPrometheusMetric
-    p90_time_to_first_token: ModelServerPrometheusMetric
-    p99_time_to_first_token: ModelServerPrometheusMetric
+    avg_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    median_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    p90_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    p99_time_to_first_token: Optional[ModelServerPrometheusMetric]
     avg_time_per_output_token: Optional[ModelServerPrometheusMetric]
     median_time_per_output_token: Optional[ModelServerPrometheusMetric]
     p90_time_per_output_token: Optional[ModelServerPrometheusMetric]
@@ -60,10 +60,10 @@ class PrometheusMetricMetadata(TypedDict):
     avg_queue_length: ModelServerPrometheusMetric
 
     # Usage
-    avg_kv_cache_usage: ModelServerPrometheusMetric
-    median_kv_cache_usage: ModelServerPrometheusMetric
-    p90_kv_cache_usage: ModelServerPrometheusMetric
-    p99_kv_cache_usage: ModelServerPrometheusMetric
+    avg_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    median_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    p90_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    p99_kv_cache_usage: Optional[ModelServerPrometheusMetric]
     num_preemptions_total: Optional[ModelServerPrometheusMetric]
     num_requests_swapped: Optional[ModelServerPrometheusMetric]
 

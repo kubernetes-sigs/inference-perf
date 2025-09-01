@@ -21,6 +21,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class TGImodelServerClient(openAIModelServerClient):
     def __init__(
         self,
@@ -53,7 +54,10 @@ class TGImodelServerClient(openAIModelServerClient):
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return PrometheusMetricMetadata(
             avg_queue_length=ModelServerPrometheusMetric(
-                "tgi_queue_size", "mean", "gauge", self.metric_filters
+                "tgi_queue_size",
+                "mean",
+                "gauge",
+                self.metric_filters,
             ),
             avg_time_per_output_token=ModelServerPrometheusMetric(
                 "tgi_request_mean_time_per_token_duration",
