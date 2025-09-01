@@ -68,8 +68,6 @@ class openAIModelServerClient(ModelServerClient):
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
-        self.additional_metric_filters = [f"model_name='{self.model_name}'", *self.additional_filters]
-
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         payload = data.to_payload(
             model_name=self.model_name,

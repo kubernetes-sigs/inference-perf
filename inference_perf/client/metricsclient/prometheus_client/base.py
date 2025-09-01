@@ -48,6 +48,8 @@ class PrometheusQueryBuilder:
             "histogram": {
                 "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
                 % (metric_name, filter, self.duration, metric_name, filter, self.duration),
+                "increase": "sum(increase(%s_count{%s}[%.0fs]))" % (metric_name, filter, self.duration),
+                "rate": "sum(rate(%s_count{%s}[%.0fs]))" % (metric_name, filter, self.duration),
                 "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))"
                 % (metric_name, filter, self.duration),
                 "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (metric_name, filter, self.duration),
