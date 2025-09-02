@@ -16,6 +16,7 @@ from typing import TypedDict
 from pydantic import BaseModel
 
 
+# Base class for accumulating metrics objects on
 class MetricsMetadata(TypedDict):
     pass
 

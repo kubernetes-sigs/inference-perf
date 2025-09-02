@@ -168,7 +168,7 @@ class PrometheusMetricsClient(MetricsClient):
         Collects the summary metrics for the given Model Server Client and query duration.
 
         Args:
-        model_server_metrics:
+        model_server_metrics: The object containing the relevent model server metrics
         query_duration: The duration for which to collect metrics
         query_eval_time: The time at which the query is evaluated, used to ensure we are querying the correct time range
 
