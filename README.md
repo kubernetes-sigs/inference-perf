@@ -35,8 +35,10 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
     pip install inference-perf
     ```
 
-- Hugging Face Authentication
+- Hugging Face Authentication [**OPTIONAL**]
 
+    > **Optional**: *the step is required for gated models only*
+    
     To download tokenizer from the Hugging Face Hub, you need to authenticate. You can do this in one of the following ways:
 
     1. Using `huggingface-cli login`:
@@ -68,6 +70,10 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 
 - Run the container by mounting your config file.
 
+    ```bash
+    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml \
+    --mount type=bind,src=<path_to_hf_home_dir>,dst=/root/.cache/huggingface/ \
+    quay.io/inference-perf/inference-perf
     ```bash
     docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml \
     --mount type=bind,src=<path_to_hf_home_dir>,dst=/root/.cache/huggingface/ \
