@@ -207,7 +207,7 @@ def main_cli() -> None:
 
     # TODO: add to output report
     dataset_summary = datagen.generate_dataset_summary()
-    print(f"benchmarking with {dataset_summary.num_unique_prompts} unique prompts")
+    print(f"benchmarking with {dataset_summary['num_unique_prompts']} unique prompts")
 
     # Define LoadGenerator
     if config.load:
