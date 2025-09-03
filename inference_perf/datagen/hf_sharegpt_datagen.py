@@ -66,7 +66,10 @@ class HFShareGPTDataGenerator(DataGenerator):
         assert self.tokenizer is not None
 
         filtered_dataset: List[InferenceAPIData] = []
-        for data in dataset:
+        logger.info("starting to filter dataset...")
+        for index, data in enumerate(dataset):
+            if index % 1000 == 0 and index > 0:
+                logger.info(f"processed {index} items... (valid: {len(filtered_dataset)})")
             if not isinstance(data, dict):
                 continue
             if (
@@ -96,6 +99,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 raise Exception("Unsupported API type")
             if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
                 filtered_dataset.append(api_data)
+        logger.info("finished processing dataset")
         return filtered_dataset
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
