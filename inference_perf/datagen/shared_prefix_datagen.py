@@ -1,5 +1,5 @@
 import random
-from typing import Generator, List
+from typing import Generator, List, Optional
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData
@@ -12,7 +12,7 @@ from .base import DataGenerator, DatasetSummary
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
 # This can be used to benchmark prefix caching cases.
 class SharedPrefixDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if self.tokenizer is None:

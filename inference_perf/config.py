@@ -28,6 +28,7 @@ class APIType(Enum):
 class APIConfig(BaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
+    headers: Optional[dict[str, str]] = None
 
 
 class DataGenType(Enum):
@@ -36,6 +37,7 @@ class DataGenType(Enum):
     Synthetic = "synthetic"
     Random = "random"
     SharedPrefix = "shared_prefix"
+    CNNDailyMail = "cnn_dailymail"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -70,6 +72,7 @@ class DataConfig(BaseModel):
 
 class ModelServerType(Enum):
     VLLM = "vllm"
+    SGLANG = "sglang"
 
 
 class LoadType(Enum):
