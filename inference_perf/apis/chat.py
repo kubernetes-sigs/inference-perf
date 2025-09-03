@@ -20,7 +20,8 @@ from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, Distribution
+
 
 class ChatMessage(BaseModel):
     role: str
@@ -36,6 +37,19 @@ class ChatCompletionAPIData(InferenceAPIData):
 
     def get_route(self) -> str:
         return "/v1/chat/completions"
+
+    def get_prompt_len(self, tokenizer: CustomTokenizer) -> int:
+        prompt_text = "".join([msg.content for msg in self.messages if msg.content])
+        return tokenizer.count_tokens(prompt_text)
+
+    def valid_in_distribution(
+        self, tokenizer: CustomTokenizer, input_dist: Distribution | None, output_dist: Distribution | None
+    ) -> bool:
+        prompt_tokens = self.get_prompt_len(tokenizer)
+        if input_dist:
+            if prompt_tokens < input_dist.min or prompt_tokens > input_dist.max:
+                return False
+        return True
 
     def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
@@ -54,19 +68,19 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_token_times: List[float] = []
             async for chunk_bytes in response.content:
                 try:
-                    chunk_str = chunk_bytes.decode('utf-8').removeprefix("data: ")
+                    chunk_str = chunk_bytes.decode("utf-8").removeprefix("data: ")
                     output_token_times.append(time.perf_counter())
                 except UnicodeDecodeError:
                     continue
                 for line in chunk_str.splitlines():
-                    if line == '[DONE]':
+                    if line == "[DONE]":
                         break
                     try:
                         data = json.loads(line)
-                        choices = data.get('choices', [])
+                        choices = data.get("choices", [])
                         if choices:
-                            delta = choices[0].get('delta', {})
-                            content = delta.get('content')
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content")
                             if content:
                                 output_text += content
                     except (json.JSONDecodeError, IndexError):
@@ -74,8 +88,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                 else:
                     continue
                 break
-            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
-            prompt_len = tokenizer.count_tokens(prompt_text)
+            prompt_len = self.get_prompt_len(tokenizer)
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,

@@ -20,7 +20,7 @@ from typing import Any, List
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, Distribution
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -32,6 +32,23 @@ class CompletionAPIData(InferenceAPIData):
 
     def get_route(self) -> str:
         return "/v1/completions"
+
+    def get_prompt_len(self, tokenizer: CustomTokenizer) -> int:
+        return tokenizer.count_tokens(self.prompt)
+
+    def valid_in_distribution(
+        self, tokenizer: CustomTokenizer, input_dist: Distribution | None, output_dist: Distribution | None
+    ) -> bool:
+        if not self.prompt:
+            return False
+        prompt_tokens = self.get_prompt_len(tokenizer)
+        if input_dist:
+            if prompt_tokens < input_dist.min or prompt_tokens > input_dist.max:
+                return False
+        if output_dist:
+            if self.max_tokens < output_dist.min or self.max_tokens > output_dist.max:
+                return False
+        return True
 
     def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
@@ -60,7 +77,7 @@ class CompletionAPIData(InferenceAPIData):
                     if choices := data.get("choices"):
                         text = choices[0].get("text")
                         output_text += text
-            prompt_len = tokenizer.count_tokens(self.prompt)
+            prompt_len = self.get_prompt_len(tokenizer)
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
@@ -69,7 +86,7 @@ class CompletionAPIData(InferenceAPIData):
             )
         else:
             data = await response.json()
-            prompt_len = tokenizer.count_tokens(self.prompt)
+            prompt_len = self.get_prompt_len(tokenizer)
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(input_tokens=prompt_len)

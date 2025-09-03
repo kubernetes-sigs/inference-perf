@@ -15,7 +15,7 @@ import numpy as np
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator
+from .base import DataGenerator, DatasetSummary
 from typing import Generator, List
 from inference_perf.config import APIType, APIConfig, DataConfig
 
@@ -73,6 +73,11 @@ class RandomDataGenerator(DataGenerator):
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
+
+    def generate_dataset_summary(self) -> DatasetSummary:
+        if self.input_distribution is None or self.input_distribution.total_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+        return DatasetSummary(num_unique_prompts=self.input_distribution.total_count)
 
     def is_io_distribution_supported(self) -> bool:
         return True

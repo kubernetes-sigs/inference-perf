@@ -13,7 +13,7 @@
 # limitations under the License.
 from typing import Generator, List, Optional
 from inference_perf.config import APIConfig, APIType, DataConfig
-from inference_perf.datagen.base import DataGenerator
+from inference_perf.datagen.base import DataGenerator, DatasetSummary
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -35,6 +35,9 @@ class MockDataGenerator(DataGenerator):
                 yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="text" + str(i))])
             else:
                 raise Exception("Unsupported API type")
+
+    def generate_dataset_summary(self) -> DatasetSummary:
+        return DatasetSummary(num_unique_prompts=1)
 
     def is_io_distribution_supported(self) -> bool:
         return False

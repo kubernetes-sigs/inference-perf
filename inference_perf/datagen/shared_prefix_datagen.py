@@ -6,7 +6,7 @@ from inference_perf.apis.base import InferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, DatasetSummary
 
 
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
@@ -49,6 +49,9 @@ class SharedPrefixDataGenerator(DataGenerator):
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
+
+    def generate_dataset_summary(self) -> DatasetSummary:
+        return DatasetSummary(num_unique_prompts=len(self.prompts))
 
     def is_io_distribution_supported(self) -> bool:
         return True

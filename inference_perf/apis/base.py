@@ -17,7 +17,7 @@ from typing import Any, List, Optional
 from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, Distribution
 
 
 class InferenceInfo(BaseModel):
@@ -49,6 +49,15 @@ class InferenceAPIData(BaseModel):
 
     @abstractmethod
     def get_route(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_prompt_len(self, tokenizer: CustomTokenizer) -> int:
+        raise NotImplementedError
+
+    def valid_in_distribution(
+        self, tokenizer: CustomTokenizer, input_dist: Distribution | None, output_dist: Distribution | None
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod

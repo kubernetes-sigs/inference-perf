@@ -15,7 +15,11 @@ from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, List
+from typing import Generator, Optional, List, TypedDict
+
+
+class DatasetSummary(TypedDict):
+    num_unique_prompts: int
 
 
 class DataGenerator(ABC):
@@ -55,6 +59,10 @@ class DataGenerator(ABC):
 
     @abstractmethod
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def generate_dataset_summary(self) -> DatasetSummary:
         raise NotImplementedError
 
     @abstractmethod

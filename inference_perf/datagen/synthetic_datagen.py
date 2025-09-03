@@ -14,7 +14,7 @@
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator
+from .base import DataGenerator, DatasetSummary
 from typing import Generator, List
 from inference_perf.config import APIConfig, APIType, DataConfig
 
@@ -55,6 +55,11 @@ class SyntheticDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
+    def generate_dataset_summary(self) -> DatasetSummary:
+        if self.input_distribution is None or self.input_distribution.total_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+        return DatasetSummary(num_unique_prompts=self.input_distribution.total_count)
+
     def get_request(self, n: int) -> InferenceAPIData:
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
@@ -62,7 +67,7 @@ class SyntheticDataGenerator(DataGenerator):
         if self.api_config.type == APIType.Completion:
             return CompletionAPIData(
                 prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[n]]),
-                max_tokens=self.output_lengths[n]
+                max_tokens=self.output_lengths[n],
             )
         else:
             raise Exception("Unsupported API type")

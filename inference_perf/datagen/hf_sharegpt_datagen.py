@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import random
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, DatasetSummary
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Generator, List
 from datasets import load_dataset
@@ -34,14 +35,14 @@ class HFShareGPTDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.sharegpt_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.sharegpt_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            self.sharegpt_dataset = iter(
+            dataset = iter(
                 load_dataset(
                     "anon8231489123/ShareGPT_Vicuna_unfiltered",
                     data_files="ShareGPT_V3_unfiltered_cleaned_split.json",
@@ -49,62 +50,58 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
+        self.sharegpt_dataset = self._create_filtered_dataset(dataset)
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
+        self.dataset_summary = self.generate_dataset_summary()
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.sharegpt_dataset is not None:
-            while True:
-                data = next(self.sharegpt_dataset)
-                if (
-                    data is None
-                    or data[self.data_key] is None
-                    or len(data[self.data_key]) < self.min_num_turns
-                    or len(data[self.data_key]) == 0
-                ):
+    def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> List[InferenceAPIData]:
+        # Ensured by main.py logic and __init__ type hint for this class
+        assert self.tokenizer is not None
+
+        filtered_dataset: List[InferenceAPIData] = []
+        for data in dataset:
+            if (
+                data is None
+                or data[self.data_key] is None
+                or len(data[self.data_key]) < self.min_num_turns
+                or len(data[self.data_key]) == 0
+            ):
+                continue
+            api_data: InferenceAPIData
+            if self.api_config.type == APIType.Completion:
+                try:
+                    prompt = data[self.data_key][0].get(self.content_key)
+                    completion = data[self.data_key][1].get(self.content_key)
+                    api_data = CompletionAPIData(prompt=prompt, max_tokens=self.tokenizer.count_tokens(completion))
+                except (KeyError, TypeError) as e:
+                    logger.warning(f"Skipping invalid completion data: {e}")
                     continue
+            elif self.api_config.type == APIType.Chat:
+                api_data = ChatCompletionAPIData(
+                    messages=[
+                        ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
+                        for conversation in data[self.data_key]
+                    ]
+                )
+            else:
+                raise Exception("Unsupported API type")
+            if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
+                filtered_dataset.append(api_data)
+        return filtered_dataset
 
-                if self.api_config.type == APIType.Completion:
-                    try:
-                        prompt = data[self.data_key][0].get(self.content_key)
-                        completion = data[self.data_key][1].get(self.content_key)
-                        if not prompt:
-                            continue
-                        # Ensured by main.py logic and __init__ type hint for this class
-                        assert self.tokenizer is not None
-                        completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.sharegpt_dataset:
+            while True:
+                yield random.choice(self.sharegpt_dataset)
 
-                        if self.input_distribution:
-                            if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
-                                continue
-                        if self.output_distribution:
-                            if (
-                                completion_tokens < self.output_distribution.min
-                                or completion_tokens > self.output_distribution.max
-                            ):
-                                continue
-
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
-                    except (KeyError, TypeError) as e:
-                        logger.warning(f"Skipping invalid completion data: {e}")
-                        continue
-                elif self.api_config.type == APIType.Chat:
-                    yield ChatCompletionAPIData(
-                        messages=[
-                            ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
-                            for conversation in data[self.data_key]
-                        ]
-                    )
-                else:
-                    raise Exception("Unsupported API type")
+    def generate_dataset_summary(self) -> DatasetSummary:
+        return DatasetSummary(num_unique_prompts=len(self.sharegpt_dataset))
 
     def is_io_distribution_supported(self) -> bool:
         return True
