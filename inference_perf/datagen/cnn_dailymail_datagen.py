@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class CNNDailyMailDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer | None) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if config.path is not None:
