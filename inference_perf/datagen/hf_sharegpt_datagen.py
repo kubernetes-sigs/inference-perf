@@ -69,54 +69,71 @@ class HFShareGPTDataGenerator(DataGenerator):
         return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.sharegpt_dataset is not None:
-            while True:
-                data = next(self.sharegpt_dataset)
-                if (
-                    data is None
-                    or data[self.data_key] is None
-                    or len(data[self.data_key]) < self.min_num_turns
-                    or len(data[self.data_key]) == 0
-                ):
+        if self.sharegpt_dataset is None:
+            return
+        if self.api_config.type == APIType.Completion:
+            yield from self.get_completion_data()
+        elif self.api_config.type == APIType.Chat:
+            yield from self.get_chat_data()
+        raise Exception("Unsupported API type")
+
+    def get_completion_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.tokenizer is None:
+            raise Exception("Tokenizer is required for completion API of HFShareGPTDataGenerator")
+        while True:
+            data = next(self.sharegpt_dataset)
+            if (
+                data is None
+                or data[self.data_key] is None
+                or len(data[self.data_key]) < self.min_num_turns
+                or len(data[self.data_key]) == 0
+            ):
+                continue
+
+            try:
+                prompt = data[self.data_key][0].get(self.content_key)
+                completion = data[self.data_key][1].get(self.content_key)
+                if not prompt:
                     continue
+                completion_tokens = self.tokenizer.count_tokens(completion)
+                prompt_tokens = self.tokenizer.count_tokens(prompt)
 
-                if self.api_config.type == APIType.Completion:
-                    try:
-                        prompt = data[self.data_key][0].get(self.content_key)
-                        completion = data[self.data_key][1].get(self.content_key)
-                        if not prompt:
-                            continue
-                        # Ensured by main.py logic and __init__ type hint for this class
-                        assert self.tokenizer is not None
-                        completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
-
-                        if self.input_distribution:
-                            if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
-                                continue
-                        if self.output_distribution:
-                            if (
-                                completion_tokens < self.output_distribution.min
-                                or completion_tokens > self.output_distribution.max
-                            ):
-                                continue
-
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
-                    except (KeyError, TypeError) as e:
-                        logger.warning(f"Skipping invalid completion data: {e}")
+                if self.input_distribution:
+                    if prompt_tokens < self.input_distribution.min:
                         continue
-                elif self.api_config.type == APIType.Chat:
-                    yield ChatCompletionAPIData(
-                        messages=[
-                            ChatMessage(
-                                role=SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user"),
-                                content=conversation[self.content_key],
-                            )
-                            for conversation in data[self.data_key]
-                        ]
+                    if prompt_tokens > self.input_distribution.max:
+                        continue
+                if self.output_distribution:
+                    if completion_tokens < self.output_distribution.min:
+                        continue
+                    if completion_tokens > self.output_distribution.max:
+                        continue
+
+                yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+
+            except (KeyError, TypeError) as e:
+                logger.warning(f"Skipping invalid completion data: {e}")
+                continue
+
+    def get_chat_data(self) -> Generator[InferenceAPIData, None, None]:
+        while True:
+            data = next(self.sharegpt_dataset)
+            if (
+                data is None
+                or data[self.data_key] is None
+                or len(data[self.data_key]) < self.min_num_turns
+                or len(data[self.data_key]) == 0
+            ):
+                continue
+            yield ChatCompletionAPIData(
+                messages=[
+                    ChatMessage(
+                        role=SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user"),
+                        content=conversation[self.content_key],
                     )
-                else:
-                    raise Exception("Unsupported API type")
+                    for conversation in data[self.data_key]
+                ]
+            )
 
     def is_io_distribution_supported(self) -> bool:
         return True
