@@ -66,6 +66,8 @@ class HFShareGPTDataGenerator(DataGenerator):
 
         filtered_dataset: List[InferenceAPIData] = []
         for data in dataset:
+            if not isinstance(data, dict):
+                continue
             if (
                 data is None
                 or data[self.data_key] is None
