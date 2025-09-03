@@ -50,11 +50,12 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-        self.sharegpt_dataset = self._create_filtered_dataset(dataset)
+        
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
+        self.sharegpt_dataset = self._create_filtered_dataset(dataset)
         self.dataset_summary = self.generate_dataset_summary()
 
     def get_supported_apis(self) -> List[APIType]:
