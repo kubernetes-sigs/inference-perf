@@ -68,7 +68,6 @@ class PrometheusMetricMetadata(TypedDict):
     num_requests_swapped: Optional[ModelServerPrometheusMetric]
 
 
-
 class ModelServerClient(ABC):
     @abstractmethod
     def __init__(self, api_config: APIConfig, *args: Tuple[int, ...]) -> None:

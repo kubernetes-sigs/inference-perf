@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import random
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, DatasetSummary
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Generator, List
 from datasets import load_dataset
@@ -34,10 +35,10 @@ class CNNDailyMailDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.cnn_dailymail_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.cnn_dailymail_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
@@ -51,46 +52,49 @@ class CNNDailyMailDataGenerator(DataGenerator):
             )
         self.article_key = "article"
         self.highlights_key = "highlights"
-        # initialize data collection
-        next(self.cnn_dailymail_dataset)
+        self.cnn_dailymail_dataset = self._create_filtered_dataset(dataset)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
-    def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.cnn_dailymail_dataset is not None:
-            while True:
-                data = next(self.cnn_dailymail_dataset)
-                if data is None or data[self.article_key] is None or data[self.highlights_key] is None:
+    def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> List[InferenceAPIData]:
+        # Ensured by main.py logic and __init__ type hint for this class
+        assert self.tokenizer is not None
+
+        filtered_dataset: List[InferenceAPIData] = []
+        logger.info("starting to filter dataset...")
+        for index, data in enumerate(dataset):
+            if index % 1000 == 0 and index > 0:
+                logger.info(f"processed {index} items... (valid: {len(filtered_dataset)})")
+            if not isinstance(data, dict):
+                continue
+            if data is None or data[self.article_key] is None or data[self.highlights_key] is None:
+                continue
+            api_data: InferenceAPIData
+            if self.api_config.type == APIType.Completion:
+                try:
+                    prompt = data[self.article_key]
+                    completion = data[self.highlights_key]
+                    api_data = CompletionAPIData(prompt=prompt, max_tokens=self.tokenizer.count_tokens(completion))
+                except (KeyError, TypeError) as e:
+                    logger.warning(f"Skipping invalid completion data: {e}")
                     continue
+            else:
+                raise Exception("Unsupported API type")
+            if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
+                filtered_dataset.append(api_data)
+        logger.info("finished processing dataset")
+        if len(filtered_dataset):
+            raise Exception("filtered dataset contains no prompts compatible with the requested distributions")
+        return filtered_dataset
 
-                if self.api_config.type == APIType.Completion:
-                    try:
-                        prompt = data[self.article_key]
-                        completion = data[self.highlights_key]
-                        if not prompt:
-                            continue
-                        # Ensured by main.py logic and __init__ type hint for this class
-                        assert self.tokenizer is not None
-                        completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.cnn_dailymail_dataset:
+            while True:
+                yield random.choice(self.cnn_dailymail_dataset)
 
-                        if self.input_distribution:
-                            if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
-                                continue
-                        if self.output_distribution:
-                            if (
-                                completion_tokens < self.output_distribution.min
-                                or completion_tokens > self.output_distribution.max
-                            ):
-                                continue
-
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
-                    except (KeyError, TypeError) as e:
-                        logger.warning(f"Skipping invalid completion data: {e}")
-                        continue
-                else:
-                    raise Exception("Unsupported API type")
+    def generate_dataset_summary(self) -> DatasetSummary:
+        return DatasetSummary(num_unique_prompts=len(self.cnn_dailymail_dataset))
 
     def is_io_distribution_supported(self) -> bool:
         return True

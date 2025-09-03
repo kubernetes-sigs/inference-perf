@@ -23,7 +23,6 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, Distribution
 
 
-
 class ChatMessage(BaseModel):
     role: str
     content: str

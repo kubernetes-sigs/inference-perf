@@ -54,7 +54,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-        
+
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
@@ -95,7 +95,10 @@ class HFShareGPTDataGenerator(DataGenerator):
             elif self.api_config.type == APIType.Chat:
                 api_data = ChatCompletionAPIData(
                     messages=[
-                        ChatMessage(role=SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user"), content=conversation[self.content_key])
+                        ChatMessage(
+                            role=SHAREGPT_HF_CHAT_ROLE_MAP.get(conversation[self.role_key], "user"),
+                            content=conversation[self.content_key],
+                        )
                         for conversation in data[self.data_key]
                     ]
                 )
