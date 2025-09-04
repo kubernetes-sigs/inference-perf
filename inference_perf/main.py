@@ -87,7 +87,7 @@ class InferencePerfRunner:
         asyncio.run(self.loadgen.stop())
 
 
-async def main_cli() -> None:
+def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
@@ -208,9 +208,9 @@ async def main_cli() -> None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 
         if config.data.type == DataGenType.ShareGPT:
-            datagen = await HFShareGPTDataGenerator.create(config.api, config.data, tokenizer)
+            datagen = asyncio.run(HFShareGPTDataGenerator.create(config.api, config.data, tokenizer))
         elif config.data.type == DataGenType.CNNDailyMail:
-            datagen = await CNNDailyMailDataGenerator.create(config.api, config.data, tokenizer)
+            datagen = asyncio.run(CNNDailyMailDataGenerator.create(config.api, config.data, tokenizer))
         elif config.data.type == DataGenType.Synthetic:
             datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Random:
@@ -263,4 +263,4 @@ async def main_cli() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main_cli())
+    main_cli()
