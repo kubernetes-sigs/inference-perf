@@ -60,7 +60,13 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        self._dataset_filtering_task = asyncio.create_task(self._create_filtered_dataset(dataset))
+        self.dataset = dataset
+    
+    @classmethod
+    async def create(cls, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]):
+        instance = cls(api_config, config, tokenizer)
+        instance._dataset_filtering_task = asyncio.create_task(instance._create_filtered_dataset(instance.dataset))
+        return instance
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
