@@ -113,7 +113,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 raise Exception("Unsupported API type")
             if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
                 self.sharegpt_dataset.append(api_data)
-        if len(self.sharegpt_dataset):
+        if len(self.sharegpt_dataset) == 0:
             raise Exception("filtered dataset contains no prompts compatible with the requested distributions")
         logger.info("finished processing dataset")
         self.dataset_summary = self.generate_dataset_summary()
