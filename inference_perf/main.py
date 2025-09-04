@@ -201,7 +201,9 @@ def main_cli() -> None:
     datagen: DataGenerator
     if config.data:
         # Common checks for generators that require a tokenizer / distribution
-        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic, DataGenType.Random]:
+        if config.data.type in set(
+            {DataGenType.ShareGPT, DataGenType.Synthetic, DataGenType.Random, DataGenType.CNNDailyMail}
+        ):
             if tokenizer is None:
                 raise Exception(
                     f"{config.data.type.value} data generator requires a configured tokenizer. "

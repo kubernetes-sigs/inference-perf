@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class CNNDailyMailDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer | None) -> None:
         super().__init__(api_config, config, tokenizer)
+        if tokenizer is None:
+            raise ValueError("CustomTokenizer instance cannot be None")
 
         if config.path is not None:
             # check if the path is valid
@@ -66,12 +68,10 @@ class CNNDailyMailDataGenerator(DataGenerator):
         if self.cnn_dailymail_dataset is None:
             return
 
+        assert self.tokenizer is not None
+
         if self.api_config.type != APIType.Completion:
             raise Exception("Unsupported API type")
-
-        # Ensured by main.py logic and __init__ type hint for this class
-        if self.tokenizer is None:
-            raise Exception("Tokenizer is required for CNNDailyMailDataGenerator")
 
         while True:
             data = next(self.cnn_dailymail_dataset)
