@@ -1,4 +1,4 @@
-FROM python:3.12.9-slim-bookworm AS dev
+FROM python:3.13.7-slim-bookworm AS dev
 
 # Upgrade pip
 RUN pip3 install --upgrade pip
