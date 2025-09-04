@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import logging
 import random
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
@@ -52,20 +53,20 @@ class CNNDailyMailDataGenerator(DataGenerator):
             )
         self.article_key = "article"
         self.highlights_key = "highlights"
-        self.cnn_dailymail_dataset = self._create_filtered_dataset(dataset)
+        self._filtering_task = asyncio.create_task(self._create_filtered_dataset(dataset))
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
-    def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> List[InferenceAPIData]:
+    async def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> None:
         # Ensured by main.py logic and __init__ type hint for this class
         assert self.tokenizer is not None
 
-        filtered_dataset: List[InferenceAPIData] = []
+        self.cnn_dailymail_datasetfiltered_dataset: List[InferenceAPIData] = []
         logger.info("starting to filter dataset...")
         for index, data in enumerate(dataset):
             if index % 1000 == 0 and index > 0:
-                logger.info(f"processed {index} items... (valid: {len(filtered_dataset)})")
+                logger.info(f"processed {index} items... (valid: {len(self.cnn_dailymail_dataset)})")
             if not isinstance(data, dict):
                 continue
             if data is None or data[self.article_key] is None or data[self.highlights_key] is None:
@@ -82,11 +83,11 @@ class CNNDailyMailDataGenerator(DataGenerator):
             else:
                 raise Exception("Unsupported API type")
             if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
-                filtered_dataset.append(api_data)
-        logger.info("finished processing dataset")
-        if len(filtered_dataset):
+                self.cnn_dailymail_dataset.append(api_data)
+        if len(self.cnn_dailymail_dataset):
             raise Exception("filtered dataset contains no prompts compatible with the requested distributions")
-        return filtered_dataset
+        logger.info("finished processing dataset")
+        self.dataset_summary = self.generate_dataset_summary()
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.cnn_dailymail_dataset:

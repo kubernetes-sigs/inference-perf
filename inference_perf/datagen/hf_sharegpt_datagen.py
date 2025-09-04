@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import logging
 import random
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
@@ -59,21 +60,20 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        self.sharegpt_dataset = self._create_filtered_dataset(dataset)
-        self.dataset_summary = self.generate_dataset_summary()
+        self._filtering_task = asyncio.create_task(self._create_filtered_dataset(dataset))
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
-    def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> List[InferenceAPIData]:
+    async def _create_filtered_dataset(self, dataset: Generator[InferenceAPIData, None, None]) -> None:
         # Ensured by main.py logic and __init__ type hint for this class
         assert self.tokenizer is not None
 
-        filtered_dataset: List[InferenceAPIData] = []
+        self.sharegpt_dataset: List[InferenceAPIData] = []
         logger.info("starting to filter dataset...")
         for index, data in enumerate(dataset):
             if index % 1000 == 0 and index > 0:
-                logger.info(f"processed {index} items... (valid: {len(filtered_dataset)})")
+                logger.info(f"processed {index} items... (valid: {len(self.sharegpt_dataset)})")
             if not isinstance(data, dict):
                 continue
             if (
@@ -105,9 +105,11 @@ class HFShareGPTDataGenerator(DataGenerator):
             else:
                 raise Exception("Unsupported API type")
             if api_data.valid_in_distribution(self.tokenizer, self.input_distribution, self.output_distribution):
-                filtered_dataset.append(api_data)
+                self.sharegpt_dataset.append(api_data)
+        if len(self.sharegpt_dataset):
+            raise Exception("filtered dataset contains no prompts compatible with the requested distributions")
         logger.info("finished processing dataset")
-        return filtered_dataset
+        self.dataset_summary = self.generate_dataset_summary()
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.sharegpt_dataset:
