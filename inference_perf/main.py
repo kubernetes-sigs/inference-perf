@@ -87,7 +87,7 @@ class InferencePerfRunner:
         asyncio.run(self.loadgen.stop())
 
 
-async def main_cli() -> None:
+def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
@@ -267,4 +267,4 @@ async def main_cli() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main_cli())
+    main_cli()
