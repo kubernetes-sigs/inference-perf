@@ -18,7 +18,7 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, DatasetSummary
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Self
 from datasets import load_dataset
 import os
 
@@ -54,9 +54,10 @@ class CNNDailyMailDataGenerator(DataGenerator):
         self.article_key = "article"
         self.highlights_key = "highlights"
         self.dataset = dataset
-        
+        self.cnn_dailymail_datasetfiltered_dataset: List[InferenceAPIData] = []
+
     @classmethod
-    async def create(cls, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]):
+    async def create(cls, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> Self:
         instance = cls(api_config, config, tokenizer)
         instance._dataset_filtering_task = asyncio.create_task(instance._create_filtered_dataset(instance.dataset))
         return instance
@@ -68,7 +69,6 @@ class CNNDailyMailDataGenerator(DataGenerator):
         # Ensured by main.py logic and __init__ type hint for this class
         assert self.tokenizer is not None
 
-        self.cnn_dailymail_datasetfiltered_dataset: List[InferenceAPIData] = []
         logger.info("starting to filter dataset...")
         for index, data in enumerate(dataset):
             if index % 1000 == 0 and index > 0:

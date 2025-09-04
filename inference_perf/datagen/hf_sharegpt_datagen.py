@@ -18,7 +18,7 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatComplet
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, DatasetSummary
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Self
 from datasets import load_dataset
 import os
 
@@ -61,11 +61,13 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.role_key = "from"
         self.content_key = "value"
         self.dataset = dataset
-    
+        self.sharegpt_dataset: List[InferenceAPIData] = []
+
     @classmethod
-    async def create(cls, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]):
+    async def create(cls, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> Self:
         instance = cls(api_config, config, tokenizer)
         instance._dataset_filtering_task = asyncio.create_task(instance._create_filtered_dataset(instance.dataset))
+        logger.debug("started task")
         return instance
 
     def get_supported_apis(self) -> List[APIType]:
@@ -75,7 +77,6 @@ class HFShareGPTDataGenerator(DataGenerator):
         # Ensured by main.py logic and __init__ type hint for this class
         assert self.tokenizer is not None
 
-        self.sharegpt_dataset: List[InferenceAPIData] = []
         logger.info("starting to filter dataset...")
         for index, data in enumerate(dataset):
             if index % 1000 == 0 and index > 0:
