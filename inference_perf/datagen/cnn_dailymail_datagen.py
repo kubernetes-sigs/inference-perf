@@ -53,7 +53,7 @@ class CNNDailyMailDataGenerator(DataGenerator):
             )
         self.article_key = "article"
         self.highlights_key = "highlights"
-        asyncio.run(self._create_filtered_dataset(dataset))
+        self._dataset_filtering_task = asyncio.create_task(self._create_filtered_dataset(dataset))
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
