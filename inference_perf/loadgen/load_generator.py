@@ -18,7 +18,7 @@ from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadType, LoadConfig
 from asyncio import Semaphore, TaskGroup, create_task, gather, run, sleep, set_event_loop_policy, get_event_loop
-from typing import List, Tuple, TypeAlias
+from typing import List, Tuple, TypeAlias, Optional
 import time
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as SyncEvent
@@ -141,6 +141,57 @@ class LoadGenerator:
             return PoissonLoadTimer(rate=rate, duration=duration)
         return ConstantLoadTimer(rate=rate, duration=duration)
 
+    async def run_stage(
+        self,
+        stage_id: int,
+        rate: float,
+        duration: int,
+        request_queue: mp.Queue, # type: ignore[type-arg]
+        finished_requests_counter: "Synchronized[int]",
+        request_phase: SyncEvent,
+        timeout: Optional[float] = None,
+    ) -> None:
+        logger.info("Stage %d - run started", stage_id)
+        request_phase.set()
+        with finished_requests_counter.get_lock():
+            finished_requests_counter.value = 0
+        timer = self.get_timer(rate, duration)
+
+        # Allow generation a second to begin populating the queue so the workers
+        # don't miss the initial scheuled request times
+        start_time_epoch = time.time()
+        start_time = time.perf_counter() + 1
+        num_requests = int(rate * duration)
+
+        time_generator = timer.start_timer(start_time)
+        if hasattr(self.datagen, "get_request"):
+            # Datagen supports deferring to workers, enqueue request number
+            for request_number in range(num_requests):
+                request_time = next(time_generator)
+                request_queue.put((stage_id, request_number, request_time))
+        else:
+            # Datagen requires queueing request_data
+            data_generator = self.datagen.get_data()
+            for _ in range(num_requests):
+                request_queue.put((stage_id, next(data_generator), next(time_generator)))
+
+        logger.debug("Loadgen sleeping until end of stage")
+        await sleep(start_time + duration - time.perf_counter())
+
+        # Wait until all requests are finished processing
+        while finished_requests_counter.value < num_requests:
+            logger.debug(f"Loadgen waiting for all requests to finish: {finished_requests_counter.value}/{num_requests}")
+            await sleep(1)
+
+        # Clear the request_phase event to force worker gather
+        request_phase.clear()
+        request_queue.join()
+
+        self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time()
+        )
+        logger.info("Stage %d - run completed", stage_id)
+
     async def mp_run(self, client: ModelServerClient) -> None:
         request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
@@ -165,46 +216,7 @@ class LoadGenerator:
             self.workers[-1].start()
 
         for stage_id, stage in enumerate(self.stages):
-            logger.info("Stage %d - run started", stage_id)
-            request_phase.set()
-            with finished_requests_counter.get_lock():
-                finished_requests_counter.value = 0
-            timer = self.get_timer(stage.rate, stage.duration)
-
-            # Allow generation a second to begin populating the queue so the workers
-            # don't miss the initial scheuled request times
-            start_time_epoch = time.time()
-            start_time = time.perf_counter() + 1
-            num_requests = int(stage.rate * stage.duration)
-
-            time_generator = timer.start_timer(start_time)
-            if hasattr(self.datagen, "get_request"):
-                # Datagen supports deferring to workers, enqueue request number
-                for request_number in range(num_requests):
-                    request_time = next(time_generator)
-                    request_queue.put((stage_id, request_number, request_time))
-            else:
-                # Datagen requires queueing request_data
-                data_generator = self.datagen.get_data()
-                for _ in range(num_requests):
-                    request_queue.put((stage_id, next(data_generator), next(time_generator)))
-
-            logger.debug("Loadgen sleeping until end of stage")
-            await sleep(start_time + stage.duration - time.perf_counter())
-
-            # Wait until all requests are finished processing
-            while finished_requests_counter.value < num_requests:
-                logger.debug(f"Loadgen waiting for all requests to finish: {finished_requests_counter.value}/{num_requests}")
-                await sleep(1)
-
-            # Clear the request_phase event to force worker gather
-            request_phase.clear()
-            request_queue.join()
-
-            self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time()
-            )
-            logger.info("Stage %d - run completed", stage_id)
+            await self.run_stage(stage_id, stage.rate, stage.duration, request_queue, finished_requests_counter, request_phase)
             if self.stageInterval:
                 await sleep(self.stageInterval)
 
