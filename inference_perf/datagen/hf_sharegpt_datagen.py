@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -38,14 +39,14 @@ class HFShareGPTDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.sharegpt_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                self.sharegpt_dataset = itertools.cycle(load_dataset("json", data_files=config.path, streaming=True, split="train"))
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.sharegpt_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                self.sharegpt_dataset = itertools.cycle(load_dataset("json", data_files=json_files, streaming=True, split="train"))
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            self.sharegpt_dataset = iter(
+            self.sharegpt_dataset = itertools.cycle(
                 load_dataset(
                     SHAREGPT_HF_DATASET_URL,
                     data_files=SHAREGPT_HF_DATAFILES_PATH,
