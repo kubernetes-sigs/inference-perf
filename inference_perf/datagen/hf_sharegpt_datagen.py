@@ -32,7 +32,6 @@ SHAREGPT_HF_CHAT_ROLE_MAP = {"human": "user", "gpt": "assistant"}
 class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
-
         if config.path is not None:
             # check if the path is valid
             if not os.path.exists(config.path):
@@ -48,6 +47,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
             dataset = iter(
+
                 load_dataset(
                     SHAREGPT_HF_DATASET_URL,
                     data_files=SHAREGPT_HF_DATAFILES_PATH,
@@ -55,7 +55,6 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"

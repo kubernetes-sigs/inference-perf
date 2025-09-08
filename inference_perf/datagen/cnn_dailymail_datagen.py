@@ -43,7 +43,7 @@ class CNNDailyMailDataGenerator(DataGenerator):
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            self.cnn_dailymail_dataset = iter(
+            self.cnn_dailymail_dataset = itertools.cycle(
                 load_dataset(
                     "abisee/cnn_dailymail",
                     "3.0.0",
