@@ -67,6 +67,10 @@ class PrometheusMetricMetadata(TypedDict):
     num_preemptions_total: Optional[ModelServerPrometheusMetric]
     num_requests_swapped: Optional[ModelServerPrometheusMetric]
 
+    # Prefix Cache
+    prefix_cache_hits: Optional[ModelServerPrometheusMetric]
+    prefix_cache_queries: Optional[ModelServerPrometheusMetric]
+
 
 class ModelServerClient(ABC):
     @abstractmethod

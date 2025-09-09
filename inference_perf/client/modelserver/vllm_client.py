@@ -173,4 +173,16 @@ class vLLMModelServerClient(openAIModelServerClient):
             median_inter_token_latency=None,
             p90_inter_token_latency=None,
             p99_inter_token_latency=None,
+            prefix_cache_hits=ModelServerPrometheusMetric(
+                "vllm:gpu_prefix_cache_hits_total",
+                "increase",
+                "counter",
+                self.additional_metric_filters,
+            ),
+            prefix_cache_queries=ModelServerPrometheusMetric(
+                "vllm:gpu_prefix_cache_queries_total",
+                "increase",
+                "counter",
+                self.additional_metric_filters,
+            ),
         )

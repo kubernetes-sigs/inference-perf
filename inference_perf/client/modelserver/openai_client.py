@@ -95,12 +95,12 @@ class openAIModelServerClient(ModelServerClient):
                         response=response, config=self.api_config, tokenizer=self.tokenizer
                     )
                     response_content = await response.text()
-                    
+
                     end_time = time.perf_counter()
                     error = None
                     if response.status != 200:
                         error = ErrorResponseInfo(error_msg=response_content, error_type="Error response")
-                    
+
                     self.metrics_collector.record_metric(
                         RequestLifecycleMetric(
                             stage_id=stage_id,
