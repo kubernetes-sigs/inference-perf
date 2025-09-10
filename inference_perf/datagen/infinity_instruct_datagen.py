@@ -16,15 +16,15 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatComplet
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List
+from typing import Generator, List, Optional
 from datasets import load_dataset
 import os
 
 logger = logging.getLogger(__name__)
 
 
-class BillsumConversationsDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer) -> None:
+class InfinityInstructDataGenerator(DataGenerator):
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if config.path is not None:
@@ -32,46 +32,50 @@ class BillsumConversationsDataGenerator(DataGenerator):
             if not os.path.exists(config.path):
                 raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
             # depending on whether the dataset is a single file or a directory, we need to load it differently
+            # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.billsum_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                self.infinity_instruct_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.billsum_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                self.infinity_instruct_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            raise ValueError(f"Invalid dataset path: No dataset path provided")
+            raise ValueError("path is not provided in the config")
 
-        self.min_num_turns = 2
-        self.data_key = "conversations"
-        self.role_key = "from"
-        self.content_key = "value"
-        
-        # Advance the iterator to the first data point
-        next(self.billsum_dataset)
+        self.conversations_key = "conversations"
+        # initialize data collection
+        next(self.infinity_instruct_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.billsum_dataset is not None:
+        if self.infinity_instruct_dataset is not None:
             while True:
-                data = next(self.billsum_dataset)
-                if (
-                    data is None
-                    or data[self.data_key] is None
-                    or len(data[self.data_key]) < self.min_num_turns
-                    or len(data[self.data_key]) == 0
-                ):
+                data = next(self.infinity_instruct_dataset)
+                if data is None or self.conversations_key not in data or data[self.conversations_key] is None:
+                    continue
+
+                conversations = data[self.conversations_key]
+                if not conversations:
                     continue
 
                 if self.api_config.type == APIType.Completion:
                     try:
-                        prompt = data[self.data_key][0].get(self.content_key)
-                        completion = data[self.data_key][1].get(self.content_key)
-                        if not prompt:
+                        # The last message is the completion
+                        completion_message = conversations[-1]
+                        if completion_message.get("from") != "gpt":
                             continue
-                        # Ensured by main.py logic and __init__ type hint for this class
+                        completion = completion_message.get("value")
+
+                        # The rest of the messages are the prompt
+                        prompt_messages = conversations[:-1]
+                        prompt = "\n".join([msg.get("value", "") for msg in prompt_messages])
+
+                        if not prompt or not completion:
+                            continue
+
                         assert self.tokenizer is not None
                         completion_tokens = self.tokenizer.count_tokens(completion)
                         prompt_tokens = self.tokenizer.count_tokens(prompt)
@@ -91,14 +95,24 @@ class BillsumConversationsDataGenerator(DataGenerator):
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.api_config.type == APIType.Chat:
-                    yield ChatCompletionAPIData(
-                        messages=[
-                            ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
-                            for conversation in data[self.data_key]
-                        ]
-                    )
+                    try:
+                        messages: List[ChatMessage] = []
+                        for conv in conversations:
+                            role = "user" if conv.get("from") == "human" else "assistant"
+                            content = conv.get("value")
+                            if not content:
+                                continue
+                            messages.append(ChatMessage(role=role, content=content))
+
+                        if not messages:
+                            continue
+
+                        yield ChatCompletionAPIData(messages=messages)
+                    except (KeyError, TypeError) as e:
+                        logger.warning(f"Skipping invalid chat data: {e}")
+                        continue
                 else:
-                    raise Excepgtion("Unsupported API type")
+                    raise Exception("Unsupported API type")
 
     def is_io_distribution_supported(self) -> bool:
         return True
