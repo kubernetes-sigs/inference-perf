@@ -16,6 +16,13 @@ spec:
           imagePullPolicy: Always
           command: ["inference-perf"]
           args: ["--config_file", "/etc/config/config.yml"]
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: hf_api_token
+                  optional: true
           volumeMounts:
             - name: config-volume
               mountPath: /etc/config

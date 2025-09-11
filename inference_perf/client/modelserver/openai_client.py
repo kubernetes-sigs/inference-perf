@@ -93,32 +93,24 @@ class openAIModelServerClient(ModelServerClient):
                         response=response, config=self.api_config, tokenizer=self.tokenizer
                     )
                     response_content = await response.text()
-                    if response.status == 200:
-                        self.metrics_collector.record_metric(
-                            RequestLifecycleMetric(
-                                stage_id=stage_id,
-                                request_data=request_data,
-                                response_data=response_content,
-                                info=response_info,
-                                error=None,
-                                start_time=start,
-                                end_time=time.perf_counter(),
-                                scheduled_time=scheduled_time,
-                            )
+
+                    end_time = time.perf_counter()
+                    error = None
+                    if response.status != 200:
+                        error = ErrorResponseInfo(error_msg=response_content, error_type="Error response")
+
+                    self.metrics_collector.record_metric(
+                        RequestLifecycleMetric(
+                            stage_id=stage_id,
+                            request_data=request_data,
+                            response_data=response_content,
+                            info=response_info,
+                            error=error,
+                            start_time=start,
+                            end_time=end_time,
+                            scheduled_time=scheduled_time,
                         )
-                    else:
-                        self.metrics_collector.record_metric(
-                            RequestLifecycleMetric(
-                                stage_id=stage_id,
-                                request_data=request_data,
-                                response_data=response_content,
-                                info=response_info,
-                                error=ErrorResponseInfo(error_msg=response_content, error_type="Error response"),
-                                start_time=start,
-                                end_time=time.perf_counter(),
-                                scheduled_time=scheduled_time,
-                            )
-                        )
+                    )
             except Exception as e:
                 logger.error("error occured during request processing:", exc_info=True)
                 self.metrics_collector.record_metric(

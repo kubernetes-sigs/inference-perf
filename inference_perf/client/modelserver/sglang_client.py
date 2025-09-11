@@ -185,4 +185,6 @@ class SGlangModelServerClient(openAIModelServerClient):
             p99_time_per_output_token=None,
             num_preemptions_total=None,
             num_requests_swapped=None,
+            prefix_cache_hits=None,
+            prefix_cache_queries=None,
         )

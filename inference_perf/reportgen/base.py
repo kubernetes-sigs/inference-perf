@@ -102,6 +102,11 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 "mean": metrics.num_requests_swapped,
             },
             "num_preemptions_total": {"mean": metrics.num_preemptions_total},
+            "prefix_cache_hit_percent": {
+                "mean": (metrics.prefix_cache_hits / metrics.prefix_cache_queries) * 100.0
+                if metrics.prefix_cache_queries > 0
+                else 0.0
+            },
         },
     )
 
