@@ -101,7 +101,7 @@ class AutoStageConfig(BaseModel):
     timeout: float = 60
     num_stages: int = 10
     stage_duration: float = 300
-    rps_percentile: float = 85
+    saturation_percentile: float = 95
 
 
 class LoadConfig(BaseModel):

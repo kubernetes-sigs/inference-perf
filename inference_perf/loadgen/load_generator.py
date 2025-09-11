@@ -254,6 +254,14 @@ class LoadGenerator:
         logger.info("Stage %d - run completed", stage_id)
 
     async def preprocess(self, client: ModelServerClient, request_queue: mp.Queue, active_requests_counter: "Synchronized[int]", finished_requests_counter: "Synchronized[int]", request_phase: SyncEvent, cancel_signal: SyncEvent) -> None:  # type: ignore[type-arg]
+        """
+        Runs a preliminary load test to automatically determine the server's saturation point
+        and generate a suitable series of load stages for the main benchmark.
+
+        An aggregator task samples the active requests and then the burn down rate is
+        calculated from the samples. Saturation is derived from a percentile of the
+        sampled burn down rates.
+        """
         logger.info("Running preprocessing stage")
         results: List[Tuple[float, int]] = []
 
@@ -277,45 +285,22 @@ class LoadGenerator:
         except CancelledError:
             pass
 
-        # Ensure that we don't calculate saturation based on the timeout flush of active requests
+        # Ensure that we don't calculate saturation based on the post-timeout drain
         results = [(timestamp, requests) for timestamp, requests in results if timestamp < start_time + timeout]
-        timestamps = np.array([timestamp for timestamp, _ in results])
-        requests = np.array([requests for _, requests in results])
-        saturation_point = 0.0
-        window_seconds = 1
-        means = []
+        # Calculate the sampled QPS by interval between the samples
+        rates = [
+            abs((current_requests - previous_requests) / (current_timestamp - previous_timestamp))
+            for (current_timestamp, current_requests), (previous_timestamp, previous_requests)
+            in zip(results[1:], results[:-1])
+            if current_requests - previous_requests < 0
+        ]
 
-        logger.debug(f"Preprocessing produced {len(results)} results")
-        if len(results) <= 1:
-            raise Exception(f"Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout")
-
-        # Iterate from the first possible full window to the end of the duration
-        first_timestamp, last_timestamp = results[0][0], results[-1][0]
-        start_i, end_i = 0, 0
-        for i in range(window_seconds, int(last_timestamp - first_timestamp)):
-            # Define the time window for this iteration
-            end_time_window = first_timestamp + i
-            start_time_window = end_time_window - window_seconds
-
-            # Collect the data that falls within the window
-            window_indices = np.where((timestamps >= start_time_window) & (timestamps < end_time_window))
-
-            # Ensure there are enough points to calculate the mean delta
-            if len(window_indices[0]) > 1:
-                window_timestamps = timestamps[window_indices]
-                window_requests = requests[window_indices]
-
-                mean_drps = (window_requests[-1] - window_requests[0]) / (max(window_timestamps) - min(window_timestamps))
-                # Only include samples that reduced the number of active requests
-                if mean_drps < 0.0:
-                    means.append(abs(mean_drps))
-
-        if len(means) <= 1:
+        if len(rates) <= 1:
             raise Exception(f"Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout")
 
         # Generate new stages
-        saturation_point = float(np.percentile(means, self.auto_stage_config.rps_percentile))
-        logger.info(f"Saturation point estimated at {saturation_point} concurrent requests.")
+        saturation_point = float(np.percentile(rates, self.auto_stage_config.rps_percentile))
+        logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
         def generateRates(target_request_rate, size, gen_type):
             if gen_type == StageGenType.GEOM:

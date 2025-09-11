@@ -201,7 +201,10 @@ class ReportGenerator:
     ) -> List[ReportFile]:
         logger.info("Generating Reports...")
         lifecycle_reports = []
-        request_metrics = self.metrics_collector.get_metrics()
+
+        # Filter out the preprocessing stage -1
+        request_metrics = [metric for metric in self.metrics_collector.get_metrics() if metric.stage_id >= 0]
+
         if report_config.request_lifecycle.summary:
             if len(request_metrics) != 0:
                 report_file = ReportFile(
