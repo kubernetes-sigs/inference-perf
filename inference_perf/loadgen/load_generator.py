@@ -16,8 +16,18 @@ from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
-from inference_perf.config import AutoStageConfig, LoadConfig, LoadStage, LoadType, StageGenType
-from asyncio import CancelledError, Semaphore, TaskGroup, create_task, gather, run, sleep, set_event_loop_policy, get_event_loop
+from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType
+from asyncio import (
+    CancelledError,
+    Semaphore,
+    TaskGroup,
+    create_task,
+    gather,
+    run,
+    sleep,
+    set_event_loop_policy,
+    get_event_loop,
+)
 from typing import List, Tuple, TypeAlias, Optional
 import time
 import multiprocessing as mp
@@ -166,15 +176,15 @@ class LoadGenerator:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
         return ConstantLoadTimer(rate=rate, duration=duration)
-    
-    async def drain(self, queue) -> None:
+
+    async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
         while True:
             try:
                 _ = queue.get_nowait()
                 queue.task_done()
             except mp.queues.Empty:
                 if queue.qsize() == 0:
-                    logger.debug(f"Drain finished")
+                    logger.debug("Drain finished")
                     return
 
     async def run_stage(
@@ -221,7 +231,7 @@ class LoadGenerator:
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
             timed_out = False
             timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
-            prog, last = min(1.0, max(timeout_progress, finished_requests_counter.value / num_requests)), 0
+            prog, last = min(1.0, max(timeout_progress, finished_requests_counter.value / num_requests)), 0.0
             pbar.update(prog)
             last = prog
             while finished_requests_counter.value < num_requests:
@@ -235,7 +245,7 @@ class LoadGenerator:
                 pbar.update(prog - last)
                 last = prog
 
-        if timed_out:
+        if timed_out and cancel_signal:
             # Cancel signal must be set before request_phase
             # Allow time for workers to process the signal
             cancel_signal.set()
@@ -253,7 +263,15 @@ class LoadGenerator:
         )
         logger.info("Stage %d - run completed", stage_id)
 
-    async def preprocess(self, client: ModelServerClient, request_queue: mp.Queue, active_requests_counter: "Synchronized[int]", finished_requests_counter: "Synchronized[int]", request_phase: SyncEvent, cancel_signal: SyncEvent) -> None:  # type: ignore[type-arg]
+    async def preprocess(
+        self,
+        client: ModelServerClient,
+        request_queue: mp.Queue,  # type: ignore[type-arg]
+        active_requests_counter: "Synchronized[int]",
+        finished_requests_counter: "Synchronized[int]",
+        request_phase: SyncEvent,
+        cancel_signal: SyncEvent,
+    ) -> None:
         """
         Runs a preliminary load test to automatically determine the server's saturation point
         and generate a suitable series of load stages for the main benchmark.
@@ -265,11 +283,15 @@ class LoadGenerator:
         logger.info("Running preprocessing stage")
         results: List[Tuple[float, int]] = []
 
+        if self.auto_stage_config is None:
+            raise Exception("auto_stage_config cannot be none")
+
         # Aggregator collects timestamped value of active_requests throughout the preprocessing
-        async def aggregator():
+        async def aggregator() -> None:
             while True:
                 results.append((time.perf_counter(), active_requests_counter.value))
                 await sleep(0.5)
+
         aggregator_task = create_task(aggregator())
 
         stage_id = -1
@@ -277,7 +299,17 @@ class LoadGenerator:
         rate = self.auto_stage_config.num_requests / duration
         timeout = self.auto_stage_config.timeout
         start_time = time.perf_counter()
-        await self.run_stage(stage_id, rate, duration, request_queue, active_requests_counter, finished_requests_counter, request_phase, timeout=timeout, cancel_signal=cancel_signal)
+        await self.run_stage(
+            stage_id,
+            rate,
+            duration,
+            request_queue,
+            active_requests_counter,
+            finished_requests_counter,
+            request_phase,
+            timeout=timeout,
+            cancel_signal=cancel_signal,
+        )
 
         aggregator_task.cancel()
         try:
@@ -290,19 +322,22 @@ class LoadGenerator:
         # Calculate the sampled QPS by interval between the samples
         rates = [
             abs((current_requests - previous_requests) / (current_timestamp - previous_timestamp))
-            for (current_timestamp, current_requests), (previous_timestamp, previous_requests)
-            in zip(results[1:], results[:-1])
+            for (current_timestamp, current_requests), (previous_timestamp, previous_requests) in zip(
+                results[1:], results[:-1], strict=True
+            )
             if current_requests - previous_requests < 0
         ]
 
         if len(rates) <= 1:
-            raise Exception(f"Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout")
+            raise Exception(
+                "Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout"
+            )
 
         # Generate new stages
         saturation_point = float(np.percentile(rates, self.auto_stage_config.saturation_percentile))
         logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
-        def generateRates(target_request_rate, size, gen_type):
+        def generateRates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
             if gen_type == StageGenType.GEOM:
                 return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
             elif gen_type == StageGenType.LINEAR:
@@ -338,12 +373,22 @@ class LoadGenerator:
                 )
             )
             self.workers[-1].start()
-        
+
         if self.auto_stage_config:
-            await self.preprocess(client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal)
+            await self.preprocess(
+                client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
+            )
 
         for stage_id, stage in enumerate(self.stages):
-            await self.run_stage(stage_id, stage.rate, stage.duration, request_queue, active_requests_counter, finished_requests_counter, request_phase)
+            await self.run_stage(
+                stage_id,
+                stage.rate,
+                stage.duration,
+                request_queue,
+                active_requests_counter,
+                finished_requests_counter,
+                request_phase,
+            )
             if self.stageInterval:
                 await sleep(self.stageInterval)
 

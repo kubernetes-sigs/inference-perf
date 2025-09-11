@@ -100,7 +100,7 @@ class AutoStageConfig(BaseModel):
     num_requests: int = 2000
     timeout: float = 60
     num_stages: int = 10
-    stage_duration: float = 300
+    stage_duration: int = 300
     saturation_percentile: float = 95
 
 
