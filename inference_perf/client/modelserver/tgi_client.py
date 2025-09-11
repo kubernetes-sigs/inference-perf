@@ -145,4 +145,6 @@ class TGImodelServerClient(openAIModelServerClient):
             p99_inter_token_latency=None,
             num_preemptions_total=None,
             num_requests_swapped=None,
+            prefix_cache_hits=None,
+            prefix_cache_queries=None,
         )
