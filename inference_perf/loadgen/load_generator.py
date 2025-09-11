@@ -299,7 +299,7 @@ class LoadGenerator:
             raise Exception(f"Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout")
 
         # Generate new stages
-        saturation_point = float(np.percentile(rates, self.auto_stage_config.rps_percentile))
+        saturation_point = float(np.percentile(rates, self.auto_stage_config.saturation_percentile))
         logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
         def generateRates(target_request_rate, size, gen_type):
