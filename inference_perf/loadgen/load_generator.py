@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pathlib import Path
 from pydantic import BaseModel
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
+from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
-from inference_perf.config import LoadType, LoadConfig
+from inference_perf.config import LoadType, LoadConfig, TraceFormat
 from asyncio import Semaphore, TaskGroup, create_task, gather, run, sleep, set_event_loop_policy, get_event_loop
 from typing import List, Tuple, TypeAlias
 import time
@@ -136,9 +138,22 @@ class LoadGenerator:
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
 
+        if self.load_type == LoadType.TRACE_REPLAY:
+            self.trace = load_config.trace
+
+            if self.trace is None:
+                raise ValueError("Trace file is required for trace replay load generator")
+    
+            if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
+                self.trace_reader = AzurePublicDatasetReader()
+            else:
+                raise ValueError(f"Unsupported trace format: {self.trace.format}")
+
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
+        elif self.load_type == LoadType.TRACE_REPLAY:
+            return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         return ConstantLoadTimer(rate=rate, duration=duration)
 
     async def mp_run(self, client: ModelServerClient) -> None:
@@ -175,7 +190,10 @@ class LoadGenerator:
             # don't miss the initial scheuled request times
             start_time_epoch = time.time()
             start_time = time.perf_counter() + 1
-            num_requests = int(stage.rate * stage.duration)
+            if self.datagen.trace is not None:
+                num_requests = self.datagen.get_request_count()
+            else:
+                num_requests = int(stage.rate * stage.duration)
 
             time_generator = timer.start_timer(start_time)
             if hasattr(self.datagen, "get_request"):
@@ -186,8 +204,8 @@ class LoadGenerator:
             else:
                 # Datagen requires queueing request_data
                 data_generator = self.datagen.get_data()
-                for _ in range(num_requests):
-                    request_queue.put((stage_id, next(data_generator), next(time_generator)))
+                for data, request_time in zip(data_generator, time_generator):
+                    request_queue.put((stage_id, data, request_time))
 
             logger.debug("Loadgen sleeping until end of stage")
             await sleep(start_time + stage.duration - time.perf_counter())
@@ -224,7 +242,7 @@ class LoadGenerator:
             logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
-                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator)):
                     now = time.perf_counter()
                     if time_index < end_time and now < end_time:
                         if time_index > now:

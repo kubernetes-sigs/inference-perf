@@ -48,6 +48,7 @@ class DataGenerator(ABC):
         self.input_distribution = config.input_distribution
         self.output_distribution = config.output_distribution
         self.shared_prefix = config.shared_prefix
+        self.trace = config.trace
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
