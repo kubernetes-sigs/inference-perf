@@ -35,6 +35,29 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
     pip install inference-perf
     ```
 
+- Hugging Face Authentication [**OPTIONAL**]
+
+    > **Optional**: *the step is required for gated models only*
+    
+    To download tokenizer from the Hugging Face Hub, you need to authenticate. You can do this in one of the following ways:
+
+    1. Using `huggingface-cli login`:
+    This will store your token to it's home folder. `~/.cache/huggingface/` by default.
+
+    2. Using Environment Variables:
+
+       You can set the `HF_TOKEN` environment variable:
+
+       ```bash
+       export HF_TOKEN=<huggingface-access-token>
+       ```
+
+       Alternatively, you can store the token in a file and set the `HF_TOKEN_PATH` environment variable to the path of that file:
+
+       ```bash
+       export HF_TOKEN_PATH=<path-to-token-file>
+       ```
+
 - Run inference-perf CLI with a configuration file
 
     ```
@@ -47,9 +70,17 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 
 - Run the container by mounting your config file.
 
+    ```bash
+    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml \
+    --mount type=bind,src=<path_to_hf_home_dir>,dst=/root/.cache/huggingface/ \
+    quay.io/inference-perf/inference-perf
+    ```bash
+    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml \
+    --mount type=bind,src=<path_to_hf_home_dir>,dst=/root/.cache/huggingface/ \
+    quay.io/inference-perf/inference-perf
     ```
-    docker run -it --rm -v $(pwd)/config.yml:/workspace/config.yml quay.io/inference-perf/inference-perf
-    ```
+
+    *\* For huggingface authentication, please refer to **“Hugging Face Authentication”** in the section [Run locally](#run-locally)*
 
 ### Run in a Kubernetes cluster
 

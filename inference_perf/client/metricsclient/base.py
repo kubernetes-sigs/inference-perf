@@ -61,6 +61,10 @@ class ModelServerMetrics(BaseModel):
     p90_kv_cache_usage: float = 0.0
     p99_kv_cache_usage: float = 0.0
 
+    # Prefix Cache
+    prefix_cache_hits: float = 0.0
+    prefix_cache_queries: float = 0.0
+
 
 class MetricsClient(ABC):
     @abstractmethod
