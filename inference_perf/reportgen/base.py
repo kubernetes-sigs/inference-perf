@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from collections import defaultdict
 from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
-from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig
+from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig, Config
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.utils import ReportFile
 from inference_perf.client.requestdatacollector import RequestDataCollector
@@ -186,15 +186,27 @@ class ReportGenerator:
         self,
         metrics_client: Optional[MetricsClient],
         metrics_collector: RequestDataCollector,
+        config: "Config",
     ) -> None:
         self.metrics_collector = metrics_collector
         self.metrics_client = metrics_client
+        self.config = config
 
     def get_metrics_collector(self) -> RequestDataCollector:
         """
         Returns the metrics collector.
         """
         return self.metrics_collector
+
+    def generate_config_report(self) -> ReportFile:
+        """
+        Generates a report file containing the config.
+        """
+        return ReportFile(
+            name="config",
+            file_type="yaml",
+            contents=self.config.model_dump(mode="json"),
+        )
 
     async def generate_reports(
         self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters
@@ -242,6 +254,8 @@ class ReportGenerator:
 
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+
+        lifecycle_reports.append(self.generate_config_report())
         return lifecycle_reports
 
     def generate_prometheus_metrics_report(

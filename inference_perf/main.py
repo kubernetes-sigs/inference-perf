@@ -133,7 +133,7 @@ def main_cli() -> None:
         collector = MultiprocessRequestDataCollector()
     else:
         collector = LocalRequestDataCollector()
-    reportgen = ReportGenerator(metrics_client, collector)
+    reportgen = ReportGenerator(metrics_client, collector, config=config)
 
     # Create tokenizer based on tokenizer config
     tokenizer: Optional[CustomTokenizer] = None

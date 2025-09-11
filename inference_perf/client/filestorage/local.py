@@ -19,6 +19,7 @@ from inference_perf.config import StorageConfigBase
 from inference_perf.utils import ReportFile
 import json
 import os
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -34,5 +35,8 @@ class LocalStorageClient(StorageClient):
             report_path = f"{self.config.path if self.config.path else ''}/{self.config.report_file_prefix if self.config.report_file_prefix else ''}{filename}"
             os.makedirs(os.path.dirname(report_path), exist_ok=True)
             with open(report_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps(report.get_contents(), indent=2))
+                if report.file_type == "yaml":
+                    yaml.dump(report.get_contents(), f, sort_keys=False, default_flow_style=False)
+                else:
+                    f.write(json.dumps(report.get_contents(), indent=2))
             logger.info(f"Report saved to: {report_path}")
