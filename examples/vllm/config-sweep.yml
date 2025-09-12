@@ -1,8 +1,8 @@
 load:
   type: constant
   interval: 15
-  auto_stage:                   # Automatically determine saturation point of the target service and generate stages
-    gen_type: linear            # Produce a linear distribution [1.0, saturation] of rates for num_stages
+  sweep:                   # Automatically determine saturation point of the target service and generate stages
+    type: linear            # Produce a linear distribution [1.0, saturation] of rates for num_stages
     timeout: 60                 # Length of time to run load to determine saturation
     num_stages: 10              # Number of stages to generate
     stage_duration: 60          # Duration of each generated stage

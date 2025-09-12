@@ -77,7 +77,7 @@ load:
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
 ```
 
-#### Automatically determining load
+#### Load Sweeps
 
 Defines the preprocessing phase to determine load based on
 target service saturation.
@@ -86,11 +86,11 @@ target service saturation.
 load:
   type: constant|poisson
   interval: 15
-  auto_stage:                   # Automatically determine saturation point of the target service and generate stages
-    gen_type: linear|geom       # Produce a linear distribution [1.0, saturation] of rates for num_stages
+  sweep:                        # Automatically determine saturation point of the target service and generate stages
+    type: linear|geometric      # Produce a linear distribution [1.0, saturation] of rates for num_stages or geometric distribution clustered around the saturation point
     timeout: 60                 # Length of time to run load to determine saturation
-    num_stages: 10              # Number of stages to generate
-    stage_duration: 60          # Duration of each generated stage
+    num_stages: 5               # Number of stages to generate
+    stage_duration: 180         # Duration of each generated stage
     saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
 ```
 
