@@ -204,7 +204,7 @@ class ReportGenerator:
 
         # Filter out the preprocessing stage -1
         request_metrics = [
-            metric for metric in self.metrics_collector.get_metrics() if metric.stage_id and metric.stage_id >= 0
+            metric for metric in self.metrics_collector.get_metrics() if metric.stage_id is not None and metric.stage_id >= 0
         ]
 
         if report_config.request_lifecycle.summary:

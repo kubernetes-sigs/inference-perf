@@ -170,7 +170,7 @@ class LoadGenerator:
         self.num_workers = load_config.num_workers
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
-        self.auto_stage_config = load_config.auto_stage
+        self.sweep_config = load_config.sweep
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -283,8 +283,8 @@ class LoadGenerator:
         logger.info("Running preprocessing stage")
         results: List[Tuple[float, int]] = []
 
-        if self.auto_stage_config is None:
-            raise Exception("auto_stage_config cannot be none")
+        if self.sweep_config is None:
+            raise Exception("sweep_config cannot be none")
 
         # Aggregator collects timestamped value of active_requests throughout the preprocessing
         async def aggregator() -> None:
@@ -296,8 +296,8 @@ class LoadGenerator:
 
         stage_id = -1
         duration = 5
-        rate = self.auto_stage_config.num_requests / duration
-        timeout = self.auto_stage_config.timeout
+        rate = self.sweep_config.num_requests / duration
+        timeout = self.sweep_config.timeout
         start_time = time.perf_counter()
         await self.run_stage(
             stage_id,
@@ -334,7 +334,7 @@ class LoadGenerator:
             )
 
         # Generate new stages
-        saturation_point = float(np.percentile(rates, self.auto_stage_config.saturation_percentile))
+        saturation_point = float(np.percentile(rates, self.sweep_config.saturation_percentile))
         logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
         def generateRates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
@@ -343,8 +343,8 @@ class LoadGenerator:
             elif gen_type == StageGenType.LINEAR:
                 return [float(round(r)) for r in np.linspace(1, target_request_rate, size)]
 
-        rates = generateRates(saturation_point, self.auto_stage_config.num_stages, self.auto_stage_config.gen_type)
-        self.stages = [LoadStage(rate=r, duration=self.auto_stage_config.stage_duration) for r in rates]
+        rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
+        self.stages = [LoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
     async def mp_run(self, client: ModelServerClient) -> None:
@@ -374,7 +374,7 @@ class LoadGenerator:
             )
             self.workers[-1].start()
 
-        if self.auto_stage_config:
+        if self.sweep_config:
             await self.preprocess(
                 client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
             )
