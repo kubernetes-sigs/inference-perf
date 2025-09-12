@@ -28,5 +28,5 @@ __all__ = [
     "RandomDataGenerator",
     "SharedPrefixDataGenerator",
     "CNNDailyMailDataGenerator",
-    "InfinityInstructDataGenerator"
+    "InfinityInstructDataGenerator",
 ]
