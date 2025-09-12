@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class CNNDailyMailDataGenerator(DataGenerator):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: CustomTokenizer | None) -> None:
+    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
         if tokenizer is None:
             raise ValueError("CustomTokenizer instance cannot be None")
