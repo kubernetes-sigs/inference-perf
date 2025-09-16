@@ -1,0 +1,48 @@
+api:
+  type: completion
+  streaming: true
+data:
+  type: sharedPrefix
+  shared_prefix:
+    num_groups: 10
+    num_prompts_per_group: 10
+    system_prompt_len: 128
+    question_len: 64
+    output_len: 64  
+load:
+  type: constant
+  interval: 1.0
+  sweep:
+    type: linear
+    timeout: 180
+    num_stages: 7
+    stage_duration: 60
+  num_workers: 44
+  worker_max_concurrency: 10
+  worker_max_tcp_connections: 2500
+metrics:
+  prometheus:
+    filters:
+    - namespace="test-ns"
+    google_managed: true
+    scrape_interval: 15
+  type: prometheus
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+  prometheus:
+    summary: true
+    per_stage: true
+storage:
+  google_cloud_storage:
+    bucket_name: <your-gcs-bucket>
+server:
+  base_url: http://vllm-service.test-ns.svc.cluster.local:8000
+  ignore_eos: true
+  model_name: meta-llama/Meta-Llama-3-8B-Instruct
+  type: vllm
+tokenizer:
+  pretrained_model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+  token: <your-hf-token>

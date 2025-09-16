@@ -1,0 +1,3 @@
+# KubeCon NA 2025 vLLM Presentation and Demo
+
+Manifests used for generating the results demoed by [Sachin Varghese](https://github.com/SachinVarghese) and [Brendan Slabe](https://github.com/Bslabe123) in the [Benchmarking GenAI Foundation Model Inference Optimizations on Kubernetes](https://kccncna2025.sched.com/event/27FVD/benchmarking-genai-foundation-model-inference-optimizations-on-kubernetes-sachin-mathew-varghese-capital-one-brendan-slabe-google) presentation at the Kubecon NA 2025 in Atlanta.
