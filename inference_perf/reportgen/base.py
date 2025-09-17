@@ -40,9 +40,17 @@ def summarize(items: List[float]) -> Optional[dict[str, float]]:
         {
             "mean": float(np.mean(items)),
             "min": float(np.min(items)),
+            "p0.1": float(np.percentile(items, 0.1)),
+            "p1": float(np.percentile(items, 1)),
+            "p5": float(np.percentile(items, 5)),
             "p10": float(np.percentile(items, 10)),
+            "p25": float(np.percentile(items, 25)),
             "median": float(np.percentile(items, 50)),
+            "p75": float(np.percentile(items, 75)),
             "p90": float(np.percentile(items, 90)),
+            "p95": float(np.percentile(items, 95)),
+            "p99": float(np.percentile(items, 99)),
+            "p99.9": float(np.percentile(items, 99.9)),
             "max": float(np.max(items)),
         }
         if len(items) != 0
