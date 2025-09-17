@@ -75,11 +75,12 @@ class PrometheusMetricMetadata(MetricsMetadata):
 
 class ModelServerClient(ABC):
     @abstractmethod
-    def __init__(self, api_config: APIConfig, *args: Tuple[int, ...]) -> None:
+    def __init__(self, api_config: APIConfig, timeout: Optional[float] = None, *args: Tuple[int, ...]) -> None:
         if api_config.type not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {api_config}")
 
         self.api_config = api_config
+        self.timeout = timeout
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:
