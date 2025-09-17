@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:f06b2efa6b469adc98049b464f8ff7b749522a1011f4fca00838153eeab3cf01"
+content_hash = "sha256:0f328702550aff798f70ab2d58f78c94582cbda38f622e2ab73ee326317d47e8"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -1797,6 +1797,17 @@ dependencies = [
 files = [
     {file = "transformers-4.52.4-py3-none-any.whl", hash = "sha256:203f5c19416d5877e36e88633943761719538a25d9775977a24fe77a1e5adfc7"},
     {file = "transformers-4.52.4.tar.gz", hash = "sha256:aff3764441c1adc192a08dba49740d3cbbcb72d850586075aed6bd89b98203e6"},
+]
+
+[[package]]
+name = "types-jmespath"
+version = "1.0.2.20250809"
+requires_python = ">=3.9"
+summary = "Typing stubs for jmespath"
+groups = ["default"]
+files = [
+    {file = "types_jmespath-1.0.2.20250809-py3-none-any.whl", hash = "sha256:4147d17cc33454f0dac7e78b4e18e532a1330c518d85f7f6d19e5818ab83da21"},
+    {file = "types_jmespath-1.0.2.20250809.tar.gz", hash = "sha256:e194efec21c0aeae789f701ae25f17c57c25908e789b1123a5c6f8d915b4adff"},
 ]
 
 [[package]]

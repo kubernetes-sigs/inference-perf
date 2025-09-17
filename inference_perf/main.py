@@ -48,6 +48,7 @@ from inference_perf.client.requestdatacollector import (
     LocalRequestDataCollector,
     MultiprocessRequestDataCollector,
 )
+from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile
 from inference_perf.logger import setup_logging
@@ -113,6 +114,10 @@ def main_cli() -> None:
 
     config = read_config(args.config_file)
 
+    # Define Circuit Breakers
+    if config.circuit_breakers:
+        init_circuit_breakers(config.circuit_breakers)
+
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
     if config.metrics:
@@ -162,6 +167,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -176,6 +182,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -190,6 +197,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
