@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.client.metricsclient.base import StageRuntimeInfo
+from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStatus
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType
+from inference_perf.utils import circuit_breaker
 from asyncio import (
     CancelledError,
     Semaphore,
@@ -163,6 +164,7 @@ class LoadGenerator:
         self.num_workers = load_config.num_workers
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
+        self.circuit_breakers = [circuit_breaker.get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
@@ -207,6 +209,7 @@ class LoadGenerator:
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
         num_requests = int(rate * duration)
+        stage_status = StageStatus.RUNNING
 
         time_generator = timer.start_timer(start_time)
         if hasattr(self.datagen, "get_request"):
@@ -232,6 +235,10 @@ class LoadGenerator:
                     logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                     timed_out = True
                     break
+                if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                    logger.warning(f"Loadgen detects circuit breakers \"{cb.name}\" open, exit the stage.")
+                    timed_out = True
+                    break
                 await sleep(1)
                 timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
                 prog = min(1.0, max(timeout_progress, finished_requests_counter.value / num_requests))
@@ -247,14 +254,17 @@ class LoadGenerator:
                 await sleep(1)
             await self.drain(request_queue)
             cancel_signal.clear()
+            stage_status = StageStatus.FAILED     
+        else:
+            stage_status = StageStatus.COMPLETED    
         # Clear the request_phase event to force worker gather
         request_phase.clear()
         request_queue.join()
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time()
+            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status
         )
-        logger.info("Stage %d - run completed", stage_id)
+        logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
     async def preprocess(
         self,
@@ -398,22 +408,31 @@ class LoadGenerator:
             start_time_epoch = time.time()
             start_time = time.perf_counter()
             end_time = start_time + stage.duration
+            stage_status = StageStatus.RUNNING
             logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
                 for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                     now = time.perf_counter()
                     if time_index < end_time and now < end_time:
+                        if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                            logger.warning(f"Loadgen detects circuit breakers \"{cb.name}\" open, clean up stage and exit early.")
+                            stage_status = StageStatus.FAILED
+                            break
                         if time_index > now:
                             await sleep(time_index - time.perf_counter())
                         tg.create_task(client.process_request(data, stage_id, time_index))
                         continue
                     else:
                         break
+            if stage_status == StageStatus.RUNNING:
+                stage_status = StageStatus.COMPLETED
+                logger.info("Stage %d - run completed", stage_id)
+            else:
+                logger.info("Stage %d - run failed", stage_id)
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time()
+                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status
             )
-            logger.info("Stage %d - run completed", stage_id)
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
 

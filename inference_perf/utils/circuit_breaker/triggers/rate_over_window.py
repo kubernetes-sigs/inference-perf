@@ -1,0 +1,33 @@
+from __future__ import annotations
+import datetime
+from typing import List
+from .base import Trigger, HitSample
+from .config import TriggerRateOverWindow
+
+class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):
+    """Open when hit rate over a time window crosses threshold."""
+    def __init__(self, window_sec: float, threshold: float, min_samples: int = 0):
+        self.size = datetime.timedelta(seconds=window_sec)
+        self.th = threshold
+        self.min = min_samples
+        self.buf: List[HitSample] = []
+        self._fired = False
+
+    def update(self, s: HitSample) -> None:
+        now = s.ts
+        self.buf.append(s)
+        cutoff = now - self.size
+        self.buf = [x for x in self.buf if x.ts >= cutoff]
+        total = len(self.buf)
+        if total >= self.min:
+            hits = sum(x.hit for x in self.buf)
+            rate = hits / total if total else 0.0
+            if rate >= self.th:
+                self._fired = True
+
+    def fired(self) -> bool:
+        return self._fired
+    
+    def reset(self):
+        self.buf.clear()
+        self._fired = False

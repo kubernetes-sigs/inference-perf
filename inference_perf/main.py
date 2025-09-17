@@ -48,7 +48,7 @@ from inference_perf.client.requestdatacollector import (
     MultiprocessRequestDataCollector,
 )
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.utils import CustomTokenizer, ReportFile
+from inference_perf.utils import circuit_breaker, CustomTokenizer, ReportFile
 from inference_perf.logger import setup_logging
 import asyncio
 import time
@@ -109,6 +109,10 @@ def main_cli() -> None:
         parser.error("argument -c/--config_file is required when not using --analyze")
 
     config = read_config(args.config_file)
+
+    # Define Circuit Breakers
+    if config.circuit_breakers:
+        circuit_breaker.init_circuit_breakers(config.circuit_breakers)
 
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
