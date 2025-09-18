@@ -1,17 +1,23 @@
 FROM python:3.12.9-slim-bookworm AS dev
 
 # Upgrade pip
-RUN pip3 install --upgrade pip
+RUN pip3 install --upgrade pip pip-tools
 
 # Set working directory
 WORKDIR /workspace
 
-# Copy project files
-COPY inference_perf/ /workspace/inference_perf/
+# Copy dependency files
 COPY pyproject.toml /workspace/
 
-# Install dependencies & clean cache
-RUN pip install . && pip cache purge
+RUN python -m piptools compile --generate-hashes --resolver=backtracking pyproject.toml -o requirements.txt && \
+    pip install -r requirements.txt && \
+    pip cache purge
+
+COPY config.yml /workspace/
+COPY inference_perf /workspace/inference_perf
+
+# Set PYTHONPATH
+ENV PYTHONPATH=/workspace
 
 # Run inference-perf
-CMD ["inference-perf", "--config_file", "config.yml"]
+CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]
