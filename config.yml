@@ -1,8 +1,10 @@
 load:
+  interval: 10
+  sweep:
+    num_stages: 10
+    stage_duration: 300
+    type: linear
   type: constant
-  stages:
-  - rate: 1
-    duration: 30
 api: 
   type: completion
   streaming: true
@@ -14,7 +16,13 @@ server:
 tokenizer:
   pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
-  type: shareGPT
+  shared_prefix:
+    num_groups: 1
+    num_prompts_per_group: 100000
+    output_len: 128
+    question_len: 64
+    system_prompt_len: 64
+  type: shared_prefix
 metrics:
   type: prometheus
   prometheus:

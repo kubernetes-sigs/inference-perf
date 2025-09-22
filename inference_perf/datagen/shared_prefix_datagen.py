@@ -87,17 +87,22 @@ class SharedPrefixDataGenerator(DataGenerator):
         for _ in range(self.num_groups):
             # Generate a shared prefix (system prompt)
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
-            shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
             for _ in range(self.num_prompts_per_group):
                 # Generate a unique question
                 question_token_ids = self._generate_random_token_ids(self.question_len)
-                question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+                prompt_text = hf_tokenizer.decode(shared_prefix_token_ids + question_token_ids, skip_special_tokens=True)
 
-                # Combine shared prefix and question
-                full_prompt_text = shared_prefix_text + " " + question_text
+                # Combine shared prefix and question, trim tokens if the prompt decodes into a prompts that has more tokens than expected
+                while self.system_prompt_len + self.question_len < self.tokenizer.count_tokens(prompt_text) :
+                    question_token_ids.pop()
+                    prompt_text = hf_tokenizer.decode(shared_prefix_token_ids + question_token_ids, skip_special_tokens=True)
+                
+                # Don't use prompt we overshoot the number of tokens to trim
+                if self.system_prompt_len + self.question_len > self.tokenizer.count_tokens(prompt_text):
+                    continue
 
-                self.prompts.append(full_prompt_text)
+                self.prompts.append(prompt_text)
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         random.shuffle(self.prompts)
