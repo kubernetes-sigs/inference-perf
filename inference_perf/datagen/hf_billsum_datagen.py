@@ -46,7 +46,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        
+
         # Advance the iterator to the first data point
         next(self.billsum_dataset)
 

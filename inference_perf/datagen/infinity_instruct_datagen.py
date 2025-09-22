@@ -34,10 +34,14 @@ class InfinityInstructDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.infinity_instruct_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+                self.infinity_instruct_dataset = iter(
+                    load_dataset("json", data_files=config.path, streaming=True, split="train")
+                )
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.infinity_instruct_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+                self.infinity_instruct_dataset = iter(
+                    load_dataset("json", data_files=json_files, streaming=True, split="train")
+                )
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
