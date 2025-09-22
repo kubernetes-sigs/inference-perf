@@ -19,6 +19,7 @@ from .random_datagen import RandomDataGenerator
 from .shared_prefix_datagen import SharedPrefixDataGenerator
 from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
 from .infinity_instruct_datagen import InfinityInstructDataGenerator
+from .hf_billsum_datagen import BillsumConversationsDataGenerator
 
 __all__ = [
     "DataGenerator",
@@ -29,4 +30,5 @@ __all__ = [
     "SharedPrefixDataGenerator",
     "CNNDailyMailDataGenerator",
     "InfinityInstructDataGenerator",
+    "BillsumConversationsDataGenerator",
 ]

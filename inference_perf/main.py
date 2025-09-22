@@ -32,6 +32,7 @@ from inference_perf.datagen import (
     SharedPrefixDataGenerator,
     CNNDailyMailDataGenerator,
     InfinityInstructDataGenerator,
+    BillsumConversationsDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient, SGlangModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
@@ -135,7 +136,7 @@ def main_cli() -> None:
         collector = MultiprocessRequestDataCollector()
     else:
         collector = LocalRequestDataCollector()
-    reportgen = ReportGenerator(metrics_client, collector)
+    reportgen = ReportGenerator(metrics_client, collector, config=config)
 
     # Create tokenizer based on tokenizer config
     tokenizer: Optional[CustomTokenizer] = None
@@ -198,6 +199,9 @@ def main_cli() -> None:
     if config.load is None:
         raise Exception("load config missing")
 
+    if len(config.load.stages) == 0 and config.load.sweep is None:
+        raise Exception("Load stages must be configured, or sweep must be configured")
+
     # Define DataGenerator
     datagen: DataGenerator
     if config.data:
@@ -235,6 +239,8 @@ def main_cli() -> None:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.InfinityInstruct:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.BillsumConversations:
+            datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

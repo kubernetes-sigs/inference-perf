@@ -19,12 +19,13 @@ class ReportFile:
     name: str
     contents: Any
 
-    def __init__(self, name: str, contents: Any):
+    def __init__(self, name: str, contents: Any, file_type: str = "json"):
         self.name = name
         self.contents = contents
+        self.file_type = file_type
 
     def get_filename(self) -> str:
-        return f"{self.name}.json"
+        return f"{self.name}.{self.file_type}"
 
     def get_contents(self) -> Any:
         return self.contents
