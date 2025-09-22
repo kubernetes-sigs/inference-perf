@@ -89,6 +89,7 @@ class SharedPrefixDataGenerator(DataGenerator):
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
 
             for _ in range(self.num_prompts_per_group):
+                print(f"appending to {len(self.prompts)} prompts")
                 # Generate a unique question
                 question_token_ids = self._generate_random_token_ids(self.question_len)
                 prompt_text = hf_tokenizer.decode(shared_prefix_token_ids + question_token_ids, skip_special_tokens=True)
