@@ -334,7 +334,7 @@ class LoadGenerator:
             if gen_type == StageGenType.GEOM:
                 return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
             elif gen_type == StageGenType.LINEAR:
-                return [float(round(r)) for r in np.linspace(1, target_request_rate, size)]
+                return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
 
         rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
         self.stages = [LoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
