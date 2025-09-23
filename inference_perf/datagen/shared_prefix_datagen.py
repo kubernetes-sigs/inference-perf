@@ -93,7 +93,7 @@ class SharedPrefixDataGenerator(DataGenerator):
                 question_token_ids = self._generate_random_token_ids(self.question_len)
                 prompt_text = hf_tokenizer.decode(shared_prefix_token_ids + question_token_ids, skip_special_tokens=True)
 
-                # Combine shared prefix and question, trim tokens if the prompt decodes into a prompts that has more tokens than expected
+                # Combine shared prefix and question, trim tokens if the prompt decodes into a prompt that has more tokens than expected
                 while self.system_prompt_len + self.question_len < self.tokenizer.count_tokens(prompt_text):
                     question_token_ids.pop()
                     prompt_text = hf_tokenizer.decode(shared_prefix_token_ids + question_token_ids, skip_special_tokens=True)
