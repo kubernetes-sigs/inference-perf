@@ -19,7 +19,7 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 * Reports the key metrics needed to measure LLM performance.
 * Supports different real world and synthetic datasets.
 * Supports different APIs and supports multiple model servers with enhanced metrics like [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang) and [TGI](https://github.com/huggingface/text-generation-inference).
-* Supports benchmarking larget deployments with frameworks like [llm-d](https://llm-d.ai/), [Dynamo](https://docs.nvidia.com/dynamo/latest/) and [Inference Gateway](https://gateway-api-inference-extension.sigs.k8s.io/).
+* Supports benchmarking large deployments with frameworks like [llm-d](https://llm-d.ai/), [Dynamo](https://docs.nvidia.com/dynamo/latest/) and [Inference Gateway](https://gateway-api-inference-extension.sigs.k8s.io/).
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
 
@@ -97,7 +97,7 @@ Refer to the [guide](./deploy/README.md) in `/deploy`.
 
 You can configure inference-perf to run with different data generation and load generation configurations today. Please see `config.yml` and examples in `/examples`.
 
-Refer to the [CONFIG.md](./docs/CONFIG.md) for documentation on all supported configuration options.
+Refer to the [config.md](./docs/config.md) for documentation on all supported configuration options.
 
 ### Datasets
 
@@ -106,9 +106,9 @@ Supported datasets include the following:
 - [Synthetic](./examples/vllm/config-synthetic.yml) for specific input / output distributions with Sonnet data
 - [Random](./examples/vllm/config-random.yml) for specific input / output distributions with random data
 - [SharedPrefix](./examples/vllm/config-shared-prefix.yml) for prefix caching scenarios
-- [CNN DailyMail](./docs/CONFIG.md#data-generation) for Summarization use case
-- [Billsum Conversations](./docs/CONFIG.md#data-generation) for long context prefill heavy cases
-- [Infinity Instruct](./docs/CONFIG.md#data-generation) for long context decode heavy cases
+- [CNN DailyMail](./docs/config.md#data-generation) for Summarization use case
+- [Billsum Conversations](./docs/config.md#data-generation) for long context prefill heavy cases
+- [Infinity Instruct](./docs/config.md#data-generation) for long context decode heavy cases
 - mock (for testing)
 
 ### Load Generators
