@@ -1,6 +1,13 @@
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub Release](https://img.shields.io/github/v/release/kubernetes-sigs/inference-perf.svg?label=Release)](https://github.com/kuberentes-sigs/inferece-perf/releases/latest)
+[![PyPI Release](https://img.shields.io/pypi/v/inference-perf.svg?label=PyPI%20Release)](https://pypi.python.org/pypi/inference-perf)
+[![Container Image](https://img.shields.io/badge/Container-latest-blue)](https://quay.io/inference-perf/inference-perf)
+[![Tests](https://img.shields.io/github/actions/workflow/status/kubernetes-sigs/inference-perf/unit_test.yml?branch=main&label=Tests)](https://github.com/kubernetes-sigs/inference-perf/actions/workflows/unit_test.yml)
+[![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
+
 # Inference Perf
 
-Inference Perf is a GenAI inference performance benchmarking tool. It came out of [wg-serving](https://github.com/kubernetes/community/tree/master/wg-serving) and is sponsored by [SIG Scalability](https://github.com/kubernetes/community/blob/master/sig-scalability/README.md#inference-perf). Original proposal can be found [here](https://github.com/kubernetes-sigs/wg-serving/tree/main/proposals/013-inference-perf).
+Inference Perf is a GenAI inference performance benchmarking tool that allows you to benchmark and analyze the performance of inference deployments. It is agnostic of model servers and can be used to measure performance and compare different systems apples-to-apples. It is a part of the inference benchmarking and metrics standardization effort in [wg-serving](https://github.com/kubernetes/community/tree/master/wg-serving) which aims to standardize the [benchmark tooling](https://github.com/kubernetes-sigs/wg-serving/tree/main/proposals/013-inference-perf) and the [metrics](https://docs.google.com/document/d/1SpSp1E6moa4HSrJnS4x3NpLuj88sMXr2tbofKlzTZpk/edit?usp=sharing&resourcekey=0-ob5dR-AJxLQ5SvPlA4rdsg) used to measure inference performance across the Kubernetes and model server communities.
 
 ## Architecture
 
@@ -11,14 +18,14 @@ Inference Perf is a GenAI inference performance benchmarking tool. It came out o
 * Highly scalable and can support benchmarking large inference production deployments.
 * Reports the key metrics needed to measure LLM performance.
 * Supports different real world and synthetic datasets.
-* Supports different APIs and can support multiple model servers.
+* Supports different APIs and supports multiple model servers with enhanced metrics like [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang) and [TGI](https://github.com/huggingface/text-generation-inference).
+* Supports benchmarking larget deployments with frameworks like [llm-d](https://llm-d.ai/), [Dynamo](https://docs.nvidia.com/dynamo/latest/) and [Inference Gateway](https://gateway-api-inference-extension.sigs.k8s.io/).
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
 
 ## Roadmap
 
 * Accelerator metrics collection during benchmarks (GPU utilization, memory usage, power usage, etc.).
-* Support for more model servers.
 * Deployment API to help deploy different inference stacks.
 * Traffic splitting among different use cases or LoRA adapters.
 * Support for benchmarking non-LLM GenAI use cases.
@@ -90,15 +97,18 @@ Refer to the [guide](./deploy/README.md) in `/deploy`.
 
 You can configure inference-perf to run with different data generation and load generation configurations today. Please see `config.yml` and examples in `/examples`.
 
-Refer to the [CONFIG.md](./CONFIG.md) for documentation on all supported configuration options.
+Refer to the [CONFIG.md](./docs/CONFIG.md) for documentation on all supported configuration options.
 
 ### Datasets
 
 Supported datasets include the following:
-- [ShareGPT](./examples/vllm/config.yml) (for a real world conversational dataset)
-- [Synthetic](./examples/vllm/config-synthetic.yml) (for specific input / output distributions with Sonnet data)
-- [Random](./examples/vllm/config-random.yml) (for specific input / output distributions with random data)
-- [SharedPrefix](./examples/vllm/config-shared-prefix.yml) (for prefix caching scenarios)
+- [ShareGPT](./examples/vllm/config.yml) for a real world conversational dataset
+- [Synthetic](./examples/vllm/config-synthetic.yml) for specific input / output distributions with Sonnet data
+- [Random](./examples/vllm/config-random.yml) for specific input / output distributions with random data
+- [SharedPrefix](./examples/vllm/config-shared-prefix.yml) for prefix caching scenarios
+- CNN DailyMail for Summarization use case
+- Billsum for long context prefill heavy cases
+- Infinity Instruct for long context decode heavy cases
 - mock (for testing)
 
 ### Load Generators
@@ -110,8 +120,7 @@ Multiple load generators are supported:
 Multiple load patterns can be specified:
 - Stages with configurable duration and QPS along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
 
-Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not
-the load generator is failing to meet the desired load.
+Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not the load generator is failing to meet the desired load. For detailed information on benchmarking at scale and to understand how inference-perf achieves the load target, please refer to [loadgen.md](./docs/loadgen.md)
 
 Example:
 ```
@@ -137,7 +146,7 @@ OpenAI completion and chat completion APIs are supported. It can be pointed to a
 
 ### Metrics
 
-Different latency and throughput metrics to analyze the performance of different LLM workloads are reported. A snippet from an example report is below.
+Different latency and throughput metrics to analyze the performance of different LLM workloads are reported. A snippet from an example report is below. For a definition of the metrics, please refer to [metrics.md](./docs/metrics.md).
 ```
 "latency": {
     "request_latency": {
