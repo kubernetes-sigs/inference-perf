@@ -106,9 +106,9 @@ Supported datasets include the following:
 - [Synthetic](./examples/vllm/config-synthetic.yml) for specific input / output distributions with Sonnet data
 - [Random](./examples/vllm/config-random.yml) for specific input / output distributions with random data
 - [SharedPrefix](./examples/vllm/config-shared-prefix.yml) for prefix caching scenarios
-- CNN DailyMail for Summarization use case
-- Billsum for long context prefill heavy cases
-- Infinity Instruct for long context decode heavy cases
+- [CNN DailyMail](./docs/CONFIG.md#data-generation) for Summarization use case
+- [Billsum Conversations](./docs/CONFIG.md#data-generation) for long context prefill heavy cases
+- [Infinity Instruct](./docs/CONFIG.md#data-generation) for long context decode heavy cases
 - mock (for testing)
 
 ### Load Generators
