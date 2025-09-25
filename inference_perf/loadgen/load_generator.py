@@ -327,6 +327,7 @@ class LoadGenerator:
             )
 
         # Generate new stages
+        logger.debug(f"Determining saturation from rates: {[f"{rate:0.2f}" for rate in sorted(rates)]}")
         saturation_point = float(np.percentile(rates, self.sweep_config.saturation_percentile))
         logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
 
