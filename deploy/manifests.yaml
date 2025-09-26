@@ -10,6 +10,13 @@ spec:
       labels:
         app: inference-perf
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: inference-perf
+              topologyKey: "kubernetes.io/hostname"
       containers:
         - name: inference-perf
           image: quay.io/inference-perf/inference-perf:latest
