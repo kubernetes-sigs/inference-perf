@@ -57,6 +57,10 @@ class ModelServerMetrics(BaseModel):
     median_time_per_output_token: float = 0.0
     p90_time_per_output_token: float = 0.0
     p99_time_per_output_token: float = 0.0
+    avg_inter_token_latency: float = 0.0
+    median_inter_token_latency: float = 0.0
+    p90_inter_token_latency: float = 0.0
+    p99_inter_token_latency: float = 0.0
 
     # Request
     total_requests: int = 0
@@ -75,6 +79,7 @@ class ModelServerMetrics(BaseModel):
     # Prefix Cache
     prefix_cache_hits: float = 0.0
     prefix_cache_queries: float = 0.0
+
 
 
 class MetricsClient(ABC):
