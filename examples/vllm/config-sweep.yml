@@ -1,0 +1,26 @@
+load:
+  type: constant
+  interval: 15
+  sweep:                   # Automatically determine saturation point of the target service and generate stages
+    type: linear            # Produce a linear distribution [1.0, saturation] of rates for num_stages
+    timeout: 60                 # Length of time to run load to determine saturation
+    num_stages: 10              # Number of stages to generate
+    stage_duration: 60          # Duration of each generated stage
+    saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
+api:
+  type: completion
+server:
+  type: vllm
+  base_url: http://0.0.0.0:8000
+data:
+  type: shareGPT
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

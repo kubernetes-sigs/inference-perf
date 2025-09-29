@@ -13,6 +13,8 @@ dependencies = [
     "pyyaml>=6.0.2",
     "boto3>=1.39.0",
     "uvloop>=0.21.0",
+    "tqdm>=4.67.1",
+    "types-tqdm>=4.67.0.20250809",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
