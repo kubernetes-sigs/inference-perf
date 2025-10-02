@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 class CNNDailyMailDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
+        if tokenizer is None:
+            raise ValueError("CustomTokenizer instance cannot be None")
 
         if config.path is not None:
             # check if the path is valid
@@ -63,39 +65,44 @@ class CNNDailyMailDataGenerator(DataGenerator):
         return [APIType.Completion]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.cnn_dailymail_dataset is not None:
-            while True:
-                data = next(self.cnn_dailymail_dataset)
-                if data is None or data[self.article_key] is None or data[self.highlights_key] is None:
+        if self.cnn_dailymail_dataset is None:
+            return
+
+        assert self.tokenizer is not None
+
+        if self.api_config.type != APIType.Completion:
+            raise Exception("Unsupported API type")
+
+        while True:
+            data = next(self.cnn_dailymail_dataset)
+            if data is None or data[self.article_key] is None or data[self.highlights_key] is None:
+                continue
+
+            try:
+                prompt = data[self.article_key]
+                if not prompt:
                     continue
 
-                if self.api_config.type == APIType.Completion:
-                    try:
-                        prompt = data[self.article_key]
-                        completion = data[self.highlights_key]
-                        if not prompt:
-                            continue
-                        # Ensured by main.py logic and __init__ type hint for this class
-                        assert self.tokenizer is not None
-                        completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
+                completion = data[self.highlights_key]
+                completion_tokens = self.tokenizer.count_tokens(completion)
+                prompt_tokens = self.tokenizer.count_tokens(prompt)
 
-                        if self.input_distribution:
-                            if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
-                                continue
-                        if self.output_distribution:
-                            if (
-                                completion_tokens < self.output_distribution.min
-                                or completion_tokens > self.output_distribution.max
-                            ):
-                                continue
-
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
-                    except (KeyError, TypeError) as e:
-                        logger.warning(f"Skipping invalid completion data: {e}")
+                if self.input_distribution:
+                    if prompt_tokens < self.input_distribution.min:
                         continue
-                else:
-                    raise Exception("Unsupported API type")
+                    if prompt_tokens > self.input_distribution.max:
+                        continue
+                if self.output_distribution:
+                    if completion_tokens < self.output_distribution.min:
+                        continue
+                    if completion_tokens > self.output_distribution.max:
+                        continue
+
+                yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+
+            except (KeyError, TypeError) as e:
+                logger.warning(f"Skipping invalid completion data: {e}")
+                continue
 
     def is_io_distribution_supported(self) -> bool:
         return True

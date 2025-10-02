@@ -1,4 +1,4 @@
-# Inference Performance Benchmark Configuration Guide
+# Configuration Guide
 
 ## Table of Contents
 
@@ -39,8 +39,8 @@ Configures the test data generation methodology:
 
 ```yaml
 data:
-  type: mock|shareGPT|synthetic|random|shared_prefix  # Data generation type
-  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present
+  type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct # Data generation type
+  path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
@@ -72,7 +72,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second
       duration: 30                  # Seconds to maintain this rate
-  num_workers: 4                    # Concurrent worker threads (default: CPU_cores/2)
+  num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
 ```
