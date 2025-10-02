@@ -1,5 +1,5 @@
 # Build stage - install dependencies
-FROM python:3.12.9-slim-bookworm AS builder
+FROM python:3.12.11-alpine3.22 AS builder
 
 # Install PDM
 RUN pip install --no-cache-dir pdm
@@ -14,7 +14,7 @@ RUN pdm sync --prod --no-editable && \
     pip cache purge
 
 # Runtime stage - minimal image
-FROM python:3.12.9-slim-bookworm
+FROM python:3.12.11-alpine3.22
 
 WORKDIR /workspace
 
