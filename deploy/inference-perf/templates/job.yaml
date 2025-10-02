@@ -16,9 +16,9 @@ spec:
       restartPolicy: Never
       containers:
         - name: inference-perf-container
-          image: {{ .Values.job.image }}
+          image: "{{ .Values.job.image.repository }}:{{ .Values.job.image.tag | default .Chart.AppVersion }}"
           command: ["inference-perf"]
-          args: 
+          args:
             - "--config_file"
             - "{{ include "inference-perf.configMount" . }}/config.yml"
             - "--log-level"
