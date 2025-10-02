@@ -1,23 +1,33 @@
-FROM python:3.12.9-slim-bookworm AS dev
+# Build stage - install dependencies
+FROM python:3.12.9-slim-bookworm AS builder
 
 # Install PDM
-RUN pip3 install --upgrade pip pdm
+RUN pip install --no-cache-dir pdm
 
-# Set working directory
 WORKDIR /workspace
 
 # Copy dependency files
-COPY pyproject.toml pdm.lock /workspace/
+COPY pyproject.toml pdm.lock ./
 
-# Install dependencies using PDM with the lock file
+# Install dependencies using PDM
 RUN pdm sync --prod --no-editable && \
     pip cache purge
 
-COPY config.yml /workspace/
-COPY inference_perf /workspace/inference_perf
+# Runtime stage - minimal image
+FROM python:3.12.9-slim-bookworm
 
-# Set PYTHONPATH
+WORKDIR /workspace
+
+# Copy installed dependencies from builder (PDM's virtual environment)
+COPY --from=builder /workspace/.venv /workspace/.venv
+
+# Copy application code
+COPY config.yml ./
+COPY inference_perf ./inference_perf
+
+# Set PYTHONPATH and PATH to use virtual environment
 ENV PYTHONPATH=/workspace
+ENV PATH="/workspace/.venv/bin:$PATH"
 
-# Run inference-perf using PDM's virtual environment
-CMD ["pdm", "run", "python", "inference_perf/main.py", "--config_file", "config.yml"]
+# Run inference-perf using the virtual environment's Python
+CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]
