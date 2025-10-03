@@ -13,6 +13,13 @@ spec:
         {{- include "inference-perf.selectorLabels" . | nindent 8 }}
         app: inference-perf
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: inference-perf
+              topologyKey: "kubernetes.io/hostname"
       restartPolicy: Never
       containers:
         - name: inference-perf-container
