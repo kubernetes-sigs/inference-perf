@@ -1,0 +1,71 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.pdm-python
+
+# Testing
+.pytest_cache/
+tests/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Examples
+examples/
+
+# Deployment
+deploy/
+helm/
+
+# Data files
+data/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+inference_perf.egg-info/
+
+# Development files
+.pre-commit-config.yaml
+.ruff_cache/
+.mypy_cache/
+
+# Config files not needed
+OWNERS
+OWNERS_ALIASES
+SECURITY_CONTACTS
+code-of-conduct.md
+CONFIG.md
+CONTRIBUTING.md
+LICENSE
+RELEASE.md
+SECURITY.md
