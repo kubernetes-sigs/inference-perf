@@ -9,8 +9,11 @@ WORKDIR /workspace
 # Copy dependency files
 COPY pyproject.toml pdm.lock ./
 
-# Install dependencies using PDM
-RUN pdm sync --prod --no-editable && \
+# Copy source code (needed for PDM to resolve the project)
+COPY inference_perf ./inference_perf
+
+# Install dependencies using PDM (this will create .venv and install all prod dependencies)
+RUN pdm install --prod --no-lock --no-editable && \
     pip cache purge
 
 # Runtime stage - minimal image
