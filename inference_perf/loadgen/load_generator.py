@@ -39,11 +39,11 @@ import logging
 import uvloop
 import numpy as np
 from tqdm import tqdm
+import signal
 
 logger = logging.getLogger(__name__)
 
 RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float]
-
 
 class Worker(mp.Process):
     def __init__(
@@ -149,12 +149,15 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
 
 class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+        print("LOADGENERATOR __init__ CALLED", flush=True)
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
@@ -164,6 +167,13 @@ class LoadGenerator:
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
         self.sweep_config = load_config.sweep
+        self.interrupt_sig = False
+        signal.signal(signal.SIGINT, self._sigint_handler)
+
+    
+    def _sigint_handler(self, _signum, _frame):
+        """SIGINT handler that sets interrup_sig flag to True"""
+        self.interrupt_sig = True
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -229,8 +239,13 @@ class LoadGenerator:
             last = prog
             while finished_requests_counter.value < num_requests:
                 if timeout and start_time + timeout < time.perf_counter():
+                    pbar.close()
                     logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                     timed_out = True
+                    break
+                if self.interrupt_sig:
+                    pbar.close()
+                    logger.info(f"Loadgen encountered SIGINT")
                     break
                 await sleep(1)
                 timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
@@ -238,7 +253,8 @@ class LoadGenerator:
                 pbar.update(prog - last)
                 last = prog
 
-        if timed_out and cancel_signal:
+        # Trigger cleanup if timed out or received SIGINT
+        if (timed_out or self.interrupt_sig) and cancel_signal:
             # Cancel signal must be set before request_phase
             # Allow time for workers to process the signal
             cancel_signal.set()
@@ -381,6 +397,7 @@ class LoadGenerator:
                 active_requests_counter,
                 finished_requests_counter,
                 request_phase,
+                cancel_signal,
             )
             if self.stageInterval:
                 await sleep(self.stageInterval)
