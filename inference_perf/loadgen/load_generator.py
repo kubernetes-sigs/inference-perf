@@ -398,6 +398,9 @@ class LoadGenerator:
                 request_phase,
                 cancel_signal,
             )
+            # If we encountered a SIGINT, we can break out of run stages loop
+            if self.interrupt_sig:
+                break
             if self.stageInterval:
                 await sleep(self.stageInterval)
 
