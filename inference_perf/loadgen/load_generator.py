@@ -157,7 +157,6 @@ class Worker(mp.Process):
 
 class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
-        print("LOADGENERATOR __init__ CALLED", flush=True)
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
