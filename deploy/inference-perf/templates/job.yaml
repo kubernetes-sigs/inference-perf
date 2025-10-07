@@ -14,6 +14,10 @@ spec:
         app: inference-perf
     spec:
       restartPolicy: Never
+      {{- with .Values.job.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: inference-perf-container
           image: "{{ .Values.job.image.repository }}:{{ .Values.job.image.tag | default .Chart.AppVersion }}"
@@ -24,20 +28,19 @@ spec:
             - "--log-level"
             - {{ .Values.logLevel }}
           env:
-{{- if .Values.hfToken }}
-          - name: HF_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: {{ include "inference-perf.hfSecret" . }}
-                key: {{ include "inference-perf.hfKey" . }}
-{{- end }}
+            {{- if .Values.hfToken }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inference-perf.hfSecret" . }}
+                  key: {{ include "inference-perf.hfKey" . }}
+            {{- end }}
           volumeMounts:
             - name: config-volume
               mountPath: {{ include "inference-perf.configMount" . }}
               readOnly: true
           resources:
-            requests:
-              memory: {{ .Values.job.memory }}
+            {{- toYaml .Values.job.resources | nindent 12 }}
       volumes:
         - name: config-volume
           configMap:

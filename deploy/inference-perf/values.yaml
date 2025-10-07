@@ -2,8 +2,17 @@
 job:
   image:
     repository: quay.io/inference-perf/inference-perf
-    tag: ""
-  memory: "8G"
+    tag: "" # Defaults to .Chart.AppVersion
+  nodeSelector: {}
+  # Example resources:
+  # resources:
+  #   requests:
+  #     cpu: "1"
+  #     memory: "4Gi"
+  #   limits:
+  #     cpu: "2"
+  #     memory: "8Gi"
+  resources: {}
 
 logLevel: INFO
 
