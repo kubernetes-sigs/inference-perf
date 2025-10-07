@@ -107,7 +107,6 @@ class openAIModelServerClient(ModelServerClient):
                 self._session = openAIModelServerClientSession(self)
             session = self._session
         await session.process_request(data, stage_id, scheduled_time, lora_adapter)
-
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
         if self._session is not None:
@@ -171,88 +170,106 @@ class openAIModelServerClientSession(ModelServerClientSession):
         request_data = json.dumps(payload)
 
         start = time.perf_counter()
+        response_info = None
+        error = None
+        response_content = ""
+        end_time = None
+        caught_exception = None
+
         try:
             async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as response:
-                response_info = await data.process_response(
-                    response=response,
-                    config=self.client.api_config,
-                    tokenizer=self.client.tokenizer,
-                    lora_adapter=lora_adapter,
-                )
-                response_content = await response.text()
+                try:
+                    if response.status == 200:
+                        response_info = await data.process_response(
+                            response=response,
+                            config=self.client.api_config,
+                            tokenizer=self.client.tokenizer,
+                            lora_adapter=lora_adapter,
+                        )
+                        response_content = await response.text()
+                    else:
+                        response_content = await response.text()
+                        error = ErrorResponseInfo(
+                            error_msg=response_content,
+                            error_type=f"HTTP Error {response.status}",
+                        )
+                except Exception as e:
+                    caught_exception = e
+                    logger.error("Error processing response:", exc_info=True)
+                    if not response_content:
+                        try:
+                            response_content = await response.text()
+                        except Exception:
+                            response_content = "Failed to read response text"
 
-                end_time = time.perf_counter()
-                error = None
-                if response.status != 200:
                     error = ErrorResponseInfo(
-                        error_msg=response_content,
-                        error_type=f"{response.status} {response.reason}",
+                        error_msg=f"Error processing response: {str(e)}",
+                        error_type=type(e).__name__,
                     )
+            end_time = time.perf_counter()
 
-                metric = RequestLifecycleMetric(
-                    stage_id=stage_id,
-                    request_data=request_data,
-                    response_data=response_content,
-                    info=response_info,
-                    error=error,
-                    start_time=start,
-                    end_time=end_time,
-                    scheduled_time=scheduled_time,
-                )
-
-                # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
-                if response_info.output_token_times:
-                    ttft_threshold = None
-                    tpot_threshold = None
-                    slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
-
-                    default_ttft_header = f"x-slo-ttft-{slo_unit}"
-                    default_tpot_header = f"x-slo-tpot-{slo_unit}"
-                    ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
-                    tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
-                    if self.client.api_config.headers:
-                        ttft_threshold = self.client.api_config.headers.get(ttft_header)
-                        tpot_threshold = self.client.api_config.headers.get(tpot_header)
-
-                        unit = slo_unit.lower()
-                        unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
-                        factor = unit_to_s.get(unit, 1.0)
-
-                        if ttft_threshold is not None:
-                            metric.ttft_slo_sec = float(ttft_threshold) * factor
-
-                        if tpot_threshold is not None:
-                            metric.tpot_slo_sec = float(tpot_threshold) * factor
-                # Record the metric
-                self.client.metrics_collector.record_metric(metric)
-
+        except aiohttp.ClientError as e:
+            caught_exception = e
+            logger.error("Client error during request:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+            end_time = time.perf_counter()
+        except asyncio.TimeoutError as e:
+            caught_exception = e
+            logger.error("Request timed out:", exc_info=True)
+            error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
+            end_time = time.perf_counter()
         except Exception as e:
-            if isinstance(e, asyncio.exceptions.TimeoutError):
-                logger.error("request timed out:", exc_info=True)
-            else:
-                logger.error("error occured during request processing:", exc_info=True)
-            failure_info = await data.process_failure(
+            caught_exception = e
+            logger.error("Unexpected error during request processing:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+            end_time = time.perf_counter()
+
+        if caught_exception is not None and not response_info:
+            response_info = await data.process_failure(
                 response=response if "response" in locals() else None,
                 config=self.client.api_config,
                 tokenizer=self.client.tokenizer,
-                exception=e,
+                exception=caught_exception,
                 lora_adapter=lora_adapter,
             )
-            self.client.metrics_collector.record_metric(
-                RequestLifecycleMetric(
-                    stage_id=stage_id,
-                    request_data=request_data,
-                    response_data=response_content if "response_content" in locals() else "",
-                    info=failure_info if failure_info else InferenceInfo(),
-                    error=ErrorResponseInfo(
-                        error_msg=str(e),
-                        error_type=type(e).__name__,
-                    ),
-                    start_time=start,
-                    end_time=time.perf_counter(),
-                    scheduled_time=scheduled_time,
-                )
-            )
+
+        metric = RequestLifecycleMetric(
+            stage_id=stage_id,
+            request_data=request_data,
+            response_data=response_content,
+            info=response_info if response_info else InferenceInfo(),
+            error=error,
+            start_time=start,
+            end_time=end_time,
+            scheduled_time=scheduled_time,
+        )
+
+        # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
+        if metric.info and metric.info.output_token_times:
+            ttft_threshold = None
+            tpot_threshold = None
+            slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
+
+            default_ttft_header = f"x-slo-ttft-{slo_unit}"
+            default_tpot_header = f"x-slo-tpot-{slo_unit}"
+            ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
+            tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
+            if self.client.api_config.headers:
+                ttft_threshold = self.client.api_config.headers.get(ttft_header)
+                tpot_threshold = self.client.api_config.headers.get(tpot_header)
+
+                unit = slo_unit.lower()
+                unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
+                factor = unit_to_s.get(unit, 1.0)
+
+                if ttft_threshold is not None:
+                    metric.ttft_slo_sec = float(ttft_threshold) * factor
+
+                if tpot_threshold is not None:
+                    metric.tpot_slo_sec = float(tpot_threshold) * factor
+
+        # Record the metric
+        self.client.metrics_collector.record_metric(metric)
 
     async def close(self) -> None:
         await self.session.close()
