@@ -369,9 +369,14 @@ class LoadGenerator:
             self.workers[-1].start()
 
         if self.sweep_config:
-            await self.preprocess(
-                client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
-            )
+            try:
+                await self.preprocess(
+                    client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
+                )
+            except Exception as e:
+                logger.error(f"Preprocessing exception: {e}")
+                stop_signal.set()
+                return
 
         for stage_id, stage in enumerate(self.stages):
             await self.run_stage(
