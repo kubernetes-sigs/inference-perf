@@ -244,7 +244,7 @@ class LoadGenerator:
                     break
                 if self.interrupt_sig:
                     pbar.close()
-                    logger.info(f"Loadgen encountered SIGINT")
+                    logger.info("Loadgen encountered SIGINT")
                     break
                 await sleep(1)
                 timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
