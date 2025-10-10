@@ -19,6 +19,7 @@ from typing import List
 import logging
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.circuit_breaker import feed_breakers
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
             try:
                 item = self.queue.get_nowait()
                 self.metrics.append(item)
+                feed_breakers(item)
                 self.queue.task_done()
             except mp.queues.Empty:
                 await sleep(1)
