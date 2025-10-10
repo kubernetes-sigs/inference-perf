@@ -29,6 +29,7 @@ from asyncio import (
     get_event_loop,
 )
 from typing import List, Tuple, TypeAlias, Optional
+from types import FrameType
 import time
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as SyncEvent
@@ -44,6 +45,7 @@ import signal
 logger = logging.getLogger(__name__)
 
 RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float]
+
 
 class Worker(mp.Process):
     def __init__(
@@ -150,7 +152,7 @@ class Worker(mp.Process):
 
     def run(self) -> None:
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
-        signal.signal(signal.SIGINT, signal.SIG_IGN)  
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
@@ -169,8 +171,7 @@ class LoadGenerator:
         self.interrupt_sig = False
         signal.signal(signal.SIGINT, self._sigint_handler)
 
-    
-    def _sigint_handler(self, _signum, _frame):
+    def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
         self.interrupt_sig = True
 
