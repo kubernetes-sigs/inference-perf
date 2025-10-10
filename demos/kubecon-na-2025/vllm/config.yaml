@@ -1,0 +1,54 @@
+api:
+  type: completion
+  streaming: true
+data:
+  type: shared_prefix
+  path: null
+  shared_prefix:
+    num_groups: 1
+    num_prompts_per_group: 100000
+    output_len: 128
+    question_len: 64
+    system_prompt_len: 64
+load:
+  type: constant
+  interval: 1.0
+  sweep:
+    type: linear
+    timeout: 120
+    num_stages: 1
+    stage_duration: 60
+  num_workers: 44
+  worker_max_concurrency: 10
+  worker_max_tcp_connections: 2500
+metrics:
+  prometheus:
+    filters:
+    - namespace="test-ns"
+    google_managed: true
+    scrape_interval: 15
+  type: prometheus
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+  prometheus:
+    summary: true
+    per_stage: true
+storage:
+  local_storage:
+    path: reports-path
+    report_file_prefix: null
+  google_cloud_storage:
+    bucket_name: test-bucket
+    path: exp-2
+  simple_storage_service: null
+server:
+  base_url: http://llama3-8b-vllm-service.test-ns.svc.cluster.local:8000
+  ignore_eos: true
+  model_name: meta-llama/Llama-3.1-8B 
+  type: vllm
+tokenizer:
+  pretrained_model_name_or_path: meta-llama/Llama-3.1-8B 
+  token: <your-token-here>
