@@ -11,9 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import abstractmethod
 import logging
 import time
-from typing import cast, Any
+from typing import List, cast, Any
 import requests
 from inference_perf.client.modelserver.base import ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
@@ -22,6 +23,75 @@ from ..base import MetricsClient, MetricsMetadata, PerfRuntimeParameters, ModelS
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
 logger = logging.getLogger(__name__)
+
+
+# When evaluated, returns a summary of the metric as a map, summary contents depends on the metric type
+class PrometheusMetric:
+    def __init__(self, name: str, filters: List[str]) -> None:
+        self.name = name
+        self.filters = ",".join(filters)
+
+    @abstractmethod
+    def get_queries(self, duration: float) -> dict[str, str]:
+        raise NotImplementedError
+
+
+class PrometheusGaugeMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
+
+    def get_queries(self, duration: float) -> dict[str, str]:
+        return {
+            "mean": "avg_over_time(%s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "median": "quantile_over_time(0.5, %s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "sd": "stddev_over_time(%s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "min": "min_over_time(%s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "max": "max_over_time(%s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "p90": "quantile_over_time(0.9, %s{%s}[%.0fs])" % (self.name, self.filters, duration),
+            "p99": "quantile_over_time(0.99, %s{%s}[%.0fs])" % (self.name, self.filters, duration),
+        }
+
+
+class PrometheusCounterMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
+
+    def get_queries(self, duration: float) -> dict[str, str]:
+        return {
+            "rate": "sum(rate(%s{%s}[%.0fs]))" % (self.name, self.filters, duration),
+            "mean": "avg_over_time(rate(%s{%s}[%.0fs])[%.0fs:%.0fs])"
+            % (self.name, self.filters, duration, duration, duration),
+            "increase": "sum(increase(%s{%s}[%.0fs]))" % (self.name, self.filters, duration),
+        }
+
+
+class PrometheusHistogramMetric(PrometheusMetric):
+    def __init__(self, name: str, filters: List[str]) -> None:
+        super().__init__(name, filters)
+
+    def get_queries(self, duration: float) -> dict[str, str]:
+        return {
+            "mean": "sum(rate(%s_sum{%s}[%.0fs])) / (sum(rate(%s_count{%s}[%.0fs])) > 0)"
+            % (self.name, self.filters, duration, self.name, self.filters, duration),
+            "median": "histogram_quantile(0.5, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filters, duration),
+            "min": "histogram_quantile(0, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filters, duration),
+            "max": "histogram_quantile(1, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filters, duration),
+            "p90": "histogram_quantile(0.9, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filters, duration),
+            "p99": "histogram_quantile(0.99, sum(rate(%s_bucket{%s}[%.0fs])) by (le))" % (self.name, self.filters, duration),
+        }
+
+
+# When evaluated, returns a single value
+class PrometheusSingleMetric:
+    def __init__(self, op: str, metric: PrometheusMetric) -> None:
+        self.op = op
+        self.metric = metric
+
+    def get_query(self, duration: float) -> str:
+        query = self.metric.get_queries(duration)
+        if self.op in query:
+            return query[self.op]
+        raise Exception(f"query of type {type(self.metric).__name__}, does not contain the operation {self.op}")
 
 
 class PrometheusQueryBuilder:
