@@ -67,6 +67,7 @@ class openAIModelServerClient(ModelServerClient):
         elif not tokenizer_config:
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
+        self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections))
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         payload = data.to_payload(
@@ -85,49 +86,64 @@ class openAIModelServerClient(ModelServerClient):
 
         request_data = json.dumps(payload)
 
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
-            start = time.perf_counter()
-            try:
-                async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
-                    response_info = await data.process_response(
-                        response=response, config=self.api_config, tokenizer=self.tokenizer
-                    )
-                    response_content = await response.text()
+        start = time.perf_counter()
+        response_info = None
+        error = None
+        response_content = ""
+        end_time = None
 
-                    end_time = time.perf_counter()
-                    error = None
-                    if response.status != 200:
-                        error = ErrorResponseInfo(error_msg=response_content, error_type="Error response")
-
-                    self.metrics_collector.record_metric(
-                        RequestLifecycleMetric(
-                            stage_id=stage_id,
-                            request_data=request_data,
-                            response_data=response_content,
-                            info=response_info,
-                            error=error,
-                            start_time=start,
-                            end_time=end_time,
-                            scheduled_time=scheduled_time,
+        try:
+            async with self.session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
+                try:
+                    if response.status == 200:
+                        response_info = await data.process_response(
+                            response=response, config=self.api_config, tokenizer=self.tokenizer
                         )
+                        response_content = await response.text()
+                    else:
+                        response_content = await response.text()
+                        error = ErrorResponseInfo(
+                            error_msg=response_content, error_type=f"HTTP Error {response.status}"
+                        )
+                except Exception as e:
+                    logger.error("Error processing response:", exc_info=True)
+                    if not response_content:
+                        try:
+                            response_content = await response.text()
+                        except Exception:
+                            response_content = "Failed to read response text"
+                    error = ErrorResponseInfo(
+                        error_msg=f"Error processing response: {str(e)}",
+                        error_type=type(e).__name__,
                     )
-            except Exception as e:
-                logger.error("error occured during request processing:", exc_info=True)
-                self.metrics_collector.record_metric(
-                    RequestLifecycleMetric(
-                        stage_id=stage_id,
-                        request_data=request_data,
-                        response_data=response_content if "response_content" in locals() else "",
-                        info=response_info if "response_info" in locals() else InferenceInfo(),
-                        error=ErrorResponseInfo(
-                            error_msg=str(e),
-                            error_type=type(e).__name__,
-                        ),
-                        start_time=start,
-                        end_time=time.perf_counter(),
-                        scheduled_time=scheduled_time,
-                    )
-                )
+
+            end_time = time.perf_counter()
+
+        except aiohttp.ClientError as e:
+            logger.error("Client error during request:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+            end_time = time.perf_counter()
+        except asyncio.TimeoutError:
+            logger.error("Request timed out:", exc_info=True)
+            error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
+            end_time = time.perf_counter()
+        except Exception as e:
+            logger.error("Unexpected error during request processing:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+            end_time = time.perf_counter()
+
+        self.metrics_collector.record_metric(
+            RequestLifecycleMetric(
+                stage_id=stage_id,
+                request_data=request_data,
+                response_data=response_content,
+                info=response_info if response_info else InferenceInfo(),
+                error=error,
+                start_time=start,
+                end_time=end_time,
+                scheduled_time=scheduled_time,
+            )
+        )
 
     def get_supported_apis(self) -> List[APIType]:
         return []
