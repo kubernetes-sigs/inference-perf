@@ -29,6 +29,7 @@ from asyncio import (
     get_event_loop,
 )
 from typing import List, Tuple, TypeAlias, Optional
+from types import FrameType
 import time
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as SyncEvent
@@ -39,6 +40,7 @@ import logging
 import uvloop
 import numpy as np
 from tqdm import tqdm
+import signal
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,8 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
@@ -164,6 +168,12 @@ class LoadGenerator:
         self.workers: List[Worker] = []
         self.worker_max_concurrency = load_config.worker_max_concurrency
         self.sweep_config = load_config.sweep
+        self.interrupt_sig = False
+        signal.signal(signal.SIGINT, self._sigint_handler)
+
+    def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
+        """SIGINT handler that sets interrup_sig flag to True"""
+        self.interrupt_sig = True
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -229,8 +239,13 @@ class LoadGenerator:
             last = prog
             while finished_requests_counter.value < num_requests:
                 if timeout and start_time + timeout < time.perf_counter():
+                    pbar.close()
                     logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                     timed_out = True
+                    break
+                if self.interrupt_sig:
+                    pbar.close()
+                    logger.info("Loadgen encountered SIGINT")
                     break
                 await sleep(1)
                 timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
@@ -238,7 +253,8 @@ class LoadGenerator:
                 pbar.update(prog - last)
                 last = prog
 
-        if timed_out and cancel_signal:
+        # Trigger cleanup if timed out or received SIGINT
+        if (timed_out or self.interrupt_sig) and cancel_signal:
             # Cancel signal must be set before request_phase
             # Allow time for workers to process the signal
             cancel_signal.set()
@@ -387,7 +403,11 @@ class LoadGenerator:
                 active_requests_counter,
                 finished_requests_counter,
                 request_phase,
+                cancel_signal,
             )
+            # If we encountered a SIGINT, we can break out of run stages loop
+            if self.interrupt_sig:
+                break
             if self.stageInterval:
                 await sleep(self.stageInterval)
 
