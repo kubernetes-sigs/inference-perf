@@ -9,7 +9,7 @@ load:
   sweep:
     type: linear
     timeout: 120
-    num_stages: 1
+    num_stages: 7
     stage_duration: 60
   num_workers: 44
   worker_max_concurrency: 10

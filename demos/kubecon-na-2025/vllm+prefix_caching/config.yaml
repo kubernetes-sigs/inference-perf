@@ -2,21 +2,14 @@ api:
   type: completion
   streaming: true
 data:
-  type: shared_prefix
-  path: null
-  shared_prefix:
-    num_groups: 1
-    num_prompts_per_group: 100000
-    output_len: 128
-    question_len: 64
-    system_prompt_len: 64
+  type: shareGPT
 load:
   type: constant
   interval: 1.0
   sweep:
     type: linear
     timeout: 120
-    num_stages: 1
+    num_stages: 7
     stage_duration: 60
   num_workers: 44
   worker_max_concurrency: 10

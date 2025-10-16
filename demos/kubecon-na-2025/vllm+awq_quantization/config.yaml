@@ -5,7 +5,7 @@ data:
   type: shared_prefix
   path: null
   shared_prefix:
-    num_groups: 1
+    num_groups: 7
     num_prompts_per_group: 100000
     output_len: 128
     question_len: 64
