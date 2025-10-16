@@ -35,7 +35,7 @@ spec:
             secretKeyRef:
               key: hf_api_token
               name: hf-secret
-        image: vllm/vllm-openai:v0.8.5
+        image: vllm/vllm-openai:v0.11.0
         name: inference-server
         ports:
         - containerPort: 8000
