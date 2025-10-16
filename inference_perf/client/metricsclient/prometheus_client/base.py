@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 # When evaluated, returns a summary of the metric as a map, summary contents depends on the metric type
-class PrometheusMetric:
+class PrometheusVectorMetric:
     def __init__(self, name: str, filters: List[str]) -> None:
         self.name = name
         self.filters = ",".join(filters)
@@ -36,7 +36,7 @@ class PrometheusMetric:
         raise NotImplementedError
 
 
-class PrometheusGaugeMetric(PrometheusMetric):
+class PrometheusGaugeMetric(PrometheusVectorMetric):
     def __init__(self, name: str, filters: List[str]) -> None:
         super().__init__(name, filters)
 
@@ -52,7 +52,7 @@ class PrometheusGaugeMetric(PrometheusMetric):
         }
 
 
-class PrometheusCounterMetric(PrometheusMetric):
+class PrometheusCounterMetric(PrometheusVectorMetric):
     def __init__(self, name: str, filters: List[str]) -> None:
         super().__init__(name, filters)
 
@@ -65,7 +65,7 @@ class PrometheusCounterMetric(PrometheusMetric):
         }
 
 
-class PrometheusHistogramMetric(PrometheusMetric):
+class PrometheusHistogramMetric(PrometheusVectorMetric):
     def __init__(self, name: str, filters: List[str]) -> None:
         super().__init__(name, filters)
 
@@ -82,8 +82,8 @@ class PrometheusHistogramMetric(PrometheusMetric):
 
 
 # When evaluated, returns a single value
-class PrometheusSingleMetric:
-    def __init__(self, op: str, metric: PrometheusMetric) -> None:
+class PrometheusScalarMetric:
+    def __init__(self, op: str, metric: PrometheusVectorMetric) -> None:
         self.op = op
         self.metric = metric
 

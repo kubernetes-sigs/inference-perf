@@ -13,8 +13,8 @@
 # limitations under the License.
 from .base import (
     PrometheusMetricsClient,
-    PrometheusMetric,
-    PrometheusSingleMetric,
+    PrometheusVectorMetric,
+    PrometheusScalarMetric,
     PrometheusGaugeMetric,
     PrometheusCounterMetric,
     PrometheusHistogramMetric,
@@ -25,8 +25,8 @@ from .google_managed_prometheus_client import GoogleManagedPrometheusMetricsClie
 __all__ = [
     "PrometheusMetricsClient",
     "GoogleManagedPrometheusMetricsClient",
-    "PrometheusMetric",
-    "PrometheusSingleMetric",
+    "PrometheusVectorMetric",
+    "PrometheusScalarMetric",
     "PrometheusGaugeMetric",
     "PrometheusCounterMetric",
     "PrometheusHistogramMetric",
