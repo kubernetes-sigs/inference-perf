@@ -40,8 +40,8 @@ storage:
 server:
   base_url: http://llama3-8b-vllm-service.test-ns.svc.cluster.local:8000
   ignore_eos: true
-  model_name: meta-llama/Llama-3.1-8B 
+  model_name: meta-llama/Meta-Llama-3-8B
   type: vllm
 tokenizer:
-  pretrained_model_name_or_path: meta-llama/Llama-3.1-8B 
+  pretrained_model_name_or_path: meta-llama/Meta-Llama-3-8B
   token: <your-token-here>

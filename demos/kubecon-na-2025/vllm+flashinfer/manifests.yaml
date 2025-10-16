@@ -27,7 +27,7 @@ spec:
         - vllm.entrypoints.openai.api_server
         env:
         - name: MODEL_ID
-          value: meta-llama/Llama-3.1-8B 
+          value: meta-llama/Meta-Llama-3-8B
         - name: VLLM_ATTENTION_BACKEND
           value: FLASHINFER
         - name: HUGGING_FACE_HUB_TOKEN
