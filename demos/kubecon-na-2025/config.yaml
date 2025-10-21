@@ -2,13 +2,20 @@ api:
   type: completion
   streaming: true
 data:
-  type: shareGPT
+  type: shared_prefix
+  path: null
+  shared_prefix:
+    num_groups: 7
+    num_prompts_per_group: 100000
+    output_len: 128
+    question_len: 64
+    system_prompt_len: 64
 load:
   type: constant
   interval: 1.0
   sweep:
     type: linear
-    timeout: 120
+    timeout: 180
     num_stages: 7
     stage_duration: 60
   num_workers: 44
@@ -30,18 +37,13 @@ report:
     summary: true
     per_stage: true
 storage:
-  local_storage:
-    path: reports-path
-    report_file_prefix: null
   google_cloud_storage:
-    bucket_name: test-bucket
-    path: exp-basecase
-  simple_storage_service: null
+    bucket_name: <your-gcs-bucket>
 server:
-  base_url: http://llama3-8b-vllm-service.test-ns.svc.cluster.local:8000
+  base_url: http://llama3-8b-instruct-vllm-service.test-ns.svc.cluster.local:8000
   ignore_eos: true
-  model_name: meta-llama/Meta-Llama-3-8B
+  model_name: meta-llama/Meta-Llama-3-8B-Instruct
   type: vllm
 tokenizer:
-  pretrained_model_name_or_path: meta-llama/Meta-Llama-3-8B
-  token: <your-token-here>
+  pretrained_model_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+  token: <your-hf-token>
