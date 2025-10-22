@@ -38,7 +38,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     def get_route(self) -> str:
         return "/v1/chat/completions"
 
-    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         return {

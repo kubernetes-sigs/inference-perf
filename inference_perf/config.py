@@ -68,6 +68,8 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
+    # create user session for each group. The chat context will be appended for the each request in the group.
+    group_as_user_session: bool = False
 
 
 class DataConfig(BaseModel):

@@ -4,6 +4,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
@@ -43,8 +44,10 @@ class SharedPrefixDataGenerator(DataGenerator):
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.question_len: int = self.shared_prefix.question_len
         self.output_len: int = self.shared_prefix.output_len
+        self.group_as_user_session: bool = self.shared_prefix.group_as_user_session
 
         self.prompts: List[str] = []
+        self.user_sessions: List[LocalUserSession] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
@@ -58,7 +61,17 @@ class SharedPrefixDataGenerator(DataGenerator):
 
     def get_request(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
-        return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+        if self.group_as_user_session:
+            user_id = n % self.num_groups
+            round = n // self.num_groups
+            return UserSessionCompletionAPIData(
+                prompt=self.prompts[i],
+                max_tokens=self.output_len,
+                user_session=self.user_sessions[user_id],
+                target_round=round,
+            )
+        else:
+            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if not self.prompts:
@@ -84,20 +97,31 @@ class SharedPrefixDataGenerator(DataGenerator):
 
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
-        for _ in range(self.num_groups):
+        for group_id in range(self.num_groups):
             # Generate a shared prefix (system prompt)
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
-            for _ in range(self.num_prompts_per_group):
-                # Generate a unique question
-                question_token_ids = self._generate_random_token_ids(self.question_len)
-                question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+            if self.group_as_user_session:
+                # Create user session and store prefix as context (system prompt)
+                self.user_sessions.append(
+                    LocalUserSession(user_session_id=f"user_session_{group_id}", context=shared_prefix_text)
+                )
+                for _ in range(self.num_prompts_per_group):
+                    question_token_ids = self._generate_random_token_ids(self.question_len)
+                    question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+                    # store question only as each round's prompt
+                    self.prompts.append(question_text)
+            else:
+                for _ in range(self.num_prompts_per_group):
+                    # Generate a unique question
+                    question_token_ids = self._generate_random_token_ids(self.question_len)
+                    question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
-                # Combine shared prefix and question
-                full_prompt_text = shared_prefix_text + " " + question_text
+                    # Combine shared prefix and question
+                    full_prompt_text = shared_prefix_text + " " + question_text
 
-                self.prompts.append(full_prompt_text)
+                    self.prompts.append(full_prompt_text)
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         random.shuffle(self.prompts)

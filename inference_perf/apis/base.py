@@ -24,6 +24,7 @@ class InferenceInfo(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     output_token_times: List[float] = []
+    extra_info: dict[str, Any] = {}
 
 
 class ErrorResponseInfo(BaseModel):
@@ -52,9 +53,14 @@ class InferenceAPIData(BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         raise NotImplementedError
+
+    async def process_failure(
+        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+    ) -> Optional[InferenceInfo]:
+        pass  # no-op by default
