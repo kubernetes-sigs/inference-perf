@@ -71,7 +71,7 @@ class openAIModelServerClient(ModelServerClient):
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
-        payload = data.to_payload(
+        payload = await data.to_payload(
             model_name=self.model_name,
             max_tokens=self.max_completion_tokens,
             ignore_eos=self.ignore_eos,
@@ -122,12 +122,18 @@ class openAIModelServerClient(ModelServerClient):
                     logger.error("request timed out:", exc_info=True)
                 else:
                     logger.error("error occured during request processing:", exc_info=True)
+                failure_info = await data.process_failure(
+                    response=response if "response" in locals() else None,
+                    config=self.api_config,
+                    tokenizer=self.tokenizer,
+                    exception=e,
+                )
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=request_data,
                         response_data=response_content if "response_content" in locals() else "",
-                        info=response_info if "response_info" in locals() else InferenceInfo(),
+                        info=failure_info if failure_info else InferenceInfo(),
                         error=ErrorResponseInfo(
                             error_msg=str(e),
                             error_type=type(e).__name__,
