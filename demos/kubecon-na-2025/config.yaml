@@ -40,7 +40,7 @@ storage:
   google_cloud_storage:
     bucket_name: <your-gcs-bucket>
 server:
-  base_url: http://llama3-8b-instruct-vllm-service.test-ns.svc.cluster.local:8000
+  base_url: http://vllm-service.test-ns.svc.cluster.local:8000
   ignore_eos: true
   model_name: meta-llama/Meta-Llama-3-8B-Instruct
   type: vllm

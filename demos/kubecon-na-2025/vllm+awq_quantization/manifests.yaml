@@ -3,25 +3,28 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: llama3-8b-instruct-vllm-inference-server
-  name: llama3-8b-instruct-vllm-deployment
+    app: vllm-inference-server
+  name: vllm-deployment
   namespace: test-ns
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: llama3-8b-instruct-vllm-inference-server
+      app: vllm-inference-server
   template:
     metadata:
       labels:
         ai.gke.io/inference-server: vllm
         ai.gke.io/model: LLaMA3_8B
-        app: llama3-8b-instruct-vllm-inference-server
+        app: vllm-inference-server
         examples.ai.gke.io/source: blueprints
     spec:
       containers:
       - args:
         - "--model=$(MODEL_ID)"
+        - "--gpu_memory_utilization=0.9"
+        - "--max-model-len=512"
+        - "--max-num-seqs=128"
         - "--quantization awq"
         command:
         - python3
@@ -29,7 +32,7 @@ spec:
         - vllm.entrypoints.openai.api_server
         env:
         - name: MODEL_ID
-          value: meta-llama/Meta-Llama-3-8B-Instruct
+          value: meta-llama/Llama-3.1-8B-Instruct
         - name: HUGGING_FACE_HUB_TOKEN
           valueFrom:
             secretKeyRef:
@@ -59,7 +62,7 @@ spec:
         - mountPath: "/dev/shm"
           name: dshm
       nodeSelector:
-        cloud.google.com/gke-accelerator: nvidia-tesla-a100
+        cloud.google.com/gke-accelerator: nvidia-h100-80gb
       volumes:
       - emptyDir:
           medium: Memory
@@ -69,8 +72,8 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: llama3-8b-instruct-vllm-inference-server
-  name: llama3-8b-instruct-vllm-service
+    app: vllm-inference-server
+  name: vllm-service
   namespace: test-ns
 spec:
   ports:
@@ -78,14 +81,14 @@ spec:
     protocol: TCP
     targetPort: 8000
   selector:
-    app: llama3-8b-instruct-vllm-inference-server
+    app: vllm-inference-server
   type: ClusterIP
 ---
 apiVersion: monitoring.googleapis.com/v1
 kind: PodMonitoring
 metadata:
   labels:
-    app: llama3-8b-instruct-vllm-inference-server
+    app: vllm-inference-server
   name: vllm-podmonitoring
   namespace: test-ns
 spec:
@@ -95,7 +98,7 @@ spec:
     port: metrics
   selector:
     matchLabels:
-      app: llama3-8b-instruct-vllm-inference-server
+      app: vllm-inference-server
   targetLabels:
     metadata:
     - pod
