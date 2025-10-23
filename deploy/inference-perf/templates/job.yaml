@@ -18,6 +18,15 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- if .Values.gcsPath}}
+      initContainers:
+        - name: fetch-dataset
+          image: google/cloud-sdk:latest
+          command: ["sh", "-c", "gsutil cp {{ .Values.gcsPath }} /dataset/dataset.json"]
+          volumeMounts:
+            - name: dataset-volume
+              mountPath: /dataset
+{{- end }}
       containers:
         - name: inference-perf-container
           image: "{{ .Values.job.image.repository }}:{{ .Values.job.image.tag | default .Chart.AppVersion }}"
