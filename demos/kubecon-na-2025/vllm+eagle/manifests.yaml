@@ -13,8 +13,6 @@ spec:
   template:
     metadata:
       labels:
-        ai.gke.io/inference-server: vllm
-        ai.gke.io/model: LLaMA3_8B
         app: vllm-inference-server
         examples.ai.gke.io/source: blueprints
     spec:
