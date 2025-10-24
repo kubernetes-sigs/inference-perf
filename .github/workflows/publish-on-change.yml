@@ -1,0 +1,122 @@
+name: Publish Resources on Change
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: 'Optional: Specify a semantic version (e.g., 1.2.3). If not provided, a dev version based on the Git SHA will be used.'
+        required: false
+        type: string
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    # Define outputs to pass version info to the helm-chart job
+    outputs:
+      chart_version: ${{ steps.get_version.outputs.CHART_VERSION }}
+      app_version: ${{ steps.get_version.outputs.APP_VERSION }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Determine Version and Tags
+        id: get_version
+        shell: bash
+        run: |
+          # Check if this is a manual run AND a chart_version was provided
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.chart_version }}" != "" ]]; then
+            # --- MANUAL RELEASE VERSION ---
+            VERSION="${{ inputs.chart_version }}"
+            echo "Workflow manually triggered for version: $VERSION"
+            
+            DOCKER_TAGS="quay.io/inference-perf/inference-perf:${VERSION},quay.io/inference-perf/inference-perf:latest"
+            CHART_VERSION="${VERSION}"
+            APP_VERSION="${VERSION}"
+
+          else
+            # --- PUSH-BASED DEV VERSION (or manual run without version) ---
+            SHA_SHORT=$(git rev-parse --short HEAD)
+            echo "Workflow triggered by push. Using SHA: $SHA_SHORT"
+
+            DOCKER_TAGS="quay.io/inference-perf/inference-perf:${SHA_SHORT},quay.io/inference-perf/inference-perf:latest,quay.io/inference-perf/inference-perf:main"
+            CHART_VERSION="0.0.0-${SHA_SHORT}"
+            APP_VERSION="${SHA_SHORT}"
+          fi
+
+          echo "DOCKER_TAGS=$DOCKER_TAGS" >> $GITHUB_OUTPUT
+          echo "CHART_VERSION=$CHART_VERSION" >> $GITHUB_OUTPUT
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.get_version.outputs.DOCKER_TAGS }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max 
+
+  helm-chart:
+    runs-on: ubuntu-latest
+    needs: docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package Helm Chart
+        shell: bash
+        id: package_helm
+        run: |
+          mkdir -p helm-releases
+          
+          # Use the outputs from the 'docker' job
+          CHART_VERSION="${{ needs.docker.outputs.chart_version }}"
+          APP_VERSION="${{ needs.docker.outputs.app_version }}"
+
+          echo "Using Chart Version: $CHART_VERSION"
+          echo "Using App Version: $APP_VERSION"
+
+          helm package deploy/inference-perf -d helm-releases \
+            --version $CHART_VERSION \
+            --app-version $APP_VERSION
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Push Helm chart to OCI registry
+        run: |
+          OCI_BASE_URL="oci://quay.io/inference-perf/charts"
+          OCI_CHART_REPO="oci://quay.io/inference-perf/charts/inference-perf"
+          CHART_VERSION="${{ needs.docker.outputs.chart_version }}"
+
+          echo "Pushing Helm chart ${CHART_VERSION} to ${OCI_BASE_URL}"
+          helm push helm-releases/inference-perf-${CHART_VERSION}.tgz ${OCI_BASE_URL}
+
+          echo "Tagging Helm chart ${CHART_VERSION} as latest..."
+          helm registry copy "${OCI_CHART_REPO}:${CHART_VERSION}" "${OCI_CHART_REPO}:latest"
+
+
