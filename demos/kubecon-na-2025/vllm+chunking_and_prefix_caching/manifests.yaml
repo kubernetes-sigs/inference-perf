@@ -26,7 +26,7 @@ spec:
         - "--max-model-len=512"
         - "--max-num-seqs=128"
         - "--enable-prefix-caching"
-        - "--enable-chunked-prefil"
+        - "--enable-chunked-prefill"
         command:
         - python3
         - "-m"

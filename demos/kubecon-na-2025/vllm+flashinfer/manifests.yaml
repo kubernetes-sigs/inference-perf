@@ -24,7 +24,8 @@ spec:
         - "--gpu_memory_utilization=0.9"
         - "--max-model-len=512"
         - "--max-num-seqs=128"
-        - vllm.entrypoints.openai.api_server
+        - "--no-enable-prefix-caching"
+        - "--no-enable-chunked-prefill"
         command:
         - python3
         - "-m"
