@@ -173,5 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Test Reports
-reports-*/*.json
+# Test Reports (directories)
+reports-*/

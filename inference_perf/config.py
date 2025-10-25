@@ -95,6 +95,7 @@ class LoadType(Enum):
     CONSTANT = "constant"
     POISSON = "poisson"
     TRACE_REPLAY = "trace_replay"
+    CONCURRENT = "concurrent"
 
 
 class MetricsClientType(Enum):
@@ -103,8 +104,10 @@ class MetricsClientType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: float
-    duration: int
+    rate: Optional[float] = None
+    duration: Optional[int] = None
+    num_requests: Optional[int] = None
+    concurrency_level: Optional[int] = None
 
 
 class StageGenType(Enum):
