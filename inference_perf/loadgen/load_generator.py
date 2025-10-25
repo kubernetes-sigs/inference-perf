@@ -61,6 +61,7 @@ class Worker(mp.Process):
         request_phase: SyncEvent,
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
+        shared_max_concurrency: Optional["Synchronized[int]"],
     ):
         super().__init__()
         self.id = id
@@ -73,16 +74,39 @@ class Worker(mp.Process):
         self.request_phase = request_phase
         self.finished_requests_counter = finished_requests_counter
         self.active_requests_counter = active_requests_counter
+        self.shared_max_concurrency = shared_max_concurrency
+        self.skip = False
 
     async def loop(self) -> None:
         semaphore = Semaphore(self.max_concurrency)
+        current_concurrency = self.max_concurrency
         tasks = []
         event_loop = get_event_loop()
         item = None
         timeout = 0.5
 
         while not self.stop_signal.is_set():
-            while self.request_phase.is_set() and not self.cancel_signal.is_set():
+            # Check if max_concurrency has been updated and recreate semaphore if needed (concurrent load type)
+            if self.shared_max_concurrency and not self.skip:
+                with self.shared_max_concurrency.get_lock():
+                    new_concurrency = self.shared_max_concurrency.value
+                if new_concurrency == 0:
+                    self.skip = True
+                elif new_concurrency != current_concurrency:
+                    logger.debug(f"[Worker {self.id}] updating semaphore from {current_concurrency} to {new_concurrency}")
+                    # Wait for all current semaphore permits to be released
+                    for _ in range(current_concurrency):
+                        await semaphore.acquire()
+                    # Create new semaphore with updated limit
+                    semaphore = Semaphore(new_concurrency)
+                    current_concurrency = new_concurrency
+                    self.max_concurrency = new_concurrency
+
+            if not self.skip:
+                logger.info(f"Worker {self.id} is currently working!") 
+            
+            # Process requests in loop
+            while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.skip:
                 await semaphore.acquire()
                 try:
                     # Use partial to pass named arg
@@ -136,6 +160,9 @@ class Worker(mp.Process):
                 tasks.append(task)
                 await sleep(0)
 
+            # Reset skip
+            self.skip = False
+
             if self.cancel_signal.is_set():
                 logger.debug(f"[Worker {self.id}] cancelling tasks with {self.active_requests_counter.value} active requests")
                 for task in tasks:
@@ -166,8 +193,8 @@ class LoadGenerator:
         self.stages = load_config.stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
         self.num_workers = load_config.num_workers
+        self.worker_max_concurrency = load_config.worker_max_concurrency             
         self.workers: List[Worker] = []
-        self.worker_max_concurrency = load_config.worker_max_concurrency
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
@@ -177,10 +204,24 @@ class LoadGenerator:
         """SIGINT handler that sets interrup_sig flag to True"""
         self.interrupt_sig = True
 
+    def _set_worker_concurrency(self, concurrency_level: int) -> None:
+        # Calculate new concurrency for worker (concurrency_level will always be > 0)
+        new_concurrency = concurrency_level // self.num_workers + 1
+        # Calculate index cutoff for workers with +1 concurrency
+        worker_less_load_id = concurrency_level % self.num_workers if concurrency_level % self.num_workers != 0 else float('inf')
+        for worker in self.workers:
+            worker_concurrency = new_concurrency if worker.id < worker_less_load_id else new_concurrency - 1
+            worker.max_concurrency = worker_concurrency
+            # Update the shared concurrency value to signal the worker to update its semaphore (needs to be synchronized with main process)
+            with worker.shared_max_concurrency.get_lock():
+                worker.shared_max_concurrency.value = worker_concurrency
+
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
+        # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
+        
 
     async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
         while True:
@@ -377,7 +418,14 @@ class LoadGenerator:
         # start workers in the request phase
         request_phase.set()
 
+        # Create list of workers to process requests
         for id in range(self.num_workers):
+            # Create shared value for each worker's max concurrency if concurrent load type
+            if self.load_type == LoadType.CONCURRENT:
+                shared_max_concurrency: "Synchronized[int]" = mp.Value("i", self.worker_max_concurrency)
+            else:
+                shared_max_concurrency = None
+            
             self.workers.append(
                 Worker(
                     id,
@@ -390,6 +438,7 @@ class LoadGenerator:
                     request_phase,
                     finished_requests_counter,
                     active_requests_counter,
+                    shared_max_concurrency,
                 )
             )
             self.workers[-1].start()
@@ -405,6 +454,11 @@ class LoadGenerator:
                 return
 
         for stage_id, stage in enumerate(self.stages):
+            # Update worker concurrency for concurrent load type
+            if self.load_type == LoadType.CONCURRENT and stage.concurrency_level is not None:
+                logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
+                self._set_worker_concurrency(stage.concurrency_level)
+                
             await self.run_stage(
                 stage_id,
                 stage.rate,

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from argparse import ArgumentParser
+from os import cpu_count
 from inference_perf.analysis.analyze import analyze_reports
 from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
     DataGenType,
+    LoadType,
     MetricsClientType,
     ModelServerType,
     ReportConfig,
@@ -113,6 +115,29 @@ def main_cli() -> None:
         parser.error("argument -c/--config_file is required when not using --analyze")
 
     config = read_config(args.config_file)
+
+    # Set stage rates to high values if using concurrent load type
+    if config.load.type == LoadType.CONCURRENT:
+        if config.load.sweep is not None:
+            raise Exception("Cannot have sweep config with a concurrent load type")
+        for stage in config.load.stages:
+            if stage.num_requests is None:
+                raise Exception(f"Number of requests is missing for {stage}")
+            if stage.concurrency_level is None:
+                raise Exception(f"Concurrency level is missing for {stage}")
+            if stage.concurrency_level <= 0:
+                raise Exception(f"Invalid concurrency level for {stage}")
+            # Generate all of the requests in the span of a second (enqueuing everything) to saturate workers
+            stage.duration = 1
+            stage.rate = stage.num_requests
+        # Set to 0 to show that worker_max_concurrency was not relevant in concurrent load type
+        config.load.worker_max_concurrency = 0
+    else:
+        for stage in config.load.stages:
+            if stage.rate is None:
+                raise Exception(f"QPS rate is missing for {stage}")
+            if stage.duration is None:
+                raise Exception(f"Duration is missing for {stage}")
 
     # Define Circuit Breakers
     if config.circuit_breakers:
