@@ -53,7 +53,7 @@ jobs:
             echo "Workflow triggered by push. Using SHA: $SHA_SHORT"
 
             DOCKER_TAGS="quay.io/inference-perf/inference-perf:${SHA_SHORT},quay.io/inference-perf/inference-perf:latest,quay.io/inference-perf/inference-perf:main"
-            CHART_VERSION="main-${SHA_SHORT}"
+            CHART_VERSION="v0.0.0-${SHA_SHORT}"
             APP_VERSION="${SHA_SHORT}"
           fi
 
