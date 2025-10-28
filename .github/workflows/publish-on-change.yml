@@ -52,8 +52,11 @@ jobs:
             SHA_SHORT=$(git rev-parse --short HEAD)
             echo "Workflow triggered by push. Using SHA: $SHA_SHORT"
 
+            LATEST_TAG=$(git describe --tags --abbrev=0 || echo "v0.0.0")
+            LATEST_VERSION=${LATEST_TAG#v}
+
             DOCKER_TAGS="quay.io/inference-perf/inference-perf:${SHA_SHORT},quay.io/inference-perf/inference-perf:latest,quay.io/inference-perf/inference-perf:main"
-            CHART_VERSION="0.0.0-${SHA_SHORT}"
+            CHART_VERSION="${LATEST_VERSION}-${SHA_SHORT}"
             APP_VERSION="${SHA_SHORT}"
           fi
 
