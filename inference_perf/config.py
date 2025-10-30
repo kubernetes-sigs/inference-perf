@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl, model_validator
+from pydantic import BaseModel, HttpUrl, model_validator, Field
 from inference_perf.circuit_breaker import CircuitBreakerConfig
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Union
 from enum import Enum
 from os import cpu_count
 import yaml
@@ -104,10 +104,45 @@ class MetricsClientType(Enum):
 
 
 class LoadStage(BaseModel):
-    rate: Optional[float] = None
-    duration: Optional[int] = None
-    num_requests: Optional[int] = None
-    concurrency_level: Optional[int] = None
+    """Base class for load stages. Use specific subclasses for different load types."""
+
+    pass
+
+
+class StandardLoadStage(LoadStage):
+    """Load stage for CONSTANT and POISSON load types."""
+
+    rate: float = Field(..., gt=0, description="Request rate (QPS)")
+    duration: int = Field(..., gt=0, description="Duration in seconds")
+
+    # These fields should not be set for standard load types
+    num_requests: Optional[int] = Field(None, description="Not used for standard load types")
+    concurrency_level: Optional[int] = Field(None, description="Not used for standard load types")
+
+    @model_validator(mode="after")
+    def validate_standard_fields(self) -> "StandardLoadStage":
+        if self.num_requests is not None:
+            raise ValueError("num_requests should not be set for CONSTANT/POISSON load types")
+        if self.concurrency_level is not None:
+            raise ValueError("concurrency_level should not be set for CONSTANT/POISSON load types")
+        return self
+
+
+class ConcurrentLoadStage(LoadStage):
+    """Load stage for CONCURRENT load type."""
+
+    num_requests: int = Field(..., gt=0, description="Number of requests to send")
+    concurrency_level: int = Field(..., gt=0, description="Concurrency level")
+
+    # These fields are set at runtime for load generation but should not be configured
+    rate: Optional[float] = Field(None, description="Set at runtime for load generation")
+    duration: Optional[int] = Field(None, description="Set at runtime for load generation")
+
+    @model_validator(mode="after")
+    def validate_concurrent_fields(self) -> "ConcurrentLoadStage":
+        # Allow rate and duration to be set at runtime, but they should start as None
+        # No validation needed here since they're set dynamically
+        return self
 
 
 class StageGenType(Enum):
@@ -127,7 +162,7 @@ class SweepConfig(BaseModel):
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
-    stages: List[LoadStage] = []
+    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage]] = []
     sweep: Optional[SweepConfig] = None
     num_workers: int = max(1, cpu_count())  # type: ignore
     worker_max_concurrency: int = 100
@@ -135,6 +170,28 @@ class LoadConfig(BaseModel):
     trace: Optional[TraceConfig] = None
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_load_config(self) -> "LoadConfig":
+        # Validate that sweep is not used with concurrent load type
+        if self.type == LoadType.CONCURRENT and self.sweep is not None:
+            raise ValueError("Cannot have sweep config with CONCURRENT load type")
+
+        # Validate stage types match load type
+        if self.type == LoadType.CONCURRENT:
+            for i, stage in enumerate(self.stages):
+                if not isinstance(stage, ConcurrentLoadStage):
+                    raise ValueError(
+                        f"Stage {i}: CONCURRENT load type requires ConcurrentLoadStage, got {type(stage).__name__}"
+                    )
+        else:  # CONSTANT or POISSON
+            for i, stage in enumerate(self.stages):
+                if not isinstance(stage, StandardLoadStage):
+                    raise ValueError(
+                        f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
+                    )
+
+        return self
 
 
 class StorageConfigBase(BaseModel):
@@ -234,6 +291,24 @@ def read_config(config_file: str) -> Config:
 
     default_cfg = Config().model_dump(mode="json")
     merged_cfg = deep_merge(default_cfg, cfg)
+
+    # Handle stage type conversion based on load type
+    if "load" in merged_cfg and "stages" in merged_cfg["load"] and merged_cfg["load"]["stages"]:
+        load_type = merged_cfg["load"].get("type", "constant")
+        stages = merged_cfg["load"]["stages"]
+
+        if load_type == "concurrent":
+            # Convert to ConcurrentLoadStage objects
+            converted_stages = []
+            for stage in stages:
+                converted_stages.append(ConcurrentLoadStage(**stage))
+            merged_cfg["load"]["stages"] = converted_stages
+        else:
+            # Convert to StandardLoadStage objects for constant/poisson
+            converted_stages = []
+            for stage in stages:
+                converted_stages.append(StandardLoadStage(**stage))
+            merged_cfg["load"]["stages"] = converted_stages
 
     logger.info(
         "Benchmarking with the following config:\n\n%s\n", yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)

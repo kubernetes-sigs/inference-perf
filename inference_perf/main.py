@@ -22,6 +22,8 @@ from inference_perf.config import (
     MetricsClientType,
     ModelServerType,
     ReportConfig,
+    StandardLoadStage,
+    ConcurrentLoadStage,
     read_config,
 )
 from inference_perf.datagen import (
@@ -117,26 +119,16 @@ def main_cli() -> None:
 
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
-        if config.load.sweep is not None:
-            raise Exception("Cannot have sweep config with a concurrent load type")
+        # The validation is now handled by Pydantic in the config classes
+        # Convert ConcurrentLoadStage to have rate/duration for load generation
         for stage in config.load.stages:
-            if stage.num_requests is None:
-                raise Exception(f"Number of requests is missing for {stage}")
-            if stage.concurrency_level is None:
-                raise Exception(f"Concurrency level is missing for {stage}")
-            if stage.concurrency_level <= 0:
-                raise Exception(f"Invalid concurrency level for {stage}")
-            # Generate all of the requests in the span of a second (enqueuing everything) to saturate workers
-            stage.duration = 1
-            stage.rate = stage.num_requests
+            if isinstance(stage, ConcurrentLoadStage):
+                # Generate all of the requests in the span of a second (enqueuing everything) to saturate workers
+                stage.duration = 1  # type: ignore
+                stage.rate = stage.num_requests  # type: ignore
         # Set to 0 to show that worker_max_concurrency was not relevant in concurrent load type
         config.load.worker_max_concurrency = 0
-    else:
-        for stage in config.load.stages:
-            if stage.rate is None:
-                raise Exception(f"QPS rate is missing for {stage}")
-            if stage.duration is None:
-                raise Exception(f"Duration is missing for {stage}")
+    # Note: StandardLoadStage validation is automatically handled by Pydantic
 
     # Define Circuit Breakers
     if config.circuit_breakers:
@@ -267,7 +259,14 @@ def main_cli() -> None:
                         f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
                     )
 
-                total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
+                # Calculate total count based on stage type
+                max_requests = 0
+                for stage in config.load.stages:
+                    if isinstance(stage, StandardLoadStage):
+                        max_requests = max(max_requests, int(stage.rate * stage.duration))
+                    elif isinstance(stage, ConcurrentLoadStage):
+                        max_requests = max(max_requests, stage.num_requests)
+                total_count = max_requests + 1
                 if config.data.input_distribution.total_count is None:
                     config.data.input_distribution.total_count = total_count
                 if config.data.output_distribution.total_count is None:

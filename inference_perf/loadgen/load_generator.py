@@ -19,7 +19,7 @@ from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.circuit_breaker import get_circuit_breaker
-from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType, TraceFormat
+from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType, TraceFormat, ConcurrentLoadStage, StandardLoadStage
 from asyncio import (
     CancelledError,
     Semaphore,
@@ -80,6 +80,7 @@ class Worker(mp.Process):
         self.skip = False
 
     async def loop(self) -> None:
+        # The self.shared_max_concurrency is initialized to self.max_concurrency
         semaphore = Semaphore(self.max_concurrency)
         current_concurrency = self.max_concurrency
         tasks = []
@@ -102,10 +103,11 @@ class Worker(mp.Process):
                     # Create new semaphore with updated limit
                     semaphore = Semaphore(new_concurrency)
                     current_concurrency = new_concurrency
-                    self.max_concurrency = new_concurrency
 
             if not self.skip:
                 logger.debug(f"Worker {self.id} is currently working")
+            else:
+                await sleep(0)
 
             # Process requests in loop
             while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.skip:
@@ -218,15 +220,13 @@ class LoadGenerator:
         self.interrupt_sig = True
 
     def _set_worker_concurrency(self, concurrency_level: int) -> None:
+        """Determines the per worker concurrency, handling cases where concurrency_level % num_workers != 0."""
         # Calculate new concurrency for worker (concurrency_level will always be > 0)
         new_concurrency = concurrency_level // self.num_workers + 1
         # Calculate index cutoff for workers with +1 concurrency
-        worker_less_load_id = (
-            concurrency_level % self.num_workers if concurrency_level % self.num_workers != 0 else float("inf")
-        )
+        remainder = concurrency_level % self.num_workers
         for worker in self.workers:
-            worker_concurrency = new_concurrency if worker.id < worker_less_load_id else new_concurrency - 1
-            worker.max_concurrency = worker_concurrency
+            worker_concurrency = new_concurrency + 1 if worker.id < remainder else new_concurrency
             # Update the shared concurrency value to signal the worker to update its semaphore (needs to be synchronized with main process)
             with worker.shared_max_concurrency.get_lock():
                 worker.shared_max_concurrency.value = worker_concurrency
@@ -488,20 +488,31 @@ class LoadGenerator:
 
         for stage_id, stage in enumerate(self.stages):
             # Update worker concurrency for concurrent load type
-            if self.load_type == LoadType.CONCURRENT and stage.concurrency_level is not None:
+            if self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
                 logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
                 self._set_worker_concurrency(stage.concurrency_level)
 
+                # Use the dynamically set rate/duration from main.py
+                rate = getattr(stage, "rate", stage.num_requests)
+                duration = getattr(stage, "duration", 1)
+                concurrency_level = stage.concurrency_level
+            elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
+                rate = stage.rate
+                duration = stage.duration
+                concurrency_level = None
+            else:
+                raise Exception(f"Stage {stage_id} has the wrong load type")
+
             await self.run_stage(
                 stage_id,
-                stage.rate,
-                stage.duration,
+                rate,
+                duration,
                 request_queue,
                 active_requests_counter,
                 finished_requests_counter,
                 request_phase,
                 cancel_signal,
-                concurrency_level=stage.concurrency_level,
+                concurrency_level=concurrency_level,
             )
             # If we encountered a SIGINT, we can break out of run stages loop
             if self.interrupt_sig:
