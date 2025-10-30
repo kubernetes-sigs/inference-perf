@@ -105,7 +105,7 @@ class Worker(mp.Process):
                     self.max_concurrency = new_concurrency
 
             if not self.skip:
-                logger.info(f"Worker {self.id} is currently working!") 
+                logger.debug(f"Worker {self.id} is currently working") 
             
             # Process requests in loop
             while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.skip:
@@ -260,6 +260,7 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
+        concurrency_level: Optional[int] = None
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -344,7 +345,7 @@ class LoadGenerator:
         request_queue.join()
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status
+            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status, concurrency_level=concurrency_level
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
@@ -493,6 +494,7 @@ class LoadGenerator:
                 finished_requests_counter,
                 request_phase,
                 cancel_signal,
+                concurrency_level=stage.concurrency_level
             )
             # If we encountered a SIGINT, we can break out of run stages loop
             if self.interrupt_sig:
@@ -542,7 +544,7 @@ class LoadGenerator:
             else:
                 logger.info("Stage %d - run failed", stage_id)
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status
+                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status, concurrency_level=None
             )
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
