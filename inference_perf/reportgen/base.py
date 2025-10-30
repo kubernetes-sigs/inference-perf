@@ -119,7 +119,9 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
-def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Optional[float] = None, stage_concurrency: Optional[int] = None) -> ResponsesSummary:
+def summarize_requests(
+    metrics: List[RequestLifecycleMetric], stage_rate: Optional[float] = None, stage_concurrency: Optional[int] = None
+) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 

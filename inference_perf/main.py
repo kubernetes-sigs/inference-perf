@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from argparse import ArgumentParser
-from os import cpu_count
 from inference_perf.analysis.analyze import analyze_reports
 from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient

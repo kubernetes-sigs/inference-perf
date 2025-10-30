@@ -105,8 +105,8 @@ class Worker(mp.Process):
                     self.max_concurrency = new_concurrency
 
             if not self.skip:
-                logger.debug(f"Worker {self.id} is currently working") 
-            
+                logger.debug(f"Worker {self.id} is currently working")
+
             # Process requests in loop
             while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.skip:
                 await semaphore.acquire()
@@ -134,6 +134,7 @@ class Worker(mp.Process):
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
+                    semaphore: Semaphore,
                 ) -> None:
                     inflight = False
                     try:
@@ -158,7 +159,7 @@ class Worker(mp.Process):
 
                 stage_id, request, request_time = item
                 request_data = self.datagen.get_request(request) if isinstance(request, int) else request
-                task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id))
+                task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore))
                 tasks.append(task)
                 await sleep(0)
 
@@ -195,7 +196,7 @@ class LoadGenerator:
         self.stages = load_config.stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
         self.num_workers = load_config.num_workers
-        self.worker_max_concurrency = load_config.worker_max_concurrency             
+        self.worker_max_concurrency = load_config.worker_max_concurrency
         self.workers: List[Worker] = []
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
@@ -220,7 +221,9 @@ class LoadGenerator:
         # Calculate new concurrency for worker (concurrency_level will always be > 0)
         new_concurrency = concurrency_level // self.num_workers + 1
         # Calculate index cutoff for workers with +1 concurrency
-        worker_less_load_id = concurrency_level % self.num_workers if concurrency_level % self.num_workers != 0 else float('inf')
+        worker_less_load_id = (
+            concurrency_level % self.num_workers if concurrency_level % self.num_workers != 0 else float("inf")
+        )
         for worker in self.workers:
             worker_concurrency = new_concurrency if worker.id < worker_less_load_id else new_concurrency - 1
             worker.max_concurrency = worker_concurrency
@@ -237,7 +240,6 @@ class LoadGenerator:
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
-        
 
     async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
         while True:
@@ -260,7 +262,7 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
-        concurrency_level: Optional[int] = None
+        concurrency_level: Optional[int] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -345,7 +347,12 @@ class LoadGenerator:
         request_queue.join()
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-            stage_id=stage_id, rate=rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status, concurrency_level=concurrency_level
+            stage_id=stage_id,
+            rate=rate,
+            start_time=start_time_epoch,
+            end_time=time.time(),
+            status=stage_status,
+            concurrency_level=concurrency_level,
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
@@ -451,7 +458,7 @@ class LoadGenerator:
                 shared_max_concurrency: "Synchronized[int]" = mp.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
-            
+
             self.workers.append(
                 Worker(
                     id,
@@ -484,7 +491,7 @@ class LoadGenerator:
             if self.load_type == LoadType.CONCURRENT and stage.concurrency_level is not None:
                 logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
                 self._set_worker_concurrency(stage.concurrency_level)
-                
+
             await self.run_stage(
                 stage_id,
                 stage.rate,
@@ -494,7 +501,7 @@ class LoadGenerator:
                 finished_requests_counter,
                 request_phase,
                 cancel_signal,
-                concurrency_level=stage.concurrency_level
+                concurrency_level=stage.concurrency_level,
             )
             # If we encountered a SIGINT, we can break out of run stages loop
             if self.interrupt_sig:
@@ -544,7 +551,12 @@ class LoadGenerator:
             else:
                 logger.info("Stage %d - run failed", stage_id)
             self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id, rate=stage.rate, start_time=start_time_epoch, end_time=time.time(), status=stage_status, concurrency_level=None
+                stage_id=stage_id,
+                rate=stage.rate,
+                start_time=start_time_epoch,
+                end_time=time.time(),
+                status=stage_status,
+                concurrency_level=None,
             )
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
