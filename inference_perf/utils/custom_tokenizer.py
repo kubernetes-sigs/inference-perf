@@ -24,7 +24,7 @@ class CustomTokenizer:
     def count_tokens(self, text: str) -> int:
         if text == "":
             return 0
-        return len(self.tokenizer(text).input_ids)
+        return len(self.tokenizer(text, truncation=True, max_length=self.tokenizer.model_max_length).input_ids)
 
     def get_tokenizer(self) -> PreTrainedTokenizerBase:
         return self.tokenizer
