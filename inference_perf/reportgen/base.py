@@ -119,7 +119,7 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
-def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Optional[float] = None) -> ResponsesSummary:
+def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Optional[float] = None, stage_concurrency: Optional[int] = None) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
@@ -142,6 +142,8 @@ def summarize_requests(metrics: List[RequestLifecycleMetric], stage_rate: Option
             "requested_rate": stage_rate,
             "achieved_rate": len(metrics) / send_duration,
         }
+        if stage_concurrency is not None:
+            load_summary["concurrency"] = stage_concurrency
 
     return ResponsesSummary(
         load_summary=load_summary,
@@ -242,10 +244,17 @@ class ReportGenerator:
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
-                report_file = ReportFile(
-                    name=f"stage_{stage_id}_lifecycle_metrics",
-                    contents=summarize_requests(metrics, stage_rate).model_dump(),
-                )
+                concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
+                if concurrency_level is not None:
+                    report_file = ReportFile(
+                        name=f"stage_{stage_id}_lifecycle_metrics",
+                        contents=summarize_requests(metrics, stage_rate, concurrency_level).model_dump(),
+                    )
+                else:
+                    report_file = ReportFile(
+                        name=f"stage_{stage_id}_lifecycle_metrics",
+                        contents=summarize_requests(metrics, stage_rate).model_dump(),
+                    )
                 lifecycle_reports.append(report_file)
 
         if report_config.request_lifecycle.per_request:
