@@ -72,6 +72,8 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second
       duration: 30                  # Seconds to maintain this rate
+      concurrency_level: 3          # Level of concurrency (number of worker threads)
+      num_requests: 40              # Number of requests to be processed by concurrency_level worker threads
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker

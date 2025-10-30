@@ -1,14 +1,8 @@
 load:
-  type: concurrent
+  type: constant
   stages:
-  - rate: 1000
+  - rate: 1
     duration: 30
-    concurrency_level: 6
-    num_requests: 50
-  - concurrency_level: 2
-    num_requests: 25
-  num_workers: 4
-  worker_max_concurrency: 8
 api: 
   type: completion
   streaming: true
