@@ -62,7 +62,13 @@ graph TD
 
 ## Recommended Configuration
 
-Choose the right machine to run inference-perf on. The maximum concurrency you can get from the benchmarking tool and the ability to hit the desired QPS relies on the machine on which you are running on. Especially the number of CPUs / cores and the clock speed help with the concurrency. Maximum concurrency you can reach is bounded by `num_workers * worker_max_concurrency`. You can only have as many in-flight requests. Our recommendation is to not change `num_workers` since it is automatically set by inference-perf based on number of CPUs available and change `worker_max_concurrency` when needed. It is set to `100` by default. But more powerful CPUs can handle up to 1000.
+Choose the right machine to run inference-perf on. The maximum concurrency you can get from the benchmarking tool and the ability to hit the desired QPS relies on the machine on which you are running on. Especially the number of CPUs / cores and the clock speed help with the concurrency. 
+
+**For rate-based load types (`constant`, `poisson`):**
+Maximum concurrency you can reach is bounded by `num_workers * worker_max_concurrency`. You can only have as many in-flight requests. Our recommendation is to not change `num_workers` since it is automatically set by inference-perf based on number of CPUs available and change `worker_max_concurrency` when needed. It is set to `100` by default. But more powerful CPUs can handle up to 1000.
+
+**For concurrent load type (`concurrent`):**
+The tool automatically manages worker allocation based on your specified `concurrency_level`. The `worker_max_concurrency` setting is ignored for concurrent load types, as workers are dynamically allocated to achieve the exact concurrency specified.
 
 You have the following options to generate load with inference-perf.
 
@@ -73,7 +79,7 @@ You have the following options to generate load with inference-perf.
 
 ```
 load:
-  type: constant
+  type: constant  # or 'poisson' - sweep not available for 'concurrent'
   sweep:
     type: linear
 ```
@@ -89,20 +95,47 @@ This should allow the tool to generate the requested QPS.
 
 ```
 load:
-  type: constant
+  type: constant  # rate-based load generation
   stages:
-  - rate: 100
-    duration: 60
+  - rate: 100      # requests per second
+    duration: 60   # duration in seconds
   num_workers: 32
   worker_max_concurrency: 250
 ```
 
-### Run with specific concurrency instead of QPS
+### Generate load with fixed concurrency levels
+
+Use the `concurrent` load type when you want to specify exact concurrency levels rather than request rates. This is ideal for testing how your system performs under specific concurrent user loads.
+
+```yaml
+load:
+  type: concurrent
+  stages:
+  - num_requests: 1000
+    concurrency_level: 32
+  - num_requests: 2000
+    concurrency_level: 64
+```
+
+**Key differences from rate-based load types:**
+- Uses `num_requests` and `concurrency_level` instead of `rate` and `duration`
+- Maintains exactly the specified concurrency throughout the test
+- Cannot be used with sweep configuration
+- Workers are dynamically allocated based on concurrency requirements
+
+**Configuration validation:**
+- `concurrent` load type requires `num_requests` and `concurrency_level` for each stage
+- `rate` and `duration` are not allowed and will cause validation errors
+- `sweep` configuration is incompatible with concurrent load type
+
+### Run with specific concurrency instead of QPS (Legacy approach)
+
+**Note: This approach is deprecated. Use the `concurrent` load type instead for better concurrency control.**
 
 You might be interested in only specifying the concurrency (number of users) on the benchmarking side. In this case, modify `num_workers` and `worker_max_concurrency` in such a way that `num_workers * worker_max_concurrency` gives you the desired concurrency number. Then set the QPS really high so as to keep all the workers fully utilized.
 
 For example, if you need to run with concurrency of 32 and you have 4 CPUs on your machine, set the following:
-```
+```yaml
 load:
   type: constant
   stages:
