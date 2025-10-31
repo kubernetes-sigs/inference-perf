@@ -18,9 +18,12 @@ from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.config import (
     DataGenType,
+    LoadType,
     MetricsClientType,
     ModelServerType,
     ReportConfig,
+    StandardLoadStage,
+    ConcurrentLoadStage,
     read_config,
 )
 from inference_perf.datagen import (
@@ -113,6 +116,19 @@ def main_cli() -> None:
         parser.error("argument -c/--config_file is required when not using --analyze")
 
     config = read_config(args.config_file)
+
+    # Set stage rates to high values if using concurrent load type
+    if config.load.type == LoadType.CONCURRENT:
+        # The validation is now handled by Pydantic in the config classes
+        # Convert ConcurrentLoadStage to have rate/duration for load generation
+        for stage in config.load.stages:
+            if isinstance(stage, ConcurrentLoadStage):
+                # Generate all of the requests in the span of a second (enqueuing everything) to saturate workers
+                stage.duration = 1  # type: ignore
+                stage.rate = stage.num_requests  # type: ignore
+        # Set to 0 to show that worker_max_concurrency was not relevant in concurrent load type
+        config.load.worker_max_concurrency = 0
+    # Note: StandardLoadStage validation is automatically handled by Pydantic
 
     # Define Circuit Breakers
     if config.circuit_breakers:
@@ -237,7 +253,14 @@ def main_cli() -> None:
             if config.data.output_distribution is None:
                 raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured")
 
-            total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
+            # Calculate total count based on stage type
+            max_requests = 0
+            for stage in config.load.stages:
+                if isinstance(stage, StandardLoadStage):
+                    max_requests = max(max_requests, int(stage.rate * stage.duration))
+                elif isinstance(stage, ConcurrentLoadStage):
+                    max_requests = max(max_requests, stage.num_requests)
+            total_count = max_requests + 1
             if config.data.input_distribution.total_count is None:
                 config.data.input_distribution.total_count = total_count
             if config.data.output_distribution.total_count is None:
