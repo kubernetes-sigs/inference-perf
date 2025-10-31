@@ -13,7 +13,7 @@
 # limitations under the License.
 from pathlib import Path
 import numpy as np
-from inference_perf.apis import InferenceAPIData, CompletionAPIData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
@@ -107,7 +107,9 @@ class RandomDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
-    def get_request(self, n: int) -> InferenceAPIData:
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        n = data.data_index
+
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
@@ -123,28 +125,6 @@ class RandomDataGenerator(DataGenerator):
             raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
 
         i = 0
-
-        if self.trace is None:
-            while True:
-                yield self.get_data_with_token_count(self.input_lengths[i], self.output_lengths[i])
-                i += 1
-        else:
-            for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
-                yield self.get_data_with_token_count(input_tokens, output_tokens)
-
-    def get_data_with_token_count(self, input_tokens: int, output_tokens: int) -> InferenceAPIData:
-        if self.tokenizer is None:
-            raise ValueError("Tokenizer is required for RandomDataGenerator")
-
-        prompt_text: str
-        if input_tokens <= 0:
-            random_token_ids_list = []
-        else:
-            random_token_ids = np.random.randint(0, self.vocab_size, size=input_tokens, dtype=np.int64)
-            random_token_ids_list = random_token_ids.tolist()
-        prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
-
-        return CompletionAPIData(
-            prompt=prompt_text,
-            max_tokens=output_tokens,
-        )
+        while True:
+            yield LazyLoadInferenceAPIData(data_index=i)
+            i += 1

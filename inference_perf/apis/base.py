@@ -44,6 +44,9 @@ class RequestLifecycleMetric(BaseModel):
 
 
 class InferenceAPIData(BaseModel):
+    # loadgen should assign this request to prefered worker if possible
+    prefered_worker_id: int = -1  # no prefered worker by default
+
     @abstractmethod
     def get_api_type(self) -> APIType:
         raise NotImplementedError
@@ -64,3 +67,31 @@ class InferenceAPIData(BaseModel):
         self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
     ) -> Optional[InferenceInfo]:
         pass  # no-op by default
+
+
+class LazyLoadInferenceAPIData(InferenceAPIData):
+    """
+    InferenceAPIData that loads data lazily.
+    This is useful for multiprocessing where the data cannot be pickled or need to be initialized in worker space.
+    this class shouldn't go with any data but payload for data generator to return API data later.
+    in most cases, generator should depends on data_index as reference. If more payload needed, try to extend this class.
+    """
+
+    data_index: int
+
+    def get_api_type(self) -> APIType:
+        raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+    def get_route(self) -> str:
+        raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+        raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+        raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+    async def process_failure(
+        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+    ) -> Optional[InferenceInfo]:
+        raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")

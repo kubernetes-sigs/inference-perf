@@ -14,8 +14,9 @@
 from pathlib import Path
 from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStatus
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
-from inference_perf.datagen import DataGenerator
+from inference_perf.datagen import DataGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.circuit_breaker import get_circuit_breaker
@@ -167,7 +168,7 @@ class Worker(mp.Process):
                         semaphore.release()
 
                 stage_id, request, request_time = item
-                request_data = self.datagen.get_request(request) if isinstance(request, int) else request
+                request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore))
                 tasks.append(task)
                 await sleep(0)
@@ -264,7 +265,7 @@ class LoadGenerator:
         stage_id: int,
         rate: float,
         duration: int,
-        request_queue: mp.Queue,  # type: ignore[type-arg]
+        request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
@@ -295,20 +296,10 @@ class LoadGenerator:
         stage_status = StageStatus.RUNNING
 
         time_generator = timer.start_timer(start_time)
-        if hasattr(self.datagen, "get_request"):
-            # Datagen supports deferring to workers, enqueue request number
-            for request_number in range(num_requests):
-                request_time = next(time_generator)
-                request_queue.put((stage_id, request_number, request_time))
-        else:
-            # Datagen requires queueing request_data
-            data_generator = self.datagen.get_data()
-            if self.datagen.trace is None:
-                for _ in range(num_requests):
-                    request_queue.put((stage_id, next(data_generator), next(time_generator)))
-            else:
-                for data, request_time in zip(data_generator, time_generator, strict=True):
-                    request_queue.put((stage_id, data, request_time))
+        data_generator = self.datagen.get_data()
+        for _ in range(num_requests):
+            request_data = next(data_generator)
+            request_queue.put((stage_id, request_data, next(time_generator)), request_data.prefered_worker_id)
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
@@ -345,7 +336,7 @@ class LoadGenerator:
             await sleep(1)
             while active_requests_counter.value > 0:
                 await sleep(1)
-            await self.drain(request_queue)
+            request_queue.drain()
             cancel_signal.clear()
             stage_status = StageStatus.FAILED
         else:
@@ -367,7 +358,7 @@ class LoadGenerator:
     async def preprocess(
         self,
         client: ModelServerClient,
-        request_queue: mp.Queue,  # type: ignore[type-arg]
+        request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
@@ -450,7 +441,9 @@ class LoadGenerator:
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
     async def mp_run(self, client: ModelServerClient) -> None:
-        request_queue: mp.Queue[RequestQueueData] = mp.JoinableQueue()
+        request_queue: RequestQueue[RequestQueueData] = RequestQueue(
+            self.num_workers if self.datagen.is_prefered_worker_requested() else 1
+        )
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         request_phase: SyncEvent = mp.Event()
@@ -471,7 +464,7 @@ class LoadGenerator:
                 Worker(
                     id,
                     client,
-                    request_queue,
+                    request_queue.get_channel(id),
                     self.datagen,
                     self.worker_max_concurrency,
                     stop_signal,
@@ -546,6 +539,7 @@ class LoadGenerator:
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
                 for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                    request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED
@@ -560,7 +554,7 @@ class LoadGenerator:
                             break
                         if time_index > now:
                             await sleep(time_index - time.perf_counter())
-                        tg.create_task(client.process_request(data, stage_id, time_index))
+                        tg.create_task(client.process_request(request_data, stage_id, time_index))
                         continue
                     else:
                         break

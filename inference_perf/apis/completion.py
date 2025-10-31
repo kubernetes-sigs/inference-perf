@@ -26,7 +26,7 @@ from inference_perf.config import APIConfig, APIType
 class CompletionAPIData(InferenceAPIData):
     prompt: str
     max_tokens: int = 0
-    output_token: str = ""
+    model_response: str = ""
 
     def get_api_type(self) -> APIType:
         return APIType.Completion
@@ -73,7 +73,7 @@ class CompletionAPIData(InferenceAPIData):
 
             prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
-            self.output_token = output_text
+            self.model_response = output_text
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
@@ -87,5 +87,5 @@ class CompletionAPIData(InferenceAPIData):
                 return InferenceInfo(input_tokens=prompt_len)
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
-            self.output_token = output_text
+            self.model_response = output_text
             return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)
