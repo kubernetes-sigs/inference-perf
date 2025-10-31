@@ -6,10 +6,10 @@ aliases:
   - achandrasekar
   - wangchen615
   - SachinVarghese
+  - jjk-g
 
   inference-perf-reviewers:
   - Bslabe123
-  - jjk-g
 
   wg-serving-leads:
   - ArangoGutierrez
