@@ -22,6 +22,7 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 * Supports benchmarking large deployments with frameworks like [llm-d](https://llm-d.ai/), [Dynamo](https://docs.nvidia.com/dynamo/latest/) and [Inference Gateway](https://gateway-api-inference-extension.sigs.k8s.io/).
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
+* Supprots Multi-turn chat conversations, it can keep context of a series of messages to simulate a conversation. A request in each chat round will keep previouse messages as prefix. see example [config-multi-turn](examples/vllm/config-shared-prefix-multi-turn.yml)
 
 ## Roadmap
 

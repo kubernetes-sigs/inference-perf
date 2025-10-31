@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 from pydantic import ConfigDict, Field
 
 from aiohttp import ClientResponse
@@ -20,13 +20,13 @@ class LocalUserSession:
         self.contexts = context if context else ""
         self._current_round = 0
         self._in_flight: asyncio.Lock = asyncio.Lock()
-        self._waiting_rounds: asyncio.PriorityQueue[Tuple[int, asyncio.Future[bool]]] = asyncio.PriorityQueue()
+        self._waiting_rounds: asyncio.Queue[asyncio.Future[bool]] = asyncio.Queue()
 
     async def get_context(self, round: int) -> str:
         if not self._waiting_rounds.empty() or self._in_flight.locked():
             # entering waiting queue
             future: asyncio.Future[bool] = asyncio.Future()
-            self._waiting_rounds.put_nowait((round, future))
+            self._waiting_rounds.put_nowait(future)
             await future
         await self._in_flight.acquire()
         self._current_round += 1
@@ -36,7 +36,7 @@ class LocalUserSession:
         self.contexts = response
 
         if not self._waiting_rounds.empty():
-            _, future = self._waiting_rounds.get_nowait()
+            future = self._waiting_rounds.get_nowait()
             future.set_result(True)
 
         self._in_flight.release()
@@ -49,6 +49,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
 
     async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         self._session_context = await self.user_session.get_context(self.target_round)
+        # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
         self.prompt = self._session_context + " " + self.prompt
         # TODO: The combined prompt (session context + current prompt) might exceed the model's
         #       maximum sequence length. Implement truncation logic/strategy to prevent
@@ -62,7 +63,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         inference_info = await super().process_response(response, config, tokenizer)
         self.update_inference_info(inference_info)
-        self.user_session.update_context(self.prompt + " " + self.output_token)
+        self.user_session.update_context(self.prompt + " " + self.model_response)
         return inference_info
 
     async def process_failure(

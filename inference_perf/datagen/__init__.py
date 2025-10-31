@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator
+from .base import DataGenerator, LazyLoadDataMixin
 from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
@@ -23,6 +23,7 @@ from .hf_billsum_datagen import BillsumConversationsDataGenerator
 
 __all__ = [
     "DataGenerator",
+    "LazyLoadDataMixin",
     "MockDataGenerator",
     "HFShareGPTDataGenerator",
     "SyntheticDataGenerator",
