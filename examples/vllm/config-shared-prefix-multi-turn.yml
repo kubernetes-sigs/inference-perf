@@ -1,0 +1,35 @@
+load:
+  type: constant
+  num_workers: 2
+  worker_max_concurrency: 10
+  stages:
+  - rate: 5
+    duration: 10
+api:
+  type: completion
+server:
+  type: vllm
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2                 # Number of distinct users
+    num_prompts_per_group: 25     # Number of unique questions per user
+    system_prompt_len: 100        # Length of the first prefix (in tokens), simulate initialization of a system prompt
+    question_len: 50              # Length of the unique question part (in tokens)
+    output_len: 50                # Target length for the model's generated output (in tokens)
+    enable_multi_turn_chat: true  # enable multi-turn chat, create user session for each group. The chat context will be appended for the each request in the group.
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

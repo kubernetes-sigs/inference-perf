@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
+from .base import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo, LazyLoadInferenceAPIData
 from .chat import ChatCompletionAPIData, ChatMessage
 from .completion import CompletionAPIData
 
 __all__ = [
     "InferenceAPIData",
+    "LazyLoadInferenceAPIData",
     "InferenceInfo",
     "RequestLifecycleMetric",
     "ErrorResponseInfo",
