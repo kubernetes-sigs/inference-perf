@@ -196,10 +196,14 @@ def main_cli() -> None:
         if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
             if config.data.trace is None:
                 if config.data.input_distribution is None:
-                    raise Exception(f"{config.data.type.value} data generator requires 'input_distribution' to be configured if no trace config is provided")
+                    raise Exception(
+                        f"{config.data.type.value} data generator requires 'input_distribution' to be configured if no trace config is provided"
+                    )
                 if config.data.output_distribution is None:
-                    raise Exception(f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided")                
-            
+                    raise Exception(
+                        f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
+                    )
+
                 total_count = int(max([stage.rate * stage.duration for stage in config.load.stages])) + 1
                 if config.data.input_distribution.total_count is None:
                     config.data.input_distribution.total_count = total_count
@@ -225,11 +229,7 @@ def main_cli() -> None:
         raise Exception("data config missing")
 
     # Define LoadGenerator
-    if (
-        isinstance(metrics_client, PrometheusMetricsClient)
-        and config.report.prometheus
-        and config.report.prometheus.per_stage
-    ):
+    if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus and config.report.prometheus.per_stage:
         config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
     loadgen = LoadGenerator(datagen, config.load)
 

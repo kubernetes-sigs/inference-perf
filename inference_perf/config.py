@@ -34,9 +34,11 @@ class APIConfig(BaseModel):
 class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
 
+
 class TraceConfig(BaseModel):
     file: str
     format: TraceFormat = TraceFormat.AZURE_PUBLIC_DATASET
+
 
 class DataGenType(Enum):
     Mock = "mock"

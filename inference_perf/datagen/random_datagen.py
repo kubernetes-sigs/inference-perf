@@ -24,6 +24,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 # Random data generator generates random tokens from the model's
 # vocabulary for the desired input and output distribution.
 class RandomDataGenerator(DataGenerator):
@@ -63,13 +64,13 @@ class RandomDataGenerator(DataGenerator):
                 self.trace_reader = AzurePublicDatasetReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
-            
+
             self.input_lengths = []
             self.output_lengths = []
             for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
                 self.input_lengths.append(input_tokens)
                 self.output_lengths.append(output_tokens)
-            
+
             logger.info(f"Ignoring input and output distributions configurations as trace file {self.trace.file} is provided")
 
         if self.tokenizer is None:
@@ -123,11 +124,11 @@ class RandomDataGenerator(DataGenerator):
         else:
             for input_tokens, output_tokens in self.trace_reader.stream_token_entries(Path(self.trace.file)):
                 yield self.get_data_with_token_count(input_tokens, output_tokens)
-    
+
     def get_data_with_token_count(self, input: int, output: int) -> InferenceAPIData:
         if self.tokenizer is None:
-                raise ValueError("Tokenizer is required for RandomDataGenerator")
-        
+            raise ValueError("Tokenizer is required for RandomDataGenerator")
+
         if self.api_config.type == APIType.Completion:
             if input <= 0:
                 random_token_ids_list = []

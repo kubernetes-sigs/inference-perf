@@ -18,6 +18,7 @@ import numpy as np
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
 
+
 class LoadTimer(ABC):
     """Abstract base class for load generators."""
 
@@ -90,6 +91,7 @@ class PoissonLoadTimer(LoadTimer):
             for _ in range(req_count):
                 next_time = next(time_generator)
                 yield next_time
+
 
 class TraceReplayLoadTimer(LoadTimer):
     def __init__(self, trace_reader: TraceReader, trace_file: Path) -> None:
