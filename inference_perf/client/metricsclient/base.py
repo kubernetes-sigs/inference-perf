@@ -12,19 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from inference_perf.client.modelserver.base import ModelServerClient
-from inference_perf.loadgen.load_generator import StageRuntimeInfo
+from enum import Enum, auto
+from typing import TypedDict
 from pydantic import BaseModel
+
+
+# Base class for accumulating metrics objects on
+class MetricsMetadata(TypedDict):
+    pass
+
+
+class StageStatus(Enum):
+    COMPLETED = auto()
+    FAILED = auto()
+    RUNNING = auto()
+    SKIPPED = auto()
+
+
+class StageRuntimeInfo(BaseModel):
+    stage_id: int
+    rate: float
+    end_time: float
+    start_time: float
+    status: StageStatus
 
 
 class PerfRuntimeParameters:
     def __init__(
-        self, start_time: float, duration: float, model_server_client: ModelServerClient, stages: dict[int, StageRuntimeInfo]
+        self, start_time: float, duration: float, model_server_metrics: MetricsMetadata, stages: dict[int, StageRuntimeInfo]
     ) -> None:
         self.start_time = start_time
         self.duration = duration
         self.stages = stages
-        self.model_server_client = model_server_client
+        self.model_server_metrics = model_server_metrics
 
 
 class ModelServerMetrics(BaseModel):
@@ -46,6 +66,10 @@ class ModelServerMetrics(BaseModel):
     median_time_per_output_token: float = 0.0
     p90_time_per_output_token: float = 0.0
     p99_time_per_output_token: float = 0.0
+    avg_inter_token_latency: float = 0.0
+    median_inter_token_latency: float = 0.0
+    p90_inter_token_latency: float = 0.0
+    p99_inter_token_latency: float = 0.0
 
     # Request
     total_requests: int = 0

@@ -20,6 +20,7 @@ from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, PrometheusMetricMetadata
 from typing import List, Optional
 import aiohttp
+import asyncio
 import json
 import time
 import logging
@@ -40,8 +41,9 @@ class openAIModelServerClient(ModelServerClient):
         additional_filters: List[str],
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> None:
-        super().__init__(api_config)
+        super().__init__(api_config, timeout)
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
         self.ignore_eos = ignore_eos
@@ -68,8 +70,6 @@ class openAIModelServerClient(ModelServerClient):
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
-        self.additional_metric_filters = [f"model_name='{self.model_name}'", *self.additional_filters]
-
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         payload = data.to_payload(
             model_name=self.model_name,
@@ -87,7 +87,11 @@ class openAIModelServerClient(ModelServerClient):
 
         request_data = json.dumps(payload)
 
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=self.max_tcp_connections)) as session:
+        timeout = aiohttp.ClientTimeout(total=self.timeout) if self.timeout else aiohttp.helpers.sentinel
+
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=self.max_tcp_connections), timeout=timeout
+        ) as session:
             start = time.perf_counter()
             try:
                 async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
@@ -114,7 +118,10 @@ class openAIModelServerClient(ModelServerClient):
                         )
                     )
             except Exception as e:
-                logger.error("error occured during request processing:", exc_info=True)
+                if isinstance(e, asyncio.exceptions.TimeoutError):
+                    logger.error("request timed out:", exc_info=True)
+                else:
+                    logger.error("error occured during request processing:", exc_info=True)
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple, TypedDict
+from typing import List, Optional, Tuple
+from inference_perf.client.metricsclient.base import MetricsMetadata
 from inference_perf.config import APIConfig, APIType
 
 from inference_perf.apis import InferenceAPIData
@@ -29,7 +30,7 @@ class ModelServerPrometheusMetric:
 # PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
 # and the filters to be applied to them.
 # This is used to generate Prometheus query for the metrics.
-class PrometheusMetricMetadata(TypedDict):
+class PrometheusMetricMetadata(MetricsMetadata):
     # Throughput
     prompt_tokens_per_second: ModelServerPrometheusMetric
     output_tokens_per_second: ModelServerPrometheusMetric
@@ -40,10 +41,10 @@ class PrometheusMetricMetadata(TypedDict):
     median_request_latency: ModelServerPrometheusMetric
     p90_request_latency: ModelServerPrometheusMetric
     p99_request_latency: ModelServerPrometheusMetric
-    avg_time_to_first_token: ModelServerPrometheusMetric
-    median_time_to_first_token: ModelServerPrometheusMetric
-    p90_time_to_first_token: ModelServerPrometheusMetric
-    p99_time_to_first_token: ModelServerPrometheusMetric
+    avg_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    median_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    p90_time_to_first_token: Optional[ModelServerPrometheusMetric]
+    p99_time_to_first_token: Optional[ModelServerPrometheusMetric]
     avg_time_per_output_token: Optional[ModelServerPrometheusMetric]
     median_time_per_output_token: Optional[ModelServerPrometheusMetric]
     p90_time_per_output_token: Optional[ModelServerPrometheusMetric]
@@ -60,10 +61,10 @@ class PrometheusMetricMetadata(TypedDict):
     avg_queue_length: ModelServerPrometheusMetric
 
     # Usage
-    avg_kv_cache_usage: ModelServerPrometheusMetric
-    median_kv_cache_usage: ModelServerPrometheusMetric
-    p90_kv_cache_usage: ModelServerPrometheusMetric
-    p99_kv_cache_usage: ModelServerPrometheusMetric
+    avg_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    median_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    p90_kv_cache_usage: Optional[ModelServerPrometheusMetric]
+    p99_kv_cache_usage: Optional[ModelServerPrometheusMetric]
     num_preemptions_total: Optional[ModelServerPrometheusMetric]
     num_requests_swapped: Optional[ModelServerPrometheusMetric]
 
@@ -74,11 +75,12 @@ class PrometheusMetricMetadata(TypedDict):
 
 class ModelServerClient(ABC):
     @abstractmethod
-    def __init__(self, api_config: APIConfig, *args: Tuple[int, ...]) -> None:
+    def __init__(self, api_config: APIConfig, timeout: Optional[float] = None, *args: Tuple[int, ...]) -> None:
         if api_config.type not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {api_config}")
 
         self.api_config = api_config
+        self.timeout = timeout
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:

@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:79b41f19c10132fe42e1d316ef40498f79427e12bbdb8fe921b5a46b53d654e0"
+content_hash = "sha256:0f328702550aff798f70ab2d58f78c94582cbda38f622e2ab73ee326317d47e8"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -282,7 +282,7 @@ version = "0.4.6"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 summary = "Cross-platform colored terminal text."
 groups = ["default", "test"]
-marker = "sys_platform == \"win32\" or platform_system == \"Windows\""
+marker = "platform_system == \"Windows\" or sys_platform == \"win32\""
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
@@ -1800,6 +1800,17 @@ files = [
 ]
 
 [[package]]
+name = "types-jmespath"
+version = "1.0.2.20250809"
+requires_python = ">=3.9"
+summary = "Typing stubs for jmespath"
+groups = ["default"]
+files = [
+    {file = "types_jmespath-1.0.2.20250809-py3-none-any.whl", hash = "sha256:4147d17cc33454f0dac7e78b4e18e532a1330c518d85f7f6d19e5818ab83da21"},
+    {file = "types_jmespath-1.0.2.20250809.tar.gz", hash = "sha256:e194efec21c0aeae789f701ae25f17c57c25908e789b1123a5c6f8d915b4adff"},
+]
+
+[[package]]
 name = "types-pyyaml"
 version = "6.0.12.20250516"
 requires_python = ">=3.9"
@@ -1815,13 +1826,27 @@ name = "types-requests"
 version = "2.32.4.20250611"
 requires_python = ">=3.9"
 summary = "Typing stubs for requests"
-groups = ["types"]
+groups = ["default", "types"]
 dependencies = [
     "urllib3>=2",
 ]
 files = [
     {file = "types_requests-2.32.4.20250611-py3-none-any.whl", hash = "sha256:ad2fe5d3b0cb3c2c902c8815a70e7fb2302c4b8c1f77bdcd738192cdb3878072"},
     {file = "types_requests-2.32.4.20250611.tar.gz", hash = "sha256:741c8777ed6425830bf51e54d6abe245f79b4dcb9019f1622b773463946bf826"},
+]
+
+[[package]]
+name = "types-tqdm"
+version = "4.67.0.20250809"
+requires_python = ">=3.9"
+summary = "Typing stubs for tqdm"
+groups = ["default"]
+dependencies = [
+    "types-requests",
+]
+files = [
+    {file = "types_tqdm-4.67.0.20250809-py3-none-any.whl", hash = "sha256:1a73053b31fcabf3c1f3e2a9d5ecdba0f301bde47a418cd0e0bdf774827c5c57"},
+    {file = "types_tqdm-4.67.0.20250809.tar.gz", hash = "sha256:02bf7ab91256080b9c4c63f9f11b519c27baaf52718e5fdab9e9606da168d500"},
 ]
 
 [[package]]

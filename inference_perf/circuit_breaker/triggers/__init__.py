@@ -11,21 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .base import build_trigger, Trigger, HitSample
+from .config import TriggerSpec
 
-from typing import Any
+from pkgutil import walk_packages
+from importlib import import_module
 
+for module_info in walk_packages(__path__):
+    import_module(f"{__name__}.{module_info.name}")
 
-class ReportFile:
-    name: str
-    contents: Any
-
-    def __init__(self, name: str, contents: Any, file_type: str = "json"):
-        self.name = name
-        self.contents = contents
-        self.file_type = file_type
-
-    def get_filename(self) -> str:
-        return f"{self.name}.{self.file_type}"
-
-    def get_contents(self) -> Any:
-        return self.contents
+__all__ = [
+    "build_trigger",
+    "HitSample",
+    "Trigger",
+    "TriggerSpec",
+]

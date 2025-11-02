@@ -116,29 +116,32 @@ class RandomDataGenerator(DataGenerator):
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for RandomDataGenerator")
+        if self.api_config.type != APIType.Completion:
+            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
+
         i = 0
+
         if self.trace is None:
             while True:
                 yield self.get_data_with_token_count(self.input_lengths[i], self.output_lengths[i])
                 i += 1
         else:
-            for input_tokens, output_tokens in self.trace_reader.stream_token_entries(Path(self.trace.file)):
+            for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
                 yield self.get_data_with_token_count(input_tokens, output_tokens)
 
-    def get_data_with_token_count(self, input: int, output: int) -> InferenceAPIData:
-        if self.tokenizer is None:
-            raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-        if self.api_config.type == APIType.Completion:
+        def get_data_with_token_count(self, input: int, output: int) -> InferenceAPIData:
+            prompt_text: str
             if input <= 0:
                 random_token_ids_list = []
             else:
                 random_token_ids = np.random.randint(0, self.vocab_size, size=input, dtype=np.int64)
                 random_token_ids_list = random_token_ids.tolist()
             prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
+
             return CompletionAPIData(
                 prompt=prompt_text,
                 max_tokens=output,
             )
-        else:
-            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")

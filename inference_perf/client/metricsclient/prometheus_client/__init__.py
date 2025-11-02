@@ -11,8 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import PrometheusMetricsClient
+from .base import (
+    PrometheusMetricsClient,
+    PrometheusVectorMetric,
+    PrometheusScalarMetric,
+    PrometheusGaugeMetric,
+    PrometheusCounterMetric,
+    PrometheusHistogramMetric,
+)
 from .google_managed_prometheus_client import GoogleManagedPrometheusMetricsClient
 
 
-__all__ = ["PrometheusMetricsClient", "GoogleManagedPrometheusMetricsClient"]
+__all__ = [
+    "PrometheusMetricsClient",
+    "GoogleManagedPrometheusMetricsClient",
+    "PrometheusVectorMetric",
+    "PrometheusScalarMetric",
+    "PrometheusGaugeMetric",
+    "PrometheusCounterMetric",
+    "PrometheusHistogramMetric",
+]

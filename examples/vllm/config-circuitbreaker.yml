@@ -1,0 +1,28 @@
+circuit_breakers:
+  - name: request_timeout_breaker
+    metrics:
+      matches:
+        - error.error_type == 'TimeoutError'
+    triggers:
+      - type: consecutive # break when there are 10 consecutive errors
+        threshold: 10
+      - type: rate_over_window # break when there are more than 80% failed every 2.5 seconds (at least 2 samples)
+        window_sec: 2.5
+        threshold: 0.8
+        min_samples: 2
+data:
+  type: shareGPT
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+  circuit_breakers:
+    - request_timeout_breaker # break running stage when request_timeout_breaker triggers
+  request_timeout: 60.0
+api:
+  type: chat
+server:
+  type: vllm
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000

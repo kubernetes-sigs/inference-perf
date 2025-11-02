@@ -68,18 +68,18 @@ class SyntheticDataGenerator(DataGenerator):
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for SyntheticDataGenerator")
+        if self.api_config.type != APIType.Completion:
+            raise Exception("Unsupported API type")
+
         i = 0
         while True:
-            if self.tokenizer is None:
-                raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-            if self.api_config.type == APIType.Completion:
-                yield CompletionAPIData(
-                    prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
-                    max_tokens=self.output_lengths[i],
-                )
-                i += 1
-            else:
-                raise Exception("Unsupported API type")
+            yield CompletionAPIData(
+                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
+                max_tokens=self.output_lengths[i],
+            )
+            i += 1
 
     # Hardcoded sonnet data that we can use for synthetic benchmarks.
     def get_sonnet_data(self) -> str:

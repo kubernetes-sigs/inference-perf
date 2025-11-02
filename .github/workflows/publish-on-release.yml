@@ -40,15 +40,19 @@ jobs:
           ${{ steps.github_release.outputs.changelog }}
 
           ## Docker Image
-          
+
           `${{ env.IMAGE_NAME }}:${{ env.RELEASE_VERSION }}`
 
           ## Python Package
-          
+
           `pip install inference-perf==${{ env.RELEASE_VERSION }}`
 
+          ## Helm Chart
+
+          `helm install inference-perf oci://quay.io/inference-perf/charts/inference-perf`
+
           ## Contributors
-          
+
           ${{ steps.github_release.outputs.contributors }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,4 +138,33 @@ jobs:
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=Apache-2.0
           cache-from: type=gha
-          cache-to: type=gha,mode=max 
+          cache-to: type=gha,mode=max
+
+  helm-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package Helm Chart
+        shell: bash
+        run: |
+          mkdir -p helm-releases
+          # Remove 'v' prefix from version
+          CHART_VERSION=${GITHUB_REF#refs/tags/v}
+          helm package deploy/inference-perf -d helm-releases --version $CHART_VERSION --app-version ${{ env.RELEASE_VERSION }}
+
+      - name: Login to Quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Push Helm chart to OCI registry
+        run: |
+          # Remove 'v' prefix from version
+          CHART_VERSION=${GITHUB_REF#refs/tags/v}
+          helm push helm-releases/inference-perf-${CHART_VERSION}.tgz oci://quay.io/inference-perf/charts
