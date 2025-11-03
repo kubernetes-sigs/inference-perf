@@ -112,6 +112,56 @@ load:
   worker_max_concurrency: 8
 ```
 
+### Replay traffic from production systems
+
+Trace replay allows you to reproduce real-world production traffic patterns in your benchmarks. This is valuable for testing how your inference server performs under realistic load patterns, including request bursts, idle periods, and varying token distributions.
+
+We currently support the [AzurePublicDataset](https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv) trace format, which contains timestamped request logs with input and output token counts.
+
+#### How Trace Replay Works
+
+Trace replay operates on two dimensions:
+
+1. **Request Timing**: Controls *when* requests are sent by replaying the original timing pattern from the trace
+2. **Request Sizing**: Controls the number of input/output tokens in each request
+
+#### Configuration
+
+To replay both timing and token counts from a trace file, you need to configure both the load and data sections:
+
+**Load Configuration** - Replays the request timing pattern:
+```yaml
+load:
+  type: trace_replay
+  trace:
+    file: ./traces/traces.csv
+    format: AzurePublicDataset
+```
+
+**Data Configuration** - Matches the token counts from the trace:
+```yaml
+data:
+  type: random
+  trace:
+    file: ./traces/traces.csv
+    format: AzurePublicDataset
+```
+
+#### Trace Format
+
+The AzurePublicDataset format is a CSV file with the following columns:
+```
+TIMESTAMP, ContextTokens, GeneratedTokens
+```
+
+For example:
+```
+2023-01-01 00:00:00.000, 150, 200
+2023-01-01 00:00:05.500, 300, 150
+```
+
+The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:

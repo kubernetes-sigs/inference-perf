@@ -44,7 +44,7 @@ class TraceReader(ABC):
 class AzurePublicDatasetReader(TraceReader):
     """Trace reader for Azure Public Dataset format."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.timestamp_format = "%Y-%m-%d %H:%M:%S.%f"
         self.traces = None
 
@@ -55,7 +55,7 @@ class AzurePublicDatasetReader(TraceReader):
         logger.info(f"Loading traces from {file_path}")
         traces = []
         start_line = 1
-        initial_timestamp = 0
+        initial_timestamp: float = 0
         before = time.time()
         with open(file_path, "r", encoding="utf-8") as f:
             if self.has_header(file_path):

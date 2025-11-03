@@ -99,5 +99,6 @@ class TraceReplayLoadTimer(LoadTimer):
         self._trace_file = trace_file
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start_time = time.monotonic() if initial is None else initial
         for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
-            yield initial + timestamp
+            yield start_time + timestamp

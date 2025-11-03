@@ -65,11 +65,14 @@ class RandomDataGenerator(DataGenerator):
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
 
-            self.input_lengths = []
-            self.output_lengths = []
+            input_lengths_list: List[int] = []
+            output_lengths_list: List[int] = []
             for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
-                self.input_lengths.append(input_tokens)
-                self.output_lengths.append(output_tokens)
+                input_lengths_list.append(input_tokens)
+                output_lengths_list.append(output_tokens)
+
+            self.input_lengths = np.array(input_lengths_list, dtype=np.int64)
+            self.output_lengths = np.array(output_lengths_list, dtype=np.int64)
 
             logger.info(f"Ignoring input and output distributions configurations as trace file {self.trace.file} is provided")
 
@@ -116,8 +119,6 @@ class RandomDataGenerator(DataGenerator):
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.tokenizer is None:
-            raise ValueError("Tokenizer is required for RandomDataGenerator")
         if self.api_config.type != APIType.Completion:
             raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
 
@@ -131,17 +132,19 @@ class RandomDataGenerator(DataGenerator):
             for _, input_tokens, output_tokens in self.trace_reader.load_traces(Path(self.trace.file)):
                 yield self.get_data_with_token_count(input_tokens, output_tokens)
 
+    def get_data_with_token_count(self, input_tokens: int, output_tokens: int) -> InferenceAPIData:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-        def get_data_with_token_count(self, input: int, output: int) -> InferenceAPIData:
-            prompt_text: str
-            if input <= 0:
-                random_token_ids_list = []
-            else:
-                random_token_ids = np.random.randint(0, self.vocab_size, size=input, dtype=np.int64)
-                random_token_ids_list = random_token_ids.tolist()
-            prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
+        prompt_text: str
+        if input_tokens <= 0:
+            random_token_ids_list = []
+        else:
+            random_token_ids = np.random.randint(0, self.vocab_size, size=input_tokens, dtype=np.int64)
+            random_token_ids_list = random_token_ids.tolist()
+        prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
 
-            return CompletionAPIData(
-                prompt=prompt_text,
-                max_tokens=output,
-            )
+        return CompletionAPIData(
+            prompt=prompt_text,
+            max_tokens=output_tokens,
+        )

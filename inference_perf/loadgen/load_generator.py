@@ -179,7 +179,7 @@ class LoadGenerator:
 
             if self.trace is None:
                 raise ValueError("Trace file is required for trace replay load generator")
-    
+
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
                 self.trace_reader = AzurePublicDatasetReader()
             else:
@@ -193,6 +193,8 @@ class LoadGenerator:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
         elif self.load_type == LoadType.TRACE_REPLAY:
+            if self.trace is None:
+                raise ValueError("Trace configuration is required for trace replay load generator")
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         return ConstantLoadTimer(rate=rate, duration=duration)
 
@@ -253,7 +255,7 @@ class LoadGenerator:
                 for _ in range(num_requests):
                     request_queue.put((stage_id, next(data_generator), next(time_generator)))
             else:
-                for data, request_time in zip(data_generator, time_generator):
+                for data, request_time in zip(data_generator, time_generator, strict=True):
                     request_queue.put((stage_id, data, request_time))
 
         # Wait until all requests are finished processing
