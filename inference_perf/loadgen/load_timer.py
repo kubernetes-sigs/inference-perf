@@ -100,5 +100,4 @@ class TraceReplayLoadTimer(LoadTimer):
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
-            print(f"request to be executed at perf counter: {initial + timestamp}, initial: {initial}")
             yield initial + timestamp

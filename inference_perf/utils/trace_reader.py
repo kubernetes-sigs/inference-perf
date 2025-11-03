@@ -31,11 +31,6 @@ class TraceReader(ABC):
     """Abstract base class for streaming trace readers."""
 
     @abstractmethod
-    def stream_timestamp_entries(self, file_path: Path) -> Iterator[float]:
-        """Stream entries from a trace file"""
-        raise NotImplementedError
-
-    @abstractmethod
     def stream_token_entries(self, file_path: Path) -> Iterator[Tuple[int, int]]:
         """Stream trace entries one by one"""
         raise NotImplementedError
@@ -53,31 +48,6 @@ class AzurePublicDatasetReader(TraceReader):
         self.timestamp_format = "%Y-%m-%d %H:%M:%S.%f"
         self.traces = None
 
-    def stream_timestamp_entries(self, file_path: Path) -> Iterator[float]:
-        """Stream entries from AzurePublicDataset format"""
-        logger.debug(f"Streaming traces from {file_path}")
-        prev_timestamp = 0
-        start_line = 1
-
-        with open(file_path, "r", encoding="utf-8") as f:
-            if self.has_header(file_path):
-                start_line = 2
-                next(f)
-            for line_num, line in enumerate(f, start_line):
-                try:
-                    if line.strip():  # Skip empty lines
-                        entry_data = line.split(",")
-                        timestamp = self.parse_timestamp(entry_data[0])
-                        # for first line, yield 0 (so that the first request is scheduled immediately)
-                        # for other lines, yield the difference between the current and previous timestamps
-                        if line_num == start_line:
-                            yield 0
-                        else:
-                            yield (timestamp - prev_timestamp)
-                        prev_timestamp = timestamp
-                except Exception as e:
-                    logger.warning(f"Error processing line {line_num}: {e}")
-
     def load_traces(self, file_path: Path) -> List[Tuple[float, int, int]]:
         """Load traces from file into memory."""
         if self.traces is not None:
@@ -85,7 +55,7 @@ class AzurePublicDatasetReader(TraceReader):
         logger.info(f"Loading traces from {file_path}")
         traces = []
         start_line = 1
-        prev_timestamp = 0
+        initial_timestamp = 0
         before = time.time()
         with open(file_path, "r", encoding="utf-8") as f:
             if self.has_header(file_path):
@@ -97,10 +67,8 @@ class AzurePublicDatasetReader(TraceReader):
                         entry_data = line.split(",")
                         timestamp = self.parse_timestamp(entry_data[0])
                         if line_num == start_line:
-                            traces.append((0, int(entry_data[1].strip()), int(entry_data[2].strip())))
-                        else:
-                            traces.append((timestamp - prev_timestamp, int(entry_data[1].strip()), int(entry_data[2].strip())))
-                        prev_timestamp = timestamp
+                            initial_timestamp = timestamp
+                        traces.append((timestamp - initial_timestamp, int(entry_data[1].strip()), int(entry_data[2].strip())))
                 except Exception as e:
                     logger.warning(f"Error processing line {line_num}: {e}")
         after = time.time()
