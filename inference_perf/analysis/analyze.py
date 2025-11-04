@@ -160,10 +160,13 @@ def analyze_reports(report_dir: str) -> None:
             # Populate latency vs throughput data
             if otps is not None:
                 if ttft is not None:
+                    print("Time to First Token vs. Output Tokens/sec data point:", ttft, otps)
                     ttft_vs_otps.append((ttft, otps))
                 if ntpot is not None:
+                    print("Normalized Time per Output Token vs. Output Tokens/sec data point:", ntpot, otps)
                     ntpot_vs_otps.append((ntpot, otps))
                 if itl is not None:
+                    print("Inter-Token Latency vs. Output Tokens/sec data point:", itl, otps)
                     itl_vs_otps.append((itl, otps))
 
         except json.JSONDecodeError:
