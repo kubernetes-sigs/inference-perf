@@ -4,6 +4,7 @@ job:
     repository: quay.io/inference-perf/inference-perf
     tag: "" # Defaults to .Chart.AppVersion
   nodeSelector: {}
+  serviceAccountName: ""
   # Example resources:
   # resources:
   #   requests:

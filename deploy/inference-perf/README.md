@@ -22,6 +22,7 @@ Before deployment, navigate to the **`deploy/inference-perf`** directory and edi
 | Key | Description | Default |
 | :--- | :--- | :--- |
 | `hfToken` | Hugging Face API token. If provided, a Kubernetes `Secret` named `hf-token-secret` will be created for authentication. | `""` |
+| `serviceAccountName` | Standard Kubernetes `serviceAccountName`. If not provided, default service account is used. | `""` |
 | `nodeSelector` |  Standard Kubernetes `nodeSelector` map to constrain pod placement to nodes with matching labels. | `{}` |
 | `resources` | Standard Kubernetes resource requests and limits for the main `inference-perf` container. | `{}` |
 ---
