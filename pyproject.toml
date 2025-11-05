@@ -34,6 +34,8 @@ dev = [
     "pre-commit>=4.1.0",
     "pytest>=8.3.4",
     "ipykernel>=6.29.5",
+    "typing-extensions>=4.15.0",
+    "hypothesis>=6.146.0",
 ]
 
 [dependency-groups]
@@ -61,7 +63,7 @@ distribution = true
 [tool.pdm.scripts]
 format = "ruff format"
 lint = "ruff check"
-test = "pytest"
+test = "pytest tests"
 type-check = "mypy --strict ./inference_perf ./tests"
 validate = {composite = ["format", "lint", "type-check"]}
 
