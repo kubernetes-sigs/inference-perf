@@ -65,8 +65,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
         if self.enable_multi_turn_chat:
-            user_id = data.data_index % self.num_groups
-            round = data.data_index // self.num_groups
+            user_id = data.data_index % len(self.user_sessions)
+            round = data.data_index // len(self.user_sessions)
             return UserSessionCompletionAPIData(
                 prompt=self.prompts[i],
                 max_tokens=self.output_len,
@@ -106,26 +106,24 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
-            if self.enable_multi_turn_chat:
-                # Create user session and store prefix as context (system prompt)
-                self.user_sessions.append(
-                    LocalUserSession(user_session_id=f"user_session_{group_id}", context=shared_prefix_text)
-                )
-                for _ in range(self.num_prompts_per_group):
-                    question_token_ids = self._generate_random_token_ids(self.question_len)
-                    question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
-                    # store question only as each round's prompt
-                    self.prompts.append(question_text)
-            else:
-                for _ in range(self.num_prompts_per_group):
-                    # Generate a unique question
-                    question_token_ids = self._generate_random_token_ids(self.question_len)
-                    question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+            for prompt_id in range(self.num_prompts_per_group):
+                # Generate a unique question
+                question_token_ids = self._generate_random_token_ids(self.question_len)
+                question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
-                    # Combine shared prefix and question
-                    full_prompt_text = shared_prefix_text + " " + question_text
+                if self.enable_multi_turn_chat:
+                    # multi turn chat, create user to keep conversation
+                    self.user_sessions.append(
+                        LocalUserSession(
+                            user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
+                            context=shared_prefix_text,
+                        )
+                    )
+                else:
+                    # Single turn chat, Combine shared prefix and question
+                    question_text = shared_prefix_text + " " + question_text
 
-                    self.prompts.append(full_prompt_text)
+                self.prompts.append(question_text)
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         random.shuffle(self.prompts)

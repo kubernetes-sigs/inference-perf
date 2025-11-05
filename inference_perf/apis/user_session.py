@@ -74,3 +74,8 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         self.update_inference_info(inference_info)
         self.user_session.update_context(self._session_context)
         return inference_info
+
+
+# TODO: UserSessionChatAPIData need to be implemented
+# class UserSessionChatAPIData(ChatCompletionAPIData):
+#     ...
