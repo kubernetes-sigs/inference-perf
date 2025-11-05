@@ -34,6 +34,7 @@ class vLLMModelServerClient(openAIModelServerClient):
         additional_filters: List[str],
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -45,6 +46,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             additional_filters,
             ignore_eos,
             api_key,
+            timeout,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

@@ -15,6 +15,7 @@
 from typing import List
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.circuit_breaker import feed_breakers
 
 
 class LocalRequestDataCollector(RequestDataCollector):
@@ -25,6 +26,7 @@ class LocalRequestDataCollector(RequestDataCollector):
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.metrics.append(metric)
+        feed_breakers(metric)
 
     def get_metrics(self) -> List[RequestLifecycleMetric]:
         return self.metrics

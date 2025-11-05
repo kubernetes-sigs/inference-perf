@@ -34,6 +34,7 @@ class SGlangModelServerClient(openAIModelServerClient):
         additional_filters: List[str],
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -45,6 +46,7 @@ class SGlangModelServerClient(openAIModelServerClient):
             additional_filters,
             ignore_eos,
             api_key,
+            timeout,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 
@@ -179,10 +181,30 @@ class SGlangModelServerClient(openAIModelServerClient):
                 "gauge",
                 self.metric_filters,
             ),
-            avg_time_per_output_token=None,
-            median_time_per_output_token=None,
-            p90_time_per_output_token=None,
-            p99_time_per_output_token=None,
+            avg_time_per_output_token=ModelServerPrometheusMetric(
+                "sglang:time_per_output_token_seconds",
+                "mean",
+                "histogram",
+                self.metric_filters,
+            ),
+            median_time_per_output_token=ModelServerPrometheusMetric(
+                "sglang:time_per_output_token_seconds",
+                "median",
+                "histogram",
+                self.metric_filters,
+            ),
+            p90_time_per_output_token=ModelServerPrometheusMetric(
+                "sglang:time_per_output_token_seconds",
+                "p90",
+                "histogram",
+                self.metric_filters,
+            ),
+            p99_time_per_output_token=ModelServerPrometheusMetric(
+                "sglang:time_per_output_token_seconds",
+                "p99",
+                "histogram",
+                self.metric_filters,
+            ),
             num_preemptions_total=None,
             num_requests_swapped=None,
             prefix_cache_hits=None,

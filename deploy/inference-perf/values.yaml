@@ -1,9 +1,26 @@
 # inference-perf/values.yaml
 job:
-  image: ""
-  memory: "8G"
+  image:
+    repository: quay.io/inference-perf/inference-perf
+    tag: "" # Defaults to .Chart.AppVersion
+  nodeSelector: {}
+  # Example resources:
+  # resources:
+  #   requests:
+  #     cpu: "1"
+  #     memory: "4Gi"
+  #   limits:
+  #     cpu: "2"
+  #     memory: "8Gi"
+  resources: {}
 
 logLevel: INFO
+
+# A GCS bucket path that points to the dataset file.
+# The file will be copied from this path to the local file system
+# at /dataset/dataset.json for use during the run.
+# NOTE: For this dataset to be used, config.data.path must also be explicitly set to /dataset/dataset.json.
+gcsPath: ""
 
 # hfToken optionally creates a secret with the specified token.
 # Can be set using helm install --set hftoken=<token>

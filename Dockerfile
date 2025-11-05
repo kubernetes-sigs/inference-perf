@@ -1,17 +1,36 @@
-FROM python:3.12.9-slim-bookworm AS dev
+# Build stage - install dependencies
+FROM python:3.12.11-alpine3.22 AS builder
 
-# Upgrade pip
-RUN pip3 install --upgrade pip
+# Install PDM
+RUN pip install --no-cache-dir pdm
 
-# Set working directory
 WORKDIR /workspace
 
-# Copy project files
-COPY inference_perf/ /workspace/inference_perf/
-COPY pyproject.toml /workspace/
+# Copy dependency files
+COPY pyproject.toml pdm.lock ./
 
-# Install dependencies & clean cache
-RUN pip install . && pip cache purge
+# Copy source code (needed for PDM to resolve the project)
+COPY inference_perf ./inference_perf
 
-# Run inference-perf
-CMD ["inference-perf", "--config_file", "config.yml"]
+# Install dependencies using PDM (this will create .venv and install all prod dependencies)
+RUN pdm install --prod --no-lock --no-editable && \
+    pip cache purge
+
+# Runtime stage - minimal image
+FROM python:3.12.11-alpine3.22
+
+WORKDIR /workspace
+
+# Copy installed dependencies from builder (PDM's virtual environment)
+COPY --from=builder /workspace/.venv /workspace/.venv
+
+# Copy application code
+COPY config.yml ./
+COPY inference_perf ./inference_perf
+
+# Set PYTHONPATH and PATH to use virtual environment
+ENV PYTHONPATH=/workspace
+ENV PATH="/workspace/.venv/bin:$PATH"
+
+# Run inference-perf using the virtual environment's Python
+CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]

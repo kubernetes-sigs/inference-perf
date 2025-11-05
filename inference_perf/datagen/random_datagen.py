@@ -92,25 +92,23 @@ class RandomDataGenerator(DataGenerator):
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for RandomDataGenerator")
+        if self.api_config.type != APIType.Completion:
+            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
+
         i = 0
-
         while True:
-            if self.tokenizer is None:
-                raise ValueError("Tokenizer is required for RandomDataGenerator")
-
-            if self.api_config.type == APIType.Completion:
-                prompt_text: str
-                if self.input_lengths[i] <= 0:
-                    random_token_ids_list = []
-                else:
-                    random_token_ids = np.random.randint(0, self.vocab_size, size=self.input_lengths[i], dtype=np.int64)
-                    random_token_ids_list = random_token_ids.tolist()
-                prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
-
-                yield CompletionAPIData(
-                    prompt=prompt_text,
-                    max_tokens=self.output_lengths[i],
-                )
-                i += 1
+            prompt_text: str
+            if self.input_lengths[i] <= 0:
+                random_token_ids_list = []
             else:
-                raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
+                random_token_ids = np.random.randint(0, self.vocab_size, size=self.input_lengths[i], dtype=np.int64)
+                random_token_ids_list = random_token_ids.tolist()
+            prompt_text = self.tokenizer.get_tokenizer().decode(random_token_ids_list)
+
+            yield CompletionAPIData(
+                prompt=prompt_text,
+                max_tokens=self.output_lengths[i],
+            )
+            i += 1

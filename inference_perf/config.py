@@ -13,6 +13,7 @@
 # limitations under the License.
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl, model_validator
+from inference_perf.circuit_breaker import CircuitBreakerConfig
 from typing import Any, Optional, List
 from enum import Enum
 from os import cpu_count
@@ -39,6 +40,7 @@ class DataGenType(Enum):
     SharedPrefix = "shared_prefix"
     CNNDailyMail = "cnn_dailymail"
     InfinityInstruct = "infinity_instruct"
+    BillsumConversations = "billsum_conversations"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -114,6 +116,8 @@ class LoadConfig(BaseModel):
     num_workers: int = max(1, cpu_count())  # type: ignore
     worker_max_concurrency: int = 100
     worker_max_tcp_connections: int = 2500
+    circuit_breakers: List[str] = []
+    request_timeout: Optional[float] = None
 
 
 class StorageConfigBase(BaseModel):
@@ -192,6 +196,7 @@ class Config(BaseModel):
     storage: Optional[StorageConfig] = StorageConfig()
     server: Optional[ModelServerClientConfig] = None
     tokenizer: Optional[CustomTokenizerConfig] = None
+    circuit_breakers: Optional[List[CircuitBreakerConfig]] = None
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

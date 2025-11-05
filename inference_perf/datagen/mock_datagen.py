@@ -27,14 +27,16 @@ class MockDataGenerator(DataGenerator):
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
-        while True:
-            i += 1
-            if self.api_config.type == APIType.Completion:
+        if self.api_config.type == APIType.Completion:
+            while True:
+                i += 1
                 yield CompletionAPIData(prompt="text" + str(i))
-            elif self.api_config.type == APIType.Chat:
+        elif self.api_config.type == APIType.Chat:
+            while True:
+                i += 1
                 yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="text" + str(i))])
-            else:
-                raise Exception("Unsupported API type")
+        else:
+            raise Exception("Unsupported API type")
 
     def is_io_distribution_supported(self) -> bool:
         return False

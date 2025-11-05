@@ -32,6 +32,7 @@ from inference_perf.datagen import (
     SharedPrefixDataGenerator,
     CNNDailyMailDataGenerator,
     InfinityInstructDataGenerator,
+    BillsumConversationsDataGenerator,
 )
 from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient, SGlangModelServerClient
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
@@ -47,6 +48,7 @@ from inference_perf.client.requestdatacollector import (
     LocalRequestDataCollector,
     MultiprocessRequestDataCollector,
 )
+from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile
 from inference_perf.logger import setup_logging
@@ -69,9 +71,11 @@ class InferencePerfRunner:
 
     def run(self) -> None:
         async def _run() -> None:
+            # Start the collector, which will gather metrics from the model_server_client
             collector = self.reportgen.get_metrics_collector()
             if isinstance(collector, MultiprocessRequestDataCollector):
                 collector.start()
+            # Generate load that is sent to inference endpoint
             await self.loadgen.run(self.client)
             if isinstance(collector, MultiprocessRequestDataCollector):
                 await collector.stop()
@@ -110,6 +114,10 @@ def main_cli() -> None:
 
     config = read_config(args.config_file)
 
+    # Define Circuit Breakers
+    if config.circuit_breakers:
+        init_circuit_breakers(config.circuit_breakers)
+
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
     if config.metrics:
@@ -135,7 +143,7 @@ def main_cli() -> None:
         collector = MultiprocessRequestDataCollector()
     else:
         collector = LocalRequestDataCollector()
-    reportgen = ReportGenerator(metrics_client, collector)
+    reportgen = ReportGenerator(metrics_client, collector, config=config)
 
     # Create tokenizer based on tokenizer config
     tokenizer: Optional[CustomTokenizer] = None
@@ -159,6 +167,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -173,6 +182,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -187,6 +197,7 @@ def main_cli() -> None:
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
+                timeout=config.load.request_timeout,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -205,7 +216,16 @@ def main_cli() -> None:
     datagen: DataGenerator
     if config.data:
         # Common checks for generators that require a tokenizer / distribution
-        if config.data.type in [DataGenType.ShareGPT, DataGenType.Synthetic, DataGenType.Random]:
+        if config.data.type in set(
+            {
+                DataGenType.ShareGPT,
+                DataGenType.Synthetic,
+                DataGenType.Random,
+                DataGenType.CNNDailyMail,
+                DataGenType.InfinityInstruct,
+                DataGenType.BillsumConversations,
+            }
+        ):
             if tokenizer is None:
                 raise Exception(
                     f"{config.data.type.value} data generator requires a configured tokenizer. "
@@ -238,6 +258,8 @@ def main_cli() -> None:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.InfinityInstruct:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.BillsumConversations:
+            datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

@@ -23,7 +23,7 @@ import os
 logger = logging.getLogger(__name__)
 
 
-class InfinityInstructDataGenerator(DataGenerator):
+class BillsumConversationsDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
@@ -32,54 +32,46 @@ class InfinityInstructDataGenerator(DataGenerator):
             if not os.path.exists(config.path):
                 raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
             # depending on whether the dataset is a single file or a directory, we need to load it differently
-            # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.infinity_instruct_dataset = iter(
-                    load_dataset("json", data_files=config.path, streaming=True, split="train")
-                )
+                self.billsum_dataset = iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.infinity_instruct_dataset = iter(
-                    load_dataset("json", data_files=json_files, streaming=True, split="train")
-                )
+                self.billsum_dataset = iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
             else:
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
-            raise ValueError("path is not provided in the config")
+            raise ValueError("Invalid dataset path: No dataset path provided")
 
-        self.conversations_key = "conversations"
-        # initialize data collection
-        next(self.infinity_instruct_dataset)
+        self.min_num_turns = 2
+        self.data_key = "conversations"
+        self.role_key = "from"
+        self.content_key = "value"
+
+        # Advance the iterator to the first data point
+        next(self.billsum_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.infinity_instruct_dataset is not None:
+        if self.billsum_dataset is not None:
             while True:
-                data = next(self.infinity_instruct_dataset)
-                if data is None or self.conversations_key not in data or data[self.conversations_key] is None:
-                    continue
-
-                conversations = data[self.conversations_key]
-                if not conversations:
+                data = next(self.billsum_dataset)
+                if (
+                    data is None
+                    or data[self.data_key] is None
+                    or len(data[self.data_key]) < self.min_num_turns
+                    or len(data[self.data_key]) == 0
+                ):
                     continue
 
                 if self.api_config.type == APIType.Completion:
                     try:
-                        # The last message is the completion
-                        completion_message = conversations[-1]
-                        if completion_message.get("from") != "gpt":
+                        prompt = data[self.data_key][0].get(self.content_key)
+                        completion = data[self.data_key][1].get(self.content_key)
+                        if not prompt:
                             continue
-                        completion = completion_message.get("value")
-
-                        # The rest of the messages are the prompt
-                        prompt_messages = conversations[:-1]
-                        prompt = "\n".join([msg.get("value", "") for msg in prompt_messages])
-
-                        if not prompt or not completion:
-                            continue
-
+                        # Ensured by main.py logic and __init__ type hint for this class
                         assert self.tokenizer is not None
                         completion_tokens = self.tokenizer.count_tokens(completion)
                         prompt_tokens = self.tokenizer.count_tokens(prompt)
@@ -99,22 +91,12 @@ class InfinityInstructDataGenerator(DataGenerator):
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.api_config.type == APIType.Chat:
-                    try:
-                        messages: List[ChatMessage] = []
-                        for conv in conversations:
-                            role = "user" if conv.get("from") == "human" else "assistant"
-                            content = conv.get("value")
-                            if not content:
-                                continue
-                            messages.append(ChatMessage(role=role, content=content))
-
-                        if not messages:
-                            continue
-
-                        yield ChatCompletionAPIData(messages=messages)
-                    except (KeyError, TypeError) as e:
-                        logger.warning(f"Skipping invalid chat data: {e}")
-                        continue
+                    yield ChatCompletionAPIData(
+                        messages=[
+                            ChatMessage(role=conversation[self.role_key], content=conversation[self.content_key])
+                            for conversation in data[self.data_key]
+                        ]
+                    )
                 else:
                     raise Exception("Unsupported API type")
 

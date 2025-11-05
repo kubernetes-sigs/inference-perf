@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
+from enum import Enum, auto
 from typing import TypedDict
 from pydantic import BaseModel
 
@@ -21,11 +22,19 @@ class MetricsMetadata(TypedDict):
     pass
 
 
+class StageStatus(Enum):
+    COMPLETED = auto()
+    FAILED = auto()
+    RUNNING = auto()
+    SKIPPED = auto()
+
+
 class StageRuntimeInfo(BaseModel):
     stage_id: int
     rate: float
     end_time: float
     start_time: float
+    status: StageStatus
 
 
 class PerfRuntimeParameters:
@@ -57,6 +66,10 @@ class ModelServerMetrics(BaseModel):
     median_time_per_output_token: float = 0.0
     p90_time_per_output_token: float = 0.0
     p99_time_per_output_token: float = 0.0
+    avg_inter_token_latency: float = 0.0
+    median_inter_token_latency: float = 0.0
+    p90_inter_token_latency: float = 0.0
+    p99_inter_token_latency: float = 0.0
 
     # Request
     total_requests: int = 0
