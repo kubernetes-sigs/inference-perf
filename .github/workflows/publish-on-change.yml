@@ -108,8 +108,8 @@ jobs:
           # Login to Quay.io Helm registry
           echo "${{ secrets.QUAY_PASSWORD }}" | helm registry login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
           
-          OCI_BASE_URL="oci://quay.io/inference-perf/charts"
-          OCI_CHART_REPO="oci://quay.io/inference-perf/charts/inference-perf"
+          OCI_BASE_URL="oci://quay.io/inference-perf"
+          OCI_CHART_REPO="oci://quay.io/inference-perf/inference-perf"
           CHART_VERSION="${{ needs.docker.outputs.chart_version }}"
 
           echo "Pushing Helm chart ${CHART_VERSION} to ${OCI_BASE_URL}"
