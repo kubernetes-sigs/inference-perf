@@ -111,6 +111,32 @@ server:
 
 Sets up performance metrics collection:
 
+#### Google Managed Prometheus (GMP) Requirements
+When setting google_managed: true, inference-perf queries the GMP API directly. You must configure Application Default Credentials (ADC) in your environment with sufficient permissions.
+
+1. Required Permissions The identity used by ADC must have the Monitoring Viewer role:
+   * roles/monitoring.viewer
+
+2. Environment Configuration
+
+   #### GKE 
+    Ensure the Pod is running with Workload Identity enabled and linked to a Google Service Account (GSA) with the required role.
+
+   #### GCE VM
+    Ensure the VM's attached Service Account has the required role.
+
+   #### Local Development
+    Authenticate using your user credentials:
+
+    ```bash
+    gcloud auth application-default login
+    ```
+
+Note: Your personal user account must have the monitoring.viewer role on the target GCP project.
+```
+Common Error: Failing to configure these permissions will result in API errors similar to: ERROR - error executing query: 403 Client Error: Forbidden for url: https://monitoring.googleapis.com/v1/projects/...
+```
+
 ```yaml
 metrics:
   type: prometheus|default        # Metrics backend type
