@@ -64,6 +64,7 @@ distribution = true
 format = "ruff format"
 lint = "ruff check"
 test = "pytest tests"
+"test:e2e" = "pytest e2e"
 type-check = "mypy --strict ./inference_perf ./tests"
 validate = {composite = ["format", "lint", "type-check"]}
 
@@ -112,6 +113,7 @@ docstring-code-format = false
 docstring-code-line-length = "dynamic"
 
 [tool.pytest.ini_options]
+log_cli_level = "INFO"
 testpaths = ["."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

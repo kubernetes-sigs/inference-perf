@@ -77,6 +77,7 @@ class ModelServerType(Enum):
     VLLM = "vllm"
     SGLANG = "sglang"
     TGI = "tgi"
+    MOCK = "mock"
 
 
 class LoadType(Enum):

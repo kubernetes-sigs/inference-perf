@@ -62,7 +62,7 @@ class Worker(mp.Process):
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
     ):
-        super().__init__()
+        super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
         self.client = client
         self.request_queue = request_queue

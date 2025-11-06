@@ -34,7 +34,12 @@ from inference_perf.datagen import (
     InfinityInstructDataGenerator,
     BillsumConversationsDataGenerator,
 )
-from inference_perf.client.modelserver import ModelServerClient, vLLMModelServerClient, SGlangModelServerClient
+from inference_perf.client.modelserver import (
+    ModelServerClient,
+    vLLMModelServerClient,
+    SGlangModelServerClient,
+    MockModelServerClient,
+)
 from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
 from inference_perf.client.filestorage import (
@@ -200,6 +205,13 @@ def main_cli() -> None:
                 timeout=config.load.request_timeout,
             )
             # tgi_client supports inferring the tokenizer
+            tokenizer = model_server_client.tokenizer
+        if config.server.type == ModelServerType.MOCK:
+            model_server_client = MockModelServerClient(
+                reportgen.get_metrics_collector(),
+                api_config=config.api,
+                timeout=config.load.request_timeout,
+            )
             tokenizer = model_server_client.tokenizer
     else:
         raise Exception("model server client config missing")
