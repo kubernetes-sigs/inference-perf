@@ -56,6 +56,28 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 ---
 
+#### AWS Specific Parameters
+
+This section details the necessary configuration and permissions for using an S3 path to manage your dataset, typical for deployments on AWS EKS.
+
+##### Required IAM Permissions
+
+The identity executing the workload (e.g., the associated Kubernetes Service Account, often configured via IRSA - IAM Roles for Service Accounts) must possess an associated AWS IAM Policy that grants the following S3 Actions on the target S3 bucket for data transfer:
+
+* **S3 Read/Download (Object Access)**
+    * Action: `s3:GetObject` (Required to download the input dataset from S3).
+    * Action: `s3:ListBucket` (Often required to check for the file's existence and list bucket contents).
+
+* **S3 Write/Upload (Object Creation)**
+    * Action: `s3:PutObject` (Required to upload benchmark results back to S3).
+
+
+| Key | Description | Default |
+| :--- | :--- | :--- |
+| `s3Path` | An S3 URI pointing to the dataset file (e.g., `s3://my-bucket/dataset.json`). The file will be automatically copied to the running pod during initialization. | `""` |
+
+---
+
 ### 3. Run Deployment
 
 Use the **`helm install`** command from the **`deploy/inference-perf`** directory to deploy the chart.
