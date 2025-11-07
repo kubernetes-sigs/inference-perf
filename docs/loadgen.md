@@ -138,7 +138,7 @@ load:
     format: AzurePublicDataset
 ```
 
-**Data Configuration** - Matches the token counts from the trace:
+**Data Configuration** - Trace replay feature is only supported for random data generator. Matches the token counts from the trace:
 ```yaml
 data:
   type: random
