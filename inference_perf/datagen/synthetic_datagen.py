@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.apis import InferenceAPIData, CompletionAPIData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator
@@ -55,7 +55,9 @@ class SyntheticDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
-    def get_request(self, n: int) -> InferenceAPIData:
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        n = data.data_index
+
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
 
@@ -75,10 +77,7 @@ class SyntheticDataGenerator(DataGenerator):
 
         i = 0
         while True:
-            yield CompletionAPIData(
-                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[i]]),
-                max_tokens=self.output_lengths[i],
-            )
+            yield LazyLoadInferenceAPIData(data_index=i)
             i += 1
 
     # Hardcoded sonnet data that we can use for synthetic benchmarks.
