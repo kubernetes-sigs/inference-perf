@@ -17,7 +17,7 @@ from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, PrometheusMetricMetadata
+from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
 from typing import List, Optional
 import aiohttp
 import asyncio
@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class openAIModelServerClient(ModelServerClient):
+    _session: "openAIModelServerClientSession | None" = None
+    _session_lock = asyncio.Lock()
+
     def __init__(
         self,
         metrics_collector: RequestDataCollector,
@@ -70,82 +73,27 @@ class openAIModelServerClient(ModelServerClient):
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
+    def new_session(self) -> "ModelServerClientSession":
+        return openAIModelServerClientSession(self)
+
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
-        payload = await data.to_payload(
-            model_name=self.model_name,
-            max_tokens=self.max_completion_tokens,
-            ignore_eos=self.ignore_eos,
-            streaming=self.api_config.streaming,
-        )
-        headers = {"Content-Type": "application/json"}
+        """
+        Create an internal client session if not already, then use that to
+        process the request.
+        """
+        session: openAIModelServerClientSession
+        # ensure session is only created once.
+        async with self._session_lock:
+            if self._session is None:
+                self._session = openAIModelServerClientSession(self)
+            session = self._session
+        await session.process_request(data, stage_id, scheduled_time)
 
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        if self.api_config.headers:
-            headers.update(self.api_config.headers)
-
-        request_data = json.dumps(payload)
-
-        timeout = aiohttp.ClientTimeout(total=self.timeout) if self.timeout else aiohttp.helpers.sentinel
-
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=self.max_tcp_connections), timeout=timeout
-        ) as session:
-            start = time.perf_counter()
-            try:
-                async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
-                    response_info = await data.process_response(
-                        response=response, config=self.api_config, tokenizer=self.tokenizer
-                    )
-                    response_content = await response.text()
-
-                    end_time = time.perf_counter()
-                    error = None
-                    if response.status != 200:
-                        error = ErrorResponseInfo(
-                            error_msg=response_content,
-                            error_type=f"{response.status} {response.reason}",
-                        )
-
-                    self.metrics_collector.record_metric(
-                        RequestLifecycleMetric(
-                            stage_id=stage_id,
-                            request_data=request_data,
-                            response_data=response_content,
-                            info=response_info,
-                            error=error,
-                            start_time=start,
-                            end_time=end_time,
-                            scheduled_time=scheduled_time,
-                        )
-                    )
-            except Exception as e:
-                if isinstance(e, asyncio.exceptions.TimeoutError):
-                    logger.error("request timed out:", exc_info=True)
-                else:
-                    logger.error("error occured during request processing:", exc_info=True)
-                failure_info = await data.process_failure(
-                    response=response if "response" in locals() else None,
-                    config=self.api_config,
-                    tokenizer=self.tokenizer,
-                    exception=e,
-                )
-                self.metrics_collector.record_metric(
-                    RequestLifecycleMetric(
-                        stage_id=stage_id,
-                        request_data=request_data,
-                        response_data=response_content if "response_content" in locals() else "",
-                        info=failure_info if failure_info else InferenceInfo(),
-                        error=ErrorResponseInfo(
-                            error_msg=str(e),
-                            error_type=type(e).__name__,
-                        ),
-                        start_time=start,
-                        end_time=time.perf_counter(),
-                        scheduled_time=scheduled_time,
-                    )
-                )
+    async def close(self) -> None:
+        """Close the internal session created by process_request, if any."""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
     def get_supported_apis(self) -> List[APIType]:
         return []
@@ -166,3 +114,87 @@ class openAIModelServerClient(ModelServerClient):
         except Exception as e:
             logger.error(f"Got exception retrieving supported models {e}")
             return []
+
+
+class openAIModelServerClientSession(ModelServerClientSession):
+    def __init__(self, client: openAIModelServerClient):
+        self.client = client
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel,
+            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections),
+        )
+
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+        payload = await data.to_payload(
+            model_name=self.client.model_name,
+            max_tokens=self.client.max_completion_tokens,
+            ignore_eos=self.client.ignore_eos,
+            streaming=self.client.api_config.streaming,
+        )
+        headers = {"Content-Type": "application/json"}
+
+        if self.client.api_key:
+            headers["Authorization"] = f"Bearer {self.client.api_key}"
+
+        if self.client.api_config.headers:
+            headers.update(self.client.api_config.headers)
+
+        request_data = json.dumps(payload)
+
+        start = time.perf_counter()
+        try:
+            async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as response:
+                response_info = await data.process_response(
+                    response=response, config=self.client.api_config, tokenizer=self.client.tokenizer
+                )
+                response_content = await response.text()
+
+                end_time = time.perf_counter()
+                error = None
+                if response.status != 200:
+                    error = ErrorResponseInfo(
+                        error_msg=response_content,
+                        error_type=f"{response.status} {response.reason}",
+                    )
+
+                self.client.metrics_collector.record_metric(
+                    RequestLifecycleMetric(
+                        stage_id=stage_id,
+                        request_data=request_data,
+                        response_data=response_content,
+                        info=response_info,
+                        error=error,
+                        start_time=start,
+                        end_time=end_time,
+                        scheduled_time=scheduled_time,
+                    )
+                )
+        except Exception as e:
+            if isinstance(e, asyncio.exceptions.TimeoutError):
+                logger.error("request timed out:", exc_info=True)
+            else:
+                logger.error("error occured during request processing:", exc_info=True)
+            failure_info = await data.process_failure(
+                response=response if "response" in locals() else None,
+                config=self.client.api_config,
+                tokenizer=self.client.tokenizer,
+                exception=e,
+            )
+            self.client.metrics_collector.record_metric(
+                RequestLifecycleMetric(
+                    stage_id=stage_id,
+                    request_data=request_data,
+                    response_data=response_content if "response_content" in locals() else "",
+                    info=failure_info if failure_info else InferenceInfo(),
+                    error=ErrorResponseInfo(
+                        error_msg=str(e),
+                        error_type=type(e).__name__,
+                    ),
+                    start_time=start,
+                    end_time=time.perf_counter(),
+                    scheduled_time=scheduled_time,
+                )
+            )
+
+    async def close(self) -> None:
+        await self.session.close()
