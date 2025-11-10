@@ -72,13 +72,9 @@ class InferencePerfRunner:
     def run(self) -> None:
         async def _run() -> None:
             # Start the collector, which will gather metrics from the model_server_client
-            collector = self.reportgen.get_metrics_collector()
-            if isinstance(collector, MultiprocessRequestDataCollector):
-                collector.start()
-            # Generate load that is sent to inference endpoint
-            await self.loadgen.run(self.client)
-            if isinstance(collector, MultiprocessRequestDataCollector):
-                await collector.stop()
+            async with self.reportgen.get_metrics_collector().start():
+                # Generate load that is sent to inference endpoint
+                await self.loadgen.run(self.client)
 
         asyncio.run(_run())
 

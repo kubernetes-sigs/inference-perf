@@ -14,8 +14,10 @@
 
 import multiprocessing as mp
 
-from asyncio import create_task, sleep
-from typing import List
+from asyncio import get_event_loop, create_task
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+from functools import partial
 import logging
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
@@ -28,31 +30,42 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
-        self.queue: mp.JoinableQueue[RequestLifecycleMetric] = mp.JoinableQueue()
-        self.metrics: List[RequestLifecycleMetric] = []
+        self.queue: "mp.JoinableQueue[RequestLifecycleMetric | None]" = mp.JoinableQueue()
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.queue.put(metric)
 
-    async def collect_metrics(self) -> None:
+    async def collect_metrics(self) -> list[RequestLifecycleMetric]:
+        metrics: list[RequestLifecycleMetric] = []
+        event_loop = get_event_loop()
+        # prevent get from blocking the executor for too long:
+        get_queue = partial(self.queue.get, timeout=0.5)
+
         while True:
             try:
-                item = self.queue.get_nowait()
-                self.metrics.append(item)
-                feed_breakers(item)
-                self.queue.task_done()
+                item = await event_loop.run_in_executor(None, get_queue)
             except mp.queues.Empty:
-                await sleep(1)
+                continue
 
-    def start(self) -> None:
-        self.collection = create_task(self.collect_metrics())
+            if item is None:
+                self.queue.task_done()
+                break
 
-    async def stop(self) -> None:
-        # Ensure that the collection queue is empty before joining
-        while self.queue.qsize() > 0:
-            logger.debug(f"Collector waiting for empty request data queue, current size {self.queue.qsize()}")
-            await sleep(1)
-        self.queue.join()
+            metrics.append(item)
+            feed_breakers(item)
+            self.queue.task_done()
 
-    def get_metrics(self) -> List[RequestLifecycleMetric]:
+        return metrics
+
+    @asynccontextmanager
+    async def start(self) -> AsyncIterator[None]:
+        collector_task = create_task(self.collect_metrics())
+
+        yield
+
+        self.queue.put(None)
+        self.metrics = await collector_task
+        logger.debug(f"Collector collected {len(self.metrics)} metrics")
+
+    def get_metrics(self) -> list[RequestLifecycleMetric]:
         return self.metrics
