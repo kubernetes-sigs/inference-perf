@@ -11,10 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import ModelServerClient
+from .base import ModelServerClient, ModelServerClientSession
 from .mock_client import MockModelServerClient
 from .vllm_client import vLLMModelServerClient
 from .sglang_client import SGlangModelServerClient
 
 
-__all__ = ["ModelServerClient", "MockModelServerClient", "vLLMModelServerClient", "SGlangModelServerClient"]
+__all__ = [
+    "ModelServerClient",
+    "ModelServerClientSession",
+    "MockModelServerClient",
+    "vLLMModelServerClient",
+    "SGlangModelServerClient",
+]
