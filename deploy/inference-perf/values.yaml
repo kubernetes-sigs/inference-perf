@@ -29,9 +29,15 @@ gcsPath: ""
 # NOTE: For this dataset to be used, config.data.path must also be explicitly set to /dataset/s3-dataset.json.
 s3Path: ""
 
-# hfToken optionally creates a secret with the specified token.
-# Can be set using helm install --set hftoken=<token>
-hfToken: ""
+# Optional Token configuration for Hugging Face authentication.
+# hfSecret: Configures a pre-existing Kubernetes Secret.
+# hfToken: Creates a new kubernetes secret with the specified token.
+# If both specified, 'hfSecret' takes precedence over 'hfToken'.
+token:
+  hfSecret:
+    name: "" # The name of the existing Secret (e.g., 'my-hf-secret').
+    key: ""  # The key within the Secret that holds the token value (e.g., 'token' or 'hf-token').
+  hfToken: ""
 
 config:
   load:
