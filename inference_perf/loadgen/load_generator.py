@@ -16,6 +16,7 @@ from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer
 from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
+from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType
 from asyncio import (
@@ -29,7 +30,7 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, TypeAlias, Optional
+from typing import List, Tuple, TypeAlias, Optional, Any
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -81,6 +82,10 @@ class Worker(mp.Process):
         item = None
         timeout = 0.5
 
+        session: Any = None
+        if issubclass(type(self.client), openAIModelServerClient):
+            session = self.client.new_reusable_session()
+
         while not self.stop_signal.is_set():
             while self.request_phase.is_set() and not self.cancel_signal.is_set():
                 await semaphore.acquire()
@@ -118,7 +123,7 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
-                        await self.client.process_request(request_data, stage_id, request_time)
+                        await self.client.process_request(request_data, stage_id, request_time, session=session)
                     except CancelledError:
                         pass
                     finally:
@@ -149,6 +154,7 @@ class Worker(mp.Process):
                 logger.debug(f"[Worker {self.id}] waiting for next phase")
                 self.request_phase.wait()
 
+        await session.close()
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:

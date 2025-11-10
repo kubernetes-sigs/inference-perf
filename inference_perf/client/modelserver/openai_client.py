@@ -17,7 +17,7 @@ from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, PrometheusMetricMetadata
+from .base import ModelServerClient, PrometheusMetricMetadata, ReusableHTTPClientSession
 from typing import List, Optional
 import aiohttp
 import asyncio
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 class openAIModelServerClient(ModelServerClient):
+    _session: aiohttp.ClientSession | None = None
+
     def __init__(
         self,
         metrics_collector: RequestDataCollector,
@@ -70,7 +72,16 @@ class openAIModelServerClient(ModelServerClient):
             tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
         self.tokenizer = CustomTokenizer(tokenizer_config)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self,
+        data: InferenceAPIData,
+        stage_id: int,
+        scheduled_time: float,
+        session: Optional[ReusableHTTPClientSession] = None,
+    ) -> None:
+        reusing_session = session is not None
+        session = session or self.new_reusable_session()
+
         payload = data.to_payload(
             model_name=self.model_name,
             max_tokens=self.max_completion_tokens,
@@ -87,14 +98,10 @@ class openAIModelServerClient(ModelServerClient):
 
         request_data = json.dumps(payload)
 
-        timeout = aiohttp.ClientTimeout(total=self.timeout) if self.timeout else aiohttp.helpers.sentinel
-
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=self.max_tcp_connections), timeout=timeout
-        ) as session:
+        async with session.dont_close_if(reusing_session):
             start = time.perf_counter()
             try:
-                async with session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
+                async with session.session.post(self.uri + data.get_route(), headers=headers, data=request_data) as response:
                     response_info = await data.process_response(
                         response=response, config=self.api_config, tokenizer=self.tokenizer
                     )
@@ -137,6 +144,14 @@ class openAIModelServerClient(ModelServerClient):
                         scheduled_time=scheduled_time,
                     )
                 )
+
+    def new_reusable_session(self) -> ReusableHTTPClientSession:
+        return ReusableHTTPClientSession(
+            aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout) if self.timeout else aiohttp.helpers.sentinel,
+                connector=aiohttp.TCPConnector(limit=self.max_tcp_connections),
+            )
+        )
 
     def get_supported_apis(self) -> List[APIType]:
         return []
