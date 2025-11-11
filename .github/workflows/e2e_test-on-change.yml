@@ -1,4 +1,4 @@
-name: Python Linting and Type Checks
+name: E2E Test on change
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
       - 'feature/**'
 
 jobs:
-  format-check:
+  e2e-tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,6 +30,6 @@ jobs:
       - name: Install dependencies
         run: |
           pdm sync -d
-      - name: Do Linting and Type Checks
+      - name: Run e2e tests
         run: |
-          pdm run validate
+          pdm run test:e2e

@@ -60,13 +60,16 @@ jobs:
   python-package:
     needs: build-and-publish  # Run after the release is created
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.13']
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install build dependencies
         run: |
