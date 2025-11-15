@@ -116,8 +116,8 @@ class StandardLoadStage(LoadStage):
     duration: int = Field(..., gt=0, description="Duration in seconds")
 
     # These fields should not be set for standard load types
-    num_requests: Optional[int] = Field(None, description="Not used for standard load types")
-    concurrency_level: Optional[int] = Field(None, description="Not used for standard load types")
+    num_requests: Optional[int] = Field(default=None, description="Not used for standard load types")
+    concurrency_level: Optional[int] = Field(default=None, description="Not used for standard load types")
 
     @model_validator(mode="after")
     def validate_standard_fields(self) -> "StandardLoadStage":
@@ -299,16 +299,16 @@ def read_config(config_file: str) -> Config:
 
         if load_type == "concurrent":
             # Convert to ConcurrentLoadStage objects
-            converted_stages = []
+            concurrent_stages = []
             for stage in stages:
-                converted_stages.append(ConcurrentLoadStage(**stage))
-            merged_cfg["load"]["stages"] = converted_stages
+                concurrent_stages.append(ConcurrentLoadStage(**stage))
+            merged_cfg["load"]["stages"] = concurrent_stages
         else:
             # Convert to StandardLoadStage objects for constant/poisson
-            converted_stages = []
+            standard_stages = []
             for stage in stages:
-                converted_stages.append(StandardLoadStage(**stage))
-            merged_cfg["load"]["stages"] = converted_stages
+                standard_stages.append(StandardLoadStage(**stage))
+            merged_cfg["load"]["stages"] = standard_stages
 
     logger.info(
         "Benchmarking with the following config:\n\n%s\n", yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)

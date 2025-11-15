@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:aedaa851d1f38ededbab3bd7b0661a944272933a1676bad1fec1f8fda23ce862"
+content_hash = "sha256:bc0dc6d38b9def3d18334a80efe1d98a921ccfa066e4dec49c90ee464d866526"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -837,21 +837,6 @@ dependencies = [
 files = [
     {file = "huggingface_hub-0.36.0-py3-none-any.whl", hash = "sha256:7bcc9ad17d5b3f07b57c78e79d527102d08313caa278a641993acddcb894548d"},
     {file = "huggingface_hub-0.36.0.tar.gz", hash = "sha256:47b3f0e2539c39bf5cde015d63b72ec49baff67b6931c3d97f3f84532e2b8d25"},
-]
-
-[[package]]
-name = "hypothesis"
-version = "6.146.0"
-requires_python = ">=3.10"
-summary = "A library for property-based testing"
-groups = ["default"]
-dependencies = [
-    "exceptiongroup>=1.0.0; python_version < \"3.11\"",
-    "sortedcontainers<3.0.0,>=2.1.0",
-]
-files = [
-    {file = "hypothesis-6.146.0-py3-none-any.whl", hash = "sha256:aef4a9cd82cdb51173decfc37c16a71c8f89e4b60111bafe39615a4c19de5f57"},
-    {file = "hypothesis-6.146.0.tar.gz", hash = "sha256:542b8a6b7c4ab15a3a259893cd646b4e324ac332b4d19901abd68a79790dd963"},
 ]
 
 [[package]]
@@ -2107,16 +2092,6 @@ groups = ["default"]
 files = [
     {file = "sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2"},
     {file = "sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc"},
-]
-
-[[package]]
-name = "sortedcontainers"
-version = "2.4.0"
-summary = "Sorted Containers -- Sorted List, Sorted Dict, Sorted Set"
-groups = ["default"]
-files = [
-    {file = "sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0"},
-    {file = "sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88"},
 ]
 
 [[package]]

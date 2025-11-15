@@ -124,8 +124,8 @@ def main_cli() -> None:
         for stage in config.load.stages:
             if isinstance(stage, ConcurrentLoadStage):
                 # Generate all of the requests in the span of a second (enqueuing everything) to saturate workers
-                stage.duration = 1  # type: ignore
-                stage.rate = stage.num_requests  # type: ignore
+                stage.duration = 1
+                stage.rate = stage.num_requests
         # Set to 0 to show that worker_max_concurrency was not relevant in concurrent load type
         config.load.worker_max_concurrency = 0
     # Note: StandardLoadStage validation is automatically handled by Pydantic

@@ -19,7 +19,14 @@ from inference_perf.datagen import DataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.circuit_breaker import get_circuit_breaker
-from inference_perf.config import LoadConfig, LoadStage, LoadType, StageGenType, TraceFormat, ConcurrentLoadStage, StandardLoadStage
+from inference_perf.config import (
+    LoadConfig,
+    LoadType,
+    StageGenType,
+    TraceFormat,
+    ConcurrentLoadStage,
+    StandardLoadStage,
+)
 from asyncio import (
     CancelledError,
     Semaphore,
@@ -228,8 +235,9 @@ class LoadGenerator:
         for worker in self.workers:
             worker_concurrency = new_concurrency + 1 if worker.id < remainder else new_concurrency
             # Update the shared concurrency value to signal the worker to update its semaphore (needs to be synchronized with main process)
-            with worker.shared_max_concurrency.get_lock():
-                worker.shared_max_concurrency.value = worker_concurrency
+            if worker.shared_max_concurrency:
+                with worker.shared_max_concurrency.get_lock():
+                    worker.shared_max_concurrency.value = worker_concurrency
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -438,7 +446,7 @@ class LoadGenerator:
                 return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
 
         rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
-        self.stages = [LoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
+        self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
     async def mp_run(self, client: ModelServerClient) -> None:
@@ -455,7 +463,7 @@ class LoadGenerator:
         for id in range(self.num_workers):
             # Create shared value for each worker's max concurrency if concurrent load type
             if self.load_type == LoadType.CONCURRENT:
-                shared_max_concurrency: "Synchronized[int]" = mp.Value("i", self.worker_max_concurrency)
+                shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
 
