@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import TypedDict
+from typing import Optional, TypedDict
 from pydantic import BaseModel
 
 
@@ -35,6 +35,7 @@ class StageRuntimeInfo(BaseModel):
     end_time: float
     start_time: float
     status: StageStatus
+    concurrency_level: Optional[int] = None
 
 
 class PerfRuntimeParameters:

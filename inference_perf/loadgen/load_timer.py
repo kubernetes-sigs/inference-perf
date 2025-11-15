@@ -66,6 +66,10 @@ class ConstantLoadTimer(LoadTimer):
 
 
 class PoissonLoadTimer(LoadTimer):
+    """
+    A load generator that generates requests based on a Poisson distribution.
+    """
+
     def __init__(self, rate: float, duration: float) -> None:
         self._rate = rate
         self._duration = duration

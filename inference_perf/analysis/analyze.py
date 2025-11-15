@@ -96,11 +96,19 @@ def analyze_reports(report_dir: str) -> None:
         logger.error(f"No stage lifecycle metrics files found in {report_dir}")
         return
 
-    # Latency data
+    # Latency data (concurrency)
+    concurrency_vs_ttft: List[Tuple[float, float]] = []
+    concurrency_vs_ntpot: List[Tuple[float, float]] = []
+    concurrency_vs_itl: List[Tuple[float, float]] = []
+    # Throughput data (concurrency)
+    concurrency_vs_itps: List[Tuple[float, float]] = []
+    concurrency_vs_otps: List[Tuple[float, float]] = []
+    concurrency_vs_ttps: List[Tuple[float, float]] = []
+    # Latency data (QPS)
     qps_vs_ttft: List[Tuple[float, float]] = []
     qps_vs_ntpot: List[Tuple[float, float]] = []
     qps_vs_itl: List[Tuple[float, float]] = []
-    # Throughput data
+    # Throughput data (QPS)
     qps_vs_itps: List[Tuple[float, float]] = []
     qps_vs_otps: List[Tuple[float, float]] = []
     qps_vs_ttps: List[Tuple[float, float]] = []
@@ -113,6 +121,9 @@ def analyze_reports(report_dir: str) -> None:
         try:
             with open(stage_file, "r") as f:
                 report_data = json.load(f)
+
+            # Get concurrency
+            concurrency = report_data.get("load_summary", {}).get("concurrency", None)
 
             # Get QPS from report file
             qps = report_data.get("load_summary", {}).get("achieved_rate")
@@ -131,15 +142,24 @@ def analyze_reports(report_dir: str) -> None:
             if latency_data:
                 ttft = _extract_latency_metric(latency_data, "time_to_first_token", convert_to_ms=True)
                 if ttft is not None:
-                    qps_vs_ttft.append((qps, ttft))
+                    if concurrency:
+                        concurrency_vs_ttft.append((concurrency, ttft))
+                    else:
+                        qps_vs_ttft.append((qps, ttft))
 
                 ntpot = _extract_latency_metric(latency_data, "normalized_time_per_output_token", convert_to_ms=True)
                 if ntpot is not None:
-                    qps_vs_ntpot.append((qps, ntpot))
+                    if concurrency:
+                        concurrency_vs_ntpot.append((concurrency, ntpot))
+                    else:
+                        qps_vs_ntpot.append((qps, ntpot))
 
                 itl = _extract_latency_metric(latency_data, "inter_token_latency", convert_to_ms=True)
                 if itl is not None:
-                    qps_vs_itl.append((qps, itl))
+                    if concurrency:
+                        concurrency_vs_itl.append((concurrency, itl))
+                    else:
+                        qps_vs_itl.append((qps, itl))
 
             # Extract throughput metrics if they exist
             otps = None
@@ -147,15 +167,24 @@ def analyze_reports(report_dir: str) -> None:
             if throughput_data:
                 itps = _extract_throughput_metric(throughput_data, "input_tokens_per_sec")
                 if itps is not None:
-                    qps_vs_itps.append((qps, itps))
+                    if concurrency:
+                        concurrency_vs_itps.append((concurrency, itps))
+                    else:
+                        qps_vs_itps.append((qps, itps))
 
                 otps = _extract_throughput_metric(throughput_data, "output_tokens_per_sec")
                 if otps is not None:
-                    qps_vs_otps.append((qps, otps))
+                    if concurrency:
+                        concurrency_vs_otps.append((concurrency, otps))
+                    else:
+                        qps_vs_otps.append((qps, otps))
 
                 ttps = _extract_throughput_metric(throughput_data, "total_tokens_per_sec")
                 if ttps is not None:
-                    qps_vs_ttps.append((qps, ttps))
+                    if concurrency:
+                        concurrency_vs_ttps.append((concurrency, ttps))
+                    else:
+                        qps_vs_ttps.append((qps, ttps))
 
             # Populate latency vs throughput data
             if otps is not None:
@@ -173,7 +202,79 @@ def analyze_reports(report_dir: str) -> None:
             logger.error(f"An unexpected error occurred while processing {stage_file.name}: {e}")
             continue
 
-    # --- Generate Latency Plot ---
+    # --- Generate Concurrency Latency Plot ---
+    concurrency_latency_charts_to_generate = []
+    if concurrency_vs_ttft:
+        concurrency_latency_charts_to_generate.append(
+            {
+                "title": "Time to First Token vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Mean TTFT (ms)",
+                "data": sorted(concurrency_vs_ttft, key=operator.itemgetter(0)),
+            }
+        )
+    if concurrency_vs_ntpot:
+        concurrency_latency_charts_to_generate.append(
+            {
+                "title": "Norm. Time per Output Token vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Mean Norm. Time (ms/token)",
+                "data": sorted(concurrency_vs_ntpot, key=operator.itemgetter(0)),
+            }
+        )
+    if concurrency_vs_itl:
+        concurrency_latency_charts_to_generate.append(
+            {
+                "title": "Inter-Token Latency vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Mean ITL (ms)",
+                "data": sorted(concurrency_vs_itl, key=operator.itemgetter(0)),
+            }
+        )
+
+    _generate_plot(
+        concurrency_latency_charts_to_generate,
+        "Latency vs Concurrency",
+        report_path / "latency_vs_concurrency.png",
+    )
+
+    # --- Generate Concurrency Throughput Plot ---
+    concurrency_throughput_charts_to_generate = []
+    if concurrency_vs_itps:
+        concurrency_throughput_charts_to_generate.append(
+            {
+                "title": "Input Tokens/sec vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Tokens/sec",
+                "data": sorted(concurrency_vs_itps, key=operator.itemgetter(0)),
+            }
+        )
+    if concurrency_vs_otps:
+        concurrency_throughput_charts_to_generate.append(
+            {
+                "title": "Output Tokens/sec vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Tokens/sec",
+                "data": sorted(concurrency_vs_otps, key=operator.itemgetter(0)),
+            }
+        )
+    if concurrency_vs_ttps:
+        concurrency_throughput_charts_to_generate.append(
+            {
+                "title": "Total Tokens/sec vs. Concurrency",
+                "xlabel": "Concurrency",
+                "ylabel": "Tokens/sec",
+                "data": sorted(concurrency_vs_ttps, key=operator.itemgetter(0)),
+            }
+        )
+
+    _generate_plot(
+        concurrency_throughput_charts_to_generate,
+        "Throughput vs Concurrency",
+        report_path / "throughput_vs_concurrency.png",
+    )
+
+    # --- Generate QPS Latency Plot ---
     latency_charts_to_generate = []
     if qps_vs_ttft:
         latency_charts_to_generate.append(
@@ -206,7 +307,7 @@ def analyze_reports(report_dir: str) -> None:
         report_path / "latency_vs_qps.png",
     )
 
-    # --- Generate Throughput Plot ---
+    # --- Generate QPS Throughput Plot ---
     throughput_charts_to_generate = []
     if qps_vs_itps:
         throughput_charts_to_generate.append(
