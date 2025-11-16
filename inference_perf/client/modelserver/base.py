@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 from inference_perf.client.metricsclient.base import MetricsMetadata
 from inference_perf.config import APIConfig, APIType
-
 from inference_perf.apis import InferenceAPIData
+import aiohttp
 
 
 class ModelServerPrometheusMetric:
@@ -87,10 +87,35 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, *args: Any, **kwargs: Any
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError
+
+
+class ReusableHTTPClientSession:
+    """
+    A wrapper for aiohttp.ClientSession to allow for reusable sessions.
+    This is useful for sharing among many HTTP clients.
+    """
+
+    def __init__(self, session: aiohttp.ClientSession, dont_close: bool = False) -> None:
+        self.session = session
+        self.dont_close = dont_close
+
+    def dont_close_if(self, dont_close: bool = True) -> "ReusableHTTPClientSession":
+        return ReusableHTTPClientSession(session=self.session, dont_close=dont_close)
+
+    async def __aenter__(self) -> None:
+        pass
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        if self.dont_close:
+            self.dont_close = False
+            return
+        await self.session.close()
