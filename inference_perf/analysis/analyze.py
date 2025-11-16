@@ -39,7 +39,9 @@ def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str
     return None
 
 
-def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path) -> None:
+def _generate_plot(
+    charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path, ylims: List[Tuple[float, float]] = None
+) -> None:
     """Generates and saves a plot with multiple subplots."""
     import matplotlib.pyplot as plt
 
@@ -62,6 +64,8 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
         ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"))
         ax.set_ylabel(chart_info["ylabel"])
         ax.grid(True)
+        if ylims and i < len(ylims) and ylims[i]:
+            ax.set_ylim(ylims[i])
 
     fig.tight_layout(rect=(0, 0.03, 1, 0.95))
     plt.savefig(output_path)
@@ -69,7 +73,7 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
     plt.close(fig)
 
 
-def analyze_reports(report_dir: str) -> None:
+def analyze_reports(report_dir: str, ylims: List[Tuple[float, float]] = None) -> None:
     """
     Analyzes performance reports to generate charts.
 
@@ -237,6 +241,7 @@ def analyze_reports(report_dir: str) -> None:
         throughput_charts_to_generate,
         "Throughput vs Request Rate",
         report_path / "throughput_vs_qps.png",
+        ylims=ylims,
     )
 
     # --- Generate Throughput vs Latency Curve Plot ---
