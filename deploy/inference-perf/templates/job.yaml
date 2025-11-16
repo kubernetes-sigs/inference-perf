@@ -47,12 +47,18 @@ spec:
             - "--log-level"
             - {{ .Values.logLevel }}
           env:
-            {{- if .Values.hfToken }}
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "inference-perf.hfSecret" . }}
-                  key: {{ include "inference-perf.hfKey" . }}
+            {{- if and .Values.token.hfSecret.name .Values.token.hfSecret.key }}
+                        - name: HF_TOKEN
+                          valueFrom:
+                            secretKeyRef:
+                              name: {{ .Values.token.hfSecret.name }}
+                              key: {{ .Values.token.hfSecret.key }}
+            {{- else if .Values.token.hfToken }}
+                        - name: HF_TOKEN
+                          valueFrom:
+                            secretKeyRef:
+                              name: {{ include "inference-perf.hfSecret" . }}
+                              key: {{ include "inference-perf.hfKey" . }}
             {{- end }}
           volumeMounts:
             - name: config-volume

@@ -17,11 +17,22 @@ Make sure you have the following tools installed and configured:
 
 Before deployment, navigate to the **`deploy/inference-perf`** directory and edit the **`values.yaml`** file to customize your deployment and the benchmark parameters.
 
-#### Optional Parameters
+#### Optional Token Parameters
+Hugging Face token can be provided either by providing a value (`hfToken`) or by referencing an existing Kubernetes Secret (`hfSecret.Name` and `hfSecret.Key`).
+
+> If both `hfToken` and the `hfSecret` parameters are provided, the chart logic is configured to prioritize the `hfSecret` reference.
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
 | `hfToken` | Hugging Face API token. If provided, a Kubernetes `Secret` named `hf-token-secret` will be created for authentication. | `""` |
+| `hfSecret.name` | The name of a pre-existing Kubernetes Secret that contains a Hugging Face API token. | `""` |
+| `hfSecret.key` | The key within the pre-existing Kubernetes Secret that holds the token value. | `""` |
+---
+
+#### Optional Job Parameters
+
+| Key | Description | Default |
+| :--- | :--- | :--- |
 | `serviceAccountName` | Standard Kubernetes `serviceAccountName`. If not provided, default service account is used. | `""` |
 | `nodeSelector` |  Standard Kubernetes `nodeSelector` map to constrain pod placement to nodes with matching labels. | `{}` |
 | `resources` | Standard Kubernetes resource requests and limits for the main `inference-perf` container. | `{}` |
@@ -100,6 +111,6 @@ Use the **`helm install`** command from the **`deploy/inference-perf`** director
 ### 4. Cleanup
 
 To remove the benchmark deployment.
-    ```bash
+```bash
     helm uninstall test
-    ```
+```
