@@ -139,7 +139,7 @@ class openAIModelServerClient(ModelServerClient):
                 )
 
     def get_supported_apis(self) -> List[APIType]:
-        return []
+        return [APIType.Completion, APIType.Chat]
 
     @abstractmethod
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
