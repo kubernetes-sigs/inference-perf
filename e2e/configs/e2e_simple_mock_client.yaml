@@ -1,0 +1,18 @@
+data:
+  type: mock
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 10
+  num_workers: 2
+api: 
+  type: chat
+server:
+  type: mock
+  base_url: http://0.0.0.0:8000
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
