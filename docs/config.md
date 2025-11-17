@@ -67,7 +67,7 @@ Defines the benchmarking load pattern:
 
 ```yaml
 load:
-  type: constant|poisson            # Load pattern type
+  type: constant|poisson|concurrent # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
