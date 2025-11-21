@@ -4,6 +4,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
@@ -44,11 +45,12 @@ class SharedPrefixDataGenerator(DataGenerator):
         self.question_len: int = self.shared_prefix.question_len
         self.output_len: int = self.shared_prefix.output_len
 
-        self.prompts: List[str] = []
+        self.prompts: List[str] = []  # For completion API
+        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for chat API
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -58,7 +60,15 @@ class SharedPrefixDataGenerator(DataGenerator):
 
     def get_request(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
-        return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+        if self.api_config.type == APIType.Chat:
+            shared_prefix, question = self.prompt_pairs[i]
+            messages = [
+                ChatMessage(role="system", content=shared_prefix),
+                ChatMessage(role="user", content=question)
+            ]
+            return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+        else:
+            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if not self.prompts:
@@ -66,7 +76,15 @@ class SharedPrefixDataGenerator(DataGenerator):
 
         i = 0
         while True:
-            yield CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+            if self.api_config.type == APIType.Chat:
+                shared_prefix, question = self.prompt_pairs[i]
+                messages = [
+                    ChatMessage(role="system", content=shared_prefix),
+                    ChatMessage(role="user", content=question)
+                ]
+                yield ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            else:
+                yield CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
             i = (i + 1) % len(self.prompts)
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
@@ -98,6 +116,10 @@ class SharedPrefixDataGenerator(DataGenerator):
                 full_prompt_text = shared_prefix_text + " " + question_text
 
                 self.prompts.append(full_prompt_text)
+                self.prompt_pairs.append((shared_prefix_text, question_text))
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
-        random.shuffle(self.prompts)
+        indices = list(range(len(self.prompts)))
+        random.shuffle(indices)
+        self.prompts = [self.prompts[i] for i in indices]
+        self.prompt_pairs = [self.prompt_pairs[i] for i in indices]
