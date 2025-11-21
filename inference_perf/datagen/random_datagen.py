@@ -16,7 +16,7 @@ import numpy as np
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator
+from .base import DataGenerator, LazyLoadDataMixin
 from typing import Generator, List, Optional
 from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Random data generator generates random tokens from the model's
 # vocabulary for the desired input and output distribution.
-class RandomDataGenerator(DataGenerator):
+class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
     def __init__(
         self,
         api_config: APIConfig,

@@ -1,7 +1,8 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
-from inference_perf.datagen.random_datagen import RandomDataGenerator
+from inference_perf.apis import LazyLoadInferenceAPIData
+from inference_perf.datagen.random_datagen import RandomDataGenerator, LazyLoadDataMixin
 from inference_perf.config import APIConfig, DataConfig, APIType, TraceFormat, TraceConfig, DataGenType
 
 
@@ -44,7 +45,11 @@ class TestTraceReplay:
 
             datagen = RandomDataGenerator(api_config=api_config, config=data_config, tokenizer=mock_tokenizer)
 
-            data_list = [datagen.get_request(i) for i in range(3)]
+            data_generator = datagen.get_data()
+            lazy_load_data_list = [next(data_generator) for _ in range(3)]
+            assert all(isinstance(data, LazyLoadInferenceAPIData) for data in lazy_load_data_list)
+
+            data_list = [LazyLoadDataMixin.get_request(datagen, data) for data in lazy_load_data_list]
 
             # Test 3: Verify both timing and token counts are preserved
             assert len(timestamps) == len(data_list)

@@ -14,12 +14,12 @@
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator
+from .base import DataGenerator, LazyLoadDataMixin
 from typing import Generator, List, Optional
 from inference_perf.config import APIConfig, APIType, DataConfig
 
 
-class SyntheticDataGenerator(DataGenerator):
+class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
