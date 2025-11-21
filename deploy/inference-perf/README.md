@@ -63,7 +63,7 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
-| `gcsPath` | A GCS URI pointing to the dataset file (e.g., `gs://my-bucket/dataset.json`). The file will be automatically copied to the running pod during initialization. | `""` |
+| `gcsPath` | A GCS bucket name pointing to the dataset file (e.g., `gs://<my-bucket-path-to-file>/dataset.json`). The file will be automatically copied to the running pod during initialization. | `""` |
 
 ---
 
@@ -85,7 +85,7 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
-| `s3Path` | An S3 URI pointing to the dataset file (e.g., `s3://my-bucket/dataset.json`). The file will be automatically copied to the running pod during initialization. | `""` |
+| `s3Path` | An S3 bucket name pointing to the dataset file (e.g., `s3://<my-bucket-path-to-file>/dataset.json`). The file will be automatically copied to the running pod during initialization. | `""` |
 
 ---
 
