@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.apis import InferenceAPIData
+from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix
 from abc import ABC, abstractmethod
@@ -65,3 +65,33 @@ class DataGenerator(ABC):
     @abstractmethod
     def is_shared_prefix_supported(self) -> bool:
         raise NotImplementedError
+
+    # notify load gen whether request has prefered worker
+    def is_prefered_worker_requested(self) -> bool:
+        return False
+
+
+class LazyLoadDataMixin(ABC):
+    """
+    Mixin for data generators that support lazy loading of InferenceAPIData.
+    This is useful for multiprocessing where the actual InferenceAPIData objects
+    might be large or unpickleable, or need to be initialized in the worker process.
+    """
+
+    @abstractmethod
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        """
+        Returns the real InferenceAPIData object for the given data.
+        This method is usually called by worker processes to lazily load data unless MP mode disabled
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def get_request(data_generator: DataGenerator, data: InferenceAPIData) -> InferenceAPIData:
+        if isinstance(data, LazyLoadInferenceAPIData):
+            if isinstance(data_generator, LazyLoadDataMixin):
+                return data_generator.load_lazy_data(data)
+            else:
+                raise NotImplementedError("Data Generator doesn't support lazy loading of requested InferenceAPIData")
+        else:
+            return data

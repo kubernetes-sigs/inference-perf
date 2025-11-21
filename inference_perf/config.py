@@ -68,6 +68,7 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
+    enable_multi_turn_chat: bool = False
 
 
 class DataConfig(BaseModel):

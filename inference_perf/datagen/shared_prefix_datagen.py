@@ -2,16 +2,17 @@ import random
 from typing import Generator, List, Optional
 import numpy as np
 
-from inference_perf.apis.base import InferenceAPIData
+from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, LazyLoadDataMixin
 
 
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
 # This can be used to benchmark prefix caching cases.
-class SharedPrefixDataGenerator(DataGenerator):
+class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
@@ -43,8 +44,10 @@ class SharedPrefixDataGenerator(DataGenerator):
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.question_len: int = self.shared_prefix.question_len
         self.output_len: int = self.shared_prefix.output_len
+        self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
 
         self.prompts: List[str] = []
+        self.user_sessions: List[LocalUserSession] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
@@ -56,9 +59,22 @@ class SharedPrefixDataGenerator(DataGenerator):
     def is_shared_prefix_supported(self) -> bool:
         return True
 
-    def get_request(self, n: int) -> InferenceAPIData:
-        i = n % len(self.prompts)
-        return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+    def is_prefered_worker_requested(self) -> bool:
+        return True
+
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        i = data.data_index % len(self.prompts)
+        if self.enable_multi_turn_chat:
+            user_id = data.data_index % len(self.user_sessions)
+            round = data.data_index // len(self.user_sessions)
+            return UserSessionCompletionAPIData(
+                prompt=self.prompts[i],
+                max_tokens=self.output_len,
+                user_session=self.user_sessions[user_id],
+                target_round=round,
+            )
+        else:
+            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if not self.prompts:
@@ -66,8 +82,9 @@ class SharedPrefixDataGenerator(DataGenerator):
 
         i = 0
         while True:
-            yield CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
-            i = (i + 1) % len(self.prompts)
+            prefered_worker_id = i % self.num_groups if self.enable_multi_turn_chat else -1
+            yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
+            i += 1
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
@@ -84,20 +101,29 @@ class SharedPrefixDataGenerator(DataGenerator):
 
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
-        for _ in range(self.num_groups):
+        for group_id in range(self.num_groups):
             # Generate a shared prefix (system prompt)
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
-            for _ in range(self.num_prompts_per_group):
+            for prompt_id in range(self.num_prompts_per_group):
                 # Generate a unique question
                 question_token_ids = self._generate_random_token_ids(self.question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
-                # Combine shared prefix and question
-                full_prompt_text = shared_prefix_text + " " + question_text
+                if self.enable_multi_turn_chat:
+                    # multi turn chat, create user to keep conversation
+                    self.user_sessions.append(
+                        LocalUserSession(
+                            user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
+                            context=shared_prefix_text,
+                        )
+                    )
+                else:
+                    # Single turn chat, Combine shared prefix and question
+                    question_text = shared_prefix_text + " " + question_text
 
-                self.prompts.append(full_prompt_text)
+                self.prompts.append(question_text)
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         random.shuffle(self.prompts)

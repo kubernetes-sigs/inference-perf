@@ -50,7 +50,7 @@ class MockModelServerClient(ModelServerClient):
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
-                        request_data=str(data.to_payload("mock_model", 3, False, False)),
+                        request_data=str(await data.to_payload("mock_model", 3, False, False)),
                         info=InferenceInfo(
                             input_tokens=0,
                             output_tokens=0,
