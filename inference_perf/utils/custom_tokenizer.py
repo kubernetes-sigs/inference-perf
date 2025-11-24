@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers.tokenization_utils_base import VERY_LARGE_INTEGER
 from inference_perf.config import CustomTokenizerConfig
 
 
@@ -24,6 +25,11 @@ class CustomTokenizer:
     def count_tokens(self, text: str) -> int:
         if text == "":
             return 0
+
+        # Some tokenizers don't set model_max_length which defaults to VERY_LARGE_INTEGER.
+        # Prevent overflow and log spam by skipping truncation.
+        if self.tokenizer.model_max_length == VERY_LARGE_INTEGER:
+            return len(self.tokenizer(text).input_ids)
         return len(self.tokenizer(text, truncation=True, max_length=self.tokenizer.model_max_length).input_ids)
 
     def get_tokenizer(self) -> PreTrainedTokenizerBase:
