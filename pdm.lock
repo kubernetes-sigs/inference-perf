@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:2889e7ad0dc9c188bc1cc01cb1df4edd269aee9c967fcf811ce59b74bb476b19"
+content_hash = "sha256:af64fbc282da5d43a35e5075e047b7242d140df8dd989be2da412540a5232708"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -866,7 +866,7 @@ name = "iniconfig"
 version = "2.3.0"
 requires_python = ">=3.10"
 summary = "brain-dead simple config-ini parsing"
-groups = ["default", "test"]
+groups = ["test"]
 files = [
     {file = "iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12"},
     {file = "iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730"},
@@ -1375,7 +1375,7 @@ name = "pluggy"
 version = "1.6.0"
 requires_python = ">=3.9"
 summary = "plugin and hook calling mechanisms for python"
-groups = ["default", "test"]
+groups = ["test"]
 files = [
     {file = "pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746"},
     {file = "pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3"},
@@ -1752,7 +1752,7 @@ name = "pygments"
 version = "2.19.2"
 requires_python = ">=3.8"
 summary = "Pygments is a syntax highlighting package written in Python."
-groups = ["default", "test"]
+groups = ["test"]
 files = [
     {file = "pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b"},
     {file = "pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887"},
@@ -1763,7 +1763,7 @@ name = "pytest"
 version = "8.4.2"
 requires_python = ">=3.9"
 summary = "pytest: simple powerful testing with Python"
-groups = ["default", "test"]
+groups = ["test"]
 dependencies = [
     "colorama>=0.4; sys_platform == \"win32\"",
     "exceptiongroup>=1; python_version < \"3.11\"",
@@ -1783,7 +1783,7 @@ name = "pytest-asyncio"
 version = "1.2.0"
 requires_python = ">=3.9"
 summary = "Pytest support for asyncio"
-groups = ["default"]
+groups = ["test"]
 dependencies = [
     "backports-asyncio-runner<2,>=1.1; python_version < \"3.11\"",
     "pytest<9,>=8.2",
@@ -2226,7 +2226,7 @@ name = "types-jmespath"
 version = "1.0.2.20250809"
 requires_python = ">=3.9"
 summary = "Typing stubs for jmespath"
-groups = ["default"]
+groups = ["types"]
 files = [
     {file = "types_jmespath-1.0.2.20250809-py3-none-any.whl", hash = "sha256:4147d17cc33454f0dac7e78b4e18e532a1330c518d85f7f6d19e5818ab83da21"},
     {file = "types_jmespath-1.0.2.20250809.tar.gz", hash = "sha256:e194efec21c0aeae789f701ae25f17c57c25908e789b1123a5c6f8d915b4adff"},
@@ -2248,7 +2248,7 @@ name = "types-requests"
 version = "2.32.4.20250913"
 requires_python = ">=3.9"
 summary = "Typing stubs for requests"
-groups = ["default", "types"]
+groups = ["types"]
 dependencies = [
     "urllib3>=2",
 ]
@@ -2262,7 +2262,7 @@ name = "types-tqdm"
 version = "4.67.0.20250809"
 requires_python = ">=3.9"
 summary = "Typing stubs for tqdm"
-groups = ["default"]
+groups = ["types"]
 dependencies = [
     "types-requests",
 ]
@@ -2276,7 +2276,7 @@ name = "typing-extensions"
 version = "4.15.0"
 requires_python = ">=3.9"
 summary = "Backported and Experimental Type Hints for Python 3.9+"
-groups = ["default", "lint"]
+groups = ["default", "lint", "test"]
 files = [
     {file = "typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"},
     {file = "typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466"},

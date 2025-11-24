@@ -14,9 +14,6 @@ dependencies = [
     "boto3>=1.39.0",
     "uvloop>=0.21.0",
     "tqdm>=4.67.1",
-    "types-tqdm>=4.67.0.20250809",
-    "types-jmespath>=1.0.2.20250809",
-    "pytest-asyncio>=1.2.0",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -47,11 +44,14 @@ lint = [
 ]
 test = [
     "pytest>=8.3.4",
+    "pytest-asyncio>=1.2.0",
     "ipykernel>=6.29.5",
 ]
 types = [
     "types-PyYAML>=6.0.12.20241230",
     "types-requests>=2.32.0.20250328",
+    "types-tqdm>=4.67.0.20250809",
+    "types-jmespath>=1.0.2.20250809",
 ]
 
 [build-system]
@@ -124,6 +124,9 @@ python_functions = ["test_*"]
 where = ["."]
 include = ["inference_perf*", "deploy*"]
 
+[tool.mypy]
+disable_error_code = ["attr-defined"]
+
 [[tool.mypy.overrides]]
 module = [
     "datasets.*",
@@ -131,6 +134,3 @@ module = [
     "boto3.*",
 ]
 ignore_missing_imports = true
-
-[tool.mypy]
-disable_error_code = ["attr-defined"]
