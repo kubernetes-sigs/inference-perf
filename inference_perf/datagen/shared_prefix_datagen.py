@@ -60,7 +60,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         return True
 
     def is_prefered_worker_requested(self) -> bool:
-        return True
+        return True if self.enable_multi_turn_chat else False
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
