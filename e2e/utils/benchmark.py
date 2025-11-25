@@ -1,10 +1,13 @@
 import json
 import os
-import shlex
-import subprocess
+import asyncio
+import aiofiles
+import aiofiles.os
 import tempfile
 import yaml
+import signal
 import logging
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Union
@@ -18,23 +21,36 @@ class BenchmarkResult:
 
     success: bool  # True if process exit code == 0 and not timed out
     timed_out: bool  # True if we hit timeout and killed the process
-    returncode: int  # Raw process return code (or -9/-15 on kill)
+    return_code: int  # Raw process return code (or -9/-15 on kill)
     stdout: str  # Combined stdout/stderr text
     work_dir: Path  # Working directory used for the run
     reports: Optional[Dict[str, Any]]  # Parsed json for reports if present
 
 
-def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir: Path) -> Path:
+async def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = out_dir / "config_input.yaml"
 
-    if isinstance(config, (str, Path)):
-        src = Path(config)
-        if not src.exists():
-            raise FileNotFoundError(f"Config file not found: {src}")
-        config = yaml.safe_load(src.read_text(encoding="utf-8"))
+    # if config is a string pointing to an existing path, then convert it to
+    # Path.
+    if isinstance(config, str):
+        try:
+            await aiofiles.os.stat(config)
+            config = Path(config)
+        except Exception:
+            pass
 
-    # Overwrite output path to temporaty folder
+    # if config is a Path, then open it as a file.
+    if isinstance(config, Path):
+        async with aiofiles.open(config, mode="r") as file:
+            config = await file.read()
+
+    # if config is (still) a string, then directly parse it as YAML.
+    if isinstance(config, str):
+        config = yaml.safe_load(config)
+        assert isinstance(config, dict)
+
+    # Overwrite output path to temporary folder
     config["storage"] = {"local_storage": {"path": out_dir.as_posix()}}
 
     cfg_path.write_text(
@@ -52,7 +68,7 @@ def _find_report_files(path: Path) -> Optional[List[Path]]:
     return candidates
 
 
-def run_benchmark_minimal(
+async def run_benchmark_minimal(
     config: Union[str, Path, Dict[str, Any]],
     *,
     work_dir: Optional[Union[str, Path]] = None,
@@ -70,36 +86,49 @@ def run_benchmark_minimal(
       - marks `timed_out=True`, returns collected stdout up to kill.
     """
     wd = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="inference-perf-e2e-"))
-    cfg_path = _process_yaml_config(config, wd)
+    cfg_path = await _process_yaml_config(config, wd)
 
     env = os.environ.copy()
     if extra_env:
         env.update({k: str(v) for k, v in extra_env.items()})
 
-    cmd = f"{shlex.quote(executable)} --config_file {shlex.quote(str(cfg_path))} --log-level DEBUG"
+    args = [executable, "--config_file", str(cfg_path), "--log-level", "DEBUG"]
+    logger.debug(f"starting inference-perf, {args=}")
 
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(wd),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        preexec_fn=os.setpgrp,  # use process groups
+    )
+    logger.debug("inference-perf started!")
+
+    stdout = ""
     timed_out = False
+    return_code = -1
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(wd),
-            env=env,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout_sec,
-        )
-        stdout = proc.stdout
+        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
+        stdout = stdout_bytes.decode()
+        logger.info(f"benchmark status {proc.returncode}, output:\n{textwrap.indent(stdout, '  | ')}")
+        assert proc.returncode is not None
         return_code = proc.returncode
-    except subprocess.TimeoutExpired as e:
+    except asyncio.exceptions.TimeoutError:
         timed_out = True
-        stdout = e.stdout
         return_code = -9
+    finally:
+        try:
+            # kill whole process group to ensure that forked workers are also
+            # terminated.
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            # wait for process to finish cleaning up.
+            await proc.wait()
+        except ProcessLookupError:
+            pass
 
     success = (return_code == 0) and (not timed_out)
-
-    logger.info("Benchmark output:\n%s", stdout)
 
     # Attempt to read report.json (optional)
     report_path = _find_report_files(wd)
@@ -108,8 +137,8 @@ def run_benchmark_minimal(
     return BenchmarkResult(
         success=success,
         timed_out=timed_out,
-        returncode=return_code,
-        stdout=stdout or "",
+        return_code=return_code,
+        stdout=stdout,
         work_dir=wd,
         reports=reports,
     )

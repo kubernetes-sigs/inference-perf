@@ -5,10 +5,21 @@
 groups = ["default", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:af64fbc282da5d43a35e5075e047b7242d140df8dd989be2da412540a5232708"
+content_hash = "sha256:5c16ab3d80a140f0b8b76bcda27cb2fae7d42ba9fc47a741da246396edb54b2b"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
+
+[[package]]
+name = "aiofiles"
+version = "25.1.0"
+requires_python = ">=3.9"
+summary = "File support for asyncio."
+groups = ["default"]
+files = [
+    {file = "aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695"},
+    {file = "aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2"},
+]
 
 [[package]]
 name = "aiohappyeyeballs"
