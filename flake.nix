@@ -60,6 +60,13 @@
                 ];
 
               venvDir = "venv";
+
+              shellHook = ''
+                # This isn't needed anywhere except for inside the Dockerfile environment, since we
+                # try to do `pdm install` without actually having any actual code present for better
+                # image layering.
+                export PYTHONPATH="$PYTHONPATH:$PWD"
+              '';
             };
 
             packages = rec {
