@@ -65,10 +65,15 @@ distribution = true
 [tool.pdm.scripts]
 format = "ruff format"
 lint = "ruff check"
-test = "pytest tests"
-"test:e2e" = "pytest e2e"
 type-check = "mypy --strict ./inference_perf ./tests"
 validate = {composite = ["format", "lint", "type-check"]}
+
+"test" = "pytest tests"
+"test:e2e" = "pytest e2e"
+"test:e2e:docker" = "pdm run docker:e2e-test:run"
+
+"docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
+"docker:e2e-test:run".shell = "rm result && pdm run docker:e2e-test:build --iidfile result && docker run --rm -it $(< result)"
 
 [tool.ruff]
 # The GitHub editor is 127 chars wide

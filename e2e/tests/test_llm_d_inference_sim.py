@@ -13,7 +13,6 @@ automatically be skipped.
 """
 
 import pytest
-import logging
 
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
