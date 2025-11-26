@@ -115,6 +115,8 @@ docstring-code-format = false
 docstring-code-line-length = "dynamic"
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 log_cli = true
 log_cli_level = "INFO"
 testpaths = ["."]
