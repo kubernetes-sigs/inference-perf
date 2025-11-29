@@ -156,6 +156,7 @@ report:
     summary: true       # Generate high-level summary
     per_stage: true     # Include breakdown by load stage
     per_request: false  # Enable detailed per-request logs (verbose)
+    percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
   prometheus:
     summary: true       # Include Prometheus metrics summary
     per_stage: false    # Disable Prometheus stage breakdown

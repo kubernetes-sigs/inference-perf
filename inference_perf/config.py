@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl, model_validator, Field
-from inference_perf.circuit_breaker import CircuitBreakerConfig
-from typing import Any, Optional, List, Union
 from enum import Enum
 from os import cpu_count
+from typing import Any, List, Optional, Union
+
 import yaml
-import logging
+from pydantic import BaseModel, Field, HttpUrl, model_validator
+
+from inference_perf.circuit_breaker import CircuitBreakerConfig
 
 
 class APIType(Enum):
@@ -219,6 +221,7 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
+    percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 
 
 class PrometheusMetricsReportConfig(BaseModel):
