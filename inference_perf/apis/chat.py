@@ -51,6 +51,8 @@ class ChatCompletionAPIData(InferenceAPIData):
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
+            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
+            prompt_len = tokenizer.count_tokens(prompt_text)
             output_text = ""
             output_token_times: List[float] = []
             buffer = b""
@@ -77,9 +79,6 @@ class ChatCompletionAPIData(InferenceAPIData):
                     else:
                         continue
                     break
-
-            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
-            prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,

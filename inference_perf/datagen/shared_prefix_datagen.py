@@ -116,6 +116,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def _generate_prompts(self) -> None:
         """Pre-generates all prompts based on the configuration."""
         if self.tokenizer is None:
+            # This check is defensive; __init__ should have already validated this.
             raise ValueError("Tokenizer is not available for generating prompts.")
 
         hf_tokenizer = self.tokenizer.get_tokenizer()
@@ -134,7 +135,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 )
 
                 if self.enable_multi_turn_chat:
-    
+                    # multi turn chat, create user to keep conversation
                     question_token_ids = full_token_ids[len(shared_prefix_token_ids):]
                     question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
@@ -146,6 +147,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     )
                     self.prompts.append(question_text)
                 else:
+                    # Single turn chat, Combine shared prefix and question
                     full_prompt_text = hf_tokenizer.decode(full_token_ids, skip_special_tokens=True)
                     self.prompts.append(full_prompt_text)
 

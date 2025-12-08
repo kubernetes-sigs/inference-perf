@@ -47,6 +47,7 @@ class CompletionAPIData(InferenceAPIData):
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:
+            prompt_len = tokenizer.count_tokens(self.prompt)
             output_text = ""
             output_token_times: List[float] = []
             buffer = b""
@@ -70,8 +71,6 @@ class CompletionAPIData(InferenceAPIData):
                     else:
                         continue
                     break
-
-            prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
             return InferenceInfo(
