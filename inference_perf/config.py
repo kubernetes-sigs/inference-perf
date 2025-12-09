@@ -80,6 +80,7 @@ class SharedPrefix(BaseModel):
     )
 
     system_prompt_len: int = 100
+    question_len: int = 50
     question_len_std: float = 0  # Variation in question length within a group
     question_len_min: Optional[int] = None
     question_len_max: Optional[int] = None
