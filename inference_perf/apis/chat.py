@@ -41,13 +41,22 @@ class ChatCompletionAPIData(InferenceAPIData):
     async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-        return {
-            "model": model_name,
-            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
-            "max_tokens": self.max_tokens,
-            "ignore_eos": ignore_eos,
-            "stream": streaming,
-        }
+        if streaming:
+                return {
+                    "model": model_name,
+                    "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+                    "max_tokens": self.max_tokens,
+                    "ignore_eos": ignore_eos,
+                    "stream": streaming,
+                    "stream_options": {"include_usage": "true"},
+                }
+        else:
+                return {
+                    "model": model_name,
+                    "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+                    "max_tokens": self.max_tokens,
+                    "ignore_eos": ignore_eos,
+                }
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:

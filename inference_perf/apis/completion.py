@@ -37,6 +37,15 @@ class CompletionAPIData(InferenceAPIData):
     async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
+        if streaming:
+            return {
+                "model": model_name,
+                "prompt": self.prompt,
+                "max_tokens": self.max_tokens,
+                "ignore_eos": ignore_eos,
+                "stream": streaming,
+                "stream_options": {"include_usage": "true"},
+            }
         return {
             "model": model_name,
             "prompt": self.prompt,
@@ -44,6 +53,7 @@ class CompletionAPIData(InferenceAPIData):
             "ignore_eos": ignore_eos,
             "stream": streaming,
         }
+
 
     async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
         if config.streaming:

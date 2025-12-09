@@ -45,6 +45,15 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.question_len: int = self.shared_prefix.question_len
         self.output_len: int = self.shared_prefix.output_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
+        
+        self.question_len_std: float = self.shared_prefix.question_len_std
+        self.output_len_std: float = self.shared_prefix.output_len_std
+        
+        self.question_len_min: Optional[int] = self.shared_prefix.question_len_min
+        self.question_len_max: Optional[int] = self.shared_prefix.question_len_max
+        self.output_len_min: Optional[int] = self.shared_prefix.output_len_min
+        self.output_len_max: Optional[int] = self.shared_prefix.output_len_max
+
 
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
@@ -64,17 +73,24 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
+        output_len = self.output_len
+        if self.output_len_std > 0:
+                output_len = max(1, int(np.random.normal(self.output_len, self.output_len_std)))
+        if self.output_len_min is not None:
+                output_len = max(self.output_len_min, output_len)
+        if self.output_len_max is not None:
+                output_len = min(self.output_len_max, output_len)   
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
             return UserSessionCompletionAPIData(
                 prompt=self.prompts[i],
-                max_tokens=self.output_len,
+                max_tokens=output_len,
                 user_session=self.user_sessions[user_id],
                 target_round=round,
             )
         else:
-            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+            return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if not self.prompts:
@@ -108,7 +124,14 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
             for prompt_id in range(self.num_prompts_per_group):
                 # Generate a unique question
-                question_token_ids = self._generate_random_token_ids(self.question_len)
+                question_len = self.question_len
+                if self.question_len_std > 0:
+                    question_len = max(1, int(np.random.normal(self.question_len, self.question_len_std)))
+                if self.question_len_min is not None:
+                    question_len = max(self.question_len_min, question_len)
+                if self.question_len_max is not None:
+                    question_len = min(self.question_len_max, question_len)
+                question_token_ids = self._generate_random_token_ids(question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
                 if self.enable_multi_turn_chat:

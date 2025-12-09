@@ -63,6 +63,91 @@ class ResponsesSummary(BaseModel):
     successes: dict[str, Any]
     failures: dict[str, Any]
 
+def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dict[str, Any]]:
+    """
+    Calculate SLO attainment statistics from request metrics.
+    
+    Returns None if no SLO thresholds were set, otherwise returns dict with SLO metrics.
+    """
+    # Filter out errors
+    valid_metrics = [m for m in metrics if m.error is None]
+    
+    if not valid_metrics:
+        return None
+    
+    # Check if any metrics have SLO fields populated
+    has_ttft_slo = any(m.ttft_slo_met is not None for m in valid_metrics)
+    has_tpot_slo = any(m.tpot_slo_met is not None for m in valid_metrics)
+
+    ttft_slo = max([m.ttft_slo for m in valid_metrics if m.ttft_slo is not None], default=None)
+    tpot_slo = max([m.tpot_slo for m in valid_metrics if m.tpot_slo is not None], default=None)
+    
+    # calculate sum of input and output tokens of all valid metrics and with slo met
+   
+    if not has_ttft_slo and not has_tpot_slo:
+        return None  # No SLO tracking enabled
+    
+    slo_metrics: dict[str, Any] = {}
+    total = len(valid_metrics)
+    
+    total_benchmark_time = max(m.end_time for m in valid_metrics) - min(m.start_time for m in valid_metrics)
+    total_goodput_tokens = sum(m.info.input_tokens + m.info.output_tokens for m in valid_metrics if m.info and m.info.input_tokens is not None and m.info.output_tokens is not None and m.ttft_slo_met)
+    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+    
+    # TTFT SLO metrics
+    if has_ttft_slo:
+        ttft_met = sum(1 for m in valid_metrics if m.ttft_slo_met is True)
+        ttft_failed = sum(1 for m in valid_metrics if m.ttft_slo_met is False)
+        
+        # Get threshold from first metric that has it
+        ttft_threshold = None
+        for m in valid_metrics:
+            if m.ttft is not None:
+                # Infer threshold from whether it met SLO
+                # We'll store the actual threshold in a better way later
+                ttft_threshold = "configured"
+                break
+        
+        slo_metrics["ttft_slo"] = {
+            "attainment_pct": (ttft_met / total * 100) if total > 0 else 0,
+            "requests_met": ttft_met,
+            "requests_failed": ttft_failed,
+            "total_requests": total,
+            "slo": ttft_slo
+            
+        }
+    
+    # TPOT SLO metrics
+    if has_tpot_slo:
+        tpot_met = sum(1 for m in valid_metrics if m.tpot_slo_met is True)
+        tpot_failed = sum(1 for m in valid_metrics if m.tpot_slo_met is False)
+        
+        slo_metrics["tpot_slo"] = {
+            "attainment_pct": (tpot_met / total * 100) if total > 0 else 0,
+            "requests_met": tpot_met,
+            "requests_failed": tpot_failed,
+            "total_requests": total,
+            "slo": tpot_slo
+        }
+    
+    # Combined SLO (both must be met)
+    if has_ttft_slo and has_tpot_slo:
+        combined_met = sum(
+            1 for m in valid_metrics 
+            if m.ttft_slo_met is True and m.tpot_slo_met is True
+        )
+        
+        slo_metrics["combined_slo"] = {
+            "attainment_pct": (combined_met / total * 100) if total > 0 else 0,
+            "requests_met": combined_met,
+            "requests_failed": total - combined_met,
+            "total_requests": total,
+            "ttft_slo": ttft_slo,
+            "tpot_slo": tpot_slo,
+            "goodput_rate": goodput_rate
+        }
+    
+    return slo_metrics
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
@@ -146,10 +231,9 @@ def summarize_requests(
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
-
-    return ResponsesSummary(
-        load_summary=load_summary,
-        successes={
+    # NEW: Calculate SLO metrics
+    slo_metrics = calculate_slo_metrics(metrics)
+    successes_dict = {
             "count": len(all_successful),
             "latency": {
                 "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
@@ -184,13 +268,20 @@ def summarize_requests(
             },
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful]),
             "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None]),
-        },
+        }
+    if slo_metrics:
+        successes_dict["slo_metrics"] = slo_metrics
+    return ResponsesSummary(
+        load_summary=load_summary,
+        successes=successes_dict,
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed]),
             "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed]),
         },
     )
+
+
 
 
 class ReportGenerator:
