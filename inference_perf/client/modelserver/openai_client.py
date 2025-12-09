@@ -217,10 +217,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 ttft_threshold = None
                 tpot_threshold = None
 
-                if self.api_config.headers:
-                    ttft_threshold = self.api_config.headers.get('x-slo-ttft-ms')
-                if self.api_config.headers:
-                    tpot_threshold = self.api_config.headers.get('x-slo-tpot-ms')
+                if self.client.api_config.headers:
+                    ttft_threshold = self.client.api_config.headers.get('x-slo-ttft-ms')
+                if self.client.api_config.headers:
+                    tpot_threshold = self.client.api_config.headers.get('x-slo-tpot-ms')
 
                 if ttft_threshold and metric.ttft is not None:
                     metric.ttft_slo = float(ttft_threshold)
@@ -231,7 +231,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     metric.tpot_slo_met = metric.tpot <= float(tpot_threshold) / 1000  # convert ms to s
 
                  # Record the metric
-                self.metrics_collector.record_metric(metric)
+                self.client.metrics_collector.record_metric(metric)
 
         except Exception as e:
             if isinstance(e, asyncio.exceptions.TimeoutError):
