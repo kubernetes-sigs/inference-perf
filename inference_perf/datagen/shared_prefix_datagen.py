@@ -5,7 +5,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData, UserSessionChatAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -112,9 +112,19 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 ChatMessage(role="system", content=shared_prefix),
                 ChatMessage(role="user", content=question)
             ]
-            return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            return ChatCompletionAPIData(messages=messages, max_tokens=output_len)
         else:
-            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+            # Single-turn: use data_index directly
+            i = data.data_index % len(self.prompts)
+            if self.api_config.type == APIType.Chat:
+                shared_prefix, question = self.prompt_pairs[i]
+                messages = [
+                    ChatMessage(role="system", content=shared_prefix),
+                    ChatMessage(role="user", content=question)
+                ]
+                return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            else:
+                return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
     def get_request(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
@@ -192,10 +202,19 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
                 if self.enable_multi_turn_chat:
                     # multi turn chat, create user to keep conversation
+                    # For Chat API, context should be a list of messages starting with system prompt
+                    # For Completion API, context is a string
+                    if self.api_config.type == APIType.Chat:
+                        initial_context = [
+                            ChatMessage(role="system", content=shared_prefix_text)
+                        ]
+                    else:
+                        initial_context = shared_prefix_text
+                    
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
-                            context=shared_prefix_text,
+                            context=initial_context,
                         )
                     )
 
