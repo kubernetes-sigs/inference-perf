@@ -4,7 +4,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData, UserSessionChatAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -65,25 +65,54 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         return True
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
-        i = data.data_index % len(self.prompts)
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
-            return UserSessionCompletionAPIData(
-                prompt=self.prompts[i],
-                max_tokens=self.output_len,
-                user_session=self.user_sessions[user_id],
-                target_round=round,
-            )
-        elif self.api_config.type == APIType.Chat:
-            shared_prefix, question = self.prompt_pairs[i]
-            messages = [
-                ChatMessage(role="system", content=shared_prefix),
-                ChatMessage(role="user", content=question)
-            ]
-            return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            
+            # Each user belongs to a group, and each group has num_prompts_per_group questions
+            # Calculate which group this user belongs to and which question in the group
+            group_id = user_id // self.num_prompts_per_group
+            prompt_in_group = user_id % self.num_prompts_per_group
+            
+            # For each round, use a different question from the same group
+            # Cycle through questions in the same group
+            question_in_group = (prompt_in_group + round) % self.num_prompts_per_group
+            question_idx = group_id * self.num_prompts_per_group + question_in_group
+            
+            if self.api_config.type == APIType.Chat:
+                # Chat API + Multi-turn: Use UserSessionChatAPIData
+                shared_prefix, question = self.prompt_pairs[question_idx]
+                messages = [
+                    ChatMessage(role="system", content=shared_prefix),
+                    ChatMessage(role="user", content=question)
+                ]
+                return UserSessionChatAPIData(
+                    messages=messages,
+                    max_tokens=self.output_len,
+                    user_session=self.user_sessions[user_id],
+                    target_round=round,
+                )
+            else:
+                # Completion API + Multi-turn: Use UserSessionCompletionAPIData
+                prompt_idx = question_idx
+                return UserSessionCompletionAPIData(
+                    prompt=self.prompts[prompt_idx],
+                    max_tokens=self.output_len,
+                    user_session=self.user_sessions[user_id],
+                    target_round=round,
+                )
         else:
-            return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+            # Single-turn: use data_index directly
+            i = data.data_index % len(self.prompts)
+            if self.api_config.type == APIType.Chat:
+                shared_prefix, question = self.prompt_pairs[i]
+                messages = [
+                    ChatMessage(role="system", content=shared_prefix),
+                    ChatMessage(role="user", content=question)
+                ]
+                return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            else:
+                return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
     def get_request(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
@@ -151,10 +180,19 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
                 if self.enable_multi_turn_chat:
                     # multi turn chat, create user to keep conversation
+                    # For Chat API, context should be a list of messages starting with system prompt
+                    # For Completion API, context is a string
+                    if self.api_config.type == APIType.Chat:
+                        initial_context = [
+                            ChatMessage(role="system", content=shared_prefix_text)
+                        ]
+                    else:
+                        initial_context = shared_prefix_text
+                    
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
-                            context=shared_prefix_text,
+                            context=initial_context,
                         )
                     )
 
