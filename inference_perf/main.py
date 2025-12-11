@@ -185,6 +185,8 @@ def main_cli() -> None:
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
                 timeout=config.load.request_timeout,
+                cert_path=config.server.cert_path,
+                key_path=config.server.key_path,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

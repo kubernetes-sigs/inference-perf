@@ -255,6 +255,8 @@ class ModelServerClientConfig(BaseModel):
     base_url: str
     ignore_eos: bool = True
     api_key: Optional[str] = None
+    cert_path: Optional[str] = None
+    key_path: Optional[str] = None
 
 
 class CustomTokenizerConfig(BaseModel):

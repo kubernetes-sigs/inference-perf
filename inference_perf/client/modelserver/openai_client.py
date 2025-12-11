@@ -25,6 +25,7 @@ import json
 import time
 import logging
 import requests
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ class openAIModelServerClient(ModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
+        cert_path: Optional[str] = None,
+        key_path: Optional[str] = None,
     ) -> None:
         super().__init__(api_config, timeout)
         self.uri = uri
@@ -54,6 +57,8 @@ class openAIModelServerClient(ModelServerClient):
         self.max_tcp_connections = max_tcp_connections
         self.additional_filters = additional_filters
         self.api_key = api_key
+        self.cert_path = cert_path
+        self.key_path = key_path
 
         if model_name is None:
             supported_models = self.get_supported_models()
@@ -118,11 +123,17 @@ class openAIModelServerClient(ModelServerClient):
 
 class openAIModelServerClientSession(ModelServerClientSession):
     def __init__(self, client: openAIModelServerClient):
+        timeout = aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel
+        connector = None
+        if client.cert_path and client.key_path:
+            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH) # Use system trust store
+            ssl_context.load_cert_chain(certfile=client.cert_path, keyfile=client.key_path)
+            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections, ssl=ssl_context)
+        else:
+            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections)
+
         self.client = client
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel,
-            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections),
-        )
+        self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
         payload = await data.to_payload(
