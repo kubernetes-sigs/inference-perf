@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package inference-perf.infra.v1;
+
+import "google/container/v1/cluster_service.proto";
+import "k8s.io/api/core/v1/generated.proto";
+
+
+// Root level representing the specific GKE Cluster
+message GkeClusterInfraReport {
+  // the GCP Cluster definition
+  // maps to: containerpb.Cluster
+  google.container.v1.Cluster spec = 1;
+
+  // children: NodePools belonging to this cluster
+  repeated NodePoolWrapper node_pools = 2;
+}
+
+message NodePoolWrapper {
+  // the GCP NodePool definition (containerpb.NodePool)
+  google.container.v1.NodePool spec = 1;
+
+  // k8s nodes belonging to this pool
+  repeated NodeWrapper nodes = 2;
+}
+
+message NodeWrapper {
+  // the K8s Node object (corev1.Node)
+  k8s.io.api.core.v1.Node node = 1;
+
+  // inference server pods running on this specific node ([]*corev1.Pod)
+  repeated k8s.io.api.core.v1.Pod pods = 2;
+}
