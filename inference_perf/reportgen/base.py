@@ -328,4 +328,16 @@ class ReportGenerator:
                 else:
                     logger.warning("No metrics collected for Stage %d", stage_id)
 
+        if report_config.infra:
+            # Safetfy check: make sure the number of requests from lifecycle metrics matches number of requests from prometheus metrics
+
+            if report_config.infra.gke:
+                # Create query per model server to get unaggregated metrics, from this determine the cluster and pods
+                # From the cluster and pods, determine the nodes and nodepools, then construct the `GkeClusterWrapper`
+                # model_dump `GkeClusterWrapper` into a ReportFile and add to prometheus_metrics_reports
+                prometheus_metrics_reports.append("gke_report")
+            if report_config.infra.local:
+                # TBD
+                prometheus_metrics_reports.append("local_report")
+
         return prometheus_metrics_reports
