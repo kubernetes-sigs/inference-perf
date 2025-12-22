@@ -228,11 +228,29 @@ class PrometheusMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = False
 
+# inference-perf and the target inference server are running on the same machine
+class LocalInfraReportConfig(BaseModel):
+    pass
+
+# inference-perf and the target inference server are running in a GKE cluster
+class GkeInfraReportConfig(BaseModel):
+    pass
+
+class InfrastructureReportConfig(BaseModel):
+    local: Optional[LocalInfraReportConfig] = None
+    gke: Optional[GkeInfraReportConfig] = None
+
+    @model_validator(mode='after')
+    def check_exclusive_fields(self):
+        set_fields = [v for v in (self.local, self.gke) if v is not None]
+        if len(set_fields) != 1:
+            raise ValueError("Must specify exactly one of 'local' or 'gke'")
+        return self
 
 class ReportConfig(BaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
-
+    infra: InfrastructureReportConfig
 
 class PrometheusClientConfig(BaseModel):
     scrape_interval: int = 15
