@@ -208,13 +208,13 @@ class vLLMModelServerClient(openAIModelServerClient):
             p90_inter_token_latency=None,
             p99_inter_token_latency=None,
             prefix_cache_hits=ModelServerPrometheusMetric(
-                "vllm:prefix_cache_hits",
+                "vllm:prefix_cache_hits_total",
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             prefix_cache_queries=ModelServerPrometheusMetric(
-                "vllm:prefix_cache_queries",
+                "vllm:prefix_cache_queries_total",
                 "increase",
                 "counter",
                 self.metric_filters,
