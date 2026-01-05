@@ -36,6 +36,7 @@ from inference_perf.datagen import (
     CNNDailyMailDataGenerator,
     InfinityInstructDataGenerator,
     BillsumConversationsDataGenerator,
+    DatasetTraceDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -299,6 +300,10 @@ def main_cli() -> None:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.BillsumConversations:
             datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.DatasetTrace:
+            if config.data.trace is None:
+                raise Exception("DatasetTrace data generator requires 'trace' to be configured")
+            datagen = DatasetTraceDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

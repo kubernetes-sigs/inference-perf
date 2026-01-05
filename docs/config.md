@@ -39,7 +39,7 @@ Configures the test data generation methodology:
 
 ```yaml
 data:
-  type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct # Data generation type
+  type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct|dataset_trace # Data generation type
   path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
@@ -58,8 +58,36 @@ data:
     num_prompts_per_group: 10 # Unique questions per group
     system_prompt_len: 100    # Shared prefix length (tokens)
     question_len: 50          # Question length (tokens)
-    output_len: 50            # Target output length (tokens)  
+    output_len: 50            # Target output length (tokens)
+  trace:                      # For random/dataset_trace types
+    file: ./traces/trace.jsonl # Path to trace file
+    format: DatasetTrace       # Trace format: AzurePublicDataset or DatasetTrace
 ```
+
+#### DatasetTrace Data Generation
+
+The `dataset_trace` type allows you to provide custom prompts via a JSONL file. Each line in the file should be a JSON object with:
+
+- `text_input` (required): The actual prompt text to send to the model
+- `output_length` (optional): If provided, sets `max_tokens` for the request; if omitted, uses server default
+
+**Example trace file (`trace.jsonl`):**
+```jsonl
+{"text_input": "What is the capital of France?", "output_length": 20}
+{"text_input": "Explain quantum computing in simple terms."}
+{"text_input": "Write a Python function for fibonacci.", "output_length": 150}
+```
+
+**Example configuration:**
+```yaml
+data:
+  type: dataset_trace
+  trace:
+    file: ./traces/my_prompts.jsonl
+    format: DatasetTrace
+```
+
+The `dataset_trace` generator supports both `completion` and `chat` API types. For chat API, prompts are automatically wrapped in a user message.
 
 ### Load Configuration
 

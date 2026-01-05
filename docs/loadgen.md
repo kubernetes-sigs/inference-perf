@@ -149,7 +149,9 @@ load:
 
 Trace replay allows you to reproduce real-world production traffic patterns in your benchmarks. This is valuable for testing how your inference server performs under realistic load patterns, including request bursts, idle periods, and varying token distributions.
 
-We currently support the [AzurePublicDataset](https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv) trace format, which contains timestamped request logs with input and output token counts.
+We currently support two trace formats:
+1. **[AzurePublicDataset](https://github.com/Azure/AzurePublicDataset/blob/master/data/AzureLLMInferenceTrace_conv.csv)**: Contains timestamped request logs with input and output token counts
+2. **DatasetTrace**: JSONL format with actual prompt text and optional output length specifications
 
 #### How Trace Replay Works
 
@@ -171,7 +173,7 @@ load:
     format: AzurePublicDataset
 ```
 
-**Data Configuration** - Trace replay feature is only supported for random data generator. Matches the token counts from the trace:
+**Data Configuration** - For AzurePublicDataset format, use the random data generator to match token counts:
 ```yaml
 data:
   type: random
@@ -180,7 +182,18 @@ data:
     format: AzurePublicDataset
 ```
 
-#### Trace Format
+For DatasetTrace format, use the dataset_trace data generator to use actual prompts:
+```yaml
+data:
+  type: dataset_trace
+  trace:
+    file: ./traces/trace.jsonl
+    format: DatasetTrace
+```
+
+#### Trace Formats
+
+**AzurePublicDataset Format**
 
 The AzurePublicDataset format is a CSV file with the following columns:
 ```
@@ -194,6 +207,21 @@ For example:
 ```
 
 The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
+
+**DatasetTrace Format**
+
+The DatasetTrace format is a JSONL file where each line is a JSON object with:
+- `text_input` (required): The actual prompt text to send
+- `output_length` (optional): If provided, sets `max_tokens`; if omitted, uses server default
+
+For example:
+```jsonl
+{"text_input": "What is the capital of France?", "output_length": 20}
+{"text_input": "Explain quantum computing in simple terms."}
+{"text_input": "Write a Python function for fibonacci.", "output_length": 150}
+```
+
+This format allows you to use your own custom prompts instead of generating random tokens, making it useful for testing with specific workloads or reproducing exact user queries.
 
 ## Troubleshooting
 

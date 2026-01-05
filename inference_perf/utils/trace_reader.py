@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Iterator, Optional, List, Tuple
 from pathlib import Path
 import csv
+import json
 import logging
 import time
 
@@ -113,3 +114,72 @@ class AzurePublicDatasetReader(TraceReader):
             has_header = sniffer.has_header(f.read(2048))
             f.seek(0)
             return has_header
+
+
+class DatasetTraceEntry:
+    """Represents a single dataset trace entry with prompt and optional output length."""
+
+    def __init__(self, text_input: str, output_length: Optional[int] = None):
+        self.text_input = text_input
+        self.output_length = output_length
+
+
+class DatasetTraceReader:
+    """Trace reader for DatasetTrace format (JSONL with text_input and optional output_length)."""
+
+    def __init__(self) -> None:
+        self.entries: Optional[List[DatasetTraceEntry]] = None
+
+    def load_entries(self, file_path: Path) -> List[DatasetTraceEntry]:
+        """Load dataset trace entries from JSONL file into memory."""
+        if self.entries is not None:
+            return self.entries
+
+        logger.info(f"Loading dataset trace entries from {file_path}")
+        entries: List[DatasetTraceEntry] = []
+        before = time.time()
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                try:
+                    line = line.strip()
+                    if not line:  # Skip empty lines
+                        continue
+                    data = json.loads(line)
+                    if "text_input" not in data:
+                        raise ValueError(f"Missing required field 'text_input' in {file_path} line {line_num}")
+                    text_input = data["text_input"]
+                    output_length = data.get("output_length")
+                    if output_length is not None:
+                        output_length = int(output_length)
+                    entries.append(DatasetTraceEntry(text_input, output_length))
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error parsing JSON on line {line_num}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error processing line {line_num}: {e}")
+
+        after = time.time()
+        logger.info(f"Loaded {len(entries)} entries in {after - before:.3f} seconds")
+        self.entries = entries
+        return entries
+
+    def stream_entries(self, file_path: Path) -> Iterator[DatasetTraceEntry]:
+        """Stream dataset trace entries one by one."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                try:
+                    line = line.strip()
+                    if not line:  # Skip empty lines
+                        continue
+                    data = json.loads(line)
+                    if "text_input" not in data:
+                        raise ValueError(f"Missing required field 'text_input'")
+                    text_input = data["text_input"]
+                    output_length = data.get("output_length")
+                    if output_length is not None:
+                        output_length = int(output_length)
+                    yield DatasetTraceEntry(text_input, output_length)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error parsing JSON on line {line_num}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error processing line {line_num}: {e}")

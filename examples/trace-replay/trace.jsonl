@@ -1,0 +1,11 @@
+{"text_input": "What is the capital of France?", "output_length": 20}
+{"text_input": "Explain quantum computing in simple terms.", "output_length": 100}
+{"text_input": "Write a Python function to calculate the factorial of a number.", "output_length": 150}
+{"text_input": "Describe the process of photosynthesis."}
+{"text_input": "What are the main differences between machine learning and deep learning?", "output_length": 200}
+{"text_input": "How does a neural network learn?", "output_length": 120}
+{"text_input": "Explain the concept of recursion in programming."}
+{"text_input": "What is the difference between supervised and unsupervised learning?", "output_length": 180}
+{"text_input": "Describe the water cycle.", "output_length": 80}
+{"text_input": "What is the purpose of the transformer architecture in NLP?", "output_length": 250}
+

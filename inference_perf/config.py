@@ -36,6 +36,7 @@ class APIConfig(BaseModel):
 
 class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
+    DATASET_TRACE = "DatasetTrace"
 
 
 class TraceConfig(BaseModel):
@@ -52,6 +53,7 @@ class DataGenType(Enum):
     CNNDailyMail = "cnn_dailymail"
     InfinityInstruct = "infinity_instruct"
     BillsumConversations = "billsum_conversations"
+    DatasetTrace = "dataset_trace"
 
 
 # Represents the distribution for input prompts and output generations.
