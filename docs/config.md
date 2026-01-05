@@ -53,12 +53,12 @@ data:
     mean: 50
     std_dev: 10
     total_count: 100
-  shared_prefix:              # For shared_prefix type
-    num_groups: 10            # Number of shared prefix groups
-    num_prompts_per_group: 10 # Unique questions per group
-    system_prompt_len: 100    # Shared prefix length (tokens)
-    question_len: 50          # Question length (tokens)
-    output_len: 50            # Target output length (tokens)  
+  shared_prefix:
+    num_unique_system_prompts: 10     # Number of distinct shared prefixes (formerly num_groups)
+    num_users_per_system_prompt: 10   # Number of unique questions per shared prefix (formerly num_prompts_per_group)
+    system_prompt_len: 100            # Length of the shared prefix (in tokens)
+    question_len: 50                  # Length of the unique question part (in tokens)
+    output_len: 50                    # Target length for the model's generated output (in tokens)
 ```
 
 ### Load Configuration

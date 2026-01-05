@@ -18,7 +18,7 @@ from os import cpu_count
 from typing import Any, List, Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from inference_perf.circuit_breaker import CircuitBreakerConfig
 
@@ -65,8 +65,20 @@ class Distribution(BaseModel):
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
 class SharedPrefix(BaseModel):
-    num_groups: int = 10
-    num_prompts_per_group: int = 10
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    num_groups: int = Field(
+        10,
+        validation_alias=AliasChoices("num_unique_system_prompts", "num_groups"),
+        serialization_alias="num_unique_system_prompts",
+    )
+
+    num_prompts_per_group: int = Field(
+        10,
+        validation_alias=AliasChoices("num_users_per_system_prompt", "num_prompts_per_group"),
+        serialization_alias="num_users_per_system_prompt",
+    )
+
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
