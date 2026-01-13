@@ -39,7 +39,7 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, TypeAlias, Optional
+from typing import List, Tuple, Optional, NamedTuple
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -55,7 +55,11 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float]
+class RequestQueueData(NamedTuple):
+    stage_id: int
+    request_data: InferenceAPIData
+    request_time: float
+    model_name: str | None = None
 
 
 class Worker(mp.Process):
