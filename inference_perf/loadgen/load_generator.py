@@ -67,7 +67,7 @@ class Worker(mp.Process):
         self,
         id: int,
         client: ModelServerClient,
-        request_queue: mp.Queue,  # type: ignore[type-arg]
+        request_queue: mp.JoinableQueue[RequestQueueData],
         datagen: DataGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
@@ -144,7 +144,7 @@ class Worker(mp.Process):
                     continue
 
                 async def schedule_client(
-                    queue: mp.Queue,  # type: ignore[type-arg]
+                    queue: mp.JoinableQueue[RequestQueueData],
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
@@ -171,8 +171,7 @@ class Worker(mp.Process):
                         queue.task_done()
                         semaphore.release()
 
-                stage_id, request, request_time = item
-                request_data = LazyLoadDataMixin.get_request(self.datagen, request)
+                request_data = LazyLoadDataMixin.get_request(self.datagen, item.request)
                 task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore))
                 tasks.append(task)
                 await sleep(0)
@@ -254,7 +253,7 @@ class LoadGenerator:
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
 
-    async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
+    async def drain(self, queue: mp.JoinableQueue[RequestQueueData]) -> None:
         while True:
             try:
                 _ = queue.get_nowait()
