@@ -117,9 +117,10 @@ Supported datasets include the following:
 Multiple load generators are supported:
 - Poisson / constant-time load generation to send specific QPS.
 - Multi-process load generation for increased concurrency and higher QPS.
+- Concurrent load generation to achieve concurrent user load for a system.
 
 Multiple load patterns can be specified:
-- Stages with configurable duration and QPS along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
+- Stages with configurable duration and QPS rate along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
 
 Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not the load generator is failing to meet the desired load. For detailed information on benchmarking at scale and to understand how inference-perf achieves the load target, please refer to [loadgen.md](./docs/loadgen.md)
 

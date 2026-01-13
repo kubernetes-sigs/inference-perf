@@ -77,7 +77,7 @@ You have the following options to generate load with inference-perf.
 1. Set the sweep option to true in the config file.
 2. Choose linear (recommended) or gemoetric progression for request rates.
 
-```
+```yaml
 load:
   type: constant  # or 'poisson' - sweep not available for 'concurrent'
   sweep:
@@ -93,7 +93,7 @@ Regardless of the serving stack, accelerator you are running on or the number of
 
 This should allow the tool to generate the requested QPS.
 
-```
+```yaml
 load:
   type: constant  # rate-based load generation
   stages:
