@@ -248,6 +248,40 @@ This should generate the following charts (below charts are for example only):
 
 ![latency-throughput-chart](./docs/images/throughput_vs_latency.png)
 
+## Testing
+
+inference-perf comes with a suite of end-to-end tests that you can run to ensure that no regressions in functionality or performance was introduced. To run the tests, you have two ways.
+
+### Testing Locally
+
+You can run the end-to-end test suites locally from within the command line.
+
+It is recommended that you have `llm-d-inference-sim` installed locally to ensure that the full test suite is executed. To do so, you can use the Nix flake available locally by running `nix develop`, or run your tests in Docker instead (see below).
+
+To start all end-to-end tests, run:
+
+```sh
+pdm run test:e2e
+```
+
+### Testing in Docker
+
+Running end-to-end tests in Docker is also a single command:
+
+```sh
+pdm run test:e2e:docker
+```
+
+This command will automatically build a testable Docker image and run it immediately after.
+
+### Testing using GitHub Actions
+
+Every commit and PR pushed to the `main` or `feature/*` branches will automatically trigger the CI pipelines to run tests using GitHub Actions. This ensures that all test cases are verified automatically before merging any changes.
+
+To debug any failure in testing, the end-to-end test workflow exposes output artifacts, such as debug-level test output logs. To access this, navigate to the workflow run page for the specific commit or PR. For more information, see GitHub's [Downloading workflow artifacts][] page.
+
+[Downloading workflow artifacts]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts
+
 ## Contributing
 
 Our community meeting is weekly on Thursdays alternating betweem 09:00 and 11:30 PDT ([Zoom Link](https://zoom.us/j/9955436256?pwd=Z2FQWU1jeDZkVC9RRTN4TlZyZTBHZz09), [Meeting Notes](https://docs.google.com/document/d/15XSF8q4DShcXIiExDfyiXxAYQslCmOmO2ARSJErVTak/edit?usp=sharing), [Meeting Recordings](https://www.youtube.com/playlist?list=PL69nYSiGNLP30qNanabU75ayPK7OPNAAS)). 
