@@ -187,6 +187,7 @@ def main_cli() -> None:
                 timeout=config.load.request_timeout,
                 cert_path=config.server.cert_path,
                 key_path=config.server.key_path,
+                lora_adapters=config.server.lora_adapters,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

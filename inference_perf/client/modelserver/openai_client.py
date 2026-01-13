@@ -48,6 +48,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout: Optional[float] = None,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
+        lora_adapters: Optional[List[str]] = None,
     ) -> None:
         super().__init__(api_config, timeout)
         self.uri = uri
@@ -59,6 +60,7 @@ class openAIModelServerClient(ModelServerClient):
         self.api_key = api_key
         self.cert_path = cert_path
         self.key_path = key_path
+        self.lora_adapters = lora_adapters
 
         if model_name is None:
             supported_models = self.get_supported_models()
@@ -67,7 +69,7 @@ class openAIModelServerClient(ModelServerClient):
                 raise Exception("openAI client init failed, no model_name could be found")
             self.model_name = supported_models[0].get("id")
             logger.info(f"Inferred model {self.model_name}")
-            if len(supported_models) > 1:
+            if len(supported_models) > 1 and not self.lora_adapters:
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
         else:
             self.model_name = model_name
