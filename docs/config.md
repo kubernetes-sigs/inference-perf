@@ -77,6 +77,11 @@ load:
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
+  lora_traffic_split:               # Optional: MultiLoRA traffic splitting
+    - name: adapter_1               # LoRA adapter name
+      split: 0.5                    # Traffic weight (must sum to 1.0)
+    - name: adapter_2
+      split: 0.5
 ```
 
 #### Load Sweeps
@@ -153,13 +158,15 @@ Controls benchmark report generation:
 ```yaml
 report:
   request_lifecycle:
-    summary: true       # Generate high-level summary
-    per_stage: true     # Include breakdown by load stage
-    per_request: false  # Enable detailed per-request logs (verbose)
+    summary: true             # Generate high-level summary
+    per_stage: true           # Include breakdown by load stage
+    per_request: false        # Enable detailed per-request logs (verbose)
+    per_adapter: false        # Generate metrics grouped by LoRA adapter
+    per_adapter_stage: false  # Generate metrics grouped by adapter and stage
     percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
   prometheus:
-    summary: true       # Include Prometheus metrics summary
-    per_stage: false    # Disable Prometheus stage breakdown
+    summary: true             # Include Prometheus metrics summary
+    per_stage: false          # Disable Prometheus stage breakdown
 ```
 
 ### Storage

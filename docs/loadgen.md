@@ -145,6 +145,89 @@ load:
   worker_max_concurrency: 8
 ```
 
+### MultiLoRA Traffic Splitting
+
+MultiLoRA support enables benchmarking multiple LoRA (Low-Rank Adaptation) adapters simultaneously by distributing traffic across them according to specified weights. This is useful for:
+- A/B testing different LoRA adapters
+- Simulating multi-tenant inference deployments
+- Benchmarking adapter-specific performance characteristics
+
+#### Configuration
+
+Add `lora_traffic_split` to your load configuration to specify adapters and their traffic weights:
+
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 100
+    duration: 60
+  lora_traffic_split:
+    - name: movie       # LoRA adapter name
+      split: 0.50       # 50% of traffic
+    - name: consumer    # Another adapter
+      split: 0.50       # 50% of traffic
+```
+
+**Key requirements:**
+- The `split` values across all adapters must sum to exactly 1.0
+- Each adapter `name` should match the LoRA adapter name configured on your inference server
+- Works with all load types: `constant`, `poisson`, `concurrent`, and `trace_replay`
+
+#### How It Works
+
+1. For each request, the load generator randomly selects a LoRA adapter based on the specified probability weights
+2. The selected adapter name is sent in the API request's `model` field
+3. The inference server (vLLM, SGLang, etc.) routes the request to the appropriate adapter
+
+#### Per-Adapter Reports
+
+Enable per-adapter reporting to analyze performance for each LoRA adapter separately:
+
+```yaml
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_adapter: true         # Generate metrics grouped by adapter
+    per_adapter_stage: true   # Generate metrics grouped by adapter and stage
+```
+
+This generates separate report files:
+- `adapter_{adapter_name}_lifecycle_metrics` - Overall metrics per adapter
+- `adapter_{adapter_name}_stage_{stage_id}_lifecycle_metrics` - Per-adapter metrics for each load stage
+
+#### Example Use Cases
+
+**A/B Testing Adapters:**
+```yaml
+lora_traffic_split:
+  - name: baseline
+    split: 0.5
+  - name: optimized
+    split: 0.5
+```
+
+**Multi-Domain Inference:**
+```yaml
+lora_traffic_split:
+  - name: medical
+    split: 0.33
+  - name: legal
+    split: 0.33
+  - name: technical
+    split: 0.34
+```
+
+**Gradual Rollout:**
+```yaml
+lora_traffic_split:
+  - name: stable
+    split: 0.9
+  - name: experimental
+    split: 0.1
+```
+
 ### Replay traffic from production systems
 
 Trace replay allows you to reproduce real-world production traffic patterns in your benchmarks. This is valuable for testing how your inference server performs under realistic load patterns, including request bursts, idle periods, and varying token distributions.

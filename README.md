@@ -23,12 +23,12 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
 * Supports Multi-turn chat conversations, it can keep context of a series of messages to simulate a conversation. A request in each chat round will keep previouse messages as prefix. see example [config-multi-turn](examples/vllm/config-shared-prefix-multi-turn.yml)
+* Supports MultiLoRA traffic splitting to benchmark multiple LoRA adapters simultaneously with configurable traffic distribution and per-adapter reporting. See [loadgen.md](./docs/loadgen.md#multilora-traffic-splitting) for details.
 
 ## Roadmap
 
 * Accelerator metrics collection during benchmarks (GPU utilization, memory usage, power usage, etc.).
 * Deployment API to help deploy different inference stacks.
-* Traffic splitting among different use cases or LoRA adapters.
 * Support for benchmarking non-LLM GenAI use cases.
 * Support for different datasets to simulate real world use cases.
 * Replaying traffic from production systems.
