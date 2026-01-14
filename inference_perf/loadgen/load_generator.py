@@ -39,7 +39,7 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, Optional, NamedTuple
+from typing import List, Tuple, Optional, NamedTuple, Callable
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -216,6 +216,7 @@ class LoadGenerator:
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
+        self.traffic_split = load_config.traffic_split
         signal.signal(signal.SIGINT, self._sigint_handler)
         if self.load_type == LoadType.TRACE_REPLAY:
             self.trace = load_config.trace
@@ -254,6 +255,18 @@ class LoadGenerator:
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
+    
+    def get_model_sampler(self) -> Optional[Callable[[], str]]:
+        if self.traffic_split is None:
+            return None
+
+        model_names = [split.model_name for split in self.traffic_split]
+        weights = [split.weight for split in self.traffic_split]
+        random_generator = np.random.default_rng(seed=42)
+
+        def sampler() -> str:
+            return random_generator.choice(model_names, p=weights)
+        return sampler
 
     async def drain(self, queue: mp.JoinableQueue[RequestQueueData]) -> None:
         while True:
@@ -302,9 +315,12 @@ class LoadGenerator:
 
         time_generator = timer.start_timer(start_time)
         data_generator = self.datagen.get_data()
+        model_sampler = self.get_model_sampler()
         for _ in range(num_requests):
             request_data = next(data_generator)
-            request_queue.put((stage_id, request_data, next(time_generator)), request_data.prefered_worker_id)
+            model_name = model_sampler() if self.traffic_split is not None else None
+            item = RequestQueueData(stage_id, request_data, next(time_generator), model_name)
+            request_queue.put(item, request_data.prefered_worker_id)
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
@@ -543,8 +559,10 @@ class LoadGenerator:
             logger.info("Stage %d - run started", stage_id)
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
+                model_sampler = self.get_model_sampler()
                 for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, data)
+                    model_name = model_sampler() if self.traffic_split is not None else None
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED
@@ -559,7 +577,7 @@ class LoadGenerator:
                             break
                         if time_index > now:
                             await sleep(time_index - time.perf_counter())
-                        tg.create_task(client.process_request(request_data, stage_id, time_index))
+                        tg.create_task(client.process_request(request_data, stage_id, time_index, model_name))
                         continue
                     else:
                         break
