@@ -67,7 +67,7 @@ class Worker(mp.Process):
         self,
         id: int,
         client: ModelServerClient,
-        request_queue: mp.JoinableQueue[RequestQueueData],
+        request_queue: "mp.JoinableQueue[RequestQueueData]",
         datagen: DataGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
@@ -144,7 +144,7 @@ class Worker(mp.Process):
                     continue
 
                 async def schedule_client(
-                    queue: mp.JoinableQueue[RequestQueueData],
+                    queue: "mp.JoinableQueue[RequestQueueData]",
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
@@ -268,7 +268,7 @@ class LoadGenerator:
             return random_generator.choice(model_names, p=weights)
         return sampler
 
-    async def drain(self, queue: mp.JoinableQueue[RequestQueueData]) -> None:
+    async def drain(self, queue: "mp.JoinableQueue[RequestQueueData]") -> None:
         while True:
             try:
                 _ = queue.get_nowait()
