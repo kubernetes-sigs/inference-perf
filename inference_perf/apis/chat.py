@@ -41,8 +41,10 @@ class ChatCompletionAPIData(InferenceAPIData):
     async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
+        # Set model to LoRA adapter if present
+        effective_model = self.lora_adapter if self.lora_adapter is not None else model_name
         return {
-            "model": model_name,
+            "model": effective_model,
             "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
@@ -85,16 +87,18 @@ class ChatCompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 output_tokens=output_len,
                 output_token_times=output_token_times,
+                lora_adapter=self.lora_adapter,
             )
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
             choices = data.get("choices", [])
             if len(choices) == 0:
-                return InferenceInfo(input_tokens=prompt_len)
+                return InferenceInfo(input_tokens=prompt_len, lora_adapter=self.lora_adapter)
             output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
+                lora_adapter=self.lora_adapter,
             )

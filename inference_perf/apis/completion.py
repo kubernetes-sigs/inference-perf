@@ -37,8 +37,10 @@ class CompletionAPIData(InferenceAPIData):
     async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
+        # Set model to LoRA adapter if present
+        effective_model = self.lora_adapter if self.lora_adapter is not None else model_name
         return {
-            "model": model_name,
+            "model": effective_model,
             "prompt": self.prompt,
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
@@ -78,14 +80,15 @@ class CompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 output_tokens=output_len,
                 output_token_times=output_token_times,
+                lora_adapter=self.lora_adapter,
             )
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens(self.prompt)
             choices = data.get("choices", [])
             if len(choices) == 0:
-                return InferenceInfo(input_tokens=prompt_len)
+                return InferenceInfo(input_tokens=prompt_len, lora_adapter=self.lora_adapter)
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
-            return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len)
+            return InferenceInfo(input_tokens=prompt_len, output_tokens=output_len, lora_adapter=self.lora_adapter)

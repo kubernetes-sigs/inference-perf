@@ -25,6 +25,7 @@ class InferenceInfo(BaseModel):
     output_tokens: int = 0
     output_token_times: List[float] = []
     extra_info: dict[str, Any] = {}
+    lora_adapter: Optional[str] = None
 
 
 class ErrorResponseInfo(BaseModel):
@@ -46,6 +47,7 @@ class RequestLifecycleMetric(BaseModel):
 class InferenceAPIData(BaseModel):
     # loadgen should assign this request to prefered worker if possible
     prefered_worker_id: int = -1  # no prefered worker by default
+    lora_adapter: Optional[str] = None
 
     @abstractmethod
     def get_api_type(self) -> APIType:

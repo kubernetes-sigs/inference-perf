@@ -222,6 +222,12 @@ class LoadGenerator:
                 self.trace_reader = AzurePublicDatasetReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
+        if load_config.lora_traffic_split is not None:
+            self.lora_adapters = [config.name for config in load_config.lora_traffic_split]
+            self.lora_weights = [config.split for config in load_config.lora_traffic_split]
+        else:
+            self.lora_adapters = None
+            self.lora_weights = None
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -239,6 +245,12 @@ class LoadGenerator:
             if worker.shared_max_concurrency:
                 with worker.shared_max_concurrency.get_lock():
                     worker.shared_max_concurrency.value = worker_concurrency
+                    
+    def _assign_lora_adapter(self, request_data: InferenceAPIData) -> Optional[str]:
+        """Assigns a LoRA (PEFT) adapter to the request data based on predetermined probability weights"""
+        if self.lora_adapters is None or self.lora_weights is None:
+            return None
+        request_data.lora_adapter = np.random.choice(adapters, weights)
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -299,6 +311,8 @@ class LoadGenerator:
         data_generator = self.datagen.get_data()
         for _ in range(num_requests):
             request_data = next(data_generator)
+            # Assign LoRA adapter to request data if needed
+            self._assign_lora_adapter(request_data)
             request_queue.put((stage_id, request_data, next(time_generator)), request_data.prefered_worker_id)
 
         # Wait until all requests are finished processing
@@ -540,6 +554,8 @@ class LoadGenerator:
                 time_generator = timer.start_timer(start_time)
                 for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, data)
+                    # Assign LoRA adapter to request data if needed
+                    self._assign_lora_adapter(request_data)
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED

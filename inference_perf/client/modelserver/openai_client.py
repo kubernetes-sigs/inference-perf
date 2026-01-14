@@ -136,6 +136,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
     async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+        # The payload will set the model name to the client's model_name field or the LoRA adapter name selected by the Load Generator
         payload = await data.to_payload(
             model_name=self.client.model_name,
             max_tokens=self.client.max_completion_tokens,
