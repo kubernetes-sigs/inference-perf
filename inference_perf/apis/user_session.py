@@ -60,14 +60,21 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         inference_info.extra_info["user_session"] = self.user_session.user_session_id
         inference_info.extra_info["chat_round"] = self.user_session._current_round
 
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         inference_info = await super().process_response(response, config, tokenizer)
         self.update_inference_info(inference_info)
         self.user_session.update_context(self.prompt + " " + self.model_response)
         return inference_info
 
     async def process_failure(
-        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         # no response returned, use context from the last round
         inference_info = InferenceInfo()

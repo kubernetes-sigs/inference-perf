@@ -47,7 +47,6 @@ class RequestLifecycleMetric(BaseModel):
 class InferenceAPIData(BaseModel):
     # loadgen should assign this request to prefered worker if possible
     prefered_worker_id: int = -1  # no prefered worker by default
-    lora_adapter: Optional[str] = None
 
     @abstractmethod
     def get_api_type(self) -> APIType:
@@ -58,15 +57,24 @@ class InferenceAPIData(BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         raise NotImplementedError
 
     async def process_failure(
-        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         pass  # no-op by default
 
@@ -87,13 +95,22 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
     def get_route(self) -> str:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
     async def process_failure(
-        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")

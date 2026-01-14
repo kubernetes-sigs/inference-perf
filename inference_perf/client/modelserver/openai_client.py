@@ -93,7 +93,9 @@ class openAIModelServerClient(ModelServerClient):
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
         """
         Create an internal client session if not already, then use that to
         process the request.
@@ -104,7 +106,7 @@ class openAIModelServerClient(ModelServerClient):
             if self._session is None:
                 self._session = openAIModelServerClientSession(self)
             session = self._session
-        await session.process_request(data, stage_id, scheduled_time)
+        await session.process_request(data, stage_id, scheduled_time, lora_adapter)
 
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
@@ -147,10 +149,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
         self.client = client
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
-        # The payload will set the model name to the client's model_name field or the LoRA adapter name selected by the Load Generator
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
+        effective_model_name = lora_adapter if lora_adapter else self.client.model_name
         payload = await data.to_payload(
-            model_name=self.client.model_name,
+            effective_model_name=effective_model_name,
             max_tokens=self.client.max_completion_tokens,
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
@@ -169,7 +174,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         try:
             async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as response:
                 response_info = await data.process_response(
-                    response=response, config=self.client.api_config, tokenizer=self.client.tokenizer
+                    response=response,
+                    config=self.client.api_config,
+                    tokenizer=self.client.tokenizer,
+                    lora_adapter=lora_adapter,
                 )
                 response_content = await response.text()
 
@@ -203,6 +211,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 config=self.client.api_config,
                 tokenizer=self.client.tokenizer,
                 exception=e,
+                lora_adapter=lora_adapter,
             )
             self.client.metrics_collector.record_metric(
                 RequestLifecycleMetric(

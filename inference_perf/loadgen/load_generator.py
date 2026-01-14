@@ -55,7 +55,7 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float]
+RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float, Optional[str]]
 
 
 class Worker(mp.Process):
@@ -145,6 +145,7 @@ class Worker(mp.Process):
                     request_time: float,
                     stage_id: int,
                     semaphore: Semaphore,
+                    lora_adapter: Optional[str],
                 ) -> None:
                     inflight = False
                     try:
@@ -155,7 +156,7 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
-                        await self.client.process_request(request_data, stage_id, request_time)
+                        await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
                     except CancelledError:
                         pass
                     finally:
@@ -167,9 +168,11 @@ class Worker(mp.Process):
                         queue.task_done()
                         semaphore.release()
 
-                stage_id, request, request_time = item
+                stage_id, request, request_time, lora_adapter = item
                 request_data = LazyLoadDataMixin.get_request(self.datagen, request)
-                task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore))
+                task = create_task(
+                    schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore, lora_adapter)
+                )
                 tasks.append(task)
                 await sleep(0)
 
@@ -245,10 +248,11 @@ class LoadGenerator:
                 with worker.shared_max_concurrency.get_lock():
                     worker.shared_max_concurrency.value = worker_concurrency
 
-    def _assign_lora_adapter(self, request_data: InferenceAPIData) -> None:
-        """Assigns a LoRA (PEFT) adapter to the request data based on predetermined probability weights"""
+    def _get_lora_adapter(self) -> Optional[str]:
+        """Returns a randomly selected LoRA adapter based on configured probability weights, or None if not configured."""
         if self.lora_adapters is not None and self.lora_weights is not None:
-            request_data.lora_adapter = np.random.choice(self.lora_adapters, p=self.lora_weights)
+            return str(np.random.choice(self.lora_adapters, p=self.lora_weights))
+        return None
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
@@ -309,9 +313,8 @@ class LoadGenerator:
         data_generator = self.datagen.get_data()
         for _ in range(num_requests):
             request_data = next(data_generator)
-            # Assign LoRA adapter to request data if needed
-            self._assign_lora_adapter(request_data)
-            request_queue.put((stage_id, request_data, next(time_generator)), request_data.prefered_worker_id)
+            lora_adapter = self._get_lora_adapter()
+            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), request_data.prefered_worker_id)
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
@@ -552,8 +555,7 @@ class LoadGenerator:
                 time_generator = timer.start_timer(start_time)
                 for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, data)
-                    # Assign LoRA adapter to request data if needed
-                    self._assign_lora_adapter(request_data)
+                    lora_adapter = self._get_lora_adapter()
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                         logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
                         stage_status = StageStatus.FAILED
@@ -568,7 +570,7 @@ class LoadGenerator:
                             break
                         if time_index > now:
                             await sleep(time_index - time.perf_counter())
-                        tg.create_task(client.process_request(request_data, stage_id, time_index))
+                        tg.create_task(client.process_request(request_data, stage_id, time_index, lora_adapter))
                         continue
                     else:
                         break
