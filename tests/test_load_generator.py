@@ -18,7 +18,7 @@ class MockCounterServerClient:
 @pytest.mark.asyncio
 async def test_traffic_split_distribution():
     """Test that LoadGenerator distributes requests according to traffic split weights."""
-    
+
     traffic_split = [
         TrafficSplitConfig(model_name="adapter1", weight=0.7),
         TrafficSplitConfig(model_name="adapter2", weight=0.3),
@@ -27,7 +27,7 @@ async def test_traffic_split_distribution():
     rate = 500
     duration = 2
     total_requests = rate * duration - 1
-    
+
     load_config = LoadConfig(
         stages=[StandardLoadStage(rate=rate, duration=duration)],
         traffic_split=traffic_split,
