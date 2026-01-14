@@ -52,7 +52,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             timeout,
             cert_path,
             key_path,
-            lora_adapters
+            lora_adapters,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

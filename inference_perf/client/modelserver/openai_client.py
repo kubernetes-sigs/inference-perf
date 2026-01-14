@@ -83,7 +83,9 @@ class openAIModelServerClient(ModelServerClient):
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None
+    ) -> None:
         """
         Create an internal client session if not already, then use that to
         process the request.
@@ -128,16 +130,18 @@ class openAIModelServerClientSession(ModelServerClientSession):
         timeout = aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel
         connector = None
         if client.cert_path and client.key_path:
-            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH) # Use system trust store
+            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)  # Use system trust store
             ssl_context.load_cert_chain(certfile=client.cert_path, keyfile=client.key_path)
-            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections, ssl=ssl_context)
+            connector = aiohttp.TCPConnector(limit=client.max_tcp_connections, ssl=ssl_context)
         else:
-            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections)
+            connector = aiohttp.TCPConnector(limit=client.max_tcp_connections)
 
         self.client = client
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None
+    ) -> None:
         model_name = model_name if model_name is not None else self.client.model_name
         payload = await data.to_payload(
             model_name=model_name,

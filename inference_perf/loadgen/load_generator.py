@@ -55,6 +55,7 @@ import signal
 
 logger = logging.getLogger(__name__)
 
+
 class RequestQueueData(NamedTuple):
     stage_id: int
     request_data: InferenceAPIData
@@ -255,7 +256,7 @@ class LoadGenerator:
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
-    
+
     def get_model_sampler(self) -> Optional[Callable[[], str]]:
         if self.traffic_split is None:
             return None
@@ -266,6 +267,7 @@ class LoadGenerator:
 
         def sampler() -> str:
             return random_generator.choice(model_names, p=weights)
+
         return sampler
 
     async def drain(self, queue: "mp.JoinableQueue[RequestQueueData]") -> None:

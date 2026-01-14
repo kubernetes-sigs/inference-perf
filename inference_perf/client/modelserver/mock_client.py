@@ -37,7 +37,9 @@ class MockModelServerClient(ModelServerClient):
         self.mock_latency = mock_latency
         self.tokenizer = None
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None
+    ) -> None:
         start = time.perf_counter()
         logger.debug("Processing mock request for stage %d", stage_id)
         try:
