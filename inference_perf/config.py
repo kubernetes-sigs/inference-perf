@@ -163,6 +163,11 @@ class SweepConfig(BaseModel):
     saturation_percentile: float = 95
 
 
+class TrafficSplitConfig(BaseModel):
+    model_name: str
+    weight: float = Field(..., ge=0, le=1, description="Weight for this model (0-1)")
+
+
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
@@ -174,6 +179,7 @@ class LoadConfig(BaseModel):
     trace: Optional[TraceConfig] = None
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
+    traffic_split: List[TrafficSplitConfig] | None = None
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":
@@ -194,6 +200,12 @@ class LoadConfig(BaseModel):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
                     )
+
+        # Validate traffic_split weights sum to 1
+        if self.traffic_split is not None:
+            total_weight = sum(split.weight for split in self.traffic_split)
+            if total_weight != 1.0:
+                raise ValueError(f"Traffic split weights must sum to 1.0, got {total_weight}")
 
         return self
 
