@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
 import logging
@@ -37,6 +37,7 @@ class vLLMModelServerClient(openAIModelServerClient):
         timeout: Optional[float] = None,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
+        lora_config: MultiLoRAConfig = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -51,6 +52,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             timeout,
             cert_path,
             key_path,
+            lora_config,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

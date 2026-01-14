@@ -14,7 +14,7 @@
 
 from abc import abstractmethod
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
@@ -48,6 +48,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout: Optional[float] = None,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
+        lora_config: MultiLoRAConfig = None,
     ) -> None:
         super().__init__(api_config, timeout)
         self.uri = uri
@@ -59,6 +60,7 @@ class openAIModelServerClient(ModelServerClient):
         self.api_key = api_key
         self.cert_path = cert_path
         self.key_path = key_path
+        self.lora_config = lora_config
 
         if model_name is None:
             supported_models = self.get_supported_models()
@@ -71,6 +73,16 @@ class openAIModelServerClient(ModelServerClient):
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
         else:
             self.model_name = model_name
+            
+        if self.lora_config is not None:
+            supported_models = self.get_supported_models()
+            supported_model_names = set()
+            for model in supported_models:
+                supported_model_names.add(model["id"])
+            lora_adapters = [config.name for config in self.lora_config]
+            for adapter in lora_adapters:
+                if adapter not in supported_model_names:
+                    raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
 
         if tokenizer_config and not tokenizer_config.pretrained_model_name_or_path:
             tokenizer_config.pretrained_model_name_or_path = self.model_name

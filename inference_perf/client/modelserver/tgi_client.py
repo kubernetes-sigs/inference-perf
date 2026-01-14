@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
 import logging
@@ -35,6 +35,7 @@ class TGImodelServerClient(openAIModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
+        lora_config: MultiLoRAConfig = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -47,6 +48,7 @@ class TGImodelServerClient(openAIModelServerClient):
             ignore_eos,
             api_key,
             timeout,
+            lora_config,
         )
         self.metric_filters = additional_filters
 
