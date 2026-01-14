@@ -438,7 +438,7 @@ class LoadGenerator:
         rates = [
             abs((current_requests - previous_requests) / (current_timestamp - previous_timestamp))
             for (current_timestamp, current_requests), (previous_timestamp, previous_requests) in zip(
-                results[1:], results[:-1], strict=True
+                results[1:], results[:-1]
             )
             if current_requests - previous_requests < 0
         ]
@@ -562,7 +562,7 @@ class LoadGenerator:
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
                 model_sampler = self.get_model_sampler()
-                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator)):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                     model_name = model_sampler() if self.traffic_split is not None else None
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
