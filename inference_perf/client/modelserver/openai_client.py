@@ -83,7 +83,7 @@ class openAIModelServerClient(ModelServerClient):
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None) -> None:
         """
         Create an internal client session if not already, then use that to
         process the request.
@@ -94,7 +94,7 @@ class openAIModelServerClient(ModelServerClient):
             if self._session is None:
                 self._session = openAIModelServerClientSession(self)
             session = self._session
-        await session.process_request(data, stage_id, scheduled_time)
+        await session.process_request(data, stage_id, scheduled_time, model_name)
 
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
@@ -137,9 +137,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         self.client = client
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float, model_name: str | None) -> None:
+        model_name = model_name if model_name is not None else self.client.model_name
         payload = await data.to_payload(
-            model_name=self.client.model_name,
+            model_name=model_name,
             max_tokens=self.client.max_completion_tokens,
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,

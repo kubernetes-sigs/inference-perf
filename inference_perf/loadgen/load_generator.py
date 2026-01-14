@@ -148,6 +148,7 @@ class Worker(mp.Process):
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
+                    model_name: str | None,
                     semaphore: Semaphore,
                 ) -> None:
                     inflight = False
@@ -159,7 +160,7 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
-                        await self.client.process_request(request_data, stage_id, request_time)
+                        await self.client.process_request(request_data, stage_id, request_time, model_name)
                     except CancelledError:
                         pass
                     finally:
@@ -171,8 +172,9 @@ class Worker(mp.Process):
                         queue.task_done()
                         semaphore.release()
 
-                request_data = LazyLoadDataMixin.get_request(self.datagen, item.request)
-                task = create_task(schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore))
+                stage_id, request, request_time, model_name = item
+                request = LazyLoadDataMixin.get_request(self.datagen, request)
+                task = create_task(schedule_client(self.request_queue, request, request_time, stage_id, model_name, semaphore))
                 tasks.append(task)
                 await sleep(0)
 
