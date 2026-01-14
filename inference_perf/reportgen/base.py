@@ -282,6 +282,31 @@ class ReportGenerator:
             )
             lifecycle_reports.append(report_file)
 
+        if report_config.request_lifecycle.per_adapter:
+            adapter_buckets: dict[Optional[str], List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.info.lora_adapter is not None:
+                    adapter_buckets[metric.info.lora_adapter].append(metric)
+            for adapter, metrics in adapter_buckets.items():
+                report_file = ReportFile(
+                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles).model_dump()
+                )
+                lifecycle_reports.append(report_file)
+
+        if report_config.request_lifecycle.per_adapter_stage:
+            # Group by (adapter, stage_id) tuple
+            adapter_stage_buckets: dict[tuple[Optional[str], int], List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None and metric.info.lora_adapter is not None:
+                    adapter_stage_buckets[(metric.info.lora_adapter, metric.stage_id)].append(metric)
+            for (adapter, stage_id), metrics in adapter_stage_buckets.items():
+                stage_rate = runtime_parameters.stages[stage_id].rate
+                report_file = ReportFile(
+                    name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
+                    contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                )
+                lifecycle_reports.append(report_file)
+
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
 

@@ -222,12 +222,11 @@ class LoadGenerator:
                 self.trace_reader = AzurePublicDatasetReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
+        self.lora_adapters: Optional[List[str]] = None
+        self.lora_weights: Optional[List[float]] = None
         if load_config.lora_traffic_split is not None:
             self.lora_adapters = [config.name for config in load_config.lora_traffic_split]
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
-        else:
-            self.lora_adapters = None
-            self.lora_weights = None
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -245,12 +244,12 @@ class LoadGenerator:
             if worker.shared_max_concurrency:
                 with worker.shared_max_concurrency.get_lock():
                     worker.shared_max_concurrency.value = worker_concurrency
-                    
-    def _assign_lora_adapter(self, request_data: InferenceAPIData) -> Optional[str]:
+
+    def _assign_lora_adapter(self, request_data: InferenceAPIData) -> None:
         """Assigns a LoRA (PEFT) adapter to the request data based on predetermined probability weights"""
         if self.lora_adapters is None or self.lora_weights is None:
             return None
-        request_data.lora_adapter = np.random.choice(adapters, weights)
+        request_data.lora_adapter = np.random.choice(self.lora_adapters, p=self.lora_weights)
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:

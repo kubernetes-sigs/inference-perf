@@ -161,7 +161,8 @@ class SweepConfig(BaseModel):
     num_stages: int = 5
     stage_duration: int = 180
     saturation_percentile: float = 95
-    
+
+
 class MultiLoRAConfig(BaseModel):
     name: str
     split: float
@@ -199,7 +200,7 @@ class LoadConfig(BaseModel):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
                     )
-                    
+
         # Validate multilora traffic split adds up to 1.0 if present
         if self.lora_traffic_split is not None:
             total = sum(config.split for config in self.lora_traffic_split)
@@ -232,6 +233,8 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
+    per_adapter: Optional[bool] = False
+    per_adapter_stage: Optional[bool] = False
     percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 
 
