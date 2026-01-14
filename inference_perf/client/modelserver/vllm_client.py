@@ -37,7 +37,7 @@ class vLLMModelServerClient(openAIModelServerClient):
         timeout: Optional[float] = None,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
-        lora_config: MultiLoRAConfig = None,
+        lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -52,7 +52,7 @@ class vLLMModelServerClient(openAIModelServerClient):
             timeout,
             cert_path,
             key_path,
-            lora_config,
+            lora_config=lora_config,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

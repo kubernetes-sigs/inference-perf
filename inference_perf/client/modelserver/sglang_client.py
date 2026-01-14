@@ -35,7 +35,7 @@ class SGlangModelServerClient(openAIModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
-        lora_config: MultiLoRAConfig = None,
+        lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -48,7 +48,7 @@ class SGlangModelServerClient(openAIModelServerClient):
             ignore_eos,
             api_key,
             timeout,
-            lora_config,
+            lora_config=lora_config,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

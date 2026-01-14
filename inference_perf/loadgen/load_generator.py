@@ -247,9 +247,8 @@ class LoadGenerator:
 
     def _assign_lora_adapter(self, request_data: InferenceAPIData) -> None:
         """Assigns a LoRA (PEFT) adapter to the request data based on predetermined probability weights"""
-        if self.lora_adapters is None or self.lora_weights is None:
-            return None
-        request_data.lora_adapter = np.random.choice(self.lora_adapters, p=self.lora_weights)
+        if self.lora_adapters is not None and self.lora_weights is not None:
+            request_data.lora_adapter = np.random.choice(self.lora_adapters, p=self.lora_weights)
 
     def get_timer(self, rate: float, duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:

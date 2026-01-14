@@ -18,7 +18,7 @@ from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, Mul
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
-from typing import List, Optional
+from typing import List, Optional, Any
 import aiohttp
 import asyncio
 import json
@@ -48,7 +48,7 @@ class openAIModelServerClient(ModelServerClient):
         timeout: Optional[float] = None,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
-        lora_config: MultiLoRAConfig = None,
+        lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(api_config, timeout)
         self.uri = uri
@@ -73,12 +73,12 @@ class openAIModelServerClient(ModelServerClient):
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
         else:
             self.model_name = model_name
-            
+
         if self.lora_config is not None:
             supported_models = self.get_supported_models()
             supported_model_names = set()
             for model in supported_models:
-                supported_model_names.add(model["id"])
+                supported_model_names.add(model.get("id"))
             lora_adapters = [config.name for config in self.lora_config]
             for adapter in lora_adapters:
                 if adapter not in supported_model_names:
@@ -119,7 +119,7 @@ class openAIModelServerClient(ModelServerClient):
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         raise NotImplementedError
 
-    def get_supported_models(self) -> List[str]:
+    def get_supported_models(self) -> List[dict[str, Any]]:
         try:
             response = requests.get(f"{self.uri}/v1/models")
             response.raise_for_status()
