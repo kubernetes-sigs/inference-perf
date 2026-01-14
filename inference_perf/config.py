@@ -161,6 +161,10 @@ class SweepConfig(BaseModel):
     num_stages: int = 5
     stage_duration: int = 180
     saturation_percentile: float = 95
+    
+class MultiLoRAConfig(BaseModel):
+    name: str
+    split: float
 
 
 class LoadConfig(BaseModel):
@@ -174,6 +178,7 @@ class LoadConfig(BaseModel):
     trace: Optional[TraceConfig] = None
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
+    lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":
@@ -194,6 +199,12 @@ class LoadConfig(BaseModel):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
                     )
+                    
+        # Validate multilora traffic split adds up to 1.0 if present
+        if self.lora_traffic_split is not None:
+            total = sum(config.split for config in self.lora_traffic_split)
+            if total != 1.0:
+                raise ValueError("MultiLoRA traffic split in load config does not add up to 1.0")
 
         return self
 

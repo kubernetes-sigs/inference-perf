@@ -1,0 +1,35 @@
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 30
+  lora_traffic_split:
+    - name: movie
+      split: 0.50
+    - name: consumer
+      split: 0.50
+api: 
+  type: completion
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+data:
+  type: shareGPT
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
+  prometheus:
+    summary: true
+    per_stage: false
