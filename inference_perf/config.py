@@ -233,7 +233,7 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
-    per_adapter: Optional[bool] = False
+    per_adapter: Optional[bool] = True
     per_adapter_stage: Optional[bool] = False
     percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 
