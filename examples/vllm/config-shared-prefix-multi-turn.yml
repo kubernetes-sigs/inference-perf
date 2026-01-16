@@ -17,9 +17,9 @@ tokenizer:
 data:
   type: shared_prefix
   shared_prefix:
-    num_groups: 2                 # Number of distinct prefix, Note: the number of users is num_groups * num_prompts_per_group
-    num_prompts_per_group: 10     # Number of unique questions per group (prefix)
-    system_prompt_len: 100        # Length of the first prefix (in tokens), simulate initialization of a system prompt
+    num_unique_system_prompts: 2      # Number of distinct prefix, Note: the number of users is num_unique_system_prompts * num_users_per_system_prompt
+    num_users_per_system_prompt: 10   # Number of unique questions per group (prefix)
+    system_prompt_len: 100            # Length of the first prefix (in tokens), simulate initialization of a system prompt
     question_len: 50              # Length of the unique question part (in tokens)
     output_len: 50                # Target length for the model's generated output (in tokens)
     enable_multi_turn_chat: true  # enable multi-turn chat, it will create user session to keep the conversation. The chat context will be appended for the each request.
