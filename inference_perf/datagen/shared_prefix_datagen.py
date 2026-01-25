@@ -127,3 +127,5 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         random.shuffle(self.prompts)
+        random.shuffle(self.user_sessions)   # no need to sync shuffles, because with multiround 
+                                             # initial prompt does not include system prompt 
