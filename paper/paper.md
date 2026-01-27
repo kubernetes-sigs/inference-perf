@@ -13,6 +13,7 @@ authors:
     orcid: 0009-0009-3481-9173
     affiliation: 1
   - name: Sachin Varghese
+    orcid: 0009-0007-5015-5173
     affiliation: 2
   - name: Jason Kramberger
     affiliation: 1
