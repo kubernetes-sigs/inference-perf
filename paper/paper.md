@@ -17,6 +17,7 @@ authors:
     affiliation: 1
   - name: Brendan Slabe
     affiliation: 1
+    orcid: 0009-0005-1730-753X
   - name: Chen Wang
     orcid: 0000-0003-0204-2362
     affiliation: 3
