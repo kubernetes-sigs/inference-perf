@@ -12,9 +12,6 @@ authors:
   - name: Ashok Chandrasekar
     orcid: 0009-0009-3481-9173
     affiliation: 1
-  - name: Sachin Varghese
-    orcid: 0009-0007-5015-5173
-    affiliation: 2
   - name: Jason Kramberger
     orcid: 0009-0006-8517-7973
     affiliation: 1
@@ -29,13 +26,11 @@ authors:
 affiliations:
  - name: Google, USA
    index: 1
- - name: Capital One, USA
-   index: 2
  - name: IBM Research, USA
-   index: 3
+   index: 2
  - name: Red Hat, USA
-   index: 4
-date: 26 January 2026
+   index: 3
+date: 27 January 2026
 bibliography: paper.bib
 ---
 
@@ -59,7 +54,7 @@ With the rapid adoption of Large Language Models (LLMs) and GenAI, there is a gr
 - **Analyzer**: Analyzes the collected metrics and provides insights into the performance of the model server by generating various charts and graphs.
 
 
-![Architecture Diagram](../docs/images/architecture.png)
+![Architecture Diagram](assets/architecture.png)
 
 ## Key Features
 
@@ -95,9 +90,11 @@ With the rapid adoption of Large Language Models (LLMs) and GenAI, there is a gr
 
 The above metrics can also be plotted into charts using the analyze command in the tool at various request rates (QPS) to understand how the latency and throughput scales with the load as shown in the below charts.
 
-![Throughput vs QPS](../docs/images/throughput_vs_qps.png)
-![Latency vs QPS](../docs/images/latency_vs_qps.png)
-![Throughput vs Latency](../docs/images/throughput_vs_latency.png)
+![Throughput vs QPS](assets/throughput_vs_qps.png)
+
+![Latency vs QPS](assets/latency_vs_qps.png)
+
+![Throughput vs Latency](assets/throughput_vs_latency.png)
 
 # Research Impact Statement
 
