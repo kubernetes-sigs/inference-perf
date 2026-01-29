@@ -118,22 +118,16 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             i = data.data_index % len(self.prompts)
             if self.api_config.type == APIType.Chat:
                 shared_prefix, question = self.prompt_pairs[i]
-                messages = [
-                    ChatMessage(role="system", content=shared_prefix),
-                    ChatMessage(role="user", content=question)
-                ]
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
                 return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
             else:
                 return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
-    def get_request(self, n: int) -> InferenceAPIData:
+    def get_request_by_index(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
         if self.api_config.type == APIType.Chat:
             shared_prefix, question = self.prompt_pairs[i]
-            messages = [
-                ChatMessage(role="system", content=shared_prefix),
-                ChatMessage(role="user", content=question)
-            ]
+            messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
             return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
@@ -150,10 +144,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 i += 1
             elif self.api_config.type == APIType.Chat:
                 shared_prefix, question = self.prompt_pairs[i]
-                messages = [
-                    ChatMessage(role="system", content=shared_prefix),
-                    ChatMessage(role="user", content=question)
-                ]
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
                 yield ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
                 i = (i + 1) % len(self.prompts)
             else:
@@ -195,6 +186,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             for prompt_id in range(self.num_prompts_per_group):
                 question_text = all_question_texts[prompt_id]
 
+                # Store question for this group (for multi-turn)
+                group_questions.append(question_text)
+
                 # Combine shared prefix and question
                 full_prompt_text = shared_prefix_text + " " + question_text
                 self.prompts.append(full_prompt_text)
@@ -204,17 +198,17 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     # multi turn chat, create user to keep conversation
                     # For Chat API, context should be a list of messages starting with system prompt
                     # For Completion API, context is a string
+                    initial_context: list[ChatMessage] | str
                     if self.api_config.type == APIType.Chat:
-                        initial_context = [
-                            ChatMessage(role="system", content=shared_prefix_text)
-                        ]
+                        initial_context = [ChatMessage(role="system", content=shared_prefix_text)]
                     else:
                         initial_context = shared_prefix_text
-                    
+
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
                             context=initial_context,
+                            group_id=group_id,  # Store group_id for correct question selection
                         )
                     )
 
