@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 class LocalUserSession:
     user_session_id: str
-    context: Any
+    context: list[ChatMessage] | str
     group_id: int
 
-    def __init__(self, user_session_id: str, context: Any = "", group_id: int = 0):
+    def __init__(self, user_session_id: str, context: list[ChatMessage] | str = "", group_id: int = 0):
         self.user_session_id = user_session_id
         self.context = context if context else ""
         self.group_id = group_id
@@ -25,7 +25,7 @@ class LocalUserSession:
         self._in_flight: asyncio.Lock = asyncio.Lock()
         self._waiting_rounds: asyncio.Queue[asyncio.Future[bool]] = asyncio.Queue()
 
-    async def get_context(self, round: int) -> Any:
+    async def get_context(self, round: int) -> list[ChatMessage] | str:
         if not self._waiting_rounds.empty() or self._in_flight.locked():
             # entering waiting queue
             future: asyncio.Future[bool] = asyncio.Future()
@@ -35,7 +35,7 @@ class LocalUserSession:
         self._current_round += 1
         return self.context
 
-    def update_context(self, response: Any) -> None:
+    def update_context(self, response: list[ChatMessage] | str) -> None:
         self.context = response
 
         if not self._waiting_rounds.empty():
@@ -55,6 +55,8 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     ) -> dict[str, Any]:
         self._session_context = await self.user_session.get_context(self.target_round)
         # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
+        if not isinstance(self._session_context, str):
+            raise TypeError("UserSessionCompletionAPIData expects string context")
         self.prompt = self._session_context + " " + self.prompt
         # TODO: The combined prompt (session context + current prompt) might exceed the model's
         #       maximum sequence length. Implement truncation logic/strategy to prevent
