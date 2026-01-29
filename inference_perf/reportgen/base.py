@@ -11,18 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional, Any
-from pydantic import BaseModel
+import logging
 from collections import defaultdict
+from typing import Any, List, Optional
+
+import numpy as np
+from pydantic import BaseModel
+
+from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
-from inference_perf.config import ReportConfig, PrometheusMetricsReportConfig, Config
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
-from inference_perf.utils import ReportFile
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.apis import RequestLifecycleMetric
-import numpy as np
-import logging
+from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
+from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
 
@@ -35,27 +37,18 @@ def safe_float(value: Any) -> float:
         return 0
 
 
-def summarize(items: List[float]) -> Optional[dict[str, float]]:
-    return (
-        {
-            "mean": float(np.mean(items)),
-            "min": float(np.min(items)),
-            "p0.1": float(np.percentile(items, 0.1)),
-            "p1": float(np.percentile(items, 1)),
-            "p5": float(np.percentile(items, 5)),
-            "p10": float(np.percentile(items, 10)),
-            "p25": float(np.percentile(items, 25)),
-            "median": float(np.percentile(items, 50)),
-            "p75": float(np.percentile(items, 75)),
-            "p90": float(np.percentile(items, 90)),
-            "p95": float(np.percentile(items, 95)),
-            "p99": float(np.percentile(items, 99)),
-            "p99.9": float(np.percentile(items, 99.9)),
-            "max": float(np.max(items)),
-        }
-        if len(items) != 0
-        else None
-    )
+def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
+    if len(items) == 0:
+        return None
+    result = {
+        "mean": float(np.mean(items)),
+        "min": float(np.min(items)),
+        "max": float(np.max(items)),
+    }
+    for p in percentiles:
+        key = "median" if p == 50 else f"p{p:g}"
+        result[key] = float(np.percentile(items, p))
+    return result
 
 
 class ResponsesSummary(BaseModel):
@@ -205,7 +198,10 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
 
 
 def summarize_requests(
-    metrics: List[RequestLifecycleMetric], stage_rate: Optional[float] = None, stage_concurrency: Optional[int] = None
+    metrics: List[RequestLifecycleMetric],
+    percentiles: List[float],
+    stage_rate: Optional[float] = None,
+    stage_concurrency: Optional[int] = None,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
@@ -218,46 +214,52 @@ def summarize_requests(
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
-        "schedule_delay": summarize(schedule_deltas),
+        "schedule_delay": summarize(schedule_deltas, percentiles),
     }
 
     if stage_rate is not None:
         load_summary = {
             "count": len(metrics),
-            "schedule_delay": summarize(schedule_deltas),
+            "schedule_delay": summarize(schedule_deltas, percentiles),
             "send_duration": send_duration,
             "requested_rate": stage_rate,
             "achieved_rate": len(metrics) / send_duration,
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
-    # NEW: Calculate SLO metrics
     slo_metrics = calculate_slo_metrics(metrics)
     successes_dict = {
             "count": len(all_successful),
             "latency": {
-                "request_latency": summarize([(successful.end_time - successful.start_time) for successful in all_successful]),
+                "request_latency": summarize(
+                    [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
+                ),
                 "normalized_time_per_output_token": summarize(
                     [
                         ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
                         for metric in all_successful
                         for output_len in [safe_float(metric.info.output_tokens)]
-                    ]
+                    ],
+                    percentiles,
                 ),
                 "time_per_output_token": summarize(
                     [
                         (x.info.output_token_times[-1] - x.info.output_token_times[0]) / (len(x.info.output_token_times) - 1)
                         for x in streamable
                         if len(x.info.output_token_times) > 1
-                    ]
+                    ],
+                    percentiles,
                 ),
-                "time_to_first_token": summarize([x.info.output_token_times[0] - x.start_time for x in streamable]),
+                "time_to_first_token": summarize(
+                    [x.info.output_token_times[0] - x.start_time for x in streamable], percentiles
+                ),
                 "inter_token_latency": summarize(
                     [
                         t2 - t1
                         for x in streamable
                         for t1, t2 in zip(x.info.output_token_times, x.info.output_token_times[1:], strict=False)
-                    ]
+                    ],
+                    percentiles,
                 ),
             },
             "throughput": {
@@ -276,8 +278,8 @@ def summarize_requests(
         successes=successes_dict,
         failures={
             "count": len(all_failed),
-            "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed]),
-            "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed]),
+            "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
+            "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed], percentiles),
         },
     )
 
@@ -316,6 +318,7 @@ class ReportGenerator:
     ) -> List[ReportFile]:
         logger.info("Generating Reports...")
         lifecycle_reports = []
+        percentiles = report_config.request_lifecycle.percentiles
 
         # Filter out the preprocessing stage -1
         request_metrics = [
@@ -326,7 +329,7 @@ class ReportGenerator:
             if len(request_metrics) != 0:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
-                    contents=summarize_requests(request_metrics).model_dump(),
+                    contents=summarize_requests(request_metrics, percentiles).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
 
@@ -341,12 +344,12 @@ class ReportGenerator:
                 if concurrency_level is not None:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, stage_rate, concurrency_level).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate, concurrency_level).model_dump(),
                     )
                 else:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, stage_rate).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
                     )
                 lifecycle_reports.append(report_file)
 
@@ -366,6 +369,31 @@ class ReportGenerator:
                 ],
             )
             lifecycle_reports.append(report_file)
+
+        if report_config.request_lifecycle.per_adapter:
+            adapter_buckets: dict[Optional[str], List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.info.lora_adapter is not None:
+                    adapter_buckets[metric.info.lora_adapter].append(metric)
+            for adapter, metrics in adapter_buckets.items():
+                report_file = ReportFile(
+                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles).model_dump()
+                )
+                lifecycle_reports.append(report_file)
+
+        if report_config.request_lifecycle.per_adapter_stage:
+            # Group by (adapter, stage_id) tuple
+            adapter_stage_buckets: dict[tuple[Optional[str], int], List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None and metric.info.lora_adapter is not None:
+                    adapter_stage_buckets[(metric.info.lora_adapter, metric.stage_id)].append(metric)
+            for (adapter, stage_id), metrics in adapter_stage_buckets.items():
+                stage_rate = runtime_parameters.stages[stage_id].rate
+                report_file = ReportFile(
+                    name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
+                    contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                )
+                lifecycle_reports.append(report_file)
 
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))

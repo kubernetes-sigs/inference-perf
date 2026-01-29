@@ -101,7 +101,7 @@ def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
-    parser.add_argument("-a", "--analyze", help="Path to a report directory to analyze.", required=False)
+    parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directory to analyze.", required=False)
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
@@ -109,7 +109,7 @@ def main_cli() -> None:
 
     setup_logging(args.log_level)
 
-    if args.analyze:
+    if args.analyze and len(args.analyze) > 0:
         analyze_reports(args.analyze)
         return
 
@@ -185,6 +185,9 @@ def main_cli() -> None:
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
                 timeout=config.load.request_timeout,
+                cert_path=config.server.cert_path,
+                key_path=config.server.key_path,
+                lora_config=config.load.lora_traffic_split,
             )
             # vllm_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -200,6 +203,7 @@ def main_cli() -> None:
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
                 timeout=config.load.request_timeout,
+                lora_config=config.load.lora_traffic_split,
             )
             # sglang_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
@@ -215,6 +219,7 @@ def main_cli() -> None:
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
                 api_key=config.server.api_key,
                 timeout=config.load.request_timeout,
+                lora_config=config.load.lora_traffic_split,
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer

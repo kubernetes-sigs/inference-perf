@@ -25,6 +25,7 @@ class InferenceInfo(BaseModel):
     output_tokens: int = 0
     output_token_times: List[float] = []
     extra_info: dict[str, Any] = {}
+    lora_adapter: Optional[str] = None
 
 
 class ErrorResponseInfo(BaseModel):
@@ -64,15 +65,24 @@ class InferenceAPIData(BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         raise NotImplementedError
 
     async def process_failure(
-        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         pass  # no-op by default
 
@@ -93,13 +103,22 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
     def get_route(self) -> str:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
     async def process_failure(
-        self, response: Optional[ClientResponse], config: APIConfig, tokenizer: CustomTokenizer, exception: Exception
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
