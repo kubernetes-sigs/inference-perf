@@ -313,6 +313,20 @@ def read_config(config_file: str) -> Config:
     default_cfg = Config().model_dump(mode="json")
     merged_cfg = deep_merge(default_cfg, cfg)
 
+    
+    # Handle timestamp substitution in storage paths
+    if "storage" in merged_cfg and merged_cfg["storage"]:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        for storage_type in ["local_storage", "google_cloud_storage", "simple_storage_service"]:
+            if (
+                storage_type in merged_cfg["storage"]
+                and merged_cfg["storage"][storage_type]
+                and "path" in merged_cfg["storage"][storage_type]
+            ):
+                path = merged_cfg["storage"][storage_type]["path"]
+                if path and "{timestamp}" in path:
+                    merged_cfg["storage"][storage_type]["path"] = path.replace("{timestamp}", timestamp)
+
     # Handle stage type conversion based on load type
     if "load" in merged_cfg and "stages" in merged_cfg["load"] and merged_cfg["load"]["stages"]:
         load_type = merged_cfg["load"].get("type", "constant")
