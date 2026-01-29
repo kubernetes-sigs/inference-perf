@@ -75,7 +75,7 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
     ttft_slo = max([m.ttft_slo for m in valid_metrics if m.ttft_slo is not None], default=None)
     tpot_slo = max([m.tpot_slo for m in valid_metrics if m.tpot_slo is not None], default=None)
     
-    # calculate sum of input and output tokens of all valid metrics and with slo met
+    # Calculate the sum of input and output tokens for all valid metrics that met SLO
    
     if not has_ttft_slo and not has_tpot_slo:
         return None  # No SLO tracking enabled
@@ -91,8 +91,8 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
             m.info
             and m.info.input_tokens is not None
             and m.info.output_tokens is not None
-            and (m.ttft_slo_met if has_ttft_slo else True)
-            and (m.tpot_slo_met if has_tpot_slo else True)
+            and ((m.ttft_slo_met is True) if has_ttft_slo else True)
+            and ((m.tpot_slo_met is True) if has_tpot_slo else True)
         )
     )
     goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
@@ -432,7 +432,7 @@ class ReportGenerator:
                 logger.warning("Report generation failed - no metrics collected by metrics client")
 
         if report_config.per_stage:
-            for stage_id, _stage_info in runtime_parameters.stages.items():
+            for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
                     report_file = ReportFile(
