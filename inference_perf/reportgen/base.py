@@ -92,15 +92,6 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
         ttft_met = sum(1 for m in valid_metrics if m.ttft_slo_met is True)
         ttft_failed = sum(1 for m in valid_metrics if m.ttft_slo_met is False)
         
-        # Get threshold from first metric that has it
-        ttft_threshold = None
-        for m in valid_metrics:
-            if m.ttft is not None:
-                # Infer threshold from whether it met SLO
-                # We'll store the actual threshold in a better way later
-                ttft_threshold = "configured"
-                break
-        
         slo_metrics["ttft_slo"] = {
             "attainment_pct": (ttft_met / total * 100) if total > 0 else 0,
             "requests_met": ttft_met,
