@@ -84,17 +84,20 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
     total = len(valid_metrics)
     
     total_benchmark_time = max(m.end_time for m in valid_metrics) - min(m.start_time for m in valid_metrics)
-    total_goodput_tokens = sum(
-        m.info.input_tokens + m.info.output_tokens
-        for m in valid_metrics
-        if (
-            m.info
-            and m.info.input_tokens is not None
-            and m.info.output_tokens is not None
-            and ((m.ttft_slo_met is True) if has_ttft_slo else True)
-            and ((m.tpot_slo_met is True) if has_tpot_slo else True)
-        )
-    )
+    goodput_token_counts = []
+    for m in valid_metrics:
+        # Check presence of info and tokens
+        if not (m.info and m.info.input_tokens is not None and m.info.output_tokens is not None):
+            continue
+            
+        # Check SLO attainment
+        ttft_ok = (m.ttft_slo_met is True) if has_ttft_slo else True
+        tpot_ok = (m.tpot_slo_met is True) if has_tpot_slo else True
+        
+        if ttft_ok and tpot_ok:
+            goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
+
+    total_goodput_tokens = sum(goodput_token_counts)
     goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
     
     # TTFT SLO metrics
