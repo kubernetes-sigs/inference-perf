@@ -50,6 +50,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.prompts: List[str] = []  # For completion API
         self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for chat API
         self.user_sessions: List[LocalUserSession] = []
+        # For multi-turn: store questions and shared_prefixes by group for correct selection
+        self.questions_by_group: List[List[str]] = []
+        self.shared_prefixes_by_group: List[str] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
@@ -68,37 +71,35 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
-            
-            # Each user belongs to a group, and each group has num_prompts_per_group questions
-            # Calculate which group this user belongs to and which question in the group
-            group_id = user_id // self.num_prompts_per_group
-            prompt_in_group = user_id % self.num_prompts_per_group
-            
+
+            # Get user session and its group_id (stored during creation, not calculated)
+            user_session = self.user_sessions[user_id]
+            group_id = user_session.group_id
+
             # For each round, use a different question from the same group
             # Cycle through questions in the same group
-            question_in_group = (prompt_in_group + round) % self.num_prompts_per_group
-            question_idx = group_id * self.num_prompts_per_group + question_in_group
-            
+            question_in_group = round % self.num_prompts_per_group
+            question_text = self.questions_by_group[group_id][question_in_group]
+            shared_prefix = self.shared_prefixes_by_group[group_id]
+
             if self.api_config.type == APIType.Chat:
                 # Chat API + Multi-turn: Use UserSessionChatAPIData
-                shared_prefix, question = self.prompt_pairs[question_idx]
-                messages = [
-                    ChatMessage(role="system", content=shared_prefix),
-                    ChatMessage(role="user", content=question)
-                ]
+                # Note: system message is included but will be filtered in to_payload()
+                # since the actual system message comes from user_session.context (history)
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question_text)]
                 return UserSessionChatAPIData(
                     messages=messages,
                     max_tokens=self.output_len,
-                    user_session=self.user_sessions[user_id],
+                    user_session=user_session,
                     target_round=round,
                 )
             else:
                 # Completion API + Multi-turn: Use UserSessionCompletionAPIData
-                prompt_idx = question_idx
+                # Only pass the question, shared_prefix is already in user_session.context
                 return UserSessionCompletionAPIData(
-                    prompt=self.prompts[prompt_idx],
+                    prompt=question_text,
                     max_tokens=self.output_len,
-                    user_session=self.user_sessions[user_id],
+                    user_session=user_session,
                     target_round=round,
                 )
         else:
@@ -106,22 +107,16 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             i = data.data_index % len(self.prompts)
             if self.api_config.type == APIType.Chat:
                 shared_prefix, question = self.prompt_pairs[i]
-                messages = [
-                    ChatMessage(role="system", content=shared_prefix),
-                    ChatMessage(role="user", content=question)
-                ]
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
                 return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
             else:
                 return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
-    def get_request(self, n: int) -> InferenceAPIData:
+    def get_request_by_index(self, n: int) -> InferenceAPIData:
         i = n % len(self.prompts)
         if self.api_config.type == APIType.Chat:
             shared_prefix, question = self.prompt_pairs[i]
-            messages = [
-                ChatMessage(role="system", content=shared_prefix),
-                ChatMessage(role="user", content=question)
-            ]
+            messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
             return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
@@ -138,10 +133,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 i += 1
             elif self.api_config.type == APIType.Chat:
                 shared_prefix, question = self.prompt_pairs[i]
-                messages = [
-                    ChatMessage(role="system", content=shared_prefix),
-                    ChatMessage(role="user", content=question)
-                ]
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
                 yield ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
                 i = (i + 1) % len(self.prompts)
             else:
@@ -168,10 +160,17 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
+            # Store shared prefix for this group (for multi-turn)
+            self.shared_prefixes_by_group.append(shared_prefix_text)
+            group_questions: List[str] = []
+
             for prompt_id in range(self.num_prompts_per_group):
                 # Generate a unique question
                 question_token_ids = self._generate_random_token_ids(self.question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+
+                # Store question for this group (for multi-turn)
+                group_questions.append(question_text)
 
                 # Combine shared prefix and question
                 full_prompt_text = shared_prefix_text + " " + question_text
@@ -182,24 +181,27 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     # multi turn chat, create user to keep conversation
                     # For Chat API, context should be a list of messages starting with system prompt
                     # For Completion API, context is a string
+                    initial_context: list[ChatMessage] | str
                     if self.api_config.type == APIType.Chat:
-                        initial_context = [
-                            ChatMessage(role="system", content=shared_prefix_text)
-                        ]
+                        initial_context = [ChatMessage(role="system", content=shared_prefix_text)]
                     else:
                         initial_context = shared_prefix_text
-                    
+
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
                             context=initial_context,
+                            group_id=group_id,  # Store group_id for correct question selection
                         )
                     )
 
+            # Store questions for this group
+            self.questions_by_group.append(group_questions)
+
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
+        # Note: For multi-turn, user_sessions are NOT shuffled to maintain group_id integrity
+        # Questions are selected via questions_by_group using user_session.group_id
         indices = list(range(len(self.prompts)))
         random.shuffle(indices)
         self.prompts = [self.prompts[i] for i in indices]
         self.prompt_pairs = [self.prompt_pairs[i] for i in indices]
-        if self.user_sessions:
-            self.user_sessions = [self.user_sessions[i] for i in indices]
