@@ -15,7 +15,7 @@
 import json
 import time
 
-from typing import Any, List
+from typing import Any, List, Optional
 from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.apis import InferenceAPIData, InferenceInfo
@@ -38,7 +38,9 @@ class ChatCompletionAPIData(InferenceAPIData):
     def get_route(self) -> str:
         return "/v1/chat/completions"
 
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
         if streaming:
@@ -58,7 +60,9 @@ class ChatCompletionAPIData(InferenceAPIData):
                     "ignore_eos": ignore_eos,
                 }
 
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         if config.streaming:
             output_text = ""
             output_token_times: List[float] = []
@@ -94,16 +98,18 @@ class ChatCompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 output_tokens=output_len,
                 output_token_times=output_token_times,
+                lora_adapter=lora_adapter,
             )
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
             choices = data.get("choices", [])
             if len(choices) == 0:
-                return InferenceInfo(input_tokens=prompt_len)
+                return InferenceInfo(input_tokens=prompt_len, lora_adapter=lora_adapter)
             output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
+                lora_adapter=lora_adapter,
             )

@@ -14,17 +14,18 @@
 
 from abc import abstractmethod
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
-from typing import List, Optional
+from typing import List, Optional, Any
 import aiohttp
 import asyncio
 import json
 import time
 import logging
 import requests
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ class openAIModelServerClient(ModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
+        cert_path: Optional[str] = None,
+        key_path: Optional[str] = None,
+        lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(api_config, timeout)
         self.uri = uri
@@ -54,6 +58,9 @@ class openAIModelServerClient(ModelServerClient):
         self.max_tcp_connections = max_tcp_connections
         self.additional_filters = additional_filters
         self.api_key = api_key
+        self.cert_path = cert_path
+        self.key_path = key_path
+        self.lora_config = lora_config
 
         if model_name is None:
             supported_models = self.get_supported_models()
@@ -67,6 +74,16 @@ class openAIModelServerClient(ModelServerClient):
         else:
             self.model_name = model_name
 
+        if self.lora_config is not None:
+            supported_models = self.get_supported_models()
+            supported_model_names = set()
+            for model in supported_models:
+                supported_model_names.add(model.get("id"))
+            lora_adapters = [config.name for config in self.lora_config]
+            for adapter in lora_adapters:
+                if adapter not in supported_model_names:
+                    raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
+
         if tokenizer_config and not tokenizer_config.pretrained_model_name_or_path:
             tokenizer_config.pretrained_model_name_or_path = self.model_name
         elif not tokenizer_config:
@@ -76,7 +93,9 @@ class openAIModelServerClient(ModelServerClient):
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
         """
         Create an internal client session if not already, then use that to
         process the request.
@@ -87,7 +106,7 @@ class openAIModelServerClient(ModelServerClient):
             if self._session is None:
                 self._session = openAIModelServerClientSession(self)
             session = self._session
-        await session.process_request(data, stage_id, scheduled_time)
+        await session.process_request(data, stage_id, scheduled_time, lora_adapter)
 
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
@@ -102,7 +121,7 @@ class openAIModelServerClient(ModelServerClient):
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         raise NotImplementedError
 
-    def get_supported_models(self) -> List[str]:
+    def get_supported_models(self) -> List[dict[str, Any]]:
         try:
             response = requests.get(f"{self.uri}/v1/models")
             response.raise_for_status()
@@ -118,15 +137,25 @@ class openAIModelServerClient(ModelServerClient):
 
 class openAIModelServerClientSession(ModelServerClientSession):
     def __init__(self, client: openAIModelServerClient):
-        self.client = client
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel,
-            connector=aiohttp.TCPConnector(limit=client.max_tcp_connections),
-        )
+        timeout = aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel
+        connector = None
+        if client.cert_path and client.key_path:
+            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)  # Use system trust store
+            ssl_context.load_cert_chain(certfile=client.cert_path, keyfile=client.key_path)
+            connector = aiohttp.TCPConnector(limit=client.max_tcp_connections, ssl=ssl_context)
+        else:
+            connector = aiohttp.TCPConnector(limit=client.max_tcp_connections)
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+        self.client = client
+        self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
+        effective_model_name = lora_adapter if lora_adapter else self.client.model_name
         payload = await data.to_payload(
-            model_name=self.client.model_name,
+            effective_model_name=effective_model_name,
             max_tokens=self.client.max_completion_tokens,
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
@@ -145,7 +174,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         try:
             async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as response:
                 response_info = await data.process_response(
-                    response=response, config=self.client.api_config, tokenizer=self.client.tokenizer
+                    response=response,
+                    config=self.client.api_config,
+                    tokenizer=self.client.tokenizer,
+                    lora_adapter=lora_adapter,
                 )
                 response_content = await response.text()
 
@@ -211,6 +243,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 config=self.client.api_config,
                 tokenizer=self.client.tokenizer,
                 exception=e,
+                lora_adapter=lora_adapter,
             )
             self.client.metrics_collector.record_metric(
                 RequestLifecycleMetric(

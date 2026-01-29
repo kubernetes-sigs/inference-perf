@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from datetime import datetime
-from pydantic import BaseModel, HttpUrl, model_validator, Field
-from inference_perf.circuit_breaker import CircuitBreakerConfig
-from typing import Any, Optional, List, Union
 from enum import Enum
 from os import cpu_count
+from typing import Any, List, Optional, Union
+
 import yaml
-import logging
+from pydantic import BaseModel, Field, HttpUrl, model_validator
+
+from inference_perf.circuit_breaker import CircuitBreakerConfig
 
 
 class APIType(Enum):
@@ -168,6 +170,11 @@ class SweepConfig(BaseModel):
     saturation_percentile: float = 95
 
 
+class MultiLoRAConfig(BaseModel):
+    name: str
+    split: float
+
+
 class LoadConfig(BaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
@@ -179,6 +186,7 @@ class LoadConfig(BaseModel):
     trace: Optional[TraceConfig] = None
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
+    lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":
@@ -199,6 +207,12 @@ class LoadConfig(BaseModel):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
                     )
+
+        # Validate multilora traffic split adds up to 1.0 if present
+        if self.lora_traffic_split is not None:
+            total = sum(config.split for config in self.lora_traffic_split)
+            if total != 1.0:
+                raise ValueError("MultiLoRA traffic split in load config does not add up to 1.0")
 
         return self
 
@@ -226,6 +240,9 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
+    per_adapter: Optional[bool] = True
+    per_adapter_stage: Optional[bool] = False
+    percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
 
 
 class PrometheusMetricsReportConfig(BaseModel):
@@ -262,6 +279,8 @@ class ModelServerClientConfig(BaseModel):
     base_url: str
     ignore_eos: bool = True
     api_key: Optional[str] = None
+    cert_path: Optional[str] = None
+    key_path: Optional[str] = None
 
 
 class CustomTokenizerConfig(BaseModel):

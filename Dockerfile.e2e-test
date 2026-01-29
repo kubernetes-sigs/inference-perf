@@ -1,0 +1,20 @@
+FROM docker.nix-community.org/nixpkgs/nix-flakes AS builder
+
+# Don't stay in the root directory for this.
+# https://github.com/NixOS/nix/issues/11217
+WORKDIR /workspace
+
+# Copy just enough for Nix pdm install without bringing in the entire project.
+# This ensures we don't run the nix develop too often.
+COPY flake.nix flake.lock pyproject.toml pdm.lock .
+
+# Build Nix shell and install all dev PDM dependencies.
+RUN nix develop path:///workspace -c pdm sync -d
+
+# Copy the actual module and E2E tests, then install self.
+# This is what will be edited during development, so we run it last.
+COPY inference_perf ./inference_perf
+COPY e2e ./e2e
+
+ENTRYPOINT ["nix", "develop", "path:///workspace", "-c"]
+CMD ["pdm", "run", "test:e2e"]

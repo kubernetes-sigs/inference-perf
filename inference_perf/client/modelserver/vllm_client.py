@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
 import logging
@@ -35,6 +35,9 @@ class vLLMModelServerClient(openAIModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
+        cert_path: Optional[str] = None,
+        key_path: Optional[str] = None,
+        lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(
             metrics_collector,
@@ -47,6 +50,9 @@ class vLLMModelServerClient(openAIModelServerClient):
             ignore_eos,
             api_key,
             timeout,
+            cert_path,
+            key_path,
+            lora_config=lora_config,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 
@@ -204,13 +210,13 @@ class vLLMModelServerClient(openAIModelServerClient):
             p90_inter_token_latency=None,
             p99_inter_token_latency=None,
             prefix_cache_hits=ModelServerPrometheusMetric(
-                "vllm:gpu_prefix_cache_hits_total",
+                "vllm:prefix_cache_hits_total",
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             prefix_cache_queries=ModelServerPrometheusMetric(
-                "vllm:gpu_prefix_cache_queries_total",
+                "vllm:prefix_cache_queries_total",
                 "increase",
                 "counter",
                 self.metric_filters,

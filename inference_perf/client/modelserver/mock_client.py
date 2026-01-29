@@ -37,9 +37,12 @@ class MockModelServerClient(ModelServerClient):
         self.mock_latency = mock_latency
         self.tokenizer = None
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
         start = time.perf_counter()
         logger.debug("Processing mock request for stage %d", stage_id)
+        effective_model_name = lora_adapter if lora_adapter else "mock_model"
         try:
             if self.timeout and self.timeout < self.mock_latency:
                 await asyncio.sleep(self.timeout)
@@ -50,10 +53,11 @@ class MockModelServerClient(ModelServerClient):
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
-                        request_data=str(await data.to_payload("mock_model", 3, False, False)),
+                        request_data=str(await data.to_payload(effective_model_name, 3, False, False)),
                         info=InferenceInfo(
                             input_tokens=0,
                             output_tokens=0,
+                            lora_adapter=lora_adapter,
                         ),
                         error=None,
                         start_time=start,
@@ -66,10 +70,11 @@ class MockModelServerClient(ModelServerClient):
             self.metrics_collector.record_metric(
                 RequestLifecycleMetric(
                     stage_id=stage_id,
-                    request_data=str(data.to_payload("mock_model", 3, False, False)),
+                    request_data=str(data.to_payload(effective_model_name, 3, False, False)),
                     info=InferenceInfo(
                         input_tokens=0,
                         output_tokens=0,
+                        lora_adapter=lora_adapter,
                     ),
                     error=ErrorResponseInfo(
                         error_msg=str(e),

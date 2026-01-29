@@ -13,23 +13,25 @@ on:
 jobs:
   e2e-tests:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.13']
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Set up PDM
-        uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: ${{ matrix.python-version }}
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install dependencies
         run: |
-          pdm sync -d
-      - name: Run e2e tests
+          nix develop -c pdm sync -d
+
+      - name: Run end-to-end tests
         run: |
-          pdm run test:e2e
+          nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
+
+      - name: Upload test_e2e.out
+        uses: actions/upload-artifact@v4
+        with:
+          name: test_e2e
+          path: test_e2e.out

@@ -89,7 +89,9 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -102,8 +104,10 @@ class ModelServerClientSession:
     def __init__(self, client: ModelServerClient):
         self.client = client
 
-    async def process_request(self, data: InferenceAPIData, stage_id: int, scheduled_time: float) -> None:
-        await self.client.process_request(data, stage_id, scheduled_time)
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        await self.client.process_request(data, stage_id, scheduled_time, lora_adapter)
 
     async def close(self) -> None:  # noqa - subclasses optionally override this
         pass

@@ -3,8 +3,9 @@ import pytest
 from utils.benchmark import run_benchmark_minimal
 
 
-def test_simple_mock_client_benchmark():
-    result = run_benchmark_minimal("e2e/configs/e2e_simple_mock_client.yaml", timeout_sec=None)
+@pytest.mark.asyncio
+async def test_simple_mock_client_benchmark():
+    result = await run_benchmark_minimal("e2e/configs/e2e_simple_mock_client.yaml", timeout_sec=None)
     assert result.success, "Benchmark failed"
     assert result.reports, "No reports generated from benchmark"
     assert result.reports["per_request_lifecycle_metrics.json"], "Missing requests report"

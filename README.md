@@ -23,12 +23,12 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
 * Supports Multi-turn chat conversations, it can keep context of a series of messages to simulate a conversation. A request in each chat round will keep previouse messages as prefix. see example [config-multi-turn](examples/vllm/config-shared-prefix-multi-turn.yml)
+* Supports MultiLoRA traffic splitting to benchmark multiple LoRA adapters simultaneously with configurable traffic distribution and per-adapter reporting. See [loadgen.md](./docs/loadgen.md#multilora-traffic-splitting) for details.
 
 ## Roadmap
 
 * Accelerator metrics collection during benchmarks (GPU utilization, memory usage, power usage, etc.).
 * Deployment API to help deploy different inference stacks.
-* Traffic splitting among different use cases or LoRA adapters.
 * Support for benchmarking non-LLM GenAI use cases.
 * Support for different datasets to simulate real world use cases.
 * Replaying traffic from production systems.
@@ -117,9 +117,10 @@ Supported datasets include the following:
 Multiple load generators are supported:
 - Poisson / constant-time load generation to send specific QPS.
 - Multi-process load generation for increased concurrency and higher QPS.
+- Concurrent load generation to achieve concurrent user load for a system.
 
 Multiple load patterns can be specified:
-- Stages with configurable duration and QPS along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
+- Stages with configurable duration and QPS rate along with specific timeouts in between them allows you to simulate different load patterns like burst in traffic, constantly increasing load till hardware saturation, etc.
 
 Load generator reports metrics per stage on the delays between the request schedule time vs the actual send time. Ideally the schedule_delay should be near 0, if not the load generator is failing to meet the desired load. For detailed information on benchmarking at scale and to understand how inference-perf achieves the load target, please refer to [loadgen.md](./docs/loadgen.md)
 
@@ -247,6 +248,40 @@ This should generate the following charts (below charts are for example only):
 3. Latency vs Throughput (output tokens / sec vs TTFT, NTPOT and ITL)
 
 ![latency-throughput-chart](./docs/images/throughput_vs_latency.png)
+
+## Testing
+
+inference-perf comes with a suite of end-to-end tests that you can run to ensure that no regressions in functionality or performance was introduced. To run the tests, you have two ways.
+
+### Testing Locally
+
+You can run the end-to-end test suites locally from within the command line.
+
+It is recommended that you have `llm-d-inference-sim` installed locally to ensure that the full test suite is executed. To do so, you can use the Nix flake available locally by running `nix develop`, or run your tests in Docker instead (see below).
+
+To start all end-to-end tests, run:
+
+```sh
+pdm run test:e2e
+```
+
+### Testing in Docker
+
+Running end-to-end tests in Docker is also a single command:
+
+```sh
+pdm run test:e2e:docker
+```
+
+This command will automatically build a testable Docker image and run it immediately after.
+
+### Testing using GitHub Actions
+
+Every commit and PR pushed to the `main` or `feature/*` branches will automatically trigger the CI pipelines to run tests using GitHub Actions. This ensures that all test cases are verified automatically before merging any changes.
+
+To debug any failure in testing, the end-to-end test workflow exposes output artifacts, such as debug-level test output logs. To access this, navigate to the workflow run page for the specific commit or PR. For more information, see GitHub's [Downloading workflow artifacts][] page.
+
+[Downloading workflow artifacts]: https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts
 
 ## Contributing
 
