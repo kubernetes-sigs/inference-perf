@@ -41,7 +41,7 @@ class CompletionAPIData(InferenceAPIData):
             self.max_tokens = max_tokens
         return {
             "model": effective_model_name,
-            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+            "messages": self.prompt,
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
             "stream": streaming,
