@@ -43,22 +43,14 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-        if streaming:
-                return {
-                    "model": effective_model_name,
-                    "messages": [{"role": m.role, "content": m.content} for m in self.messages],
-                    "max_tokens": self.max_tokens,
-                    "ignore_eos": ignore_eos,
-                    "stream": streaming,
-                    "stream_options": {"include_usage": "true"},
-                }
-        else:
-                return {
-                    "model": effective_model_name,
-                    "messages": [{"role": m.role, "content": m.content} for m in self.messages],
-                    "max_tokens": self.max_tokens,
-                    "ignore_eos": ignore_eos,
-                }
+        return {
+            "model": effective_model_name,
+            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
+            "max_tokens": self.max_tokens,
+            "ignore_eos": ignore_eos,
+            "stream": streaming,
+            **({"stream_options": {"include_usage": "true"}} if streaming else {}),
+        }
 
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
