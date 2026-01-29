@@ -14,4 +14,5 @@ async def test_completion_api_data() -> None:
         "max_tokens": 100,
         "ignore_eos": False,
         "stream": True,
+        "stream_options": {"include_usage": "true"},
     }
