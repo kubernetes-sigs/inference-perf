@@ -84,7 +84,17 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
     total = len(valid_metrics)
     
     total_benchmark_time = max(m.end_time for m in valid_metrics) - min(m.start_time for m in valid_metrics)
-    total_goodput_tokens = sum(m.info.input_tokens + m.info.output_tokens for m in valid_metrics if m.info and m.info.input_tokens is not None and m.info.output_tokens is not None and m.ttft_slo_met)
+    total_goodput_tokens = sum(
+        m.info.input_tokens + m.info.output_tokens
+        for m in valid_metrics
+        if (
+            m.info
+            and m.info.input_tokens is not None
+            and m.info.output_tokens is not None
+            and (m.ttft_slo_met if has_ttft_slo else True)
+            and (m.tpot_slo_met if has_tpot_slo else True)
+        )
+    )
     goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
     
     # TTFT SLO metrics
@@ -260,8 +270,8 @@ def summarize_requests(
                 "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
                 "requests_per_sec": len(all_successful) / total_time,
             },
-            "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful]),
-            "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None]),
+            "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
+            "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles),
         }
     if slo_metrics:
         successes_dict["slo_metrics"] = slo_metrics
