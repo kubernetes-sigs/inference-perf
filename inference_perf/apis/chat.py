@@ -44,12 +44,16 @@ class ChatCompletionAPIData(InferenceAPIData):
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 9b789b2 (fix test errors)
         return {
             "model": effective_model_name,
             "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
             "stream": streaming,
+<<<<<<< HEAD
         }
 =======
         if streaming:
@@ -69,6 +73,10 @@ class ChatCompletionAPIData(InferenceAPIData):
                     "ignore_eos": ignore_eos,
                 }
 >>>>>>> 41bb6d3 (allow shared prefix question and system prompt variance and calculate slo metrics)
+=======
+            **({"stream_options": {"include_usage": "true"}} if streaming else {}),
+        }
+>>>>>>> 9b789b2 (fix test errors)
 
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None

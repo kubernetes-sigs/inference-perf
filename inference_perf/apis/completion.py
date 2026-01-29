@@ -39,21 +39,13 @@ class CompletionAPIData(InferenceAPIData):
     ) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-        if streaming:
-            return {
-                "model": model_name,
-                "prompt": self.prompt,
-                "max_tokens": self.max_tokens,
-                "ignore_eos": ignore_eos,
-                "stream": streaming,
-                "stream_options": {"include_usage": "true"},
-            }
         return {
             "model": effective_model_name,
-            "prompt": self.prompt,
+            "messages": [{"role": m.role, "content": m.content} for m in self.messages],
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
             "stream": streaming,
+            **({"stream_options": {"include_usage": "true"}} if streaming else {}),
         }
 
 
