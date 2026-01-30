@@ -45,13 +45,13 @@ data:
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
     mean: 50                                          # Average length
-    std: 10                                           # Standard deviation
+    std_dev: 10                                       # Standard deviation
     total_count: 100                                  # Total prompts to generate
   output_distribution:                                # Same structure as input_distribution
     min: 10
     max: 100
     mean: 50
-    std: 10
+    std_dev: 10
     total_count: 100
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
@@ -242,13 +242,13 @@ data:
     min: 10             # min length of the synthetic prompts
     max: 100            # max length of the synthetic prompts
     mean: 50            # mean length of the synthetic prompts
-    std: 10             # standard deviation of the length of the synthetic prompts
+    std_dev: 10         # standard deviation of the length of the synthetic prompts
     total_count: 100    # total number of prompts to generate to fit the above mentioned distribution constraints
   output_distribution:
     min: 10             # min length of the output to be generated
     max: 100            # max length of the output to be generated
     mean: 50            # mean length of the output to be generated
-    std: 10             # standard deviation of the length of the output to be generated
+    std_dev: 10         # standard deviation of the length of the output to be generated
     total_count: 100    # total number of output lengths to generate to fit the above mentioned distribution constraints
 metrics:
   type: prometheus
