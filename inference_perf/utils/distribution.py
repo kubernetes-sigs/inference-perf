@@ -13,6 +13,7 @@
 # limitations under the License.
 import numpy as np
 from numpy.typing import NDArray
+from typing import cast
 
 
 def generate_distribution(min: int, max: int, mean: float, std_dev: float, total_count: int) -> NDArray[np.int_]:
@@ -57,4 +58,4 @@ def generate_distribution(min: int, max: int, mean: float, std_dev: float, total
     # (e.g., rounding 4.6 when max is 4 could result in 5 without this)
     generated_lengths = np.clip(generated_lengths, min, max)
 
-    return generated_lengths
+    return cast(NDArray[np.int_], generated_lengths)
