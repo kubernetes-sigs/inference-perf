@@ -213,22 +213,32 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 token_gaps.append(gap)
                             metric.tpot = sum(token_gaps) / len(token_gaps)
 
-                # Evaluate SLO - check custom_headers first, then api_config.headers
+                # Evaluate SLO - check api_config.headers
                 ttft_threshold = None
                 tpot_threshold = None
+                slo_unit = getattr(self.client.api_config, "slo_unit", "ms")
+                ttft_header = getattr(self.client.api_config, "slo_ttft_header", f"x-slo-ttft-{slo_unit}")
+                tpot_header = getattr(self.client.api_config, "slo_tpot_header", f"x-slo-tpot-{slo_unit}")
+                if self.client.api_config.headers:
+                    ttft_threshold = self.client.api_config.headers.get(ttft_header)
+                    tpot_threshold = self.client.api_config.headers.get(tpot_header)
 
-                if self.client.api_config.headers:
-                    ttft_threshold = self.client.api_config.headers.get('x-slo-ttft-ms')
-                if self.client.api_config.headers:
-                    tpot_threshold = self.client.api_config.headers.get('x-slo-tpot-ms')
+                    unit = slo_unit.lower()
+                    unit_to_ms = {"s": 1000.0, "ms": 1.0, "us": 0.001}
+                    factor = unit_to_ms.get(unit, 1.0)
+
+                    if ttft_threshold is not None:
+                        ttft_threshold = float(ttft_threshold) * factor
+                    if tpot_threshold is not None:
+                        tpot_threshold = float(tpot_threshold) * factor
 
                 if ttft_threshold and metric.ttft is not None:
                     metric.ttft_slo = float(ttft_threshold)
-                    metric.ttft_slo_met = metric.ttft <= float(ttft_threshold) / 1000  # convert ms to s
+                    metric.ttft_slo_met = metric.ttft <= float(ttft_threshold) 
 
                 if tpot_threshold and metric.tpot is not None:
                     metric.tpot_slo = float(tpot_threshold)
-                    metric.tpot_slo_met = metric.tpot <= float(tpot_threshold) / 1000  # convert ms to s
+                    metric.tpot_slo_met = metric.tpot <= float(tpot_threshold)
 
                  # Record the metric
                 self.client.metrics_collector.record_metric(metric)
