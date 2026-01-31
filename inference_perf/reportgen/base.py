@@ -239,6 +239,7 @@ def summarize_requests(
                 "request_latency": summarize(
                     [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
                 ),
+                # need to precompute normalized time per output token in metrics like tpot and ttft 
                 "normalized_time_per_output_token": summarize(
                     [
                         ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
