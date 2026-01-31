@@ -47,14 +47,14 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     user_session: LocalUserSession = Field(exclude=True)
     target_round: int
 
-    async def to_payload(self, model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
+    async def to_payload(self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool) -> dict[str, Any]:
         self._session_context = await self.user_session.get_context(self.target_round)
         # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
         self.prompt = self._session_context + " " + self.prompt
         # TODO: The combined prompt (session context + current prompt) might exceed the model's
         #       maximum sequence length. Implement truncation logic/strategy to prevent
         #       errors/failures from the inference server.
-        return await super().to_payload(model_name, max_tokens, ignore_eos, streaming)
+        return await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:
         inference_info.extra_info["user_session"] = self.user_session.user_session_id

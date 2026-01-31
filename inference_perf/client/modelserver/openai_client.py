@@ -29,7 +29,13 @@ import ssl
 
 logger = logging.getLogger(__name__)
 
-
+def safe_float(value: Any) -> float:
+    """NOTE: Only for use in summarize_requests after validating safe access"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+    
 class openAIModelServerClient(ModelServerClient):
     _session: "openAIModelServerClientSession | None" = None
     _session_lock = asyncio.Lock()
@@ -199,6 +205,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         end_time=end_time,
                         scheduled_time=scheduled_time,
                     )
+                
+                output_len = safe_float(metric.info.output_tokens)
+                metric.ntpot = ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0                       
                     
                     # Calculate TTFT and TPOT if we have timing data
                 if response_info.output_token_times:
