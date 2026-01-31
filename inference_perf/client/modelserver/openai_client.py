@@ -216,9 +216,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 # Evaluate SLO - check api_config.headers
                 ttft_threshold = None
                 tpot_threshold = None
-                slo_unit = self.client.api_config.slo_unit if hasattr(self.client.api_config, "slo_unit") else "ms"
-                ttft_header = self.client.api_config.slo_ttft_header if hasattr(self.client.api_config, "slo_ttft_header") else f"x-slo-ttft-{slo_unit}"
-                tpot_header = self.client.api_config.slo_tpot_header if hasattr(self.client.api_config, "slo_tpot_header") else f"x-slo-tpot-{slo_unit}"
+                slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
+                
+                default_ttft_header = f"x-slo-ttft-{slo_unit}"
+                default_tpot_header = f"x-slo-tpot-{slo_unit}"
+                ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
+                tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
                 if self.client.api_config.headers:
                     ttft_threshold = self.client.api_config.headers.get(ttft_header)
                     tpot_threshold = self.client.api_config.headers.get(tpot_header)
