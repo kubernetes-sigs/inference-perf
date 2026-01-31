@@ -227,18 +227,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
                     factor = unit_to_s.get(unit, 1.0)
 
-                    if ttft_threshold is not None:
-                        ttft_threshold = float(ttft_threshold) * factor
-                    if tpot_threshold is not None:
-                        tpot_threshold = float(tpot_threshold) * factor
-
                 if ttft_threshold and metric.ttft is not None:
-                    metric.ttft_slo = float(ttft_threshold)
-                    metric.ttft_slo_met = metric.ttft <= float(ttft_threshold) 
+                    metric.ttft_slo = float(ttft_threshold) * factor
+                    metric.ttft_slo_met = metric.ttft <= metric.ttft_slo
 
                 if tpot_threshold and metric.tpot is not None:
-                    metric.tpot_slo = float(tpot_threshold)
-                    metric.tpot_slo_met = metric.tpot <= float(tpot_threshold)
+                    metric.tpot_slo = float(tpot_threshold) * factor
+                    metric.tpot_slo_met = metric.tpot <= metric.tpot_slo
 
                  # Record the metric
                 self.client.metrics_collector.record_metric(metric)
