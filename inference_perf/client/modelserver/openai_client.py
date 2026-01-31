@@ -216,16 +216,16 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 # Evaluate SLO - check api_config.headers
                 ttft_threshold = None
                 tpot_threshold = None
-                slo_unit = getattr(self.client.api_config, "slo_unit", "ms")
-                ttft_header = getattr(self.client.api_config, "slo_ttft_header", f"x-slo-ttft-{slo_unit}")
-                tpot_header = getattr(self.client.api_config, "slo_tpot_header", f"x-slo-tpot-{slo_unit}")
+                slo_unit = self.client.api_config.slo_unit if hasattr(self.client.api_config, "slo_unit") else "ms"
+                ttft_header = self.client.api_config.slo_ttft_header if hasattr(self.client.api_config, "slo_ttft_header") else f"x-slo-ttft-{slo_unit}"
+                tpot_header = self.client.api_config.slo_tpot_header if hasattr(self.client.api_config, "slo_tpot_header") else f"x-slo-tpot-{slo_unit}"
                 if self.client.api_config.headers:
                     ttft_threshold = self.client.api_config.headers.get(ttft_header)
                     tpot_threshold = self.client.api_config.headers.get(tpot_header)
 
                     unit = slo_unit.lower()
-                    unit_to_ms = {"s": 1000.0, "ms": 1.0, "us": 0.001}
-                    factor = unit_to_ms.get(unit, 1.0)
+                    unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
+                    factor = unit_to_s.get(unit, 1.0)
 
                     if ttft_threshold is not None:
                         ttft_threshold = float(ttft_threshold) * factor
