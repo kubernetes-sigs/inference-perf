@@ -32,6 +32,9 @@ class APIConfig(BaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
     headers: Optional[dict[str, str]] = None
+    slo_unit: str = None
+    slo_tpot_header: Optional[str] = None
+    slo_ttft_header: Optional[str] = None
 
 
 class TraceFormat(Enum):
