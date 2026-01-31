@@ -49,6 +49,8 @@ class RequestLifecycleMetric(BaseModel):
     tpot_slo: Optional[float] = None
     ttft_slo_met: Optional[bool] = None
     tpot_slo_met: Optional[bool] = None
+    
+    ntpot: Optional[float] = None  # normalized time per input token
 
 
 

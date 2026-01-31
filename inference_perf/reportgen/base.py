@@ -15,6 +15,7 @@ import logging
 from collections import defaultdict
 from typing import Any, List, Optional
 
+
 import numpy as np
 from pydantic import BaseModel
 
@@ -25,17 +26,9 @@ from inference_perf.client.metricsclient.prometheus_client import PrometheusMetr
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
 from inference_perf.utils import ReportFile
+from inference_perf.client.modelserver.openai_client import safe_float
 
 logger = logging.getLogger(__name__)
-
-
-def safe_float(value: Any) -> float:
-    """NOTE: Only for use in summarize_requests after validating safe access"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
-
 
 def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
     if len(items) == 0:
@@ -239,12 +232,10 @@ def summarize_requests(
                 "request_latency": summarize(
                     [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
                 ),
-                # need to precompute normalized time per output token in metrics like tpot and ttft 
                 "normalized_time_per_output_token": summarize(
                     [
-                        ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
+                        metric.ntpot if metric.ntpot is not None else 0
                         for metric in all_successful
-                        for output_len in [safe_float(metric.info.output_tokens)]
                     ],
                     percentiles,
                 ),
