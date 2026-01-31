@@ -249,14 +249,14 @@ def summarize_requests(
                 ),
                 "time_per_output_token": summarize(
                     [
-                       x.tpot
+                       x.tpot if x.tpot is not None else 0
                         for x in streamable
                         if len(x.info.output_token_times) > 1
                     ],
                     percentiles,
                 ),
                 "time_to_first_token": summarize(
-                    [x.ttft for x in streamable], percentiles
+                    [x.ttft if x.ttft is not None else 0 for x in streamable], percentiles
                 ),
                 "inter_token_latency": summarize(
                     [
