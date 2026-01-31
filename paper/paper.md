@@ -12,6 +12,9 @@ authors:
   - name: Ashok Chandrasekar
     orcid: 0009-0009-3481-9173
     affiliation: 1
+  - name: Sachin Varghese
+    orcid: 0009-0007-5015-5173
+    affiliation: 2
   - name: Jason Kramberger
     orcid: 0009-0006-8517-7973
     affiliation: 1
@@ -25,13 +28,15 @@ authors:
     orcid: 0000-0001-5243-233X
     affiliation: 4
 affiliations:
- - name: Google, USA
-   index: 1
- - name: IBM Research, USA
-   index: 2
- - name: Red Hat, USA
-   index: 3
-date: 27 January 2026
+  - name: Google, USA
+    index: 1
+  - name: Capital One, USA
+    index: 2
+  - name: IBM Research, USA
+    index: 3
+  - name: Red Hat, USA
+    index: 4
+date: 30 January 2026
 bibliography: paper.bib
 ---
 
