@@ -15,6 +15,7 @@ import logging
 from collections import defaultdict
 from typing import Any, List, Optional
 
+
 import numpy as np
 from pydantic import BaseModel
 
@@ -25,17 +26,9 @@ from inference_perf.client.metricsclient.prometheus_client import PrometheusMetr
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
 from inference_perf.utils import ReportFile
+from inference_perf.client.modelserver.openai_client import safe_float
 
 logger = logging.getLogger(__name__)
-
-
-def safe_float(value: Any) -> float:
-    """NOTE: Only for use in summarize_requests after validating safe access"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
-
 
 def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
     if len(items) == 0:
@@ -56,6 +49,95 @@ class ResponsesSummary(BaseModel):
     successes: dict[str, Any]
     failures: dict[str, Any]
 
+def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dict[str, Any]]:
+    """
+    Calculate SLO attainment statistics from request metrics.
+    
+    Returns None if no SLO thresholds were set, otherwise returns dict with SLO metrics.
+    """
+    # Filter out errors
+    valid_metrics = [m for m in metrics if m.error is None]
+    
+    if not valid_metrics:
+        return None
+    
+    # Check if any metrics have SLO fields populated
+    has_ttft_slo = any(m.ttft_slo_met is not None for m in valid_metrics)
+    has_tpot_slo = any(m.tpot_slo_met is not None for m in valid_metrics)
+
+    ttft_slo = max([m.ttft_slo for m in valid_metrics if m.ttft_slo is not None], default=None)
+    tpot_slo = max([m.tpot_slo for m in valid_metrics if m.tpot_slo is not None], default=None)
+    
+    # Calculate the sum of input and output tokens for all valid metrics that met SLO
+   
+    if not has_ttft_slo and not has_tpot_slo:
+        return None  # No SLO tracking enabled
+    
+    slo_metrics: dict[str, Any] = {}
+    total = len(valid_metrics)
+    
+    total_benchmark_time = max(m.end_time for m in valid_metrics) - min(m.start_time for m in valid_metrics)
+    goodput_token_counts = []
+    for m in valid_metrics:
+        # Check presence of info and tokens
+        if not (m.info and m.info.input_tokens is not None and m.info.output_tokens is not None):
+            continue
+            
+        # Check SLO attainment
+        ttft_ok = (m.ttft_slo_met is True) if has_ttft_slo else True
+        tpot_ok = (m.tpot_slo_met is True) if has_tpot_slo else True
+        
+        if ttft_ok and tpot_ok:
+            goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
+
+    total_goodput_tokens = sum(goodput_token_counts)
+    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+    
+    # TTFT SLO metrics
+    if has_ttft_slo:
+        ttft_met = sum(1 for m in valid_metrics if m.ttft_slo_met is True)
+        ttft_failed = sum(1 for m in valid_metrics if m.ttft_slo_met is False)
+        
+        slo_metrics["ttft_slo"] = {
+            "attainment_pct": (ttft_met / total * 100) if total > 0 else 0,
+            "requests_met": ttft_met,
+            "requests_failed": ttft_failed,
+            "total_requests": total,
+            "slo": ttft_slo
+            
+        }
+    
+    # TPOT SLO metrics
+    if has_tpot_slo:
+        tpot_met = sum(1 for m in valid_metrics if m.tpot_slo_met is True)
+        tpot_failed = sum(1 for m in valid_metrics if m.tpot_slo_met is False)
+        
+        slo_metrics["tpot_slo"] = {
+            "attainment_pct": (tpot_met / total * 100) if total > 0 else 0,
+            "requests_met": tpot_met,
+            "requests_failed": tpot_failed,
+            "total_requests": total,
+            "slo": tpot_slo
+        }
+    
+    # Combined SLO (both must be met)
+    if has_ttft_slo and has_tpot_slo:
+        combined_met = sum(
+            1 for m in valid_metrics 
+            if m.ttft_slo_met is True and m.tpot_slo_met is True
+        )
+        
+        slo_metrics["combined_slo"] = {
+            "attainment_pct": (combined_met / total * 100) if total > 0 else 0,
+            "requests_met": combined_met,
+            "requests_failed": total - combined_met,
+            "total_requests": total,
+            "ttft_slo": ttft_slo,
+            "tpot_slo": tpot_slo,
+            "goodput_rate": goodput_rate
+        }
+    
+    return slo_metrics
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
@@ -142,10 +224,8 @@ def summarize_requests(
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
-
-    return ResponsesSummary(
-        load_summary=load_summary,
-        successes={
+    slo_metrics = calculate_slo_metrics(metrics)
+    successes_dict = {
             "count": len(all_successful),
             "latency": {
                 "request_latency": summarize(
@@ -153,22 +233,21 @@ def summarize_requests(
                 ),
                 "normalized_time_per_output_token": summarize(
                     [
-                        ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
+                        metric.ntpot if metric.ntpot is not None else 0
                         for metric in all_successful
-                        for output_len in [safe_float(metric.info.output_tokens)]
                     ],
                     percentiles,
                 ),
                 "time_per_output_token": summarize(
                     [
-                        (x.info.output_token_times[-1] - x.info.output_token_times[0]) / (len(x.info.output_token_times) - 1)
+                       x.tpot if x.tpot is not None else 0
                         for x in streamable
                         if len(x.info.output_token_times) > 1
                     ],
                     percentiles,
                 ),
                 "time_to_first_token": summarize(
-                    [x.info.output_token_times[0] - x.start_time for x in streamable], percentiles
+                    [x.ttft if x.ttft is not None else 0 for x in streamable], percentiles
                 ),
                 "inter_token_latency": summarize(
                     [
@@ -186,16 +265,21 @@ def summarize_requests(
                 "requests_per_sec": len(all_successful) / total_time,
             },
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
-            "output_len": summarize(
-                [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
-            ),
-        },
+            "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles),
+        }
+    if slo_metrics:
+        successes_dict["slo_metrics"] = slo_metrics
+    return ResponsesSummary(
+        load_summary=load_summary,
+        successes=successes_dict,
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
             "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed], percentiles),
         },
     )
+
+
 
 
 class ReportGenerator:
@@ -342,7 +426,7 @@ class ReportGenerator:
                 logger.warning("Report generation failed - no metrics collected by metrics client")
 
         if report_config.per_stage:
-            for stage_id, _stage_info in runtime_parameters.stages.items():
+            for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
                     report_file = ReportFile(

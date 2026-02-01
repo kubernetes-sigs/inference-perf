@@ -29,7 +29,13 @@ import ssl
 
 logger = logging.getLogger(__name__)
 
-
+def safe_float(value: Any) -> float:
+    """NOTE: Only for use in summarize_requests after validating safe access"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+    
 class openAIModelServerClient(ModelServerClient):
     _session: "openAIModelServerClientSession | None" = None
     _session_lock = asyncio.Lock()
@@ -189,8 +195,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         error_type=f"{response.status} {response.reason}",
                     )
 
-                self.client.metrics_collector.record_metric(
-                    RequestLifecycleMetric(
+                metric = RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=request_data,
                         response_data=response_content,
@@ -200,7 +205,51 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         end_time=end_time,
                         scheduled_time=scheduled_time,
                     )
-                )
+                
+                output_len = safe_float(metric.info.output_tokens)
+                metric.ntpot = ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0                       
+                    
+                    # Calculate TTFT and TPOT if we have timing data
+                if response_info.output_token_times:
+                        # TTFT = time to first token
+                    metric.ttft = response_info.output_token_times[0] - start
+    
+                    # TPOT = average time between tokens
+                    if len(response_info.output_token_times) > 1:
+                        token_gaps = []
+                        for i in range(1, len(response_info.output_token_times)):
+                            gap = response_info.output_token_times[i] - response_info.output_token_times[i-1]
+                            token_gaps.append(gap)
+                        metric.tpot = sum(token_gaps) / len(token_gaps)
+
+                    # Evaluate SLO - check api_config.headers
+                    ttft_threshold = None
+                    tpot_threshold = None
+                    slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
+                
+                    default_ttft_header = f"x-slo-ttft-{slo_unit}"
+                    default_tpot_header = f"x-slo-tpot-{slo_unit}"
+                    ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
+                    tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
+                    if self.client.api_config.headers:
+                        ttft_threshold = self.client.api_config.headers.get(ttft_header)
+                        tpot_threshold = self.client.api_config.headers.get(tpot_header)
+
+                        unit = slo_unit.lower()
+                        unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
+                        factor = unit_to_s.get(unit, 1.0)
+
+                        if ttft_threshold and metric.ttft is not None:
+                            metric.ttft_slo = float(ttft_threshold) * factor
+                            metric.ttft_slo_met = metric.ttft <= metric.ttft_slo
+
+                        if tpot_threshold and metric.tpot is not None:
+                            metric.tpot_slo = float(tpot_threshold) * factor
+                            metric.tpot_slo_met = metric.tpot <= metric.tpot_slo
+
+                 # Record the metric
+                self.client.metrics_collector.record_metric(metric)
+
         except Exception as e:
             if isinstance(e, asyncio.exceptions.TimeoutError):
                 logger.error("request timed out:", exc_info=True)
