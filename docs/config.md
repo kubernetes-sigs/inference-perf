@@ -31,11 +31,11 @@ api:
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
     x-routing-strategy: round-robin
-    x-tpot-slo-ms: "2"
-    x-ttft-slo-ms: "1000"
+    x-slo-tpot-ms: "2"
+    x-slo-ttft-ms: "1000"
   slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
-  slo_tpot_header: "x-tpot-slo-ms"        # Optional header name for TPOT SLO Header, default is x-tpot-slo-ms
-  slo_ttft_header: "x-ttft-slo-ms"        # Optional header name for TTFT SLO Header, default is x-ttft-slo-ms
+  slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
+  slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
 
 ### Data Generation
