@@ -33,9 +33,9 @@ api:
     x-routing-strategy: round-robin
     x-tpot-slo-ms: "2"
     x-ttft-slo-ms: "1000"
-  slo_unit: "s"               # Optional SLO unit (e.g., ms, s) default is ms
-  slo_tpot_header: "x-tpot-slo-s"        # Optional header name for TPOT SLO Header default is x-tpot-slo-ms
-  slo_ttft_header: "x-ttft-slo-s"        # Optional header name for TTFT SLO Header default is x-ttft-slo-ms
+  slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
+  slo_tpot_header: "x-tpot-slo-ms"        # Optional header name for TPOT SLO Header, default is x-tpot-slo-ms
+  slo_ttft_header: "x-ttft-slo-ms"        # Optional header name for TTFT SLO Header, default is x-ttft-slo-ms
 ```  
 
 ### Data Generation
@@ -62,7 +62,7 @@ data:
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
     system_prompt_len: 100    # Shared prefix length (tokens)
-    
+
     question_len: 50          # Question length (tokens)
     question_len_std: 5       # optional defaults to 0
     question_len_min: 10      # optional defaults to 1
