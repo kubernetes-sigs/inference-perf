@@ -27,7 +27,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 ```yaml
 api:
   type: completion             # API type (completion|chat). completion is default since chat may require extra server config
-  streaming: false             # Enable streaming for TTFT, ITL, and TPOT metrics
+  streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
     x-routing-strategy: round-robin
