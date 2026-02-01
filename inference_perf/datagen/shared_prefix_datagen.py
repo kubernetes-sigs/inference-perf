@@ -148,5 +148,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
                 self.prompts.append(question_text)
 
-        # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
-        random.shuffle(self.prompts)
+        # Shuffle prompts to avoid any ordering effects
+        if self.enable_multi_turn_chat:
+            random.shuffle(self.user_sessions)        
+        else:
+            random.shuffle(self.prompts)
