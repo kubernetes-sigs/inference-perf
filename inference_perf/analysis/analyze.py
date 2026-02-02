@@ -16,12 +16,12 @@ import json
 import logging
 import operator
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def _extract_latency_metric(latency_data: Dict[str, Any], metric_name: str, convert_to_ms: bool = False) -> float | None:
+def _extract_latency_metric(latency_data: Dict[str, Any], metric_name: str, convert_to_ms: bool = False) -> Optional[float]:
     """Helper to extract a metric's mean value from latency data."""
     metric_data = latency_data.get(metric_name)
     if isinstance(metric_data, dict):
@@ -31,7 +31,7 @@ def _extract_latency_metric(latency_data: Dict[str, Any], metric_name: str, conv
     return None
 
 
-def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str) -> float | None:
+def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str) -> Optional[float]:
     """Helper to extract a throughput metric's value."""
     metric_value = throughput_data.get(metric_name)
     if isinstance(metric_value, (int, float)):
