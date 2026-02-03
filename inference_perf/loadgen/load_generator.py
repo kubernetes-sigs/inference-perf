@@ -195,6 +195,11 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        # Seed with current time + worker id to ensure unique random sequences per worker
+        seed = (int(time.time() * 1000) + self.id) % 2**32
+        np.random.seed(seed)
+        logger.debug(f"[Worker {self.id}] seeded numpy with {seed}")
+
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
