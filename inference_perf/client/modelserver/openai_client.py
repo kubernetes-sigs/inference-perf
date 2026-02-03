@@ -160,6 +160,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
             ignore_eos=self.client.ignore_eos,
             streaming=self.client.api_config.streaming,
         )
+
+        # Add response_format for structured output if configured
+        if self.client.api_config.response_format:
+            payload["response_format"] = self.client.api_config.response_format.to_api_format()
+
         headers = {"Content-Type": "application/json"}
 
         if self.client.api_key:
