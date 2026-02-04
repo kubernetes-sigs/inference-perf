@@ -141,9 +141,4 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     )
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
-        indices = list(range(len(self.prompts)))
-        random.shuffle(indices)
-        self.prompts = [self.prompts[i] for i in indices]
-        self.prompt_pairs = [self.prompt_pairs[i] for i in indices]
-        if self.user_sessions:
-            self.user_sessions = [self.user_sessions[i] for i in indices]
+        random.shuffle(self.prompts)
