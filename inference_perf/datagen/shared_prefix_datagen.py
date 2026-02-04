@@ -5,7 +5,7 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData, UserSessionChatAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -75,8 +75,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             )
             self.output_len_list_per_group.append(output_lens.tolist())
 
-        self.prompts: List[str] = []  # For completion API
-        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for chat API
+        self.prompts: List[str] = []
+        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for Chat API
         self.user_sessions: List[LocalUserSession] = []
         self.flat_output_lens: List[int] = []
         self._generate_prompts()
@@ -108,27 +108,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             )
         elif self.api_config.type == APIType.Chat:
             shared_prefix, question = self.prompt_pairs[i]
-            messages = [
-                ChatMessage(role="system", content=shared_prefix),
-                ChatMessage(role="user", content=question)
-            ]
-            return ChatCompletionAPIData(messages=messages, max_tokens=output_len)
-        else:
-            # Single-turn: use data_index directly
-            i = data.data_index % len(self.prompts)
-            if self.api_config.type == APIType.Chat:
-                shared_prefix, question = self.prompt_pairs[i]
-                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
-                return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
-            else:
-                return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
-
-    def get_request_by_index(self, n: int) -> InferenceAPIData:
-        i = n % len(self.prompts)
-        if self.api_config.type == APIType.Chat:
-            shared_prefix, question = self.prompt_pairs[i]
             messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
-            return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+            return ChatCompletionAPIData(messages=messages, max_tokens=output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
@@ -138,18 +119,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         i = 0
         while True:
-            if self.enable_multi_turn_chat:
-                prefered_worker_id = i % self.num_groups
-                yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
-                i += 1
-            elif self.api_config.type == APIType.Chat:
-                shared_prefix, question = self.prompt_pairs[i]
-                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
-                yield ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
-                i = (i + 1) % len(self.prompts)
-            else:
-                yield CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
-                i = (i + 1) % len(self.prompts)
+            prefered_worker_id = i % self.num_groups if self.enable_multi_turn_chat else -1
+            yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
+            i += 1
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
@@ -186,31 +158,21 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             for prompt_id in range(self.num_prompts_per_group):
                 question_text = all_question_texts[prompt_id]
 
-                # Store question for this group (for multi-turn)
-                group_questions.append(question_text)
-
-                # Combine shared prefix and question
-                full_prompt_text = shared_prefix_text + " " + question_text
-                self.prompts.append(full_prompt_text)
-                self.prompt_pairs.append((shared_prefix_text, question_text))
-
                 if self.enable_multi_turn_chat:
                     # multi turn chat, create user to keep conversation
-                    # For Chat API, context should be a list of messages starting with system prompt
-                    # For Completion API, context is a string
-                    initial_context: list[ChatMessage] | str
-                    if self.api_config.type == APIType.Chat:
-                        initial_context = [ChatMessage(role="system", content=shared_prefix_text)]
-                    else:
-                        initial_context = shared_prefix_text
-
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
-                            context=initial_context,
-                            group_id=group_id,  # Store group_id for correct question selection
+                            context=shared_prefix_text,
                         )
                     )
+                else:
+                    # Single turn: store (shared_prefix, question) pair for Chat API
+                    self.prompt_pairs.append((shared_prefix_text, question_text))
+                    # Combine shared prefix and question for Completion API
+                    question_text = shared_prefix_text + " " + question_text
+
+                self.prompts.append(question_text)
 
         # Flatten output lengths to match prompts ordering
         self.flat_output_lens = [
