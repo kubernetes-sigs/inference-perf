@@ -48,6 +48,18 @@ Inference Perf is a generative AI (GenAI) inference performance benchmarking too
 
 With the rapid adoption of Large Language Models (LLMs) and GenAI, there is a growing need to accurately measure and compare the performance of inference serving systems. Different model servers (e.g., vLLM, TGI, SGLang) and deployment orchestrators (e.g., Kubernetes) introduce substantial variability in performance. Existing tools often lack standardized metrics or GenAI inference specific capabilities like [@k6] and [@locust] or are tightly coupled to specific frameworks like [@vllm-benchmark], [@tgi-benchmark], [@genai-perf] where their goal is to provide a tool for developers working on the specific framework to benchmark their system. As a result, it is often hard to reproduce benchmark results across different serving stacks and environments. `inference-perf` addresses this gap by providing a scalable, agnostic, and comprehensive benchmarking suite for GenAI workloads. It supports various real-world and synthetic datasets, different load patterns (e.g., burst, saturation), and integrates with standard cloud-native observability tools like Prometheus allowing it to benchmark both smaller scale systems in development as well as large production-scale deployments orchestrated by Kubernetes. Crucially, it provides a standardized comparison between different model servers and serving stacks across various use cases.
 
+# State of the field
+
+There are two kinds of performance benchmarking tools for GenAI inference that are commonly used:
+1. Web-based benchmarks like [@k6] and [@locust]
+2. Model server benchmarks like [@vllm-benchmark], [@tgi-benchmark] and [@genai-perf]
+
+Web-based benchmarks are generic web server benchmarking tools which offer battle-tested way to reliably generate traffic against specific HTTP endpoints. While these can be used to benchmark LLMs and GenAI workloads, they lack the standardized set of metrics that we want to measure with inference often at token level. To measure these token level metrics, streaming request support, tokenizer support and other features specific to the GenAI workload that is being tested are needed. While some of these tools allow extensions, it is restrictive in general and is not ideal for GenAI benchmarking.
+
+Model server benchmarks are geared towards developers of the model server to repeatedly measure performance improvements that are being made to that model server. While these work well for benchmarking GenAI inference, they are very specific to the model servers and don't work well for production workloads where different traffic patterns that simulate real world workloads are needed. Especially to validate autoscaling, load balancing and intelligent routing which are staple features of these production systems.
+
+The main contribution of `infernce-perf` is to provide a standardized model-server agnostic tool that is designed to benchmark production-scale GenAI workloads for various real-world use cases.
+
 # Software Design
 
 `inference-perf` is built with a modular architecture comprising several key components:
