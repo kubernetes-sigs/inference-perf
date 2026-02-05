@@ -1,4 +1,12 @@
-from inference_perf.config import read_config, deep_merge, Config, APIType, DataGenType, LoadType, MetricsClientType
+from inference_perf.config import (
+    APIType,
+    Config,
+    DataGenType,
+    LoadType,
+    MetricsClientType,
+    deep_merge,
+    read_config,
+)
 import os
 
 
@@ -32,3 +40,37 @@ def test_deep_merge() -> None:
     assert merged["data"]["type"] == DataGenType.Mock
     assert merged["load"]["type"] == LoadType.POISSON
     assert merged["metrics"]["type"] == MetricsClientType.PROMETHEUS
+
+
+def test_shared_prefix_aliases() -> None:
+    # Test using the short names (field names)
+    config_short = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {"num_groups": 5, "num_prompts_per_group": 20},
+            }
+        }
+    )
+    assert config_short.data.shared_prefix is not None
+    assert config_short.data.shared_prefix.num_groups == 5
+    assert config_short.data.shared_prefix.num_prompts_per_group == 20
+
+    # Test using the long names (aliases)
+    config_long = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {"num_unique_system_prompts": 7, "num_users_per_system_prompt": 15},
+            }
+        }
+    )
+    assert config_long.data.shared_prefix is not None
+    assert config_long.data.shared_prefix.num_groups == 7
+    assert config_long.data.shared_prefix.num_prompts_per_group == 15
+
+    # Test serialization
+    dumped = config_long.model_dump(mode="json", by_alias=True)
+    shared_prefix_dump = dumped["data"]["shared_prefix"]
+    assert shared_prefix_dump["num_unique_system_prompts"] == 7
+    assert shared_prefix_dump["num_users_per_system_prompt"] == 15

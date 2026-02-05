@@ -222,7 +222,7 @@ class ReportGenerator:
         return ReportFile(
             name="config",
             file_type="yaml",
-            contents=self.config.model_dump(mode="json"),
+            contents=self.config.model_dump(mode="json", by_alias=True),
         )
 
     async def generate_reports(
