@@ -85,13 +85,13 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     question_len_std: float = 0  # Variation in question length within a group
-    question_len_min: Optional[int] = None
-    question_len_max: Optional[int] = None
-    output_len_std: float = 0  # Variation in output length within a group
-    output_len_min: Optional[int] = None
-    output_len_max: Optional[int] = None
+    question_len_min: int = 1
+    question_len_max: int = 2048
 
     output_len: int = 50
+    output_len_std: float = 0  # Variation in output length within a group
+    output_len_min: int = 1
+    output_len_max: int = 2048
     enable_multi_turn_chat: bool = False
 
 
