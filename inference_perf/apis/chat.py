@@ -43,7 +43,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> dict[str, Any]:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-            return {
+        return {
                     "model": effective_model_name,
                     "messages": [{"role": m.role, "content": m.content} for m in self.messages],
                     "max_tokens": self.max_tokens,
