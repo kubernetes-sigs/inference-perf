@@ -49,7 +49,9 @@ class CompletionAPIData(InferenceAPIData):
         }
 
 
-    async def process_response(self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer) -> InferenceInfo:
+    async def process_response(
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+    ) -> InferenceInfo:
         if config.streaming:
             output_text = ""
             output_token_times: List[float] = []
