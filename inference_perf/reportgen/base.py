@@ -263,10 +263,6 @@ def summarize_requests(
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
-<<<<<<< HEAD
-    # NEW: Calculate SLO metrics
-    slo_metrics = calculate_slo_metrics(metrics)
-=======
 
     # --- Pre-calculate Metrics for all successful requests ---
     # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
@@ -312,7 +308,6 @@ def summarize_requests(
     valid_tpot = [v for v in tpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
 
->>>>>>> 2931c63 (calculate tpot, ntpot, ttft, and slo metrics in post processing and generate_distribution in shared_prefix_datagen)
     successes_dict = {
             "count": len(all_successful),
             "latency": {

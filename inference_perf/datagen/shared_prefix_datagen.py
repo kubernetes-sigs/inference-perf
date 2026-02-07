@@ -1,7 +1,6 @@
 import random
 from typing import Generator, List, Optional
 from inference_perf.utils.distribution import generate_distribution
-from inference_perf.utils.distribution import generate_distribution
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
@@ -154,4 +153,4 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             random.shuffle(self.user_sessions)        
         else:
             random.shuffle(self.prompts)
-        random.shuffle(self.prompts)
+ß
