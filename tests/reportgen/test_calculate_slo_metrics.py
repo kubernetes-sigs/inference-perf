@@ -3,7 +3,7 @@ from unittest.mock import Mock
 from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.reportgen.base import calculate_slo_metrics
 
-
+@pytest.fixture(scope="module", autouse=True)
 def test_calculate_slo_metrics_empty_metrics() -> None:
     """Test with empty metrics list returns None."""
     result = calculate_slo_metrics([], [], [])

@@ -160,7 +160,7 @@ def calculate_slo_metrics(
     # Combined SLO (both must be met)
     if has_ttft_slo and has_tpot_slo:
         combined_met = sum(
-            1 for t_res, p_res in zip(ttft_results, tpot_results)
+            1 for t_res, p_res in zip(ttft_results, tpot_results, strict=True)
             if t_res is True and p_res is True
         )
         
