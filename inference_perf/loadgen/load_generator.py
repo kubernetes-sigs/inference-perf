@@ -31,7 +31,6 @@ from inference_perf.config import (
 from asyncio import (
     CancelledError,
     Semaphore,
-    TaskGroup,
     create_task,
     gather,
     run,
@@ -39,7 +38,22 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, TypeAlias, Optional
+
+try:
+    from asyncio import TaskGroup
+except ImportError:
+    # Python 3.9 compatibility: TaskGroup was added in 3.11
+    # This is a dummy for import-time compatibility.
+    # Runtime usage will still require Python 3.11+.
+    TaskGroup = object
+
+from typing import List, Tuple, Optional, Union
+try:
+    from typing import TypeAlias
+except ImportError:
+    # Python 3.9 compatibility: TypeAlias was added in 3.10
+    from typing import Any
+    TypeAlias = Any
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -55,7 +69,7 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float, Optional[str]]
+RequestQueueData: TypeAlias = Tuple[int, Union[InferenceAPIData, int], float, Optional[str]]
 
 
 class Worker(mp.Process):

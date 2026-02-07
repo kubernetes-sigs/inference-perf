@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class openAIModelServerClient(ModelServerClient):
-    _session: "openAIModelServerClientSession | None" = None
+    _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
 
     def __init__(

@@ -97,11 +97,11 @@ class MetricsClient(ABC):
         pass
 
     @abstractmethod
-    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> Optional[ModelServerMetrics]:
         raise NotImplementedError
 
     @abstractmethod
-    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
+    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> Optional[ModelServerMetrics]:
         raise NotImplementedError
 
     @abstractmethod

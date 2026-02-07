@@ -14,7 +14,7 @@
 from abc import abstractmethod
 import logging
 import time
-from typing import List, cast, Any
+from typing import List, cast, Any, Optional
 import requests
 from inference_perf.client.modelserver.base import ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
@@ -184,7 +184,7 @@ class PrometheusMetricsClient(MetricsClient):
         wait_time = self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         time.sleep(wait_time)
 
-    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> ModelServerMetrics | None:
+    def collect_metrics_summary(self, runtime_parameters: PerfRuntimeParameters) -> Optional[ModelServerMetrics]:
         """
         Collects the summary metrics for the given Perf Benchmark run.
 
@@ -204,7 +204,7 @@ class PrometheusMetricsClient(MetricsClient):
 
         return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
 
-    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> ModelServerMetrics | None:
+    def collect_metrics_for_stage(self, runtime_parameters: PerfRuntimeParameters, stage_id: int) -> Optional[ModelServerMetrics]:
         """
         Collects the summary metrics for a specific stage.
 
@@ -235,7 +235,7 @@ class PrometheusMetricsClient(MetricsClient):
 
     def get_model_server_metrics(
         self, metrics_metadata: MetricsMetadata, query_duration: float, query_eval_time: float
-    ) -> ModelServerMetrics | None:
+    ) -> Optional[ModelServerMetrics]:
         """
         Collects the summary metrics for the given Model Server Client and query duration.
 
