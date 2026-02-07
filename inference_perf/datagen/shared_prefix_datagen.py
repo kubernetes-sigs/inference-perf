@@ -45,22 +45,28 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
         
+        # Generate separate distributions for each group
+        self.question_len_list_per_group: List[List[int]] = []
+        self.output_len_list_per_group: List[List[int]] = []
         
-        self.question_len_list = generate_distribution(
-            self.shared_prefix.question_len_min,
-            self.shared_prefix.question_len_max,
-            self.shared_prefix.question_len,
-             self.shared_prefix.question_len_std,
-            self.shared_prefix.num_prompts_per_group * self.shared_prefix.num_groups,
-        )
-        
-        self.output_len_list = generate_distribution(
-            self.shared_prefix.output_len_min,
-            self.shared_prefix.output_len_max,
-            self.shared_prefix.output_len,
-            self.shared_prefix.output_len_std,
-            self.shared_prefix.num_prompts_per_group * self.shared_prefix.num_groups,
-        )
+        for _ in range(self.num_groups):
+            question_lens = generate_distribution(
+                self.shared_prefix.question_len_min,
+                self.shared_prefix.question_len_max,
+                self.shared_prefix.question_len,
+                self.shared_prefix.question_len_std,
+                self.shared_prefix.num_prompts_per_group,
+            )
+            self.question_len_list_per_group.append(question_lens)
+            
+            output_lens = generate_distribution(
+                self.shared_prefix.output_len_min,
+                self.shared_prefix.output_len_max,
+                self.shared_prefix.output_len,
+                self.shared_prefix.output_len_std,
+                self.shared_prefix.num_prompts_per_group,
+            )
+            self.output_len_list_per_group.append(output_lens)
         
         
 
@@ -83,7 +89,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
-        output_len = self.output_len_list[i]  
+        group_id = i // self.num_prompts_per_group
+        prompt_id_in_group = i % self.num_prompts_per_group
+        output_len = self.output_len_list_per_group[group_id][prompt_id_in_group]
+          
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
@@ -131,7 +140,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
             for prompt_id in range(self.num_prompts_per_group):
                 # Generate a unique question
-                question_len = self.question_len_list[group_id * self.shared_prefix.num_prompts_per_group + prompt_id]
+                question_len = self.question_len_list_per_group[group_id][prompt_id]
                 
                 question_token_ids = self._generate_random_token_ids(question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
