@@ -48,7 +48,6 @@ class CompletionAPIData(InferenceAPIData):
             **({"stream_options": {"include_usage": "true"}} if streaming else {}),
         }
 
-
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
