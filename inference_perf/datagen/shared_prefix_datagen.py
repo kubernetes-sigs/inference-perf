@@ -119,6 +119,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             # This check is defensive; __init__ should have already validated this.
             raise ValueError("Tokenizer is not available for generating prompts.")
 
+        if self.shared_prefix is None:
+            raise ValueError("Shared prefix is not available for generating prompts.")
+        
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
         for group_id in range(self.num_groups):
