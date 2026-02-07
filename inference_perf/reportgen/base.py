@@ -34,7 +34,7 @@ def safe_float(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0
+        return 0.0
     
 def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
     if len(items) == 0:
@@ -92,10 +92,10 @@ def calculate_slo_metrics(
     ttft_results = []
     tpot_results = []
     
-    # Iterate through metrics and their corresponding calculated values
-    for i, m in enumerate(metrics):
-        ttft = ttft_values[i]
-        tpot = tpot_values[i]
+    # Iterate through metrics and their corresponding calculated values.
+    # Using zip(..., strict=True) ensures that all sequences have the same length
+    # and prevents misalignment or IndexError if they do not.
+    for m, ttft, tpot in zip(metrics, ttft_values, tpot_values, strict=True):
         
         # Check TTFT SLO (Only if streamable / ttft exists)
         ttft_met = None
@@ -243,7 +243,7 @@ def summarize_requests(
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
     
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
-    send_duration = max([x.start_time for x in metrics]) - min([x.start_time for x in metrics])
+    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
@@ -325,13 +325,29 @@ def summarize_requests(
                 "inter_token_latency": summarize(inter_token_latencies, percentiles),
             },
             "throughput": {
-                "input_tokens_per_sec": sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time,
-                "output_tokens_per_sec": sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time,
-                "total_tokens_per_sec": sum(
-                    safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens)
-                    for x in all_successful
-                ) / total_time,
-                "requests_per_sec": len(all_successful) / total_time,
+                "input_tokens_per_sec": (
+                    sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time
+                    if total_time > 0
+                    else 0.0
+                ),
+                "output_tokens_per_sec": (
+                    sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time
+                    if total_time > 0
+                    else 0.0
+                ),
+                "total_tokens_per_sec": (
+                    sum(
+                        safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens)
+                        for x in all_successful
+                    ) / total_time
+                    if total_time > 0
+                    else 0.0
+                ),
+                "requests_per_sec": (
+                    len(all_successful) / total_time
+                    if total_time > 0
+                    else 0.0
+                ),
             },
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
             "output_len": summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles),
