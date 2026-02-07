@@ -42,15 +42,9 @@ class RequestLifecycleMetric(BaseModel):
     response_data: Optional[str] = None
     info: InferenceInfo
     error: Optional[ErrorResponseInfo]
-    
-    ttft: Optional[float] = None
-    tpot: Optional[float] = None
-    ttft_slo: Optional[float] = None
-    tpot_slo: Optional[float] = None
-    ttft_slo_met: Optional[bool] = None
-    tpot_slo_met: Optional[bool] = None
-    
-    ntpot: Optional[float] = None  # normalized time per input token
+
+    ttft_slo_sec: Optional[float] = None
+    tpot_slo_sec: Optional[float] = None
 
 
 

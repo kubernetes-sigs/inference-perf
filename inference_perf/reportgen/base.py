@@ -26,10 +26,16 @@ from inference_perf.client.metricsclient.prometheus_client import PrometheusMetr
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
 from inference_perf.utils import ReportFile
-from inference_perf.client.modelserver.openai_client import safe_float
 
 logger = logging.getLogger(__name__)
 
+def safe_float(value: Any) -> float:
+    """NOTE: Only for use in summarize_requests after validating safe access"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+    
 def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
     if len(items) == 0:
         return None
@@ -49,82 +55,113 @@ class ResponsesSummary(BaseModel):
     successes: dict[str, Any]
     failures: dict[str, Any]
 
-def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dict[str, Any]]:
+def calculate_slo_metrics(
+    metrics: List[RequestLifecycleMetric],
+    ttft_values: List[Optional[float]],
+    tpot_values: List[Optional[float]]
+) -> Optional[dict[str, Any]]:
     """
-    Calculate SLO attainment statistics from request metrics.
+    Calculate SLO attainment statistics from request metrics and pre-calculated latencies.
+    
+    Args:
+        metrics: List of successful RequestLifecycleMetric objects.
+        ttft_values: List of calculated TTFT values corresponding to metrics (same index). None if not streamable.
+        tpot_values: List of calculated TPOT values corresponding to metrics (same index). None if not streamable.
     
     Returns None if no SLO thresholds were set, otherwise returns dict with SLO metrics.
     """
-    # Filter out errors
-    valid_metrics = [m for m in metrics if m.error is None]
-    
-    if not valid_metrics:
+    if not metrics:
         return None
     
     # Check if any metrics have SLO fields populated
-    has_ttft_slo = any(m.ttft_slo_met is not None for m in valid_metrics)
-    has_tpot_slo = any(m.tpot_slo_met is not None for m in valid_metrics)
+    has_ttft_slo = any(m.ttft_slo_sec is not None for m in metrics)
+    has_tpot_slo = any(m.tpot_slo_sec is not None for m in metrics)
 
-    ttft_slo = max([m.ttft_slo for m in valid_metrics if m.ttft_slo is not None], default=None)
-    tpot_slo = max([m.tpot_slo for m in valid_metrics if m.tpot_slo is not None], default=None)
-    
-    # Calculate the sum of input and output tokens for all valid metrics that met SLO
+    ttft_slo_limit = max([m.ttft_slo_sec for m in metrics if m.ttft_slo_sec is not None], default=None)
+    tpot_slo_limit = max([m.tpot_slo_sec for m in metrics if m.tpot_slo_sec is not None], default=None)
    
     if not has_ttft_slo and not has_tpot_slo:
         return None  # No SLO tracking enabled
     
     slo_metrics: dict[str, Any] = {}
-    total = len(valid_metrics)
+    total = len(metrics)
     
-    total_benchmark_time = max(m.end_time for m in valid_metrics) - min(m.start_time for m in valid_metrics)
+    total_benchmark_time = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
     goodput_token_counts = []
-    for m in valid_metrics:
-        # Check presence of info and tokens
-        if not (m.info and m.info.input_tokens is not None and m.info.output_tokens is not None):
-            continue
-            
-        # Check SLO attainment
-        ttft_ok = (m.ttft_slo_met is True) if has_ttft_slo else True
-        tpot_ok = (m.tpot_slo_met is True) if has_tpot_slo else True
+    
+    ttft_results = []
+    tpot_results = []
+    
+    # Iterate through metrics and their corresponding calculated values
+    for i, m in enumerate(metrics):
+        ttft = ttft_values[i]
+        tpot = tpot_values[i]
+        
+        # Check TTFT SLO (Only if streamable / ttft exists)
+        ttft_met = None
+        if m.ttft_slo_sec is not None:
+            if ttft is not None:
+                ttft_met = (ttft <= m.ttft_slo_sec)
+            else:
+                # If it's not streamable, we can't measure TTFT, so strictly speaking it's not "met"
+                # OR we treat non-streamable as failing the streaming SLO.
+                # Standard practice: if we can't measure it, it counts as failed or ignored.
+                # Here assuming failed if data is missing but SLO required.
+                ttft_met = False
+        ttft_results.append(ttft_met)
+        
+        # Check TPOT SLO (Only if streamable / tpot exists)
+        tpot_met = None
+        if m.tpot_slo_sec is not None:
+            if tpot is not None:
+                tpot_met = (tpot <= m.tpot_slo_sec)
+            else:
+                tpot_met = False
+        tpot_results.append(tpot_met)
+
+        # Goodput Calculation Logic
+        ttft_ok = (ttft_met is True) if has_ttft_slo else True
+        tpot_ok = (tpot_met is True) if has_tpot_slo else True
         
         if ttft_ok and tpot_ok:
-            goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
+            if m.info.input_tokens is not None and m.info.output_tokens is not None:
+                goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
 
     total_goodput_tokens = sum(goodput_token_counts)
     goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
     
     # TTFT SLO metrics
     if has_ttft_slo:
-        ttft_met = sum(1 for m in valid_metrics if m.ttft_slo_met is True)
-        ttft_failed = sum(1 for m in valid_metrics if m.ttft_slo_met is False)
+        ttft_met_count = sum(1 for res in ttft_results if res is True)
+        ttft_failed_count = sum(1 for res in ttft_results if res is False)
         
         slo_metrics["ttft_slo"] = {
-            "attainment_pct": (ttft_met / total * 100) if total > 0 else 0,
-            "requests_met": ttft_met,
-            "requests_failed": ttft_failed,
+            "attainment_pct": (ttft_met_count / total * 100) if total > 0 else 0,
+            "requests_met": ttft_met_count,
+            "requests_failed": ttft_failed_count,
             "total_requests": total,
-            "slo": ttft_slo
+            "slo": ttft_slo_limit
             
         }
     
     # TPOT SLO metrics
     if has_tpot_slo:
-        tpot_met = sum(1 for m in valid_metrics if m.tpot_slo_met is True)
-        tpot_failed = sum(1 for m in valid_metrics if m.tpot_slo_met is False)
+        tpot_met_count = sum(1 for res in tpot_results if res is True)
+        tpot_failed_count = sum(1 for res in tpot_results if res is False)
         
         slo_metrics["tpot_slo"] = {
-            "attainment_pct": (tpot_met / total * 100) if total > 0 else 0,
-            "requests_met": tpot_met,
-            "requests_failed": tpot_failed,
+            "attainment_pct": (tpot_met_count / total * 100) if total > 0 else 0,
+            "requests_met": tpot_met_count,
+            "requests_failed": tpot_failed_count,
             "total_requests": total,
-            "slo": tpot_slo
+            "slo": tpot_slo_limit
         }
     
     # Combined SLO (both must be met)
     if has_ttft_slo and has_tpot_slo:
         combined_met = sum(
-            1 for m in valid_metrics 
-            if m.ttft_slo_met is True and m.tpot_slo_met is True
+            1 for t_res, p_res in zip(ttft_results, tpot_results)
+            if t_res is True and p_res is True
         )
         
         slo_metrics["combined_slo"] = {
@@ -132,8 +169,8 @@ def calculate_slo_metrics(metrics: List[RequestLifecycleMetric]) -> Optional[dic
             "requests_met": combined_met,
             "requests_failed": total - combined_met,
             "total_requests": total,
-            "ttft_slo": ttft_slo,
-            "tpot_slo": tpot_slo,
+            "ttft_slo": ttft_slo_limit,
+            "tpot_slo": tpot_slo_limit,
             "goodput_rate": goodput_rate
         }
     
@@ -204,8 +241,7 @@ def summarize_requests(
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
-    streamable = [x for x in all_successful if x.info.output_token_times and len(x.info.output_token_times) > 1]
-
+    
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
     send_duration = max([x.start_time for x in metrics]) - min([x.start_time for x in metrics])
 
@@ -215,54 +251,86 @@ def summarize_requests(
     }
 
     if stage_rate is not None:
+        # Guard against zero send_duration to avoid ZeroDivisionError when all
+        # requests have identical start times or there is only a single request.
+        achieved_rate = len(metrics) / send_duration if send_duration > 0 else 0.0
         load_summary = {
             "count": len(metrics),
             "schedule_delay": summarize(schedule_deltas, percentiles),
             "send_duration": send_duration,
             "requested_rate": stage_rate,
-            "achieved_rate": len(metrics) / send_duration,
+            "achieved_rate": achieved_rate,
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
+<<<<<<< HEAD
     # NEW: Calculate SLO metrics
     slo_metrics = calculate_slo_metrics(metrics)
+=======
+
+    # --- Pre-calculate Metrics for all successful requests ---
+    # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
+    
+    ntpot_values: List[float] = []
+    tpot_values: List[Optional[float]] = [] # Optional: None if not streamable
+    ttft_values: List[Optional[float]] = [] # Optional: None if not streamable
+    inter_token_latencies: List[float] = []
+
+    for m in all_successful:
+        # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
+        if m.info.output_tokens and m.info.output_tokens > 0:
+            ntpot_values.append((m.end_time - m.start_time) / m.info.output_tokens)
+        else:
+            ntpot_values.append(0.0)
+        
+        # Check if streamable: Must have more than 1 output token timestamp
+        is_streamable = m.info.output_token_times and len(m.info.output_token_times) > 1
+        
+        if is_streamable:
+            # TTFT: First Token Time - Start Time
+            ttft = m.info.output_token_times[0] - m.start_time
+            ttft_values.append(ttft)
+
+            # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
+            duration = m.info.output_token_times[-1] - m.info.output_token_times[0]
+            count = len(m.info.output_token_times)
+            tpot = duration / (count - 1)
+            tpot_values.append(tpot)
+            
+            # Add inter-token deltas
+            for t1, t2 in zip(m.info.output_token_times, m.info.output_token_times[1:], strict=False):
+                inter_token_latencies.append(t2 - t1)
+        else:
+            # Not streamable, so TTFT and TPOT are undefined
+            ttft_values.append(None)
+            tpot_values.append(None)
+
+    # --- Pass pre-calculated lists to SLO Calculator ---
+    slo_metrics = calculate_slo_metrics(all_successful, ttft_values, tpot_values)
+
+    # --- Filter lists for summarization (remove Nones) ---
+    valid_tpot = [v for v in tpot_values if v is not None]
+    valid_ttft = [v for v in ttft_values if v is not None]
+
+>>>>>>> 2931c63 (calculate tpot, ntpot, ttft, and slo metrics in post processing and generate_distribution in shared_prefix_datagen)
     successes_dict = {
             "count": len(all_successful),
             "latency": {
                 "request_latency": summarize(
                     [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
                 ),
-                "normalized_time_per_output_token": summarize(
-                    [
-                        metric.ntpot if metric.ntpot is not None else 0
-                        for metric in all_successful
-                    ],
-                    percentiles,
-                ),
-                "time_per_output_token": summarize(
-                    [
-                       x.tpot if x.tpot is not None else 0
-                        for x in streamable
-                        if len(x.info.output_token_times) > 1
-                    ],
-                    percentiles,
-                ),
-                "time_to_first_token": summarize(
-                    [x.ttft if x.ttft is not None else 0 for x in streamable], percentiles
-                ),
-                "inter_token_latency": summarize(
-                    [
-                        t2 - t1
-                        for x in streamable
-                        for t1, t2 in zip(x.info.output_token_times, x.info.output_token_times[1:], strict=False)
-                    ],
-                    percentiles,
-                ),
+                "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
+                "time_per_output_token": summarize(valid_tpot, percentiles),
+                "time_to_first_token": summarize(valid_ttft, percentiles),
+                "inter_token_latency": summarize(inter_token_latencies, percentiles),
             },
             "throughput": {
-                "input_tokens_per_sec": sum(x.info.input_tokens for x in all_successful) / total_time,
-                "output_tokens_per_sec": sum(x.info.output_tokens for x in all_successful) / total_time,
-                "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
+                "input_tokens_per_sec": sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time,
+                "output_tokens_per_sec": sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time,
+                "total_tokens_per_sec": sum(
+                    safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens)
+                    for x in all_successful
+                ) / total_time,
                 "requests_per_sec": len(all_successful) / total_time,
             },
             "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),

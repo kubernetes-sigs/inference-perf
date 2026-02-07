@@ -1,5 +1,7 @@
 import random
 from typing import Generator, List, Optional
+from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.distribution import generate_distribution
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
@@ -42,17 +44,26 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.num_groups: int = self.shared_prefix.num_groups
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
-        self.question_len: int = self.shared_prefix.question_len
-        self.output_len: int = self.shared_prefix.output_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
         
-        self.question_len_std: float = self.shared_prefix.question_len_std
-        self.output_len_std: float = self.shared_prefix.output_len_std
         
-        self.question_len_min: Optional[int] = self.shared_prefix.question_len_min
-        self.question_len_max: Optional[int] = self.shared_prefix.question_len_max
-        self.output_len_min: Optional[int] = self.shared_prefix.output_len_min
-        self.output_len_max: Optional[int] = self.shared_prefix.output_len_max
+        self.question_len_list = generate_distribution(
+            self.shared_prefix.question_len_min,
+            self.shared_prefix.question_len_max,
+            self.shared_prefix.question_len,
+             self.shared_prefix.question_len_std,
+            self.shared_prefix.num_prompts_per_group * self.shared_prefix.num_groups,
+        )
+        
+        self.output_len_list = generate_distribution(
+            self.shared_prefix.output_len_min,
+            self.shared_prefix.output_len_max,
+            self.shared_prefix.output_len,
+            self.shared_prefix.output_len_std,
+            self.shared_prefix.num_prompts_per_group * self.shared_prefix.num_groups,
+        )
+        
+        
 
 
         self.prompts: List[str] = []
@@ -73,13 +84,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
-        output_len = self.output_len
-        if self.output_len_std > 0:
-                output_len = max(1, int(np.random.normal(self.output_len, self.output_len_std)))
-        if self.output_len_min is not None:
-                output_len = max(self.output_len_min, output_len)
-        if self.output_len_max is not None:
-                output_len = min(self.output_len_max, output_len)   
+        output_len = self.output_len_list[i]  
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
@@ -124,13 +129,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
             for prompt_id in range(self.num_prompts_per_group):
                 # Generate a unique question
-                question_len = self.question_len
-                if self.question_len_std > 0:
-                    question_len = max(1, int(np.random.normal(self.question_len, self.question_len_std)))
-                if self.question_len_min is not None:
-                    question_len = max(self.question_len_min, question_len)
-                if self.question_len_max is not None:
-                    question_len = min(self.question_len_max, question_len)
+                question_len = self.question_len_list[group_id * self.shared_prefix.num_prompts_per_group + prompt_id]
+                
                 question_token_ids = self._generate_random_token_ids(question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
@@ -154,3 +154,4 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             random.shuffle(self.user_sessions)        
         else:
             random.shuffle(self.prompts)
+        random.shuffle(self.prompts)

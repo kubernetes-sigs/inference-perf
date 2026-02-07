@@ -28,13 +28,6 @@ import requests
 import ssl
 
 logger = logging.getLogger(__name__)
-
-def safe_float(value: Any) -> float:
-    """NOTE: Only for use in summarize_requests after validating safe access"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
     
 class openAIModelServerClient(ModelServerClient):
     _session: "openAIModelServerClientSession | None" = None
@@ -206,22 +199,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         scheduled_time=scheduled_time,
                     )
                 
-                output_len = safe_float(metric.info.output_tokens)
-                metric.ntpot = ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0                       
+                output_len = safe_float(metric.info.output_tokens)       
                     
                     # Calculate TTFT and TPOT if we have timing data
                 if response_info.output_token_times:
-                        # TTFT = time to first token
-                    metric.ttft = response_info.output_token_times[0] - start
-    
-                    # TPOT = average time between tokens
-                    if len(response_info.output_token_times) > 1:
-                        token_gaps = []
-                        for i in range(1, len(response_info.output_token_times)):
-                            gap = response_info.output_token_times[i] - response_info.output_token_times[i-1]
-                            token_gaps.append(gap)
-                        metric.tpot = sum(token_gaps) / len(token_gaps)
-
                     # Evaluate SLO - check api_config.headers
                     ttft_threshold = None
                     tpot_threshold = None
@@ -240,13 +221,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         factor = unit_to_s.get(unit, 1.0)
 
                         if ttft_threshold and metric.ttft is not None:
-                            metric.ttft_slo = float(ttft_threshold) * factor
-                            metric.ttft_slo_met = metric.ttft <= metric.ttft_slo
+                            metric.ttft_slo_sec = float(ttft_threshold) * factor
 
                         if tpot_threshold and metric.tpot is not None:
-                            metric.tpot_slo = float(tpot_threshold) * factor
-                            metric.tpot_slo_met = metric.tpot <= metric.tpot_slo
-
+                            metric.tpot_slo_sec = float(tpot_threshold) * factor
                  # Record the metric
                 self.client.metrics_collector.record_metric(metric)
 
