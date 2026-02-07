@@ -199,9 +199,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         scheduled_time=scheduled_time,
                     ) 
                     
-                    # Calculate TTFT and TPOT if we have timing data
+                    # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
                 if response_info.output_token_times:
-                    # Evaluate SLO - check api_config.headers
                     ttft_threshold = None
                     tpot_threshold = None
                     slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
