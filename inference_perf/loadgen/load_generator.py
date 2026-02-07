@@ -39,7 +39,7 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, TypeAlias, Optional
+from typing import List, Tuple, Optional, NamedTuple
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -55,7 +55,11 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float, Optional[str]]
+class RequestQueueData(NamedTuple):
+    stage_id: int
+    request_data: InferenceAPIData | int
+    request_time: float
+    lora_adapter: Optional[str]
 
 
 class Worker(mp.Process):
@@ -327,7 +331,10 @@ class LoadGenerator:
             worker_id = request_data.prefered_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
-            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), request_data.prefered_worker_id)
+            request_queue.put(
+                RequestQueueData(stage_id, request_data, next(time_generator), lora_adapter),
+                request_data.prefered_worker_id,
+            )
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
