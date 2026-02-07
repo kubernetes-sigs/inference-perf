@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the entity"
+    },
+    "age": {
+      "type": "integer",
+      "description": "The age of the entity"
+    },
+    "city": {
+      "type": "string",
+      "description": "The city where the entity is located"
+    }
+  },
+  "required": ["name", "age"]
+}
