@@ -103,11 +103,7 @@ def calculate_slo_metrics(
             if ttft is not None:
                 ttft_met = (ttft <= m.ttft_slo_sec)
             else:
-                # If it's not streamable, we can't measure TTFT, so strictly speaking it's not "met"
-                # OR we treat non-streamable as failing the streaming SLO.
-                # Standard practice: if we can't measure it, it counts as failed or ignored.
-                # Here assuming failed if data is missing but SLO required.
-                ttft_met = False
+                ttft_met = True # If TTFT SLO is set but we don't have a TTFT value (non-streamable), we can choose to consider it as met or not. Here we consider it met to avoid penalizing non-streamable requests.
         ttft_results.append(ttft_met)
         
         # Check TPOT SLO (Only if streamable / tpot exists)
@@ -116,7 +112,7 @@ def calculate_slo_metrics(
             if tpot is not None:
                 tpot_met = (tpot <= m.tpot_slo_sec)
             else:
-                tpot_met = False
+                tpot_met = True # Similar logic as TTFT for non-streamable requests
         tpot_results.append(tpot_met)
 
         # Goodput Calculation Logic
