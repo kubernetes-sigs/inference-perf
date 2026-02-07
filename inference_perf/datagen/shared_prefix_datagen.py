@@ -5,6 +5,7 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, LazyLoadDataMixin
@@ -46,12 +47,13 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.output_len: int = self.shared_prefix.output_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
 
-        self.prompts: List[str] = []
+        self.prompts: List[str] = []  # For completion API
+        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for chat API
         self.user_sessions: List[LocalUserSession] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -73,6 +75,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session=self.user_sessions[user_id],
                 target_round=round,
             )
+        elif self.api_config.type == APIType.Chat:
+            shared_prefix, question = self.prompt_pairs[i]
+            messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
+            return ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
 
@@ -82,9 +88,18 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         i = 0
         while True:
-            prefered_worker_id = i % self.num_groups if self.enable_multi_turn_chat else -1
-            yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
-            i += 1
+            if self.enable_multi_turn_chat:
+                prefered_worker_id = i % self.num_groups
+                yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
+                i += 1
+            elif self.api_config.type == APIType.Chat:
+                shared_prefix, question = self.prompt_pairs[i]
+                messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
+                yield ChatCompletionAPIData(messages=messages, max_tokens=self.output_len)
+                i = (i + 1) % len(self.prompts)
+            else:
+                yield CompletionAPIData(prompt=self.prompts[i], max_tokens=self.output_len)
+                i = (i + 1) % len(self.prompts)
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
@@ -111,6 +126,11 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 question_token_ids = self._generate_random_token_ids(self.question_len)
                 question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
 
+                # Combine shared prefix and question
+                full_prompt_text = shared_prefix_text + " " + question_text
+                self.prompts.append(full_prompt_text)
+                self.prompt_pairs.append((shared_prefix_text, question_text))
+
                 if self.enable_multi_turn_chat:
                     # multi turn chat, create user to keep conversation
                     self.user_sessions.append(
@@ -119,11 +139,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                             context=shared_prefix_text,
                         )
                     )
-                else:
-                    # Single turn chat, Combine shared prefix and question
-                    question_text = shared_prefix_text + " " + question_text
-
-                self.prompts.append(question_text)
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         if self.enable_multi_turn_chat:
