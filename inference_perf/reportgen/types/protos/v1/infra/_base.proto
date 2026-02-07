@@ -1,0 +1,6 @@
+message Infra {
+    oneof {
+        LocalInfraReport local = 1;
+        GkeClusterInfraReport Gke = 2;
+    }
+}
