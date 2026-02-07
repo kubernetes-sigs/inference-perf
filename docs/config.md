@@ -66,12 +66,12 @@ data:
     question_len: 50          # Question length (tokens)
     question_len_std: 5       # optional defaults to 0
     question_len_min: 10      # optional defaults to 1
-    question_len_max: 1024      # optional defaults to 2048
+    question_len_max: 1024      # optional defaults to 32768
 
     output_len: 50            # Target output length (tokens) 
     output_len_std: 5       # optional defaults to 0
     output_len_min: 10      # optional defaults to 1
-    output_len_max: 1024      # optional defaults to 2048     
+    output_len_max: 1024      # optional defaults to 32768     
 ```
 
 ### Load Configuration
