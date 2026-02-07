@@ -57,7 +57,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.shared_prefix.question_len_std,
                 self.shared_prefix.num_prompts_per_group,
             )
-            self.question_len_list_per_group.append(question_lens)
+            self.question_len_list_per_group.append(question_lens.tolist())
             
             output_lens = generate_distribution(
                 self.shared_prefix.output_len_min,
@@ -66,7 +66,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.shared_prefix.output_len_std,
                 self.shared_prefix.num_prompts_per_group,
             )
-            self.output_len_list_per_group.append(output_lens)
+            self.output_len_list_per_group.append(output_lens.tolist())
         
         
 
