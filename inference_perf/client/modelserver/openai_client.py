@@ -197,9 +197,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         start_time=start,
                         end_time=end_time,
                         scheduled_time=scheduled_time,
-                    )
-                
-                output_len = safe_float(metric.info.output_tokens)       
+                    ) 
                     
                     # Calculate TTFT and TPOT if we have timing data
                 if response_info.output_token_times:
