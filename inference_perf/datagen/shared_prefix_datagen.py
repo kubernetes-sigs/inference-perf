@@ -176,7 +176,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             random.shuffle(self.user_sessions)        
         else:
             # Shuffle prompts and output lengths in sync
-            combined = list(zip(self.prompts, self.flat_output_lens))
+            combined = list(zip(self.prompts, self.flat_output_lens, strict=True))
             random.shuffle(combined)
             self.prompts, self.flat_output_lens = [list(t) for t in zip(*combined)]
 
