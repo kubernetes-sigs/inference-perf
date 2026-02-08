@@ -73,6 +73,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
+        self.flat_output_lens: List[int] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
@@ -89,9 +90,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
-        group_id = i // self.num_prompts_per_group
-        prompt_id_in_group = i % self.num_prompts_per_group
-        output_len = self.output_len_list_per_group[group_id][prompt_id_in_group]
+        output_len = self.flat_output_lens[i]
           
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
@@ -138,12 +137,17 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
+            # Batch generate all question token IDs for this group
+            all_question_token_ids = [
+                self._generate_random_token_ids(self.question_len_list_per_group[group_id][prompt_id])
+                for prompt_id in range(self.num_prompts_per_group)
+            ]
+
+            # Batch decode all questions at once (much faster than individual decode calls)
+            all_question_texts = hf_tokenizer.batch_decode(all_question_token_ids, skip_special_tokens=True)
+
             for prompt_id in range(self.num_prompts_per_group):
-                # Generate a unique question
-                question_len = self.question_len_list_per_group[group_id][prompt_id]
-                
-                question_token_ids = self._generate_random_token_ids(question_len)
-                question_text = hf_tokenizer.decode(question_token_ids, skip_special_tokens=True)
+                question_text = all_question_texts[prompt_id]
 
                 if self.enable_multi_turn_chat:
                     # multi turn chat, create user to keep conversation
@@ -159,10 +163,20 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
                 self.prompts.append(question_text)
 
+        # Flatten output lengths to match prompts ordering
+        self.flat_output_lens = [
+            self.output_len_list_per_group[g][p]
+            for g in range(self.num_groups)
+            for p in range(self.num_prompts_per_group)
+        ]
+
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         if self.enable_multi_turn_chat:
             # no need to sync shuffles - multi-round initial prompt does not include system prompt 
             random.shuffle(self.user_sessions)        
         else:
-            random.shuffle(self.prompts)
+            # Shuffle prompts and output lengths in sync
+            combined = list(zip(self.prompts, self.flat_output_lens))
+            random.shuffle(combined)
+            self.prompts, self.flat_output_lens = [list(t) for t in zip(*combined)]
 
