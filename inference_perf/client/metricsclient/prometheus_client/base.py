@@ -171,6 +171,8 @@ class PrometheusMetricsClient(MetricsClient):
             if not config.url:
                 raise Exception("prometheus url missing")
             self.query_url = config.url.unicode_string().rstrip("/") + "/api/v1/query"
+            self.query_range_url = config.url.unicode_string().rstrip("/") + "/api/v1/query_range"
+            self.federate_url = config.url.unicode_string().rstrip("/") + "/federate"
             logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
         else:
@@ -234,6 +236,136 @@ class PrometheusMetricsClient(MetricsClient):
         query_eval_time = runtime_parameters.stages[stage_id].end_time + self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         query_duration = query_eval_time - runtime_parameters.stages[stage_id].start_time
         return self.get_model_server_metrics(runtime_parameters.model_server_metrics, query_duration, query_eval_time)
+
+    def collect_raw_metrics(
+        self,
+        filters: List[str],
+        metrics_metadata: Optional[MetricsMetadata] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        interval: int = 5,
+    ) -> dict[str, str] | None:
+        """
+        Collects the raw metrics from the Prometheus federate endpoint or query endpoint as fallback.
+
+        Args:
+        filters: The filters to apply to the metrics collection
+        metrics_metadata: Optional metadata for specific metrics to fetch if general query is restricted
+        start_time: Start time for range query
+        end_time: End time for range query
+        interval: Step interval for range query
+
+        Returns:
+        A dictionary mapping metric names to their raw metrics in text format.
+        """
+        match_param = "{" + ",".join(filters) + "}"
+        # If google_managed is true, we use the query endpoint as /federate is not supported
+        is_google_managed = "monitoring.googleapis.com" in self.query_url
+        is_range_query = start_time is not None and end_time is not None
+
+        if not is_range_query and not is_google_managed:
+            try:
+                logger.debug(f"making PromQL federate query: '{self.federate_url}' with match[]='{match_param}'")
+                response = requests.get(self.federate_url, headers=self.get_headers(), params={"match[]": match_param})
+                if response is not None and response.status_code == 200:
+                    metrics: dict[str, list[str]] = {}
+                    for line in response.text.splitlines():
+                        if not line:
+                            continue
+                        if line.startswith("#"):
+                            parts = line.split(" ")
+                            if len(parts) >= 3:
+                                metric_name = parts[2]
+                                if metric_name not in metrics:
+                                    metrics[metric_name] = []
+                                metrics[metric_name].append(line)
+                        else:
+                            metric_name = line.split("{")[0].split(" ")[0]
+                            if metric_name not in metrics:
+                                metrics[metric_name] = []
+                            metrics[metric_name].append(line)
+                    return {k: "\n".join(v) + "\n" for k, v in metrics.items()}
+                if response is not None:
+                    logger.debug(f"federate query failed with status {response.status_code}, falling back to query endpoint")
+            except Exception as e:
+                logger.debug(f"federate query failed: {e}, falling back to query endpoint")
+
+        # Fallback to query/query_range endpoint and convert JSON to Prometheus text format
+        prom_metrics: dict[str, list[str]] = {}
+        url = self.query_range_url if is_range_query else self.query_url
+
+        # If we have metrics_metadata, we should try to fetch those specifically if the general query fails
+        # This is especially important for GMP which doesn't allow bare vector selectors
+        queries_to_try = [match_param]
+        if is_google_managed and metrics_metadata:
+            # For GMP, we can't use the match_param alone, so we collect the names of all metrics we track
+            tracked_metric_names = set()
+            for metric_key in metrics_metadata:
+                metadata = metrics_metadata.get(metric_key)
+                if metadata:
+                    tracked_metric_names.add(metadata.name)
+
+            queries_to_try += [f"{name}{match_param}" for name in tracked_metric_names]
+            logger.debug(
+                f"GMP detected, will try querying {len(queries_to_try)} queries for {'range' if is_range_query else 'instant'} query: {tracked_metric_names}"
+            )
+
+        for query in queries_to_try:
+            try:
+                params: dict[str, Any] = {"query": query}
+                if is_range_query:
+                    params["start"] = str(start_time)
+                    params["end"] = str(end_time)
+                    params["step"] = f"{interval}s"
+
+                logger.debug(f"making PromQL query: '{url}' with params={params}")
+                response = requests.get(url, headers=self.get_headers(), params=params)
+                if response is None:
+                    continue
+
+                if response.status_code != 200:
+                    logger.debug(f"query for '{query}' failed with status {response.status_code}")
+                    continue
+
+                response_obj = response.json()
+                if response_obj.get("status") != "success":
+                    continue
+
+                data = response_obj.get("data", {})
+                results = data.get("result", [])
+                for res in results:
+                    metric = res.get("metric", {})
+                    if not metric:
+                        continue
+
+                    metric_name = metric.get("__name__", "unknown")
+                    labels = [f'{k}="{v}"' for k, v in metric.items() if k != "__name__"]
+                    label_str = "{" + ",".join(labels) + "}" if labels else ""
+
+                    if metric_name not in prom_metrics:
+                        prom_metrics[metric_name] = []
+
+                    if is_range_query:
+                        values = res.get("values", [])  # List of [timestamp, value]
+                        for val_pair in values:
+                            if len(val_pair) < 2:
+                                continue
+                            val = val_pair[1]
+                            timestamp_ms = int(float(val_pair[0]) * 1000)
+                            prom_metrics[metric_name].append(f"{metric_name}{label_str} {val} {timestamp_ms}")
+                    else:
+                        value = res.get("value", [])
+                        if len(value) < 2:
+                            continue
+                        val = value[1]
+                        prom_metrics[metric_name].append(f"{metric_name}{label_str} {val}")
+            except Exception as e:
+                logger.debug(f"error querying '{query}': {e}")
+
+        if prom_metrics:
+            return {k: "\n".join(v) + "\n" for k, v in prom_metrics.items()}
+
+        return None
 
     def get_model_server_metrics(
         self, metrics_metadata: MetricsMetadata, query_duration: float, query_eval_time: float

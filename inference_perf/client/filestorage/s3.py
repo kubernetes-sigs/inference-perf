@@ -15,6 +15,7 @@ import json
 import logging
 from typing import List
 import boto3
+import yaml
 from inference_perf.client.filestorage import StorageClient
 from inference_perf.config import SimpleStorageServiceConfig
 from inference_perf.utils import ReportFile
@@ -49,12 +50,27 @@ class SimpleStorageServiceClient(StorageClient):
                         pass
 
                 # Upload the files
-                self.client.put_object(
-                    Bucket=self.output_bucket,
-                    Key=blob_path,
-                    Body=json.dumps(report.get_contents()),
-                    ContentType="application/json",
-                )
+                if report.file_type == "yaml":
+                    self.client.put_object(
+                        Bucket=self.output_bucket,
+                        Key=blob_path,
+                        Body=yaml.dump(report.get_contents(), sort_keys=False, default_flow_style=False),
+                        ContentType="text/yaml",
+                    )
+                elif report.file_type == "prom":
+                    self.client.put_object(
+                        Bucket=self.output_bucket,
+                        Key=blob_path,
+                        Body=report.get_contents(),
+                        ContentType="text/plain",
+                    )
+                else:
+                    self.client.put_object(
+                        Bucket=self.output_bucket,
+                        Key=blob_path,
+                        Body=json.dumps(report.get_contents()),
+                        ContentType="application/json",
+                    )
                 logger.info(f"Uploaded s3://{self.output_bucket}/{blob_path}")
             except Exception as e:
                 logger.error(f"Failed to upload {blob_path}: {e}")

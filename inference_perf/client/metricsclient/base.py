@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, List
 from pydantic import BaseModel
 
 
@@ -181,6 +181,17 @@ class MetricsClient(ABC):
     def collect_metrics_for_stage(
         self, runtime_parameters: PerfRuntimeParameters, stage_id: int
     ) -> Optional[ModelServerMetrics]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def collect_raw_metrics(
+        self,
+        filters: List[str],
+        metrics_metadata: Optional[MetricsMetadata] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        interval: int = 5,
+    ) -> dict[str, str] | None:
         raise NotImplementedError
 
     @abstractmethod
