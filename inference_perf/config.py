@@ -85,14 +85,26 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     question_len_std: float = 0  # Variation in question length within a group
-    question_len_min: int = 1
-    question_len_max: int = 32768
+    question_len_min: Optional[int] = None
+    question_len_max: Optional[int] = None
 
     output_len: int = 50
     output_len_std: float = 0  # Variation in output length within a group
-    output_len_min: int = 1
-    output_len_max: int = 32768
+    output_len_min: Optional[int] = None
+    output_len_max: Optional[int] = None
     enable_multi_turn_chat: bool = False
+
+    @model_validator(mode="after")
+    def set_dynamic_defaults(self) -> "SharedPrefix":
+        if self.question_len_min is None:
+            self.question_len_min = self.question_len if self.question_len_std == 0 else 1
+        if self.question_len_max is None:
+            self.question_len_max = self.question_len if self.question_len_std == 0 else 32768
+        if self.output_len_min is None:
+            self.output_len_min = self.output_len if self.output_len_std == 0 else 1
+        if self.output_len_max is None:
+            self.output_len_max = self.output_len if self.output_len_std == 0 else 32768
+        return self
 
 
 class DataConfig(BaseModel):

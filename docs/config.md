@@ -64,14 +64,14 @@ data:
     system_prompt_len: 100    # Shared prefix length (tokens)
 
     question_len: 50          # Question length (tokens)
-    question_len_std: 5       # optional defaults to 0
-    question_len_min: 10      # optional defaults to 1
-    question_len_max: 1024      # optional defaults to 32768
+    question_len_std: 5       # optional defaults to 0 with constant question_len
+    question_len_min: 10      # optional defaults to 1 if question_len_std > 0
+    question_len_max: 1024      # optional defaults to 32768 if question_len_std > 0
 
     output_len: 50            # Target output length (tokens) 
-    output_len_std: 5       # optional defaults to 0
-    output_len_min: 10      # optional defaults to 1
-    output_len_max: 1024      # optional defaults to 32768     
+    output_len_std: 5       # optional defaults to 0 with constant output_len
+    output_len_min: 10      # optional defaults to 1 if output_len_std > 0
+    output_len_max: 1024      # optional defaults to 32768 if output_len_std > 0
 ```
 
 ### Load Configuration
