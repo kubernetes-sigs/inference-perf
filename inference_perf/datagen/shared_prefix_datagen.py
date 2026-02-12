@@ -6,7 +6,7 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -45,25 +45,31 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
         
+        # Use distribution configs, or fall back to question_len/output_len with std_dev=0
+        q_len = self.shared_prefix.question_len
+        o_len = self.shared_prefix.output_len
+        question_dist = self.shared_prefix.question_distribution or Distribution(min=q_len, max=q_len, mean=q_len, std_dev=0)
+        output_dist = self.shared_prefix.output_distribution or Distribution(min=o_len, max=o_len, mean=o_len, std_dev=0)
+
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
-        
+
         for _ in range(self.num_groups):
             question_lens = generate_distribution(
-                self.shared_prefix.question_len_min,
-                self.shared_prefix.question_len_max,
-                self.shared_prefix.question_len,
-                self.shared_prefix.question_len_std,
+                question_dist.min,
+                question_dist.max,
+                question_dist.mean,
+                question_dist.std_dev,
                 self.shared_prefix.num_prompts_per_group,
             )
             self.question_len_list_per_group.append(question_lens.tolist())
-            
+
             output_lens = generate_distribution(
-                self.shared_prefix.output_len_min,
-                self.shared_prefix.output_len_max,
-                self.shared_prefix.output_len,
-                self.shared_prefix.output_len_std,
+                output_dist.min,
+                output_dist.max,
+                output_dist.mean,
+                output_dist.std_dev,
                 self.shared_prefix.num_prompts_per_group,
             )
             self.output_len_list_per_group.append(output_lens.tolist())

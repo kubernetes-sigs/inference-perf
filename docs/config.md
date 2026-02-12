@@ -62,16 +62,18 @@ data:
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
     system_prompt_len: 100    # Shared prefix length (tokens)
-
-    question_len: 50          # Question length (tokens)
-    question_len_std: 5       # optional defaults to 0 with constant question_len
-    question_len_min: 10      # optional defaults to 1 if question_len_std > 0
-    question_len_max: 1024      # optional defaults to 32768 if question_len_std > 0
-
-    output_len: 50            # Target output length (tokens) 
-    output_len_std: 5       # optional defaults to 0 with constant output_len
-    output_len_min: 10      # optional defaults to 1 if output_len_std > 0
-    output_len_max: 1024      # optional defaults to 32768 if output_len_std > 0
+    question_len: 50          # Default question length (tokens), used when question_distribution is absent
+    output_len: 50            # Default output length (tokens), used when output_distribution is absent
+    question_distribution:    # Optional: distribution for question lengths (overrides question_len)
+      min: 10
+      max: 1024
+      mean: 50
+      std_dev: 5
+    output_distribution:      # Optional: distribution for output lengths (overrides output_len)
+      min: 10
+      max: 1024
+      mean: 50
+      std_dev: 5
 ```
 
 ### Load Configuration

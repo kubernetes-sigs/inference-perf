@@ -84,27 +84,10 @@ class SharedPrefix(BaseModel):
 
     system_prompt_len: int = 100
     question_len: int = 50
-    question_len_std: float = 0  # Variation in question length within a group
-    question_len_min: int = -1  # Set dynamically by validator if not provided
-    question_len_max: int = -1  # Set dynamically by validator if not provided
-
     output_len: int = 50
-    output_len_std: float = 0  # Variation in output length within a group
-    output_len_min: int = -1  # Set dynamically by validator if not provided
-    output_len_max: int = -1  # Set dynamically by validator if not provided
+    question_distribution: Optional[Distribution] = None
+    output_distribution: Optional[Distribution] = None
     enable_multi_turn_chat: bool = False
-
-    @model_validator(mode="after")
-    def set_dynamic_defaults(self) -> "SharedPrefix":
-        if self.question_len_min == -1:
-            self.question_len_min = self.question_len if self.question_len_std == 0 else 1
-        if self.question_len_max == -1:
-            self.question_len_max = self.question_len if self.question_len_std == 0 else 32768
-        if self.output_len_min == -1:
-            self.output_len_min = self.output_len if self.output_len_std == 0 else 1
-        if self.output_len_max == -1:
-            self.output_len_max = self.output_len if self.output_len_std == 0 else 32768
-        return self
 
 
 class DataConfig(BaseModel):
@@ -120,7 +103,6 @@ class DataConfig(BaseModel):
 
     # Trace file is only supported for random dataset at this moment
     trace: Optional[TraceConfig] = None
-
 
 class ModelServerType(Enum):
     VLLM = "vllm"
