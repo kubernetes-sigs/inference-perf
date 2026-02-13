@@ -32,6 +32,9 @@ class APIConfig(BaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
     headers: Optional[dict[str, str]] = None
+    slo_unit: Optional[str] = None
+    slo_tpot_header: Optional[str] = None
+    slo_ttft_header: Optional[str] = None
 
 
 class TraceFormat(Enum):
@@ -82,6 +85,8 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
+    question_distribution: Optional[Distribution] = None
+    output_distribution: Optional[Distribution] = None
     enable_multi_turn_chat: bool = False
 
 
@@ -98,7 +103,6 @@ class DataConfig(BaseModel):
 
     # Trace file is only supported for random dataset at this moment
     trace: Optional[TraceConfig] = None
-
 
 class ModelServerType(Enum):
     VLLM = "vllm"

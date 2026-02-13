@@ -22,15 +22,20 @@ This document provides complete documentation for all configuration options avai
 
 ### API Configuration
 
-Controls the API interaction behavior:
+Controls the API interaction behavior. If SLO headers are present, each request is evaluated for SLO compliance and SLO-related metrics are reported:
 
 ```yaml
 api:
-  type: completion  # API type (completion|chat) (default: completion), completion is the default since the chat API is not typically enabled on model servers such as vLLM by default without additional configuration.
-  streaming: false  # Enable/disable streaming (default: false), needs to be enabled for metrics like TTFT, ITL and TPOT to be measured
-  headers:          # Add custom http headers to the request sent to the inference server
+  type: completion             # API type (completion|chat). completion is default since chat may require extra server config
+  streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
+  headers:                     # Optional custom HTTP headers
     x-inference-model: llama
     x-routing-strategy: round-robin
+    x-slo-tpot-ms: "2"
+    x-slo-ttft-ms: "1000"
+  slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
+  slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
+  slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
 
 ### Data Generation
@@ -53,12 +58,22 @@ data:
     mean: 50
     std_dev: 10
     total_count: 100
-  shared_prefix:
-    num_unique_system_prompts: 10     # Number of distinct shared prefixes (formerly num_groups)
-    num_users_per_system_prompt: 10   # Number of unique questions per shared prefix (formerly num_prompts_per_group)
-    system_prompt_len: 100            # Length of the shared prefix (in tokens)
-    question_len: 50                  # Length of the unique question part (in tokens)
-    output_len: 50                    # Target length for the model's generated output (in tokens)
+  shared_prefix:              # For shared_prefix type
+    num_groups: 10            # Number of shared prefix groups
+    num_prompts_per_group: 10 # Unique questions per group
+    system_prompt_len: 100    # Shared prefix length (tokens)
+    question_len: 50          # Default question length (tokens), used when question_distribution is absent
+    output_len: 50            # Default output length (tokens), used when output_distribution is absent
+    question_distribution:    # Optional: distribution for question lengths (overrides question_len)
+      min: 10
+      max: 1024
+      mean: 50
+      std_dev: 5
+    output_distribution:      # Optional: distribution for output lengths (overrides output_len)
+      min: 10
+      max: 1024
+      mean: 50
+      std_dev: 5
 ```
 
 ### Load Configuration

@@ -28,8 +28,7 @@ import requests
 import ssl
 
 logger = logging.getLogger(__name__)
-
-
+    
 class openAIModelServerClient(ModelServerClient):
     _session: "openAIModelServerClientSession | None" = None
     _session_lock = asyncio.Lock()
@@ -189,8 +188,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         error_type=f"{response.status} {response.reason}",
                     )
 
-                self.client.metrics_collector.record_metric(
-                    RequestLifecycleMetric(
+                metric = RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=request_data,
                         response_data=response_content,
@@ -199,8 +197,34 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         start_time=start,
                         end_time=end_time,
                         scheduled_time=scheduled_time,
-                    )
-                )
+                    ) 
+                    
+                    # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
+                if response_info.output_token_times:
+                    ttft_threshold = None
+                    tpot_threshold = None
+                    slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
+                
+                    default_ttft_header = f"x-slo-ttft-{slo_unit}"
+                    default_tpot_header = f"x-slo-tpot-{slo_unit}"
+                    ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
+                    tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
+                    if self.client.api_config.headers:
+                        ttft_threshold = self.client.api_config.headers.get(ttft_header)
+                        tpot_threshold = self.client.api_config.headers.get(tpot_header)
+
+                        unit = slo_unit.lower()
+                        unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
+                        factor = unit_to_s.get(unit, 1.0)
+
+                        if ttft_threshold is not None:
+                            metric.ttft_slo_sec = float(ttft_threshold) * factor
+
+                        if tpot_threshold is not None:
+                            metric.tpot_slo_sec = float(tpot_threshold) * factor
+                 # Record the metric
+                self.client.metrics_collector.record_metric(metric)
+
         except Exception as e:
             if isinstance(e, asyncio.exceptions.TimeoutError):
                 logger.error("request timed out:", exc_info=True)

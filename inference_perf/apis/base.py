@@ -43,6 +43,10 @@ class RequestLifecycleMetric(BaseModel):
     info: InferenceInfo
     error: Optional[ErrorResponseInfo]
 
+    ttft_slo_sec: Optional[float] = None
+    tpot_slo_sec: Optional[float] = None
+
+
 
 class InferenceAPIData(BaseModel):
     # loadgen should assign this request to prefered worker if possible
