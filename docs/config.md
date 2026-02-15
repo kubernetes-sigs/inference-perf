@@ -92,6 +92,7 @@ load:
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
+  base_seed: 12345                    # Optional: base random seed for reproducibility (default: current time in ms)
   lora_traffic_split:               # Optional: MultiLoRA traffic splitting
     - name: adapter_1               # LoRA adapter name
       split: 0.5                    # Traffic weight (must sum to 1.0)
