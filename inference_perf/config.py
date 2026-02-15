@@ -105,6 +105,7 @@ class DataConfig(BaseModel):
     # Trace file is only supported for random dataset at this moment
     trace: Optional[TraceConfig] = None
 
+
 class ModelServerType(Enum):
     VLLM = "vllm"
     SGLANG = "sglang"

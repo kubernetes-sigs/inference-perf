@@ -89,7 +89,7 @@ class Worker(mp.Process):
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
-        base_seed: int
+        base_seed: int,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id

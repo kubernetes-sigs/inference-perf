@@ -44,7 +44,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
-        
+
         # Use distribution configs, or fall back to question_len/output_len with std_dev=0
         q_len = self.shared_prefix.question_len
         o_len = self.shared_prefix.output_len
@@ -73,9 +73,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.shared_prefix.num_prompts_per_group,
             )
             self.output_len_list_per_group.append(output_lens.tolist())
-        
-        
-
 
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
@@ -97,7 +94,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
         output_len = self.flat_output_lens[i]
-          
+
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
@@ -135,7 +132,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         if self.shared_prefix is None:
             raise ValueError("Shared prefix is not available for generating prompts.")
-        
+
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
         for group_id in range(self.num_groups):
@@ -171,9 +168,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Flatten output lengths to match prompts ordering
         self.flat_output_lens = [
-            self.output_len_list_per_group[g][p]
-            for g in range(self.num_groups)
-            for p in range(self.num_prompts_per_group)
+            self.output_len_list_per_group[g][p] for g in range(self.num_groups) for p in range(self.num_prompts_per_group)
         ]
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
@@ -185,4 +180,3 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             combined = list(zip(self.prompts, self.flat_output_lens, strict=True))
             random.shuffle(combined)
             self.prompts, self.flat_output_lens = [list(t) for t in zip(*combined, strict=True)]
-

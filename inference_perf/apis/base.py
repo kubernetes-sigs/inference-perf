@@ -47,7 +47,6 @@ class RequestLifecycleMetric(BaseModel):
     tpot_slo_sec: Optional[float] = None
 
 
-
 class InferenceAPIData(BaseModel):
     # loadgen should assign this request to prefered worker if possible
     prefered_worker_id: int = -1  # no prefered worker by default
