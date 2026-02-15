@@ -5,6 +5,7 @@ import sys
 import textwrap
 import shutil
 from contextlib import AsyncContextDecorator
+from typing import Optional
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
 
     _host = "127.0.0.1"
     _port: int
-    _proc: asyncio.subprocess.Process | None = None
+    _proc: "Optional[asyncio.subprocess.Process]" = None
     _wait_until_ready: bool
 
     def __init__(
@@ -91,7 +92,7 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
     async def wait_until_ready(
         self,
         polling_sec: float = 0.5,
-        timeout_sec: float | None = 10,
+        timeout_sec: Optional[float] = 10,
     ) -> None:
         """Waits until the server is ready to serve requests."""
         assert self._proc
