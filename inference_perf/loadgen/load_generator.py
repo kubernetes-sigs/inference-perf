@@ -344,7 +344,7 @@ class LoadGenerator:
             worker_id = request_data.prefered_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
-            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), request_data.prefered_worker_id)
+            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), worker_id)
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:

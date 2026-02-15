@@ -178,8 +178,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
         if self.enable_multi_turn_chat:
-            # no need to sync shuffles - multi-round initial prompt does not include system prompt 
-            random.shuffle(self.user_sessions)        
+            # no need to sync shuffles - multi-round initial prompt does not include system prompt
+            random.shuffle(self.user_sessions)
         else:
             # Shuffle prompts and output lengths in sync
             combined = list(zip(self.prompts, self.flat_output_lens, strict=True))
