@@ -90,6 +90,83 @@ class ModelServerMetrics(BaseModel):
     prefix_cache_hits: float = 0.0
     prefix_cache_queries: float = 0.0
 
+    # Running Requests
+    avg_num_requests_running: float = 0.0
+
+    # Request Lifecycle Latency Breakdown
+    avg_request_queue_time: float = 0.0
+    median_request_queue_time: float = 0.0
+    p90_request_queue_time: float = 0.0
+    p99_request_queue_time: float = 0.0
+    avg_request_inference_time: float = 0.0
+    median_request_inference_time: float = 0.0
+    p90_request_inference_time: float = 0.0
+    p99_request_inference_time: float = 0.0
+    avg_request_prefill_time: float = 0.0
+    median_request_prefill_time: float = 0.0
+    p90_request_prefill_time: float = 0.0
+    p99_request_prefill_time: float = 0.0
+    avg_request_decode_time: float = 0.0
+    median_request_decode_time: float = 0.0
+    p90_request_decode_time: float = 0.0
+    p99_request_decode_time: float = 0.0
+
+    # Request Metadata
+    avg_request_prompt_tokens: float = 0.0
+    median_request_prompt_tokens: float = 0.0
+    p90_request_prompt_tokens: float = 0.0
+    p99_request_prompt_tokens: float = 0.0
+    avg_request_generation_tokens: float = 0.0
+    median_request_generation_tokens: float = 0.0
+    p90_request_generation_tokens: float = 0.0
+    p99_request_generation_tokens: float = 0.0
+    avg_request_max_num_generation_tokens: float = 0.0
+    median_request_max_num_generation_tokens: float = 0.0
+    p90_request_max_num_generation_tokens: float = 0.0
+    p99_request_max_num_generation_tokens: float = 0.0
+    avg_request_params_n: float = 0.0
+    median_request_params_n: float = 0.0
+    p90_request_params_n: float = 0.0
+    p99_request_params_n: float = 0.0
+    avg_request_params_max_tokens: float = 0.0
+    median_request_params_max_tokens: float = 0.0
+    p90_request_params_max_tokens: float = 0.0
+    p99_request_params_max_tokens: float = 0.0
+    request_success_count: float = 0.0
+
+    # Iteration Stats
+    avg_iteration_tokens: float = 0.0
+    median_iteration_tokens: float = 0.0
+    p90_iteration_tokens: float = 0.0
+    p99_iteration_tokens: float = 0.0
+
+    # Token Cache Stats
+    prompt_tokens_cached: float = 0.0
+    prompt_tokens_recomputed: float = 0.0
+    external_prefix_cache_hits: float = 0.0
+    external_prefix_cache_queries: float = 0.0
+    mm_cache_hits: float = 0.0
+    mm_cache_queries: float = 0.0
+    corrupted_requests: float = 0.0
+
+    # KV Block Metrics
+    avg_request_prefill_kv_computed_tokens: float = 0.0
+    median_request_prefill_kv_computed_tokens: float = 0.0
+    p90_request_prefill_kv_computed_tokens: float = 0.0
+    p99_request_prefill_kv_computed_tokens: float = 0.0
+    avg_kv_block_idle_before_evict: float = 0.0
+    median_kv_block_idle_before_evict: float = 0.0
+    p90_kv_block_idle_before_evict: float = 0.0
+    p99_kv_block_idle_before_evict: float = 0.0
+    avg_kv_block_lifetime: float = 0.0
+    median_kv_block_lifetime: float = 0.0
+    p90_kv_block_lifetime: float = 0.0
+    p99_kv_block_lifetime: float = 0.0
+    avg_kv_block_reuse_gap: float = 0.0
+    median_kv_block_reuse_gap: float = 0.0
+    p90_kv_block_reuse_gap: float = 0.0
+    p99_kv_block_reuse_gap: float = 0.0
+
 
 class MetricsClient(ABC):
     @abstractmethod
