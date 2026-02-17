@@ -15,6 +15,7 @@ import logging
 from datetime import datetime
 from enum import Enum
 from os import cpu_count
+import time
 from typing import Any, List, Optional, Union
 
 import yaml
@@ -103,6 +104,7 @@ class DataConfig(BaseModel):
 
     # Trace file is only supported for random dataset at this moment
     trace: Optional[TraceConfig] = None
+
 
 class ModelServerType(Enum):
     VLLM = "vllm"
@@ -196,6 +198,7 @@ class LoadConfig(BaseModel):
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
     lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
+    base_seed: int = Field(default_factory=lambda: int(time.time() * 1000))
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":

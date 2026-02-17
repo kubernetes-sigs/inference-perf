@@ -89,6 +89,7 @@ class Worker(mp.Process):
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
+        base_seed: int,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -103,6 +104,7 @@ class Worker(mp.Process):
         self.active_requests_counter = active_requests_counter
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
+        self.base_seed = base_seed
 
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
@@ -213,9 +215,9 @@ class Worker(mp.Process):
 
     def run(self) -> None:
         # Seed with current time + worker id to ensure unique random sequences per worker
-        seed = (int(time.time() * 1000) + self.id) % 2**32
+        seed = (self.base_seed + self.id) % 2**32
         np.random.seed(seed)
-        logger.debug(f"[Worker {self.id}] seeded numpy with {seed}")
+        logger.debug(f"[Worker {self.id}] seeded numpy with {seed} and base seed {self.base_seed}")
 
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -252,6 +254,7 @@ class LoadGenerator:
         if load_config.lora_traffic_split is not None:
             self.lora_adapters = [config.name for config in load_config.lora_traffic_split]
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
+        self.base_seed: int = load_config.base_seed
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -518,6 +521,7 @@ class LoadGenerator:
                     finished_requests_counter,
                     active_requests_counter,
                     shared_max_concurrency,
+                    self.base_seed,
                 )
             )
             self.workers[-1].start()

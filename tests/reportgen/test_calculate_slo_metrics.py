@@ -3,12 +3,12 @@ from unittest.mock import Mock
 from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.reportgen.base import calculate_slo_metrics
 
+
 @pytest.fixture(scope="module", autouse=True)
 def test_calculate_slo_metrics_empty_metrics() -> None:
     """Test with empty metrics list returns None."""
     result = calculate_slo_metrics([], [], [])
     assert result is None
-
 
 
 def test_calculate_slo_metrics_no_slo_thresholds() -> None:
@@ -18,10 +18,9 @@ def test_calculate_slo_metrics_no_slo_thresholds() -> None:
     metric.tpot_slo_sec = None
     metric.start_time = 0.0
     metric.end_time = 1.0
-    
+
     result = calculate_slo_metrics([metric], [None], [None])
     assert result is None
-
 
 
 def test_calculate_slo_metrics_ttft_slo_met() -> None:
@@ -34,17 +33,16 @@ def test_calculate_slo_metrics_ttft_slo_met() -> None:
     metric.info = Mock()
     metric.info.input_tokens = 10
     metric.info.output_tokens = 5
-    
+
     ttft_value = 0.3  # Below SLO
     result = calculate_slo_metrics([metric], [ttft_value], [None])
-    
+
     assert result is not None
     assert "ttft_slo" in result
     assert result["ttft_slo"]["attainment_pct"] == 100.0
     assert result["ttft_slo"]["requests_met"] == 1
     assert result["ttft_slo"]["requests_failed"] == 0
     assert result["ttft_slo"]["slo"] == 0.5
-
 
 
 def test_calculate_slo_metrics_ttft_slo_failed() -> None:
@@ -57,15 +55,14 @@ def test_calculate_slo_metrics_ttft_slo_failed() -> None:
     metric.info = Mock()
     metric.info.input_tokens = 10
     metric.info.output_tokens = 5
-    
+
     ttft_value = 0.5  # Above SLO
     result = calculate_slo_metrics([metric], [ttft_value], [None])
-    
+
     assert result is not None
     assert result["ttft_slo"]["attainment_pct"] == 0.0
     assert result["ttft_slo"]["requests_met"] == 0
     assert result["ttft_slo"]["requests_failed"] == 1
-
 
 
 def test_calculate_slo_metrics_ttft_slo_missing_value() -> None:
@@ -78,13 +75,12 @@ def test_calculate_slo_metrics_ttft_slo_missing_value() -> None:
     metric.info = Mock()
     metric.info.input_tokens = 10
     metric.info.output_tokens = 5
-    
+
     result = calculate_slo_metrics([metric], [None], [None])
-    
+
     assert result is not None
     assert result["ttft_slo"]["attainment_pct"] == 100.0
     assert result["ttft_slo"]["requests_failed"] == 0
-
 
 
 def test_calculate_slo_metrics_tpot_slo_met() -> None:
@@ -97,16 +93,15 @@ def test_calculate_slo_metrics_tpot_slo_met() -> None:
     metric.info = Mock()
     metric.info.input_tokens = 10
     metric.info.output_tokens = 5
-    
+
     tpot_value = 0.08  # Below SLO
     result = calculate_slo_metrics([metric], [None], [tpot_value])
-    
+
     assert result is not None
     assert "tpot_slo" in result
     assert result["tpot_slo"]["attainment_pct"] == 100.0
     assert result["tpot_slo"]["requests_met"] == 1
     assert result["tpot_slo"]["slo"] == 0.1
-
 
 
 def test_calculate_slo_metrics_combined_slo() -> None:
@@ -119,7 +114,7 @@ def test_calculate_slo_metrics_combined_slo() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 10
     metric1.info.output_tokens = 5
-    
+
     metric2 = Mock(spec=RequestLifecycleMetric)
     metric2.ttft_slo_sec = 0.5
     metric2.tpot_slo_sec = 0.1
@@ -128,21 +123,16 @@ def test_calculate_slo_metrics_combined_slo() -> None:
     metric2.info = Mock()
     metric2.info.input_tokens = 10
     metric2.info.output_tokens = 5
-    
+
     ttft_values: list[float | None] = [0.3, 0.6]
     tpot_values: list[float | None] = [0.08, 0.08]
-    
-    result = calculate_slo_metrics(
-        [metric1, metric2],
-        ttft_values,
-        tpot_values
-    )
-    
+
+    result = calculate_slo_metrics([metric1, metric2], ttft_values, tpot_values)
+
     assert result is not None
     assert "combined_slo" in result
     assert result["combined_slo"]["requests_met"] == 1  # Only metric1 meets both
     assert result["combined_slo"]["requests_failed"] == 1
-
 
 
 def test_calculate_slo_metrics_multiple_requests() -> None:
@@ -150,7 +140,7 @@ def test_calculate_slo_metrics_multiple_requests() -> None:
     metrics: list[RequestLifecycleMetric] = []
     ttft_values: list[float | None] = []
     tpot_values: list[float | None] = []
-    
+
     for i in range(5):
         metric = Mock(spec=RequestLifecycleMetric)
         metric.ttft_slo_sec = 0.5
@@ -163,14 +153,13 @@ def test_calculate_slo_metrics_multiple_requests() -> None:
         metrics.append(metric)
         ttft_values.append(0.3 if i % 2 == 0 else 0.6)  # 60% pass
         tpot_values.append(None)
-    
+
     result = calculate_slo_metrics(metrics, ttft_values, tpot_values)
-    
+
     assert result is not None
     assert result["ttft_slo"]["attainment_pct"] == 60.0
     assert result["ttft_slo"]["requests_met"] == 3
     assert result["ttft_slo"]["requests_failed"] == 2
-
 
 
 def test_calculate_slo_metrics_goodput_calculation() -> None:
@@ -183,9 +172,9 @@ def test_calculate_slo_metrics_goodput_calculation() -> None:
     metric.info = Mock()
     metric.info.input_tokens = 100
     metric.info.output_tokens = 50
-    
+
     result = calculate_slo_metrics([metric], [0.3], [0.08])
-    
+
     assert result is not None
     assert "combined_slo" in result
     assert "goodput_rate" in result["combined_slo"]

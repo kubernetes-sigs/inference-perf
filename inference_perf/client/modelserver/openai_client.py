@@ -28,7 +28,8 @@ import requests
 import ssl
 
 logger = logging.getLogger(__name__)
-    
+
+
 class openAIModelServerClient(ModelServerClient):
     _session: "Optional[openAIModelServerClientSession]" = None
     _session_lock = asyncio.Lock()
@@ -189,22 +190,22 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     )
 
                 metric = RequestLifecycleMetric(
-                        stage_id=stage_id,
-                        request_data=request_data,
-                        response_data=response_content,
-                        info=response_info,
-                        error=error,
-                        start_time=start,
-                        end_time=end_time,
-                        scheduled_time=scheduled_time,
-                    ) 
-                    
-                    # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
+                    stage_id=stage_id,
+                    request_data=request_data,
+                    response_data=response_content,
+                    info=response_info,
+                    error=error,
+                    start_time=start,
+                    end_time=end_time,
+                    scheduled_time=scheduled_time,
+                )
+
+                # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
                 if response_info.output_token_times:
                     ttft_threshold = None
                     tpot_threshold = None
                     slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"
-                
+
                     default_ttft_header = f"x-slo-ttft-{slo_unit}"
                     default_tpot_header = f"x-slo-tpot-{slo_unit}"
                     ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
@@ -222,7 +223,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
                         if tpot_threshold is not None:
                             metric.tpot_slo_sec = float(tpot_threshold) * factor
-                 # Record the metric
+                # Record the metric
                 self.client.metrics_collector.record_metric(metric)
 
         except Exception as e:
