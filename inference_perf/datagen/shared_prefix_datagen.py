@@ -6,6 +6,7 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, LazyLoadDataMixin
@@ -44,7 +45,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
         self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
-        
+
         # Use distribution configs, or fall back to question_len/output_len with std_dev=0
         q_len = self.shared_prefix.question_len
         o_len = self.shared_prefix.output_len
@@ -73,17 +74,15 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.shared_prefix.num_prompts_per_group,
             )
             self.output_len_list_per_group.append(output_lens.tolist())
-        
-        
-
 
         self.prompts: List[str] = []
+        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for Chat API
         self.user_sessions: List[LocalUserSession] = []
         self.flat_output_lens: List[int] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -97,7 +96,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
         output_len = self.flat_output_lens[i]
-          
+
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
@@ -107,6 +106,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session=self.user_sessions[user_id],
                 target_round=round,
             )
+        elif self.api_config.type == APIType.Chat:
+            shared_prefix, question = self.prompt_pairs[i]
+            messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
+            return ChatCompletionAPIData(messages=messages, max_tokens=output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
@@ -135,7 +138,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         if self.shared_prefix is None:
             raise ValueError("Shared prefix is not available for generating prompts.")
-        
+
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
         for group_id in range(self.num_groups):
@@ -164,7 +167,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                         )
                     )
                 else:
-                    # Single turn chat, Combine shared prefix and question
+                    # Single turn: store (shared_prefix, question) pair for Chat API
+                    self.prompt_pairs.append((shared_prefix_text, question_text))
+                    # Combine shared prefix and question for Completion API
                     question_text = shared_prefix_text + " " + question_text
 
                 self.prompts.append(question_text)
@@ -181,8 +186,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             # no need to sync shuffles - multi-round initial prompt does not include system prompt
             random.shuffle(self.user_sessions)
         else:
-            # Shuffle prompts and output lengths in sync
-            combined = list(zip(self.prompts, self.flat_output_lens, strict=True))
+            # Shuffle prompts, prompt_pairs, and output lengths in sync
+            combined = list(zip(self.prompts, self.prompt_pairs, self.flat_output_lens, strict=True))
             random.shuffle(combined)
-            self.prompts, self.flat_output_lens = [list(t) for t in zip(*combined, strict=True)]
-
+            self.prompts, self.prompt_pairs, self.flat_output_lens = [list(t) for t in zip(*combined, strict=True)]
