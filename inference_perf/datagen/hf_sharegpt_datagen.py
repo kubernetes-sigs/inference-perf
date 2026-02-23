@@ -32,38 +32,49 @@ class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if config.path is not None:
-            # check if the path is valid
-            if not os.path.exists(config.path):
-                raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
-            # depending on whether the dataset is a single file or a directory, we need to load it differently
-            # TODO: add support for other file types
-            if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.sharegpt_dataset = itertools.cycle(
-                    load_dataset("json", data_files=config.path, streaming=True, split="train")
-                )
-            elif os.path.isdir(config.path):
-                json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.sharegpt_dataset = itertools.cycle(
-                    load_dataset("json", data_files=json_files, streaming=True, split="train")
-                )
-            else:
-                raise ValueError(f"Invalid dataset path: {config.path}")
-        else:
-            self.sharegpt_dataset = itertools.cycle(
-                load_dataset(
-                    SHAREGPT_HF_DATASET_URL,
-                    data_files=SHAREGPT_HF_DATAFILES_PATH,
-                    streaming=True,
-                    split="train",
-                )
-            )
+        self._dataset_path = config.path
+        self._init_sharegpt_dataset()
+
         self.min_num_turns = 2
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
+
+    def _init_sharegpt_dataset(self) -> None:
+        if self._dataset_path is not None:
+            # check if the path is valid
+            if not os.path.exists(self._dataset_path):
+                raise ValueError(f"Invalid dataset path: {self._dataset_path}. Path does not exist.")
+            # depending on whether the dataset is a single file or a directory, we need to load it differently
+            # TODO: add support for other file types
+            if os.path.isfile(self._dataset_path) and self._dataset_path.endswith(".json"):
+                dataset = load_dataset("json", data_files=self._dataset_path, streaming=True, split="train")
+            elif os.path.isdir(self._dataset_path):
+                json_files = [
+                    os.path.join(self._dataset_path, f)
+                    for f in os.listdir(self._dataset_path)
+                    if f.endswith(".json")
+                ]
+                dataset = load_dataset("json", data_files=json_files, streaming=True, split="train")
+            else:
+                raise ValueError(f"Invalid dataset path: {self._dataset_path}")
+        else:
+            dataset = load_dataset(
+                SHAREGPT_HF_DATASET_URL,
+                data_files=SHAREGPT_HF_DATAFILES_PATH,
+                streaming=True,
+                split="train",
+            )
+
+        self.sharegpt_dataset = iter(dataset)
+
+    def _next_data(self):
+        try:
+            return next(self.sharegpt_dataset)
+        except StopIteration:
+            logger.info("ShareGPT dataset exhausted; restarting dataset iterator")
+            self._init_sharegpt_dataset()
+            return next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
@@ -81,7 +92,7 @@ class HFShareGPTDataGenerator(DataGenerator):
         if self.tokenizer is None:
             raise Exception("Tokenizer is required for completion API of HFShareGPTDataGenerator")
         while True:
-            data = next(self.sharegpt_dataset)
+            data = self._next_data()
             if (
                 data is None
                 or data[self.data_key] is None
@@ -117,7 +128,7 @@ class HFShareGPTDataGenerator(DataGenerator):
 
     def get_chat_data(self) -> Generator[InferenceAPIData, None, None]:
         while True:
-            data = next(self.sharegpt_dataset)
+            data = self._next_data()
             if (
                 data is None
                 or data[self.data_key] is None
