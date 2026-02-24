@@ -71,6 +71,83 @@ class PrometheusMetricMetadata(MetricsMetadata):
     prefix_cache_hits: Optional[ModelServerPrometheusMetric]
     prefix_cache_queries: Optional[ModelServerPrometheusMetric]
 
+    # Running Requests
+    avg_num_requests_running: Optional[ModelServerPrometheusMetric]
+
+    # Request Lifecycle Latency Breakdown
+    avg_request_queue_time: Optional[ModelServerPrometheusMetric]
+    median_request_queue_time: Optional[ModelServerPrometheusMetric]
+    p90_request_queue_time: Optional[ModelServerPrometheusMetric]
+    p99_request_queue_time: Optional[ModelServerPrometheusMetric]
+    avg_request_inference_time: Optional[ModelServerPrometheusMetric]
+    median_request_inference_time: Optional[ModelServerPrometheusMetric]
+    p90_request_inference_time: Optional[ModelServerPrometheusMetric]
+    p99_request_inference_time: Optional[ModelServerPrometheusMetric]
+    avg_request_prefill_time: Optional[ModelServerPrometheusMetric]
+    median_request_prefill_time: Optional[ModelServerPrometheusMetric]
+    p90_request_prefill_time: Optional[ModelServerPrometheusMetric]
+    p99_request_prefill_time: Optional[ModelServerPrometheusMetric]
+    avg_request_decode_time: Optional[ModelServerPrometheusMetric]
+    median_request_decode_time: Optional[ModelServerPrometheusMetric]
+    p90_request_decode_time: Optional[ModelServerPrometheusMetric]
+    p99_request_decode_time: Optional[ModelServerPrometheusMetric]
+
+    # Request Metadata
+    avg_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
+    median_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
+    p90_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
+    p99_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
+    avg_request_generation_tokens: Optional[ModelServerPrometheusMetric]
+    median_request_generation_tokens: Optional[ModelServerPrometheusMetric]
+    p90_request_generation_tokens: Optional[ModelServerPrometheusMetric]
+    p99_request_generation_tokens: Optional[ModelServerPrometheusMetric]
+    avg_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
+    median_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
+    p90_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
+    p99_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
+    avg_request_params_n: Optional[ModelServerPrometheusMetric]
+    median_request_params_n: Optional[ModelServerPrometheusMetric]
+    p90_request_params_n: Optional[ModelServerPrometheusMetric]
+    p99_request_params_n: Optional[ModelServerPrometheusMetric]
+    avg_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
+    median_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
+    p90_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
+    p99_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
+    request_success_count: Optional[ModelServerPrometheusMetric]
+
+    # Iteration Stats
+    avg_iteration_tokens: Optional[ModelServerPrometheusMetric]
+    median_iteration_tokens: Optional[ModelServerPrometheusMetric]
+    p90_iteration_tokens: Optional[ModelServerPrometheusMetric]
+    p99_iteration_tokens: Optional[ModelServerPrometheusMetric]
+
+    # Token Cache Stats
+    prompt_tokens_cached: Optional[ModelServerPrometheusMetric]
+    prompt_tokens_recomputed: Optional[ModelServerPrometheusMetric]
+    external_prefix_cache_hits: Optional[ModelServerPrometheusMetric]
+    external_prefix_cache_queries: Optional[ModelServerPrometheusMetric]
+    mm_cache_hits: Optional[ModelServerPrometheusMetric]
+    mm_cache_queries: Optional[ModelServerPrometheusMetric]
+    corrupted_requests: Optional[ModelServerPrometheusMetric]
+
+    # KV Block Metrics
+    avg_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
+    median_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
+    p90_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
+    p99_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
+    avg_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
+    median_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
+    p90_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
+    p99_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
+    avg_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
+    median_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
+    p90_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
+    p99_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
+    avg_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
+    median_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
+    p90_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
+    p99_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
+
 
 class ModelServerClient(ABC):
     @abstractmethod

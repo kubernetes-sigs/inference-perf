@@ -223,6 +223,111 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 if metrics.prefix_cache_queries > 0
                 else 0.0
             },
+            "inter_token_latency": {
+                "mean": metrics.avg_inter_token_latency,
+                "median": metrics.median_inter_token_latency,
+                "p90": metrics.p90_inter_token_latency,
+                "p99": metrics.p99_inter_token_latency,
+            },
+            "num_requests_running": {
+                "mean": metrics.avg_num_requests_running,
+            },
+            "request_queue_time": {
+                "mean": metrics.avg_request_queue_time,
+                "median": metrics.median_request_queue_time,
+                "p90": metrics.p90_request_queue_time,
+                "p99": metrics.p99_request_queue_time,
+            },
+            "request_inference_time": {
+                "mean": metrics.avg_request_inference_time,
+                "median": metrics.median_request_inference_time,
+                "p90": metrics.p90_request_inference_time,
+                "p99": metrics.p99_request_inference_time,
+            },
+            "request_prefill_time": {
+                "mean": metrics.avg_request_prefill_time,
+                "median": metrics.median_request_prefill_time,
+                "p90": metrics.p90_request_prefill_time,
+                "p99": metrics.p99_request_prefill_time,
+            },
+            "request_decode_time": {
+                "mean": metrics.avg_request_decode_time,
+                "median": metrics.median_request_decode_time,
+                "p90": metrics.p90_request_decode_time,
+                "p99": metrics.p99_request_decode_time,
+            },
+            "request_prompt_tokens": {
+                "mean": metrics.avg_request_prompt_tokens,
+                "median": metrics.median_request_prompt_tokens,
+                "p90": metrics.p90_request_prompt_tokens,
+                "p99": metrics.p99_request_prompt_tokens,
+            },
+            "request_generation_tokens": {
+                "mean": metrics.avg_request_generation_tokens,
+                "median": metrics.median_request_generation_tokens,
+                "p90": metrics.p90_request_generation_tokens,
+                "p99": metrics.p99_request_generation_tokens,
+            },
+            "request_max_num_generation_tokens": {
+                "mean": metrics.avg_request_max_num_generation_tokens,
+                "median": metrics.median_request_max_num_generation_tokens,
+                "p90": metrics.p90_request_max_num_generation_tokens,
+                "p99": metrics.p99_request_max_num_generation_tokens,
+            },
+            "request_params_n": {
+                "mean": metrics.avg_request_params_n,
+                "median": metrics.median_request_params_n,
+                "p90": metrics.p90_request_params_n,
+                "p99": metrics.p99_request_params_n,
+            },
+            "request_params_max_tokens": {
+                "mean": metrics.avg_request_params_max_tokens,
+                "median": metrics.median_request_params_max_tokens,
+                "p90": metrics.p90_request_params_max_tokens,
+                "p99": metrics.p99_request_params_max_tokens,
+            },
+            "request_success_count": metrics.request_success_count,
+            "iteration_tokens": {
+                "mean": metrics.avg_iteration_tokens,
+                "median": metrics.median_iteration_tokens,
+                "p90": metrics.p90_iteration_tokens,
+                "p99": metrics.p99_iteration_tokens,
+            },
+            "prompt_tokens_cached": metrics.prompt_tokens_cached,
+            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed,
+            "external_prefix_cache_hit_percent": {
+                "mean": (metrics.external_prefix_cache_hits / metrics.external_prefix_cache_queries) * 100.0
+                if metrics.external_prefix_cache_queries > 0
+                else 0.0
+            },
+            "mm_cache_hit_percent": {
+                "mean": (metrics.mm_cache_hits / metrics.mm_cache_queries) * 100.0 if metrics.mm_cache_queries > 0 else 0.0
+            },
+            "corrupted_requests": metrics.corrupted_requests,
+            "request_prefill_kv_computed_tokens": {
+                "mean": metrics.avg_request_prefill_kv_computed_tokens,
+                "median": metrics.median_request_prefill_kv_computed_tokens,
+                "p90": metrics.p90_request_prefill_kv_computed_tokens,
+                "p99": metrics.p99_request_prefill_kv_computed_tokens,
+            },
+            "kv_block_idle_before_evict": {
+                "mean": metrics.avg_kv_block_idle_before_evict,
+                "median": metrics.median_kv_block_idle_before_evict,
+                "p90": metrics.p90_kv_block_idle_before_evict,
+                "p99": metrics.p99_kv_block_idle_before_evict,
+            },
+            "kv_block_lifetime": {
+                "mean": metrics.avg_kv_block_lifetime,
+                "median": metrics.median_kv_block_lifetime,
+                "p90": metrics.p90_kv_block_lifetime,
+                "p99": metrics.p99_kv_block_lifetime,
+            },
+            "kv_block_reuse_gap": {
+                "mean": metrics.avg_kv_block_reuse_gap,
+                "median": metrics.median_kv_block_reuse_gap,
+                "p90": metrics.p90_kv_block_reuse_gap,
+                "p99": metrics.p99_kv_block_reuse_gap,
+            },
         },
     )
 
