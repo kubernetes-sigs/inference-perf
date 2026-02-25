@@ -36,6 +36,7 @@ dev = [
     "ipykernel>=6.29.5",
     "typing-extensions>=4.15.0",
     "hypothesis>=6.146.0",
+    "pytest-asyncio>=1.3.0",
 ]
 
 [dependency-groups]
@@ -48,6 +49,7 @@ test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=1.2.0",
     "ipykernel>=6.29.5",
+    "pytest-cov>=7.0.0",
 ]
 types = [
     "types-PyYAML>=6.0.12.20241230",
@@ -72,6 +74,10 @@ validate = {composite = ["format", "lint", "type-check"]}
 "test" = "pytest tests"
 "test:e2e" = "pytest e2e"
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
+
+"test:cov" = "pytest --cov=inference_perf --cov-report=json:coverage.json tests/"
+"check:cov" = "python scripts/check_coverage_regression.py"
+"validate:cov" = { composite = ["test:cov", "check:cov"] }
 
 "docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
 "docker:e2e-test:run".shell = "rm result && pdm run docker:e2e-test:build --iidfile result && docker run --rm -it $(< result)"
@@ -144,3 +150,11 @@ module = [
     "boto3.*",
 ]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["inference_perf"]
+omit = ["tests/*", "**/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
