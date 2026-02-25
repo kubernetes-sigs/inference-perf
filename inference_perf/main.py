@@ -101,7 +101,8 @@ def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
-    parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directory to analyze.", required=False)
+    parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False)
+    parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False)
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
@@ -110,7 +111,7 @@ def main_cli() -> None:
     setup_logging(args.log_level)
 
     if args.analyze and len(args.analyze) > 0:
-        analyze_reports(args.analyze)
+        analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
     if not args.config_file:

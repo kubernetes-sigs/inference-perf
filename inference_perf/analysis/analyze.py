@@ -39,6 +39,49 @@ def _extract_throughput_metric(throughput_data: Dict[str, Any], metric_name: str
     return None
 
 
+def _generate_multi_plot(
+    chartset_to_generate: List[List[Dict[str, Any]]], num_charts: int, names: List[str], suptitle: str, output_path: Path
+) -> None:
+    """Generates and saves a plot with multiple subplots."""
+    import matplotlib.pyplot as plt
+
+    if not num_charts:
+        logger.debug("No chart data available")
+        return
+
+    if not chartset_to_generate:
+        logger.warning(f"No data available to generate chart: {output_path.name}")
+        return
+
+    fig, axes = plt.subplots(1, num_charts, figsize=(7 * num_charts, 6), squeeze=False)
+    fig.suptitle(suptitle, fontsize=16)
+
+    for charts_to_generate in chartset_to_generate:
+        if not charts_to_generate:
+            logger.warning(f"No data available to generate chart: {output_path.name}")
+            return
+        for i, chart_info in enumerate(charts_to_generate):
+            ax = axes[0, i]
+            data = chart_info["data"]
+            qps_values = [x[0] for x in data]
+            y_values = [x[1] for x in data]
+
+            ax.plot(qps_values, y_values, marker="o", linestyle="-")
+            ax.set_title(chart_info["title"])
+            ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"))
+            ax.set_ylabel(chart_info["ylabel"])
+            if not names:
+                ax.legend([f"Report {idx + 1}" for idx in range(len(chartset_to_generate))])
+            else:
+                ax.legend(names)
+            ax.grid(True)
+
+    fig.tight_layout(rect=(0, 0.03, 1, 0.95))
+    plt.savefig(output_path)
+    logger.info(f"Chart saved to {output_path}")
+    plt.close(fig)
+
+
 def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, output_path: Path) -> None:
     """Generates and saves a plot with multiple subplots."""
     import matplotlib.pyplot as plt
@@ -69,7 +112,7 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
     plt.close(fig)
 
 
-def analyze_reports(report_dirs: List[str]) -> None:
+def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) -> None:
     """
     Analyzes performance reports to generate charts.
 
@@ -85,6 +128,8 @@ def analyze_reports(report_dirs: List[str]) -> None:
             "You can install it via 'pip install .[analysis]'"
         )
         return
+
+    chartset = {}
 
     for report_dir in report_dirs:
         logger.info(f"Analyzing reports in {report_dir}")
@@ -375,4 +420,72 @@ def analyze_reports(report_dirs: List[str]) -> None:
             throughput_latency_charts_to_generate,
             "Latency vs Throughput",
             report_path / "throughput_vs_latency.png",
+        )
+
+        chartset[report_path] = [
+            concurrency_latency_charts_to_generate,
+            concurrency_throughput_charts_to_generate,
+            latency_charts_to_generate,
+            throughput_charts_to_generate,
+            throughput_latency_charts_to_generate,
+        ]
+
+    if analysis_dir:
+        logger.info(f"Unified analysis reporting in {analysis_dir}")
+        analysis_path = Path(analysis_dir)
+
+        # Creating a legend file in the analysis path with list of report paths analyzed
+        report_names = [f"Report {idx + 1}" for idx in range(len(chartset.keys()))]
+        report_legend_dict = {f"Report {idx + 1}": str(path) for idx, path in enumerate(chartset.keys())}
+        with open(analysis_path / "analyzed_reports_legend.json", "w") as f:
+            json.dump(report_legend_dict, f, indent=2)
+
+        # --- Generate Concurrency Latency Plot ---
+        setof_concurrency_latency_charts_to_generate = [charts_to_generate[0] for charts_to_generate in chartset.values()]
+        _generate_multi_plot(
+            setof_concurrency_latency_charts_to_generate,
+            len(max(setof_concurrency_latency_charts_to_generate, key=len)),
+            report_names,
+            "Latency vs Concurrency",
+            analysis_path / "latency_vs_concurrency.png",
+        )
+
+        # --- Generate Concurrency Throughput Plot ---
+        setof_concurrency_throughput_charts_to_generate = [charts_to_generate[1] for charts_to_generate in chartset.values()]
+        _generate_multi_plot(
+            setof_concurrency_throughput_charts_to_generate,
+            len(max(setof_concurrency_throughput_charts_to_generate, key=len)),
+            report_names,
+            "Throughput vs Concurrency",
+            analysis_path / "throughput_vs_concurrency.png",
+        )
+
+        # --- Generate QPS Latency Plot ---
+        setof_latency_charts_to_generate = [charts_to_generate[2] for charts_to_generate in chartset.values()]
+        _generate_multi_plot(
+            setof_latency_charts_to_generate,
+            len(max(setof_latency_charts_to_generate, key=len)),
+            report_names,
+            "Latency vs Request Rate",
+            analysis_path / "latency_vs_qps.png",
+        )
+
+        # --- Generate QPS Throughput Plot ---
+        setof_throughput_charts_to_generate = [charts_to_generate[3] for charts_to_generate in chartset.values()]
+        _generate_multi_plot(
+            setof_throughput_charts_to_generate,
+            len(max(setof_throughput_charts_to_generate, key=len)),
+            report_names,
+            "Throughput vs Request Rate",
+            analysis_path / "throughput_vs_qps.png",
+        )
+
+        # --- Generate Throughput vs Latency Curve Plot ---
+        setof_throughput_latency_charts_to_generate = [charts_to_generate[4] for charts_to_generate in chartset.values()]
+        _generate_multi_plot(
+            setof_throughput_latency_charts_to_generate,
+            len(max(setof_throughput_latency_charts_to_generate, key=len)),
+            report_names,
+            "Latency vs Throughput",
+            analysis_path / "throughput_vs_latency.png",
         )
