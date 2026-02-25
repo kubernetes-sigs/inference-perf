@@ -75,9 +75,7 @@ validate = {composite = ["format", "lint", "type-check"]}
 "test:e2e" = "pytest e2e"
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
 
-"test:cov" = "pytest --cov=inference_perf --cov-report=json:coverage.json tests/"
 "check:cov" = "python scripts/check_coverage_regression.py"
-"validate:cov" = { composite = ["test:cov", "check:cov"] }
 
 "docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
 "docker:e2e-test:run".shell = "rm result && pdm run docker:e2e-test:build --iidfile result && docker run --rm -it $(< result)"
@@ -153,7 +151,7 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["inference_perf"]
-omit = ["tests/*", "**/__init__.py"]
+omit = ["tests/*", "**/__init__.py", "scripts/*", "scripts/**/*"]
 
 [tool.coverage.report]
 show_missing = true
