@@ -16,10 +16,11 @@ from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStat
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
-from inference_perf.datagen import DataGenerator, LazyLoadDataMixin
+from inference_perf.datagen import DataGenerator, LazyLoadDataMixin, get_datagen_class
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.circuit_breaker import get_circuit_breaker
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import (
     LoadConfig,
     LoadType,
@@ -27,6 +28,10 @@ from inference_perf.config import (
     TraceFormat,
     ConcurrentLoadStage,
     StandardLoadStage,
+    DataConfig,
+    APIConfig,
+    DataGenType,
+    CustomTokenizerConfig,
 )
 from asyncio import (
     CancelledError,
@@ -81,7 +86,9 @@ class Worker(mp.Process):
         id: int,
         client: ModelServerClient,
         request_queue: mp.Queue,  # type: ignore[type-arg]
-        datagen: DataGenerator,
+        api_config: APIConfig,
+        data_config: DataConfig,
+        tokenizer_config: Optional[CustomTokenizerConfig],
         max_concurrency: int,
         stop_signal: SyncEvent,
         cancel_signal: SyncEvent,
@@ -95,8 +102,10 @@ class Worker(mp.Process):
         self.id = id
         self.client = client
         self.request_queue = request_queue
+        self.api_config = api_config
+        self.data_config = data_config
+        self.tokenizer_config = tokenizer_config
         self.max_concurrency = max_concurrency
-        self.datagen = datagen
         self.stop_signal = stop_signal
         self.cancel_signal = cancel_signal
         self.request_phase = request_phase
@@ -106,7 +115,7 @@ class Worker(mp.Process):
         self.skip = False
         self.base_seed = base_seed
 
-    async def loop(self) -> None:
+    async def loop(self, datagen: DataGenerator) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
         semaphore = Semaphore(self.max_concurrency)
         current_concurrency = self.max_concurrency
@@ -188,7 +197,7 @@ class Worker(mp.Process):
                         semaphore.release()
 
                 stage_id, request, request_time, lora_adapter = item
-                request_data = LazyLoadDataMixin.get_request(self.datagen, request)
+                request_data = LazyLoadDataMixin.get_request(datagen, request)
                 task = create_task(
                     schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore, lora_adapter)
                 )
@@ -219,16 +228,29 @@ class Worker(mp.Process):
         np.random.seed(seed)
         logger.debug(f"[Worker {self.id}] seeded numpy with {seed} and base seed {self.base_seed}")
 
+        # Instantiate tokenizer and datagen locally in the worker
+        tokenizer = None
+        if self.tokenizer_config:
+            tokenizer = CustomTokenizer(self.tokenizer_config)
+        datagen_class = get_datagen_class(self.data_config.type)
+
+        datagen_kwargs = {}
+        if self.data_config.type == DataGenType.Random:
+            datagen_kwargs["seed"] = seed
+
+        datagen = datagen_class(self.api_config, self.data_config, tokenizer, **datagen_kwargs)
+
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
-        run(self.loop())
+        run(self.loop(datagen))
 
 
 class LoadGenerator:
-    def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+    def __init__(self, datagen: DataGenerator, load_config: LoadConfig, tokenizer_config: Optional[CustomTokenizerConfig] = None) -> None:
         self.datagen = datagen
         self.stageInterval = load_config.interval
+        self.tokenizer_config = tokenizer_config
         self.load_type = load_config.type
         self.stages = load_config.stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
@@ -513,7 +535,9 @@ class LoadGenerator:
                     id,
                     client,
                     request_queue.get_channel(id),
-                    self.datagen,
+                    self.datagen.api_config,
+                    self.datagen.config,
+                    self.tokenizer_config,
                     self.worker_max_concurrency,
                     stop_signal,
                     cancel_signal,

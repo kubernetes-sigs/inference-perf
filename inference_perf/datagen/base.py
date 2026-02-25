@@ -22,6 +22,7 @@ class DataGenerator(ABC):
     """Abstract base class for data generators."""
 
     api_config: APIConfig
+    config: DataConfig
     input_distribution: Optional[Distribution]
     output_distribution: Optional[Distribution]
     shared_prefix: Optional[SharedPrefix]
@@ -44,6 +45,7 @@ class DataGenerator(ABC):
         if tokenizer is not None:
             self.tokenizer = tokenizer
 
+        self.config = config
         self.api_config = api_config
         self.input_distribution = config.input_distribution
         self.output_distribution = config.output_distribution

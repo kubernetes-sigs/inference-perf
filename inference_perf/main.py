@@ -310,7 +310,7 @@ def main_cli() -> None:
     # Define LoadGenerator
     if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus and config.report.prometheus.per_stage:
         config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
-    loadgen = LoadGenerator(datagen, config.load)
+    loadgen = LoadGenerator(datagen, config.load, config.tokenizer)
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)

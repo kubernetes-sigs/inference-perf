@@ -33,8 +33,14 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         api_config: APIConfig,
         config: DataConfig,
         tokenizer: Optional[CustomTokenizer],
+        seed: Optional[int] = None,
+        **kwargs,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        else:
+            self.rng = np.random.default_rng()
 
         if self.trace is None:
             # let's read the trace file and get the input and output lengths
@@ -114,7 +120,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
         if self.api_config.type == APIType.Completion:
-            tokens = np.random.randint(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
+            tokens = self.rng.integers(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
             prompt_text = self.tokenizer.get_tokenizer().decode(tokens.tolist())
             return CompletionAPIData(prompt=prompt_text, max_tokens=self.output_lengths[n])
         else:
