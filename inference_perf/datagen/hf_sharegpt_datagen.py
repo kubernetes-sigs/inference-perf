@@ -11,13 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List, Optional
+from typing import Generator, Iterator, List, Optional
 from datasets import load_dataset
 import os
 
@@ -32,25 +31,36 @@ class HFShareGPTDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if config.path is not None:
+        self.config_path = config.path
+        self.sharegpt_dataset: Optional[Iterator] = None
+        self._load_dataset()
+
+        self.min_num_turns = 2
+        self.data_key = "conversations"
+        self.role_key = "from"
+        self.content_key = "value"
+
+    def _load_dataset(self) -> None:
+        """Load or reload the ShareGPT dataset iterator."""
+        if self.config_path is not None:
             # check if the path is valid
-            if not os.path.exists(config.path):
-                raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
+            if not os.path.exists(self.config_path):
+                raise ValueError(f"Invalid dataset path: {self.config_path}. Path does not exist.")
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
-            if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.sharegpt_dataset = itertools.cycle(
-                    load_dataset("json", data_files=config.path, streaming=True, split="train")
+            if os.path.isfile(self.config_path) and self.config_path.endswith(".json"):
+                self.sharegpt_dataset = iter(
+                    load_dataset("json", data_files=self.config_path, streaming=True, split="train")
                 )
-            elif os.path.isdir(config.path):
-                json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.sharegpt_dataset = itertools.cycle(
+            elif os.path.isdir(self.config_path):
+                json_files = [f for f in os.listdir(self.config_path) if f.endswith(".json")]
+                self.sharegpt_dataset = iter(
                     load_dataset("json", data_files=json_files, streaming=True, split="train")
                 )
             else:
-                raise ValueError(f"Invalid dataset path: {config.path}")
+                raise ValueError(f"Invalid dataset path: {self.config_path}")
         else:
-            self.sharegpt_dataset = itertools.cycle(
+            self.sharegpt_dataset = iter(
                 load_dataset(
                     SHAREGPT_HF_DATASET_URL,
                     data_files=SHAREGPT_HF_DATAFILES_PATH,
@@ -58,12 +68,15 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-        self.min_num_turns = 2
-        self.data_key = "conversations"
-        self.role_key = "from"
-        self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
+
+    def _next_data(self):
+        """Get next item from dataset, reloading if exhausted to enable cycling."""
+        try:
+            return next(self.sharegpt_dataset)
+        except StopIteration:
+            logger.info("ShareGPT dataset exhausted, reloading to continue cycling")
+            self._load_dataset()
+            return next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
@@ -81,7 +94,7 @@ class HFShareGPTDataGenerator(DataGenerator):
         if self.tokenizer is None:
             raise Exception("Tokenizer is required for completion API of HFShareGPTDataGenerator")
         while True:
-            data = next(self.sharegpt_dataset)
+            data = self._next_data()
             if (
                 data is None
                 or data[self.data_key] is None
@@ -117,7 +130,7 @@ class HFShareGPTDataGenerator(DataGenerator):
 
     def get_chat_data(self) -> Generator[InferenceAPIData, None, None]:
         while True:
-            data = next(self.sharegpt_dataset)
+            data = self._next_data()
             if (
                 data is None
                 or data[self.data_key] is None
