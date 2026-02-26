@@ -77,37 +77,71 @@
                 in
                 python.pkgs.buildPythonPackage (buildAttrs // { });
 
-              llm-d-inference-sim = pkgs.buildGoModule rec {
-                pname = "llm-d-inference-sim";
-                version = "0.6.1";
+              llm-d-inference-sim =
+                let
+                  # create necessary python for kv-cache-manager-wrapper.
+                  neededPython = pkgs.python312.withPackages (
+                    ps: with ps; [
+                      packaging
+                      pillow
+                      torch
+                      transformers
+                      jinja2
+                    ]
+                  );
+                in
+                pkgs.buildGoModule rec {
+                  pname = "llm-d-inference-sim";
+                  version = "0.7.1";
 
-                src = pkgs.fetchFromGitHub {
-                  owner = "llm-d";
-                  repo = "llm-d-inference-sim";
-                  tag = "v${version}";
-                  hash = "sha256-KdA7dgdy1jGjRhrqXfkg4Z9V3SXPcKp1FnTtm+e5DSA=";
+                  src = pkgs.fetchFromGitHub {
+                    owner = "llm-d";
+                    repo = "llm-d-inference-sim";
+                    tag = "v${version}";
+                    hash = "sha256-PFXqhA1Dz8xg2a7RtRcWE11RIzovaEduZT1G7oAUTS0=";
+                  };
+                  vendorHash = "sha256-8+W3FloObny7ZWq5h02yWF4skOE2gRbceCtWBzmZslE=";
+
+                  nativeBuildInputs = with pkgs; [
+                    pkg-config
+                    makeWrapper
+                    neededPython
+                  ];
+
+                  buildInputs = with pkgs; [
+                    zeromq
+                    libtokenizers
+                    neededPython
+                  ];
+
+                  preBuild = ''
+                    # https://github.com/llm-d/llm-d-inference-sim/blob/cf682b5a7b160e27754e9b186b7e2dfeb24678bb/Dockerfile#L52-L53
+                    export CGO_CFLAGS="''${CGO_CFLAGS:-} $(${neededPython.executable}-config --cflags)"
+                    export CGO_LDFLAGS="''${CGO_LDFLAGS:-} $(${neededPython.executable}-config --ldflags --embed)"
+                  '';
+
+                  postInstall = ''
+                    mkdir -p $out/lib/python3.12/site-packages
+
+                    cp \
+                      vendor/github.com/llm-d/llm-d-kv-cache-manager/pkg/preprocessing/chat_completions/*.py \
+                      $out/lib/python3.12/site-packages/
+
+                    wrapProgram $out/bin/llm-d-inference-sim \
+                      --prefix PYTHONPATH : $out/lib/python3.12/site-packages \
+                      --set    PYTHON ${neededPython}
+                  '';
+
+                  # several tests require networking.
+                  doCheck = false;
+
+                  meta = {
+                    description = "A light weight vLLM simulator, for mocking out replicas";
+                    homepage = "https://github.com/llm-d/llm-d-inference-sim";
+                    license = with nixpkgs.lib.licenses; asl20;
+                    mainProgram = "llm-d-inference-sim";
+                  };
                 };
-                vendorHash = "sha256-MINH7J2ozTORFK/KgZvXBlwThYRISL1wlHebdZxvuvw=";
-
-                nativeBuildInputs = with pkgs; [
-                  pkg-config
-                ];
-
-                buildInputs = with pkgs; [
-                  zeromq
-                  libtokenizers
-                ];
-
-                # several tests require networking.
-                doCheck = false;
-
-                meta = {
-                  description = "A light weight vLLM simulator, for mocking out replicas";
-                  homepage = "https://github.com/llm-d/llm-d-inference-sim";
-                  license = with nixpkgs.lib.licenses; asl20;
-                  mainProgram = "llm-d-inference-sim";
-                };
-              };
 
               libtokenizers = pkgs.rustPlatform.buildRustPackage rec {
                 pname = "libtokenizers";
