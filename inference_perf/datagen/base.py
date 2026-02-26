@@ -70,6 +70,9 @@ class DataGenerator(ABC):
     def is_prefered_worker_requested(self) -> bool:
         return False
 
+    def get_request_count(self) -> int:
+        return -1
+
 
 class LazyLoadDataMixin(ABC):
     """

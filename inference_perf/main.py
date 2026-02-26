@@ -288,7 +288,7 @@ def main_cli() -> None:
                 if config.data.output_distribution.total_count is None:
                     config.data.output_distribution.total_count = total_count
 
-        if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
+        if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None and config.data.trace is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 
         if config.data.type == DataGenType.ShareGPT:

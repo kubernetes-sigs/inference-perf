@@ -271,10 +271,12 @@ load:
   type: trace_replay
   trace:
     file: ./traces/traces.csv
-    format: AzurePublicDataset
+    format: AzurePublicDataset # Or SharedPrefix
 ```
 
-**Data Configuration** - Trace replay feature is only supported for random data generator. Matches the token counts from the trace:
+**Data Configuration** - Defines how the token counts are matched to the requests.
+
+*For AzurePublicDataset (using random tokens)*:
 ```yaml
 data:
   type: random
@@ -283,7 +285,18 @@ data:
     format: AzurePublicDataset
 ```
 
-#### Trace Format
+*For SharedPrefix (using dynamically generated prefix text)*:
+```yaml
+data:
+  type: shared_prefix
+  trace:
+    file: ./traces/trace_tot.jsonl
+    format: SharedPrefix
+```
+
+#### Trace Formats
+
+**AzurePublicDataset Format**
 
 The AzurePublicDataset format is a CSV file with the following columns:
 ```
@@ -297,6 +310,25 @@ For example:
 ```
 
 The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
+
+**SharedPrefix Format**
+
+The SharedPrefix format is a JSONL file specifically designed to simulate workloads like Tree of Thought, where multiple requests share the same prompt prefix, allowing inference servers to utilize prefix caching.
+
+Fields:
+- `timestamp`: Float. The time the request should be sent. Normalizes to start from 0.
+- `shared_prefix_length`: Integer. The length of the shared prompt prefix.
+- `tail_input_length`: Integer. The length of the unique input tokens appended to the prefix.
+- `output_length`: Integer. The number of tokens expected to be generated.
+- `shared_prefix_id`: Integer (Optional). Requests with the same ID and `shared_prefix_length` will generate the exact same random token sequence for their prefix, simulating a cache hit.
+
+For example:
+```json
+{"timestamp": 10.0, "shared_prefix_length": 100, "tail_input_length": 50, "output_length": 20, "shared_prefix_id": 1}
+{"timestamp": 12.5, "shared_prefix_length": 100, "tail_input_length": 30, "output_length": 20, "shared_prefix_id": 1}
+{"timestamp": 15.0, "shared_prefix_length": 50, "tail_input_length": 10, "output_length": 10}
+```
+*Note: For `SharedPrefix` trace format to work, you must define a valid `tokenizer` configuration in your configuration file so that `inference-perf` can accurately simulate token distributions.*
 
 ## Troubleshooting
 

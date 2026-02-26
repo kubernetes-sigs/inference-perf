@@ -1,33 +1,33 @@
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Iterator, Optional, List, Tuple
+from typing import Iterator, List, Tuple, TypeVar, Generic
 from pathlib import Path
 import csv
 import logging
 import time
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-class TraceEntry:
-    """Represents a single trace entry with timing and token information."""
+class NewTraceEntry(BaseModel):
+    """Base class for all trace entries."""
 
-    def __init__(
-        self,
-        timestamp: float,
-        input_tokens: int,
-        output_tokens: int,
-        prompt: Optional[str] = None,
-        completion: Optional[str] = None,
-    ):
-        self.timestamp = timestamp
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-        self.prompt = prompt
-        self.completion = completion
+    timestamp: float
 
 
-class TraceReader(ABC):
+T = TypeVar("T", bound=NewTraceEntry)
+
+
+class NewTraceReader(ABC, Generic[T]):
+    """Abstract base class for new trace readers."""
+
+    @abstractmethod
+    def load_entries(self, file_path: Path) -> List[T]:
+        raise NotImplementedError
+
+
+class LegacyTraceReader(ABC):
     """Abstract base class for streaming trace readers."""
 
     @abstractmethod
@@ -41,7 +41,7 @@ class TraceReader(ABC):
         raise NotImplementedError
 
 
-class AzurePublicDatasetReader(TraceReader):
+class AzurePublicDatasetReader(LegacyTraceReader):
     """Trace reader for Azure Public Dataset format."""
 
     def __init__(self) -> None:

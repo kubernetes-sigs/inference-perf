@@ -15,8 +15,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, Tuple
 import numpy as np
-from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
+from inference_perf.utils.trace_reader import NewTraceReader, LegacyTraceReader, NewTraceEntry
 
 
 class LoadTimer(ABC):
@@ -98,11 +98,15 @@ class PoissonLoadTimer(LoadTimer):
 
 
 class TraceReplayLoadTimer(LoadTimer):
-    def __init__(self, trace_reader: TraceReader, trace_file: Path) -> None:
+    def __init__(self, trace_reader: NewTraceReader[NewTraceEntry] | LegacyTraceReader, trace_file: Path) -> None:
         self._trace_reader = trace_reader
         self._trace_file = trace_file
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         start_time = time.monotonic() if initial is None else initial
-        for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
-            yield start_time + timestamp
+        if isinstance(self._trace_reader, NewTraceReader):
+            for entry in self._trace_reader.load_entries(self._trace_file):
+                yield start_time + entry.timestamp
+        else:
+            for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
+                yield start_time + timestamp
