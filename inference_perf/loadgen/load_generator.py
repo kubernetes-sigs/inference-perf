@@ -48,15 +48,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, Union
-
-if sys.version_info >= (3, 10):
-    from typing import TypeAlias
-else:
-    # Python 3.9 compatibility: TypeAlias was added in 3.10
-    from typing import Any
-
-    TypeAlias = Any
+from typing import List, Tuple, Optional, NamedTuple, Union
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -72,7 +64,11 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, Union[InferenceAPIData, int], float, Optional[str]]
+class RequestQueueData(NamedTuple):
+    stage_id: int
+    request_data: Union[InferenceAPIData, int]
+    request_time: float
+    lora_adapter: Optional[str]
 
 
 class Worker(mp.Process):
@@ -347,7 +343,10 @@ class LoadGenerator:
             worker_id = request_data.prefered_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
-            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), worker_id)
+            request_queue.put(
+                RequestQueueData(stage_id, request_data, next(time_generator), lora_adapter),
+                worker_id,
+            )
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
