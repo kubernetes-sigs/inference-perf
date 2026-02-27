@@ -114,7 +114,6 @@ load:
     timeout: 60                 # Length of time to run load to determine saturation
     num_stages: 5               # Number of stages to generate
     stage_duration: 180         # Duration of each generated stage
-    saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
 ```
 
 ### Model Server

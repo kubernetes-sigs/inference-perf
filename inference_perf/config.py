@@ -178,7 +178,6 @@ class SweepConfig(BaseModel):
     timeout: float = 60
     num_stages: int = 5
     stage_duration: int = 180
-    saturation_percentile: float = 95
 
 
 class MultiLoRAConfig(BaseModel):
