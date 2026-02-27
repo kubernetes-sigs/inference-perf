@@ -14,6 +14,7 @@
 import json
 import logging
 from typing import List
+import yaml
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from inference_perf.client.filestorage import StorageClient
@@ -49,7 +50,15 @@ class GoogleCloudStorageClient(StorageClient):
                 continue
 
             try:
-                blob.upload_from_string(json.dumps(report.get_contents()), content_type="application/json")
+                if report.file_type == "yaml":
+                    blob.upload_from_string(
+                        yaml.dump(report.get_contents(), sort_keys=False, default_flow_style=False),
+                        content_type="text/yaml",
+                    )
+                elif report.file_type == "prom":
+                    blob.upload_from_string(report.get_contents(), content_type="text/plain")
+                else:
+                    blob.upload_from_string(json.dumps(report.get_contents()), content_type="application/json")
                 logger.info(f"Uploaded gs://{self.output_bucket}/{blob_path}")
             except GoogleCloudError as e:
                 logger.error(f"Failed to upload {blob_path}: {e}")

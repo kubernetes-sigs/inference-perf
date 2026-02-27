@@ -260,6 +260,8 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
 class PrometheusMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = False
+    raw_time_series: bool = False
+    raw_time_series_interval: int = 5
 
 
 class ReportConfig(BaseModel):
