@@ -36,7 +36,7 @@ api:
   slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
-```  
+```
 
 ### Data Generation
 
@@ -123,12 +123,14 @@ Configures connection to the model serving backend:
 
 ```yaml
 server:
-  type: vllm                                          # Currently only vLLM supported
+  type: vllm                                          # Server type (vllm, sglang, tgi, openai, mock)
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"   # Required model identifier
   base_url: "http://0.0.0.0:8000"                     # Required server endpoint
   ignore_eos: true                                    # Whether to ignore End-of-Sequence tokens
   api_key: ""                                         # Optional API key for authenticated endpoints
 ```
+
+> **Note on `openai` Server Type**: The `openai` ModelServerType acts as a generic, vanilla client for testing *any* generic OpenAI-compatible endpoint. While it supports the same core OpenAI protocols (Chat and Completions), it does not export or gather the specialized Prometheus metrics (like KV cache statistics or Queue Depth) that the vendor-specific clients (`vllm`, `sglang`, `tgi`) natively support.
 
 ### Metrics Collection
 
@@ -227,10 +229,10 @@ load:
   stages:
   - rate: 1
     duration: 30
-api: 
+api:
   type: chat
 server:
-  type: vllm
+  type: openai
   model_name: HuggingFaceTB/SmolLM2-135M-Instruct
   base_url: http://0.0.0.0:8000
 ```
@@ -243,7 +245,7 @@ load:
   stages:
   - rate: 1
     duration: 30
-api: 
+api:
   type: completion
 server:
   type: vllm
@@ -289,10 +291,10 @@ load:
   stages:
   - rate: 1
     duration: 30
-api: 
+api:
   type: chat
 server:
-  type: vllm
+  type: openai
   model_name: ./models/SmolLM2-135M-Instruct
   base_url: http://0.0.0.0:8000
   ignore_eos: true

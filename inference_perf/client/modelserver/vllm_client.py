@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
 import logging

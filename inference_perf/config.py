@@ -110,6 +110,7 @@ class ModelServerType(Enum):
     VLLM = "vllm"
     SGLANG = "sglang"
     TGI = "tgi"
+    OPENAI = "openai"
     MOCK = "mock"
 
 
