@@ -18,7 +18,7 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 * Highly scalable and can support benchmarking large inference production deployments.
 * Reports the key metrics needed to measure LLM performance.
 * Supports different real world and synthetic datasets.
-* Supports different APIs and supports multiple model servers with enhanced metrics like [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang) and [TGI](https://github.com/huggingface/text-generation-inference).
+* Supports different APIs and supports multiple model servers with enhanced metrics like [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [TGI](https://github.com/huggingface/text-generation-inference), and natively handles any standard OpenAI-compatible endpoints.
 * Supports benchmarking large deployments with frameworks like [llm-d](https://llm-d.ai/), [Dynamo](https://docs.nvidia.com/dynamo/latest/) and [Inference Gateway](https://gateway-api-inference-extension.sigs.k8s.io/).
 * Supports specifying an exact input and output distribution to simulate different scenarios - Gaussian distribution, fixed length, min-max cases are all supported.
 * Generates different load patterns and can benchmark specific cases like burst traffic, scaling to saturation and other autoscaling / routing scenarios.
@@ -46,7 +46,7 @@ Inference Perf is a GenAI inference performance benchmarking tool that allows yo
 - Hugging Face Authentication [**OPTIONAL**]
 
     > **Optional**: *the step is required for gated models only*
-    
+
     To download tokenizer from the Hugging Face Hub, you need to authenticate. You can do this in one of the following ways:
 
     1. Using `huggingface-cli login`:
@@ -144,7 +144,7 @@ Example:
 
 ### API
 
-OpenAI completion and chat completion APIs are supported. It can be pointed to any endpoints which support these APIs - currently verified against vLLM deployments. Other APIs and model server support can be added easily.
+OpenAI completion and chat completion APIs are supported. Benchmarks can be pointed to any endpoints which support these APIs—using the generic `openai` ModelServerType—but we additionally provide specialized clients with enhanced metric gathering capabilities for Native vLLM, SGLang, and TGI deployments. Other APIs and model server support can be added easily.
 
 ### Metrics
 
@@ -285,7 +285,7 @@ To debug any failure in testing, the end-to-end test workflow exposes output art
 
 ## Contributing
 
-Our community meeting is weekly on Thursdays alternating betweem 09:00 and 11:30 PDT ([Zoom Link](https://zoom.us/j/9955436256?pwd=Z2FQWU1jeDZkVC9RRTN4TlZyZTBHZz09), [Meeting Notes](https://docs.google.com/document/d/15XSF8q4DShcXIiExDfyiXxAYQslCmOmO2ARSJErVTak/edit?usp=sharing), [Meeting Recordings](https://www.youtube.com/playlist?list=PL69nYSiGNLP30qNanabU75ayPK7OPNAAS)). 
+Our community meeting is weekly on Thursdays alternating betweem 09:00 and 11:30 PDT ([Zoom Link](https://zoom.us/j/9955436256?pwd=Z2FQWU1jeDZkVC9RRTN4TlZyZTBHZz09), [Meeting Notes](https://docs.google.com/document/d/15XSF8q4DShcXIiExDfyiXxAYQslCmOmO2ARSJErVTak/edit?usp=sharing), [Meeting Recordings](https://www.youtube.com/playlist?list=PL69nYSiGNLP30qNanabU75ayPK7OPNAAS)).
 
 We currently utilize the [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf) channel in Kubernetes Slack workspace for communications.
 

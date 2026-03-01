@@ -14,7 +14,7 @@
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
 import logging
@@ -51,9 +51,6 @@ class TGImodelServerClient(openAIModelServerClient):
             lora_config=lora_config,
         )
         self.metric_filters = additional_filters
-
-    def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return PrometheusMetricMetadata(

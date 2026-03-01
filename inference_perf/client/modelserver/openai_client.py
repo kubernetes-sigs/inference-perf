@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from abc import abstractmethod
+
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
@@ -115,11 +115,10 @@ class openAIModelServerClient(ModelServerClient):
             self._session = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return []
+        return [APIType.Completion, APIType.Chat]
 
-    @abstractmethod
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
-        raise NotImplementedError
+        return PrometheusMetricMetadata()  # type: ignore[typeddict-item, no-any-return]
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:

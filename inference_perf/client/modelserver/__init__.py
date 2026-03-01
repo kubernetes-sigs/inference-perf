@@ -15,7 +15,7 @@ from .base import ModelServerClient, ModelServerClientSession
 from .mock_client import MockModelServerClient
 from .vllm_client import vLLMModelServerClient
 from .sglang_client import SGlangModelServerClient
-
+from .openai_client import openAIModelServerClient
 
 __all__ = [
     "ModelServerClient",
@@ -23,4 +23,5 @@ __all__ = [
     "MockModelServerClient",
     "vLLMModelServerClient",
     "SGlangModelServerClient",
+    "openAIModelServerClient",
 ]
