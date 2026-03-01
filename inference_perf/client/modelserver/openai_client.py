@@ -201,17 +201,18 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         if not response_content:
                             response_content = "Failed to read response text"
 
+        except aiohttp.ClientError as e:
+            caught_exception = e
+            logger.error("Client error during request:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+        except asyncio.TimeoutError as e:
+            caught_exception = e
+            logger.error("Request timed out:", exc_info=True)
+            error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
         except Exception as e:
             caught_exception = e
-            if isinstance(e, asyncio.TimeoutError):
-                logger.error("Request timed out:", exc_info=True)
-                error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
-            elif isinstance(e, aiohttp.ClientError):
-                logger.error("Client error during request:", exc_info=True)
-                error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
-            else:
-                logger.error("Unexpected error during request processing:", exc_info=True)
-                error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+            logger.error("Unexpected error during request processing:", exc_info=True)
+            error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
 
         end_time = time.perf_counter()
 
