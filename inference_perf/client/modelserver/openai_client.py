@@ -118,7 +118,7 @@ class openAIModelServerClient(ModelServerClient):
         return [APIType.Completion, APIType.Chat]
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
-        return PrometheusMetricMetadata()  # type: ignore[typeddict-item]
+        return PrometheusMetricMetadata()  # type: ignore[typeddict-item, no-any-return]
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
