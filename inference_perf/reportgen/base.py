@@ -594,6 +594,20 @@ class ReportGenerator:
             else:
                 logger.warning("Report generation failed - no metrics collected by metrics client")
 
+            if report_config.raw_time_series and self.config.metrics and self.config.metrics.prometheus:
+                raw_metrics = self.metrics_client.collect_raw_metrics(
+                    self.config.metrics.prometheus.filters,
+                    runtime_parameters.model_server_metrics,
+                    start_time=runtime_parameters.start_time,
+                    end_time=runtime_parameters.start_time + runtime_parameters.duration,
+                    interval=report_config.raw_time_series_interval,
+                )
+                if raw_metrics:
+                    for metric_name, metric_data in raw_metrics.items():
+                        prometheus_metrics_reports.append(
+                            ReportFile(name=f"raw_metrics/{metric_name}", contents=metric_data, file_type="prom")
+                        )
+
         if report_config.per_stage:
             for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
