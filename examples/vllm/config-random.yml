@@ -18,12 +18,12 @@ data:
     min: 10             # min length of the synthetic prompts
     max: 100            # max length of the synthetic prompts
     mean: 50            # mean length of the synthetic prompts
-    std: 10             # standard deviation of the length of the synthetic prompts
+    std_dev: 10         # standard deviation of the length of the synthetic prompts
   output_distribution:
     min: 10             # min length of the output to be generated
     max: 100            # max length of the output to be generated
     mean: 50            # mean length of the output to be generated
-    std: 10             # standard deviation of the length of the output to be generated
+    std_dev: 10         # standard deviation of the length of the output to be generated
 metrics:
   type: prometheus
   prometheus:

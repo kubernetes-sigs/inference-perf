@@ -29,7 +29,7 @@ class GoogleManagedPrometheusMetricsClient(PrometheusMetricsClient):
         # Creates a credentials object from the default service account file
         # Assumes that script has appropriate default credentials set up, ref:
         # https://googleapis.dev/python/google-auth/latest/user-guide.html#application-default-credentials
-        credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call]
+        credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call,unused-ignore]
         self.credentials = credentials
         self.project_id = project_id
         config.url = HttpUrl(f"https://monitoring.googleapis.com/v1/projects/{self.project_id}/location/global/prometheus")
@@ -39,5 +39,7 @@ class GoogleManagedPrometheusMetricsClient(PrometheusMetricsClient):
         # Prepare an authentication request - helps format the request auth token
         auth_req = google.auth.transport.requests.Request()
 
-        self.credentials.refresh(auth_req)
+        self.credentials.refresh(auth_req)  # type: ignore[no-untyped-call,unused-ignore]
+        if not self.credentials.token:
+            raise Exception("Failed to get credentials token")
         return {"Authorization": "Bearer " + self.credentials.token}

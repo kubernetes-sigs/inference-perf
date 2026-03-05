@@ -145,6 +145,26 @@ load:
   worker_max_concurrency: 8
 ```
 
+### Reproducible Runs with Base Seed
+
+Each worker process is seeded with a unique random seed derived from a base seed: `(base_seed + worker_id) % 2^32`. This ensures that workers generate distinct random sequences (e.g., for data selection and LoRA adapter assignment) while still allowing reproducible runs.
+
+By default, `base_seed` is set to the current time in milliseconds, so each run produces different random behavior. To make runs reproducible, set `base_seed` to a fixed value:
+
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 100
+    duration: 60
+  base_seed: 12345    # Fixed seed for reproducible runs
+```
+
+This is useful for:
+- Comparing performance across different server configurations with identical request patterns
+- Debugging issues by replaying the exact same workload
+- Ensuring consistent benchmarking results across multiple runs
+
 ### MultiLoRA Traffic Splitting
 
 MultiLoRA support enables benchmarking multiple LoRA (Low-Rank Adaptation) adapters simultaneously by distributing traffic across them according to specified weights. This is useful for:

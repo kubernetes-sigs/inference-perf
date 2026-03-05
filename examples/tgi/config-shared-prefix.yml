@@ -18,9 +18,9 @@ tokenizer:
 data:
   type: shared_prefix
   shared_prefix:
-    num_groups: 10                # Number of distinct shared prefixes
-    num_prompts_per_group: 10     # Number of unique questions per shared prefix
-    system_prompt_len: 100        # Length of the shared prefix (in tokens)
+    num_unique_system_prompts: 10     # Number of distinct shared prefixes (formerly num_groups)
+    num_users_per_system_prompt: 10   # Number of unique questions per shared prefix (formerly num_prompts_per_group)
+    system_prompt_len: 100            # Length of the shared prefix (in tokens)
     question_len: 50              # Length of the unique question part (in tokens)
     output_len: 50                # Target length for the model's generated output (in tokens)
 metrics:

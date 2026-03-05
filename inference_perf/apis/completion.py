@@ -45,6 +45,7 @@ class CompletionAPIData(InferenceAPIData):
             "max_tokens": self.max_tokens,
             "ignore_eos": ignore_eos,
             "stream": streaming,
+            **({"stream_options": {"include_usage": "true"}} if streaming else {}),
         }
 
     async def process_response(

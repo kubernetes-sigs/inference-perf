@@ -15,6 +15,7 @@ import logging
 from collections import defaultdict
 from typing import Any, List, Optional
 
+
 import numpy as np
 from pydantic import BaseModel
 
@@ -34,7 +35,7 @@ def safe_float(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0
+        return 0.0
 
 
 def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str, float]]:
@@ -55,6 +56,119 @@ class ResponsesSummary(BaseModel):
     load_summary: dict[str, Any]
     successes: dict[str, Any]
     failures: dict[str, Any]
+
+
+def calculate_slo_metrics(
+    metrics: List[RequestLifecycleMetric], ttft_values: List[Optional[float]], tpot_values: List[Optional[float]]
+) -> Optional[dict[str, Any]]:
+    """
+    Calculate SLO attainment statistics from request metrics and pre-calculated latencies.
+
+    Args:
+        metrics: List of successful RequestLifecycleMetric objects.
+        ttft_values: List of calculated TTFT values corresponding to metrics (same index). None if not streamable.
+        tpot_values: List of calculated TPOT values corresponding to metrics (same index). None if not streamable.
+
+    Returns None if no SLO thresholds were set, otherwise returns dict with SLO metrics.
+    """
+    if not metrics:
+        return None
+
+    # Check if any metrics have SLO fields populated
+    has_ttft_slo = any(m.ttft_slo_sec is not None for m in metrics)
+    has_tpot_slo = any(m.tpot_slo_sec is not None for m in metrics)
+
+    ttft_slo_limit = max([m.ttft_slo_sec for m in metrics if m.ttft_slo_sec is not None], default=None)
+    tpot_slo_limit = max([m.tpot_slo_sec for m in metrics if m.tpot_slo_sec is not None], default=None)
+
+    if not has_ttft_slo and not has_tpot_slo:
+        return None  # No SLO tracking enabled
+
+    slo_metrics: dict[str, Any] = {}
+    total = len(metrics)
+
+    total_benchmark_time = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
+    goodput_token_counts = []
+
+    ttft_results = []
+    tpot_results = []
+
+    # Iterate through metrics and their corresponding calculated values.
+    # Using zip(..., strict=True) ensures that all sequences have the same length
+    # and prevents misalignment or IndexError if they do not.
+    for m, ttft, tpot in zip(metrics, ttft_values, tpot_values, strict=True):
+        # Check TTFT SLO (Only if streamable / ttft exists)
+        ttft_met = None
+        if m.ttft_slo_sec is not None:
+            if ttft is not None:
+                ttft_met = ttft <= m.ttft_slo_sec
+            else:
+                ttft_met = True  # If TTFT SLO is set but we don't have a TTFT value (non-streamable), we can choose to consider it as met or not. Here we consider it met to avoid penalizing non-streamable requests.
+        ttft_results.append(ttft_met)
+
+        # Check TPOT SLO (Only if streamable / tpot exists)
+        tpot_met = None
+        if m.tpot_slo_sec is not None:
+            if tpot is not None:
+                tpot_met = tpot <= m.tpot_slo_sec
+            else:
+                tpot_met = True  # Similar logic as TTFT for non-streamable requests
+        tpot_results.append(tpot_met)
+
+        # Goodput Calculation Logic
+        ttft_ok = (ttft_met is True) if has_ttft_slo else True
+        tpot_ok = (tpot_met is True) if has_tpot_slo else True
+
+        if ttft_ok and tpot_ok:
+            if m.info.input_tokens is not None and m.info.output_tokens is not None:
+                goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
+
+    total_goodput_tokens = sum(goodput_token_counts)
+    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+
+    # TTFT SLO metrics
+    if has_ttft_slo:
+        ttft_met_count = sum(1 for res in ttft_results if res is True)
+        ttft_failed_count = sum(1 for res in ttft_results if res is False)
+
+        slo_metrics["ttft_slo"] = {
+            "attainment_pct": (ttft_met_count / total * 100) if total > 0 else 0,
+            "requests_met": ttft_met_count,
+            "requests_failed": ttft_failed_count,
+            "total_requests": total,
+            "slo": ttft_slo_limit,
+        }
+
+    # TPOT SLO metrics
+    if has_tpot_slo:
+        tpot_met_count = sum(1 for res in tpot_results if res is True)
+        tpot_failed_count = sum(1 for res in tpot_results if res is False)
+
+        slo_metrics["tpot_slo"] = {
+            "attainment_pct": (tpot_met_count / total * 100) if total > 0 else 0,
+            "requests_met": tpot_met_count,
+            "requests_failed": tpot_failed_count,
+            "total_requests": total,
+            "slo": tpot_slo_limit,
+        }
+
+    # Combined SLO (both must be met)
+    if has_ttft_slo and has_tpot_slo:
+        combined_met = sum(
+            1 for t_res, p_res in zip(ttft_results, tpot_results, strict=True) if t_res is True and p_res is True
+        )
+
+        slo_metrics["combined_slo"] = {
+            "attainment_pct": (combined_met / total * 100) if total > 0 else 0,
+            "requests_met": combined_met,
+            "requests_failed": total - combined_met,
+            "total_requests": total,
+            "ttft_slo": ttft_slo_limit,
+            "tpot_slo": tpot_slo_limit,
+            "goodput_rate": goodput_rate,
+        }
+
+    return slo_metrics
 
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
@@ -108,6 +222,111 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
                 if metrics.prefix_cache_queries > 0
                 else 0.0
             },
+            "inter_token_latency": {
+                "mean": metrics.avg_inter_token_latency,
+                "median": metrics.median_inter_token_latency,
+                "p90": metrics.p90_inter_token_latency,
+                "p99": metrics.p99_inter_token_latency,
+            },
+            "num_requests_running": {
+                "mean": metrics.avg_num_requests_running,
+            },
+            "request_queue_time": {
+                "mean": metrics.avg_request_queue_time,
+                "median": metrics.median_request_queue_time,
+                "p90": metrics.p90_request_queue_time,
+                "p99": metrics.p99_request_queue_time,
+            },
+            "request_inference_time": {
+                "mean": metrics.avg_request_inference_time,
+                "median": metrics.median_request_inference_time,
+                "p90": metrics.p90_request_inference_time,
+                "p99": metrics.p99_request_inference_time,
+            },
+            "request_prefill_time": {
+                "mean": metrics.avg_request_prefill_time,
+                "median": metrics.median_request_prefill_time,
+                "p90": metrics.p90_request_prefill_time,
+                "p99": metrics.p99_request_prefill_time,
+            },
+            "request_decode_time": {
+                "mean": metrics.avg_request_decode_time,
+                "median": metrics.median_request_decode_time,
+                "p90": metrics.p90_request_decode_time,
+                "p99": metrics.p99_request_decode_time,
+            },
+            "request_prompt_tokens": {
+                "mean": metrics.avg_request_prompt_tokens,
+                "median": metrics.median_request_prompt_tokens,
+                "p90": metrics.p90_request_prompt_tokens,
+                "p99": metrics.p99_request_prompt_tokens,
+            },
+            "request_generation_tokens": {
+                "mean": metrics.avg_request_generation_tokens,
+                "median": metrics.median_request_generation_tokens,
+                "p90": metrics.p90_request_generation_tokens,
+                "p99": metrics.p99_request_generation_tokens,
+            },
+            "request_max_num_generation_tokens": {
+                "mean": metrics.avg_request_max_num_generation_tokens,
+                "median": metrics.median_request_max_num_generation_tokens,
+                "p90": metrics.p90_request_max_num_generation_tokens,
+                "p99": metrics.p99_request_max_num_generation_tokens,
+            },
+            "request_params_n": {
+                "mean": metrics.avg_request_params_n,
+                "median": metrics.median_request_params_n,
+                "p90": metrics.p90_request_params_n,
+                "p99": metrics.p99_request_params_n,
+            },
+            "request_params_max_tokens": {
+                "mean": metrics.avg_request_params_max_tokens,
+                "median": metrics.median_request_params_max_tokens,
+                "p90": metrics.p90_request_params_max_tokens,
+                "p99": metrics.p99_request_params_max_tokens,
+            },
+            "request_success_count": metrics.request_success_count,
+            "iteration_tokens": {
+                "mean": metrics.avg_iteration_tokens,
+                "median": metrics.median_iteration_tokens,
+                "p90": metrics.p90_iteration_tokens,
+                "p99": metrics.p99_iteration_tokens,
+            },
+            "prompt_tokens_cached": metrics.prompt_tokens_cached,
+            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed,
+            "external_prefix_cache_hit_percent": {
+                "mean": (metrics.external_prefix_cache_hits / metrics.external_prefix_cache_queries) * 100.0
+                if metrics.external_prefix_cache_queries > 0
+                else 0.0
+            },
+            "mm_cache_hit_percent": {
+                "mean": (metrics.mm_cache_hits / metrics.mm_cache_queries) * 100.0 if metrics.mm_cache_queries > 0 else 0.0
+            },
+            "corrupted_requests": metrics.corrupted_requests,
+            "request_prefill_kv_computed_tokens": {
+                "mean": metrics.avg_request_prefill_kv_computed_tokens,
+                "median": metrics.median_request_prefill_kv_computed_tokens,
+                "p90": metrics.p90_request_prefill_kv_computed_tokens,
+                "p99": metrics.p99_request_prefill_kv_computed_tokens,
+            },
+            "kv_block_idle_before_evict": {
+                "mean": metrics.avg_kv_block_idle_before_evict,
+                "median": metrics.median_kv_block_idle_before_evict,
+                "p90": metrics.p90_kv_block_idle_before_evict,
+                "p99": metrics.p99_kv_block_idle_before_evict,
+            },
+            "kv_block_lifetime": {
+                "mean": metrics.avg_kv_block_lifetime,
+                "median": metrics.median_kv_block_lifetime,
+                "p90": metrics.p90_kv_block_lifetime,
+                "p99": metrics.p99_kv_block_lifetime,
+            },
+            "kv_block_reuse_gap": {
+                "mean": metrics.avg_kv_block_reuse_gap,
+                "median": metrics.median_kv_block_reuse_gap,
+                "p90": metrics.p90_kv_block_reuse_gap,
+                "p99": metrics.p99_kv_block_reuse_gap,
+            },
         },
     )
 
@@ -122,10 +341,9 @@ def summarize_requests(
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
     total_time = max(x.end_time for x in metrics) - min(x.start_time for x in metrics)
-    streamable = [x for x in all_successful if x.info.output_token_times and len(x.info.output_token_times) > 1]
 
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
-    send_duration = max([x.start_time for x in metrics]) - min([x.start_time for x in metrics])
+    send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
 
     load_summary: dict[Any, Any] = {
         "count": len(metrics),
@@ -133,63 +351,98 @@ def summarize_requests(
     }
 
     if stage_rate is not None:
+        # Guard against zero send_duration to avoid ZeroDivisionError when all
+        # requests have identical start times or there is only a single request.
+        achieved_rate = len(metrics) / send_duration if send_duration > 0 else 0.0
         load_summary = {
             "count": len(metrics),
             "schedule_delay": summarize(schedule_deltas, percentiles),
             "send_duration": send_duration,
             "requested_rate": stage_rate,
-            "achieved_rate": len(metrics) / send_duration,
+            "achieved_rate": achieved_rate,
         }
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
 
+    # --- Pre-calculate Metrics for all successful requests ---
+    # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
+
+    ntpot_values: List[float] = []
+    tpot_values: List[Optional[float]] = []  # Optional: None if not streamable
+    ttft_values: List[Optional[float]] = []  # Optional: None if not streamable
+    inter_token_latencies: List[float] = []
+
+    for m in all_successful:
+        # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
+        if m.info.output_tokens and m.info.output_tokens > 0:
+            ntpot_values.append((m.end_time - m.start_time) / m.info.output_tokens)
+        else:
+            ntpot_values.append(0.0)
+
+        # Check if streamable: Must have more than 1 output token timestamp
+        is_streamable = m.info.output_token_times and len(m.info.output_token_times) > 1
+
+        if is_streamable:
+            # TTFT: First Token Time - Start Time
+            ttft = m.info.output_token_times[0] - m.start_time
+            ttft_values.append(ttft)
+
+            # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
+            duration = m.info.output_token_times[-1] - m.info.output_token_times[0]
+            count = len(m.info.output_token_times)
+            tpot = duration / (count - 1)
+            tpot_values.append(tpot)
+
+            # Add inter-token deltas
+            for t1, t2 in zip(m.info.output_token_times, m.info.output_token_times[1:], strict=False):
+                inter_token_latencies.append(t2 - t1)
+        else:
+            # Not streamable, so TTFT and TPOT are undefined
+            ttft_values.append(None)
+            tpot_values.append(None)
+
+    # --- Pass pre-calculated lists to SLO Calculator ---
+    slo_metrics = calculate_slo_metrics(all_successful, ttft_values, tpot_values)
+
+    # --- Filter lists for summarization (remove Nones) ---
+    valid_tpot = [v for v in tpot_values if v is not None]
+    valid_ttft = [v for v in ttft_values if v is not None]
+
+    successes_dict = {
+        "count": len(all_successful),
+        "latency": {
+            "request_latency": summarize(
+                [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
+            ),
+            "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
+            "time_per_output_token": summarize(valid_tpot, percentiles),
+            "time_to_first_token": summarize(valid_ttft, percentiles),
+            "inter_token_latency": summarize(inter_token_latencies, percentiles),
+        },
+        "throughput": {
+            "input_tokens_per_sec": (
+                sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+            ),
+            "output_tokens_per_sec": (
+                sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+            ),
+            "total_tokens_per_sec": (
+                sum(safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens) for x in all_successful) / total_time
+                if total_time > 0
+                else 0.0
+            ),
+            "requests_per_sec": (len(all_successful) / total_time if total_time > 0 else 0.0),
+        },
+        "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
+        "output_len": summarize(
+            [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
+        ),
+    }
+    if slo_metrics:
+        successes_dict["slo_metrics"] = slo_metrics
     return ResponsesSummary(
         load_summary=load_summary,
-        successes={
-            "count": len(all_successful),
-            "latency": {
-                "request_latency": summarize(
-                    [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
-                ),
-                "normalized_time_per_output_token": summarize(
-                    [
-                        ((metric.end_time - metric.start_time) / output_len) if output_len and output_len != 0 else 0
-                        for metric in all_successful
-                        for output_len in [safe_float(metric.info.output_tokens)]
-                    ],
-                    percentiles,
-                ),
-                "time_per_output_token": summarize(
-                    [
-                        (x.info.output_token_times[-1] - x.info.output_token_times[0]) / (len(x.info.output_token_times) - 1)
-                        for x in streamable
-                        if len(x.info.output_token_times) > 1
-                    ],
-                    percentiles,
-                ),
-                "time_to_first_token": summarize(
-                    [x.info.output_token_times[0] - x.start_time for x in streamable], percentiles
-                ),
-                "inter_token_latency": summarize(
-                    [
-                        t2 - t1
-                        for x in streamable
-                        for t1, t2 in zip(x.info.output_token_times, x.info.output_token_times[1:], strict=False)
-                    ],
-                    percentiles,
-                ),
-            },
-            "throughput": {
-                "input_tokens_per_sec": sum(x.info.input_tokens for x in all_successful) / total_time,
-                "output_tokens_per_sec": sum(x.info.output_tokens for x in all_successful) / total_time,
-                "total_tokens_per_sec": sum((x.info.input_tokens + x.info.output_tokens) for x in all_successful) / total_time,
-                "requests_per_sec": len(all_successful) / total_time,
-            },
-            "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
-            "output_len": summarize(
-                [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
-            ),
-        },
+        successes=successes_dict,
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
@@ -222,7 +475,7 @@ class ReportGenerator:
         return ReportFile(
             name="config",
             file_type="yaml",
-            contents=self.config.model_dump(mode="json"),
+            contents=self.config.model_dump(mode="json", by_alias=True),
         )
 
     async def generate_reports(
@@ -342,7 +595,7 @@ class ReportGenerator:
                 logger.warning("Report generation failed - no metrics collected by metrics client")
 
         if report_config.per_stage:
-            for stage_id, _stage_info in runtime_parameters.stages.items():
+            for stage_id in runtime_parameters.stages:
                 collected_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, stage_id)
                 if collected_metrics is not None:
                     report_file = ReportFile(

@@ -15,10 +15,11 @@ import logging
 from datetime import datetime
 from enum import Enum
 from os import cpu_count
+import time
 from typing import Any, List, Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from inference_perf.circuit_breaker import CircuitBreakerConfig
 
@@ -32,6 +33,9 @@ class APIConfig(BaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
     headers: Optional[dict[str, str]] = None
+    slo_unit: Optional[str] = None
+    slo_tpot_header: Optional[str] = None
+    slo_ttft_header: Optional[str] = None
 
 
 class TraceFormat(Enum):
@@ -65,11 +69,25 @@ class Distribution(BaseModel):
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
 class SharedPrefix(BaseModel):
-    num_groups: int = 10
-    num_prompts_per_group: int = 10
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    num_groups: int = Field(
+        10,
+        validation_alias=AliasChoices("num_unique_system_prompts", "num_groups"),
+        serialization_alias="num_unique_system_prompts",
+    )
+
+    num_prompts_per_group: int = Field(
+        10,
+        validation_alias=AliasChoices("num_users_per_system_prompt", "num_prompts_per_group"),
+        serialization_alias="num_users_per_system_prompt",
+    )
+
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
+    question_distribution: Optional[Distribution] = None
+    output_distribution: Optional[Distribution] = None
     enable_multi_turn_chat: bool = False
 
 
@@ -180,6 +198,7 @@ class LoadConfig(BaseModel):
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
     lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
+    base_seed: int = Field(default_factory=lambda: int(time.time() * 1000))
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":

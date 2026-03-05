@@ -31,7 +31,6 @@ from inference_perf.config import (
 from asyncio import (
     CancelledError,
     Semaphore,
-    TaskGroup,
     create_task,
     gather,
     run,
@@ -39,7 +38,25 @@ from asyncio import (
     set_event_loop_policy,
     get_event_loop,
 )
-from typing import List, Tuple, TypeAlias, Optional
+import sys
+
+if sys.version_info >= (3, 11):
+    from asyncio import TaskGroup
+else:
+    # Python 3.9 compatibility: TaskGroup was added in 3.11
+    # This is a dummy for import-time compatibility.
+    # Runtime usage will still require Python 3.11+.
+    TaskGroup = object
+
+from typing import List, Tuple, Optional, Union
+
+if sys.version_info >= (3, 10):
+    from typing import TypeAlias
+else:
+    # Python 3.9 compatibility: TypeAlias was added in 3.10
+    from typing import Any
+
+    TypeAlias = Any
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -55,7 +72,7 @@ import signal
 
 logger = logging.getLogger(__name__)
 
-RequestQueueData: TypeAlias = Tuple[int, InferenceAPIData | int, float, Optional[str]]
+RequestQueueData: TypeAlias = Tuple[int, Union[InferenceAPIData, int], float, Optional[str]]
 
 
 class Worker(mp.Process):
@@ -72,6 +89,7 @@ class Worker(mp.Process):
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
+        base_seed: int,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -86,6 +104,7 @@ class Worker(mp.Process):
         self.active_requests_counter = active_requests_counter
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
+        self.base_seed = base_seed
 
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
@@ -195,6 +214,11 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        # Seed with current time + worker id to ensure unique random sequences per worker
+        seed = (self.base_seed + self.id) % 2**32
+        np.random.seed(seed)
+        logger.debug(f"[Worker {self.id}] seeded numpy with {seed} and base seed {self.base_seed}")
+
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
@@ -230,6 +254,7 @@ class LoadGenerator:
         if load_config.lora_traffic_split is not None:
             self.lora_adapters = [config.name for config in load_config.lora_traffic_split]
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
+        self.base_seed: int = load_config.base_seed
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -322,7 +347,7 @@ class LoadGenerator:
             worker_id = request_data.prefered_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
-            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), request_data.prefered_worker_id)
+            request_queue.put((stage_id, request_data, next(time_generator), lora_adapter), worker_id)
 
         # Wait until all requests are finished processing
         with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
@@ -496,6 +521,7 @@ class LoadGenerator:
                     finished_requests_counter,
                     active_requests_counter,
                     shared_max_concurrency,
+                    self.base_seed,
                 )
             )
             self.workers[-1].start()
