@@ -31,6 +31,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionAPIData(InferenceAPIData):
     messages: List[ChatMessage]
     max_tokens: int = 0
+    model_response: str = ""  # Store the assistant response for multi-turn chat
 
     def get_api_type(self) -> APIType:
         return APIType.Chat
@@ -86,6 +87,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             prompt_text = "".join([msg.content for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)
+            self.model_response = output_text  # Store response for multi-turn chat
             return InferenceInfo(
                 input_tokens=prompt_len,
                 output_tokens=output_len,
@@ -99,6 +101,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             if len(choices) == 0:
                 return InferenceInfo(input_tokens=prompt_len, lora_adapter=lora_adapter)
             output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
+            self.model_response = output_text  # Store response for multi-turn chat
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
