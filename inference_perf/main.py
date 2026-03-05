@@ -229,7 +229,9 @@ def main_cli() -> None:
                 api_config=config.api,
                 timeout=config.load.request_timeout,
             )
-            tokenizer = model_server_client.tokenizer
+            # Don't overwrite tokenizer if mock client doesn't provide one
+            if model_server_client.tokenizer is not None:
+                tokenizer = model_server_client.tokenizer
     else:
         raise Exception("model server client config missing")
 
