@@ -17,15 +17,7 @@ constraint validation during generation, making it important to benchmark.
 
 ## Usage
 
-### Via CLI flag
-
-```bash
-inference-perf -c config.yml --guided-json schema.json
-```
-
-### Via config file
-
-You can also specify the schema directly in the config file under `api.response_format`:
+Configure `response_format` in your config file under `api`:
 
 ```yaml
 api:
@@ -40,6 +32,14 @@ api:
         intent: {type: string}
       required: [query, intent]
 ```
+
+Then run with:
+
+```bash
+inference-perf -c config.yml
+```
+
+See [config.yml](config.yml) and [schema.json](schema.json) for a complete example.
 
 ## Response Format Types
 

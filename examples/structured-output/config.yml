@@ -11,16 +11,15 @@ load:
 api:
   type: chat
   streaming: false
-  # Structured output can also be configured here instead of CLI:
-  # response_format:
-  #   type: json_schema
-  #   name: my_schema  # Optional custom name (default: "structured_output")
-  #   json_schema:
-  #     type: object
-  #     properties:
-  #       name: {type: string}
-  #       age: {type: integer}
-  #     required: [name, age]
+  response_format:
+    type: json_schema
+    name: my_schema
+    json_schema:
+      type: object
+      properties:
+        name: {type: string}
+        age: {type: integer}
+      required: [name, age]
 
 server:
   type: vllm
