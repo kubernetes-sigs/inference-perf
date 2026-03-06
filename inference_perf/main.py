@@ -23,8 +23,6 @@ from inference_perf.config import (
     MetricsClientType,
     ModelServerType,
     ReportConfig,
-    ResponseFormat,
-    ResponseFormatType,
     StandardLoadStage,
     ConcurrentLoadStage,
     read_config,
@@ -109,11 +107,6 @@ def main_cli() -> None:
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
-    parser.add_argument(
-        "--guided-json",
-        help="Path to JSON schema file for structured output (response_format)",
-        required=False,
-    )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -126,18 +119,6 @@ def main_cli() -> None:
         parser.error("argument -c/--config_file is required when not using --analyze")
 
     config = read_config(args.config_file)
-
-    # Apply --guided-json CLI override if provided
-    if args.guided_json:
-        import json
-
-        with open(args.guided_json, "r") as f:
-            json_schema = json.load(f)
-        config.api.response_format = ResponseFormat(
-            type=ResponseFormatType.JSON_SCHEMA,
-            json_schema=json_schema,
-        )
-        logging.getLogger(__name__).info(f"Using structured output with schema from: {args.guided_json}")
 
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
