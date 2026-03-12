@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import pytest
 from unittest.mock import MagicMock
 
 from inference_perf.config import (
@@ -21,9 +23,12 @@ from inference_perf.config import (
     Distribution,
     DistributionType,
     SharedPrefix,
+    CustomTokenizerConfig,
 )
 from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
+# --- Tests from HEAD (Mock based) ---
 
 def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     """Create a mock tokenizer that returns predictable text."""
@@ -155,3 +160,56 @@ class TestMultiTurnChat:
         items = [next(data_iter) for _ in range(10)]
         assert len(items) == 10
         assert all(hasattr(item, "data_index") for item in items)
+
+
+# --- Tests from d168373 (Tokenizer based) ---
+
+@pytest.fixture
+def api_config():
+    return APIConfig(
+        api_type=APIType.Completion,
+        model_name="gpt2",
+        tokenizer_name="gpt2",
+    )
+
+
+@pytest.fixture
+def shared_prefix_config():
+    return SharedPrefix(
+        num_groups=2,
+        num_prompts_per_group=3,
+        system_prompt_len=10,
+        question_len=5,
+        output_len=15,
+    )
+
+
+@pytest.fixture
+def data_config(shared_prefix_config):
+    return DataConfig(shared_prefix=shared_prefix_config)
+
+
+@pytest.fixture
+def tokenizer():
+    tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path="gpt2")
+    return CustomTokenizer(tokenizer_config)
+
+
+def test_shared_prefix_datagen_token_counts(api_config, data_config, tokenizer, shared_prefix_config):
+    generator = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+
+    # The generator shuffles prompts, so we test all of them
+    for prompt in generator.prompts:
+        # It's tricky to perfectly split the prompt back into system and question
+        # because of how tokenization and decoding works (e.g., spaces).
+        # Instead, we'll check the total token count.
+
+        # The expected total length is system_prompt_len + question_len.
+        # There's also a space added between them, which is usually 1 token.
+        expected_min_len = shared_prefix_config.system_prompt_len + shared_prefix_config.question_len
+
+        token_ids = tokenizer.get_tokenizer().encode(prompt)
+
+        # The actual token count might be slightly different due to the space
+        # and how tokens are combined. We'll check if it's very close.
+        assert abs(len(token_ids) - expected_min_len) <= 5, f"Prompt: '{prompt}', Tokens: {len(token_ids)}"
