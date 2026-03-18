@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 import aiohttp
+import json
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, ErrorResponseInfo, InferenceInfo
 
@@ -81,3 +82,34 @@ async def test_process_request_general_exception(mock_client: MagicMock, mock_da
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert isinstance(metric.error, ErrorResponseInfo)
     assert metric.error.error_type == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_process_request_stream_options(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session = openAIModelServerClientSession(mock_client)
+    real_session = session.session
+    session.session = MagicMock()
+
+    # Mock data.to_payload to return streaming payload
+    mock_data.to_payload.return_value = {"stream": True}
+
+    # Mock the post request context manager
+    mock_post_ctx = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.text = AsyncMock(return_value="{}")
+
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    # Verify session.post was called with stream_options
+    session.session.post.assert_called_once()
+    args, kwargs = session.session.post.call_args
+
+    # The data argument should contain stream_options
+    posted_data = json.loads(kwargs["data"])
+    assert posted_data.get("stream_options") == {"include_usage": True}
+    await real_session.close()
