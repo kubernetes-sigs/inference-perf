@@ -104,18 +104,37 @@ def main_cli() -> None:
     parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False)
     parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False)
     parser.add_argument(
+        "--tracegen",
+        help="Run trace generation module. Format: <module>:<config_file>. Supported modules: tot",
+        required=False,
+    )
+    parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
     args = parser.parse_args()
 
     setup_logging(args.log_level)
 
+    if args.tracegen:
+        try:
+            module, config_file = args.tracegen.split(":", 1)
+        except ValueError:
+            parser.error("--tracegen format must be <module>:<config_file>")
+
+        if module == "tot":
+            from inference_perf.tracegen.tot import main as tot_main
+
+            tot_main(config_file)
+            return
+        else:
+            parser.error(f"Unknown tracegen module: {module}")
+
     if args.analyze and len(args.analyze) > 0:
         analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
     if not args.config_file:
-        parser.error("argument -c/--config_file is required when not using --analyze")
+        parser.error("argument -c/--config_file is required when not using --analyze or --tracegen")
 
     config = read_config(args.config_file)
 
@@ -241,8 +260,12 @@ def main_cli() -> None:
     if config.load is None:
         raise Exception("load config missing")
 
-    if len(config.load.stages) == 0 and config.load.sweep is None:
+    if len(config.load.stages) == 0 and config.load.sweep is None and config.load.type != LoadType.TRACE_REPLAY:
         raise Exception("Load stages must be configured, or sweep must be configured")
+
+    if config.load.type == LoadType.TRACE_REPLAY and len(config.load.stages) == 0:
+        # Trace replay ignores rate and duration but requires at least one stage to execute
+        config.load.stages = [StandardLoadStage(rate=1.0, duration=1)]
 
     # Define DataGenerator
     datagen: DataGenerator
