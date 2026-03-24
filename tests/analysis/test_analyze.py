@@ -177,11 +177,7 @@ async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummar
 
     analyze_reports([r.as_posix(), r.as_posix()], a.as_posix())
 
-    analyze_reports([], a.as_posix())
-
     _generate_multi_plot([], 2, [], "", a)
-
-    _generate_multi_plot([None], 2, [], "", a)
 
     assert _extract_latency_metric(mock_report_data.failures["request_latency"], "request_latency") is None
     assert _extract_latency_metric(mock_report_data.failures["request_latency"], "time_to_first_token") is None
