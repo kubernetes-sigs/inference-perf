@@ -1,0 +1,95 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm-multihost-base
+spec:
+  leaderWorkerTemplate:
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          deployment: vllm-multihost-base
+      spec:
+        containers:
+          - name: inference-server-leader
+            image: vllm/vllm-openai:latest
+            command:
+            - sh
+            - -c
+            - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+              python3 -m vllm.entrypoints.openai.api_server \"$@\""
+            - "--"
+            args:
+            - "--port=8080"
+            - "--model=$(MODEL_ID)"
+            - "--tensor-parallel-size=$(TENSOR_PARALLEL_SIZE)"
+            - "--pipeline_parallel_size=$(PIPELINE_PARALLEL_SIZE)"
+            env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: hf_api_token
+            - name: MODEL_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-multihost-config
+                  key: model_id
+            - name: PIPELINE_PARALLEL_SIZE
+              value: $(LWS_GROUP_SIZE)
+            - name: MAX_MODEL_LEN
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-multihost-config
+                  key: max_model_len  
+            volumeMounts:
+            - mountPath: "/scripts"
+              name: scripts-volume
+              readOnly: true
+            - mountPath: /dev/shm
+              name: dshm
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
+              failureThreshold: 60
+            ports:
+              - containerPort: 8080
+                name: metrics
+        volumes:
+        - name: scripts-volume
+          configMap:
+            defaultMode: 0700
+            name: vllm-multihost-config
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 30Gi
+    workerTemplate:
+      spec:
+        containers:
+          - name: inference-server-worker
+            image: vllm/vllm-openai:latest
+            command:
+            - sh 
+            - -c 
+            - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
+            env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: hf_api_token
+            volumeMounts:
+            - mountPath: /dev/shm
+              name: dshm
+        volumes:
+        - name: scripts-volume
+          configMap:
+            defaultMode: 0700
+            name: vllm-multihost-config
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 30Gi

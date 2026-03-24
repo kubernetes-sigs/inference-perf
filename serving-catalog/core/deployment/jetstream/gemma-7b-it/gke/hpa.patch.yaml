@@ -1,0 +1,10 @@
+- op: add
+  path: /metadata/name
+  value: gemma-7b-it-jetstream-hpa
+- op: add
+  path: /metadata/labels
+  value:
+    app: gemma-7b-it-jetstream-inference-server
+- op: add
+  path: /spec/metrics/0/pods/target/averageValue
+  value: 50

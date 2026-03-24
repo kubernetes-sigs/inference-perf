@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Job
+metadata:
+  name: llama3-8b-jetstream-data-loader
+  labels:
+    app: llama3-8b-jetstream-data-loader
+spec:
+  template:
+    metadata:
+      labels:
+        app: llama3-8b-jetstream-data-loader
+    spec:
+      containers:
+      - name: inference-checkpoint
+        image: us-docker.pkg.dev/cloud-tpu-images/inference/inference-checkpoint:v0.2.3
+        args:
+        - -s=jetstream-pytorch
+        - -m=meta-llama/Meta-Llama-3-8B
+        - -o=gs://$BUCKET_NAME/pytorch/llama3-8b/final/bf16/
+        - -n=llama-3
+        - -q=False
+        - -h=True
+        volumeMounts:
+        - mountPath: "/huggingface/"
+          name: huggingface-credentials
+          readOnly: true
+      volumes:
+        - name: huggingface-credentials
+          secret:
+            defaultMode: 0400
+            secretName: huggingface-secret

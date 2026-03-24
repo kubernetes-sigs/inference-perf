@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: llama3-8b-jetstream-inference-server
+  name: llama3-8b-jetstream-deployment
+spec:
+  selector:
+    matchLabels:
+      app: llama3-8b-jetstream-inference-server
+      deployment: llama3-8b-jetstream-deployment
+  template:
+    metadata:
+      labels:
+        app: llama3-8b-jetstream-inference-server
+        deployment: llama3-8b-jetstream-deployment
+    spec:
+      containers:
+      - name: inference-server
+        image: us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-pytorch-server:v0.2.3
+        ports:
+          - containerPort: 9100
+            name: metrics
+        args:
+        - --size=8b
+        - --model_name=llama-3
+        - --batch_size=80
+        - --max_cache_length=2048
+        - --quantize_weights=False
+        - --quantize_kv_cache=False
+        - --tokenizer_path=/models/pytorch/llama3-8b/final/bf16/tokenizer.model
+        - --checkpoint_path=/models/pytorch/llama3-8b/final/bf16/model.safetensors
+        - --prometheus_port=9100
