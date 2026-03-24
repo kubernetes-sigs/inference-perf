@@ -1,6 +1,11 @@
 import pytest
 from pathlib import Path
-from inference_perf.analysis.analyze import analyze_reports, _extract_latency_metric, _extract_throughput_metric
+from inference_perf.analysis.analyze import (
+    analyze_reports,
+    _generate_multi_plot,
+    _extract_latency_metric,
+    _extract_throughput_metric,
+)
 from inference_perf.reportgen.base import ResponsesSummary
 
 
@@ -152,7 +157,7 @@ def mock_report_data() -> ResponsesSummary:
                 "max": 68.0,
             },
         },
-        failures={"count": 0, "request_latency": None, "prompt_len": None},
+        failures={"count": 0, "request_latency": {}, "prompt_len": {}},
     )
 
 
@@ -172,6 +177,16 @@ async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummar
 
     analyze_reports([r.as_posix(), r.as_posix()], a.as_posix())
 
+    analyze_reports([], a.as_posix())
+
+    _generate_multi_plot([], 2, [], "", a)
+
+    _generate_multi_plot([None], 2, [], "", a)
+
+    assert _extract_latency_metric(mock_report_data.failures["request_latency"], "request_latency") is None
+    assert _extract_latency_metric(mock_report_data.failures["request_latency"], "time_to_first_token") is None
+    assert _extract_latency_metric(mock_report_data.failures["request_latency"], "inter_token_latency") is None
+
     assert _extract_latency_metric(mock_report_data.successes["latency"], "request_latency") == 0.48048226445680486
     assert _extract_latency_metric(mock_report_data.successes["latency"], "time_to_first_token") == 0.03112733216257766
     assert _extract_latency_metric(mock_report_data.successes["latency"], "inter_token_latency") == 0.003473417240526474
@@ -179,6 +194,11 @@ async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummar
     assert _extract_latency_metric(mock_report_data.successes["latency"], "request_latency", True) == 480.48226445680486
     assert _extract_latency_metric(mock_report_data.successes["latency"], "time_to_first_token", True) == 31.12733216257766
     assert _extract_latency_metric(mock_report_data.successes["latency"], "inter_token_latency", True) == 3.4734172405264743
+
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "input_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "output_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "total_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "requests_per_sec") is None
 
     assert _extract_throughput_metric(mock_report_data.successes["throughput"], "input_tokens_per_sec") == 207.6018611826434
     assert _extract_throughput_metric(mock_report_data.successes["throughput"], "output_tokens_per_sec") == 64.23350089997027
