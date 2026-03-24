@@ -442,18 +442,20 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
 
         # --- Generate Concurrency Latency Plot ---
         setof_concurrency_latency_charts_to_generate = [charts_to_generate[0] for charts_to_generate in chartset.values()]
-        _generate_multi_plot(
-            setof_concurrency_latency_charts_to_generate,
-            len(max(setof_concurrency_latency_charts_to_generate, key=len)),
-            report_names,
-            "Latency vs Concurrency",
-            analysis_path / "latency_vs_concurrency.png",
-        )
+        if len(setof_concurrency_latency_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_concurrency_latency_charts_to_generate,
+                len(max(setof_concurrency_latency_charts_to_generate, key=len)),
+                report_names,
+                "Latency vs Concurrency",
+                analysis_path / "latency_vs_concurrency.png",
+            )
 
         # --- Generate Concurrency Throughput Plot ---
         setof_concurrency_throughput_charts_to_generate = [charts_to_generate[1] for charts_to_generate in chartset.values()]
-        _generate_multi_plot(
-            setof_concurrency_throughput_charts_to_generate,
+        if len(setof_concurrency_throughput_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_concurrency_throughput_charts_to_generate,
             len(max(setof_concurrency_throughput_charts_to_generate, key=len)),
             report_names,
             "Throughput vs Concurrency",
@@ -462,18 +464,20 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
 
         # --- Generate QPS Latency Plot ---
         setof_latency_charts_to_generate = [charts_to_generate[2] for charts_to_generate in chartset.values()]
-        _generate_multi_plot(
-            setof_latency_charts_to_generate,
-            len(max(setof_latency_charts_to_generate, key=len)),
-            report_names,
-            "Latency vs Request Rate",
-            analysis_path / "latency_vs_qps.png",
+        if len(setof_latency_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_latency_charts_to_generate,
+                len(max(setof_latency_charts_to_generate, key=len)),
+                report_names,
+                "Latency vs Request Rate",
+                analysis_path / "latency_vs_qps.png",
         )
 
         # --- Generate QPS Throughput Plot ---
         setof_throughput_charts_to_generate = [charts_to_generate[3] for charts_to_generate in chartset.values()]
-        _generate_multi_plot(
-            setof_throughput_charts_to_generate,
+        if len(setof_throughput_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_throughput_charts_to_generate,
             len(max(setof_throughput_charts_to_generate, key=len)),
             report_names,
             "Throughput vs Request Rate",
@@ -482,8 +486,9 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
 
         # --- Generate Throughput vs Latency Curve Plot ---
         setof_throughput_latency_charts_to_generate = [charts_to_generate[4] for charts_to_generate in chartset.values()]
-        _generate_multi_plot(
-            setof_throughput_latency_charts_to_generate,
+        if len(setof_throughput_latency_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_throughput_latency_charts_to_generate,
             len(max(setof_throughput_latency_charts_to_generate, key=len)),
             report_names,
             "Latency vs Throughput",
