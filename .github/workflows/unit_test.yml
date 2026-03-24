@@ -27,6 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           pdm sync -d
+          pdm install -G analysis
       - name: Run Unit Tests
         run: |
           pdm run test
