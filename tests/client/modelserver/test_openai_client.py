@@ -4,6 +4,7 @@ import aiohttp
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, ErrorResponseInfo, InferenceInfo
 
+
 @pytest.fixture
 def mock_client() -> MagicMock:
     client = MagicMock()
@@ -16,6 +17,7 @@ def mock_client() -> MagicMock:
     client.key_path = None
     return client
 
+
 @pytest.fixture
 def mock_data() -> MagicMock:
     data = MagicMock()
@@ -24,6 +26,7 @@ def mock_data() -> MagicMock:
     data.process_response = AsyncMock(return_value=InferenceInfo())
     data.to_payload = AsyncMock(return_value={"mock": "data"})
     return data
+
 
 @pytest.mark.asyncio
 async def test_process_request_timeout(mock_client: MagicMock, mock_data: MagicMock) -> None:
@@ -44,6 +47,7 @@ async def test_process_request_timeout(mock_client: MagicMock, mock_data: MagicM
     assert isinstance(metric.error, ErrorResponseInfo)
     assert metric.error.error_type == "TimeoutError"
 
+
 @pytest.mark.asyncio
 async def test_process_request_client_error(mock_client: MagicMock, mock_data: MagicMock) -> None:
     session = openAIModelServerClientSession(mock_client)
@@ -62,6 +66,7 @@ async def test_process_request_client_error(mock_client: MagicMock, mock_data: M
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert isinstance(metric.error, ErrorResponseInfo)
     assert metric.error.error_type == "ClientError"
+
 
 @pytest.mark.asyncio
 async def test_process_request_general_exception(mock_client: MagicMock, mock_data: MagicMock) -> None:

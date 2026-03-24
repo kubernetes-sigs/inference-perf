@@ -64,6 +64,7 @@ import signal
 
 logger = logging.getLogger(__name__)
 
+
 class RequestQueueData(NamedTuple):
     stage_id: int
     request_data: Union[InferenceAPIData, int]

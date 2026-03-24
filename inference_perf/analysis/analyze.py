@@ -456,11 +456,11 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
         if len(setof_concurrency_throughput_charts_to_generate) > 0:
             _generate_multi_plot(
                 setof_concurrency_throughput_charts_to_generate,
-            len(max(setof_concurrency_throughput_charts_to_generate, key=len)),
-            report_names,
-            "Throughput vs Concurrency",
-            analysis_path / "throughput_vs_concurrency.png",
-        )
+                len(max(setof_concurrency_throughput_charts_to_generate, key=len)),
+                report_names,
+                "Throughput vs Concurrency",
+                analysis_path / "throughput_vs_concurrency.png",
+            )
 
         # --- Generate QPS Latency Plot ---
         setof_latency_charts_to_generate = [charts_to_generate[2] for charts_to_generate in chartset.values()]
@@ -471,26 +471,26 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                 report_names,
                 "Latency vs Request Rate",
                 analysis_path / "latency_vs_qps.png",
-        )
+            )
 
         # --- Generate QPS Throughput Plot ---
         setof_throughput_charts_to_generate = [charts_to_generate[3] for charts_to_generate in chartset.values()]
         if len(setof_throughput_charts_to_generate) > 0:
             _generate_multi_plot(
                 setof_throughput_charts_to_generate,
-            len(max(setof_throughput_charts_to_generate, key=len)),
-            report_names,
-            "Throughput vs Request Rate",
-            analysis_path / "throughput_vs_qps.png",
-        )
+                len(max(setof_throughput_charts_to_generate, key=len)),
+                report_names,
+                "Throughput vs Request Rate",
+                analysis_path / "throughput_vs_qps.png",
+            )
 
         # --- Generate Throughput vs Latency Curve Plot ---
         setof_throughput_latency_charts_to_generate = [charts_to_generate[4] for charts_to_generate in chartset.values()]
         if len(setof_throughput_latency_charts_to_generate) > 0:
             _generate_multi_plot(
                 setof_throughput_latency_charts_to_generate,
-            len(max(setof_throughput_latency_charts_to_generate, key=len)),
-            report_names,
-            "Latency vs Throughput",
-            analysis_path / "throughput_vs_latency.png",
-        )
+                len(max(setof_throughput_latency_charts_to_generate, key=len)),
+                report_names,
+                "Latency vs Throughput",
+                analysis_path / "throughput_vs_latency.png",
+            )
