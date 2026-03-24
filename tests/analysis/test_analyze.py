@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from inference_perf.analysis import analyze_reports
+from inference_perf.analysis.analyze import analyze_reports, _extract_latency_metric, _extract_throughput_metric
 from inference_perf.reportgen.base import ResponsesSummary
 
 
@@ -164,8 +164,23 @@ async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummar
     f = r / "stage_0_lifecycle_metrics.json"
     f.write_text(mock_report_data.model_dump_json(), encoding="utf-8")
 
+    analyze_reports([r.as_posix(), r.as_posix()])
+
     # Creating a temporary directory for analysis output
     a = tmp_path / "analysis_report"
     a.mkdir()
 
-    analyze_reports([r.as_posix()], a.as_posix())
+    analyze_reports([r.as_posix(), r.as_posix()], a.as_posix())
+
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "request_latency") == 0.48048226445680486
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "time_to_first_token") == 0.03112733216257766
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "inter_token_latency") == 0.003473417240526474
+
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "request_latency", True) == 480.48226445680486
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "time_to_first_token", True) == 31.12733216257766
+    assert _extract_latency_metric(mock_report_data.successes["latency"], "inter_token_latency", True) == 3.4734172405264743
+
+    assert _extract_throughput_metric(mock_report_data.successes["throughput"], "input_tokens_per_sec") == 207.6018611826434
+    assert _extract_throughput_metric(mock_report_data.successes["throughput"], "output_tokens_per_sec") == 64.23350089997027
+    assert _extract_throughput_metric(mock_report_data.successes["throughput"], "total_tokens_per_sec") == 271.83536208261364
+    assert _extract_throughput_metric(mock_report_data.successes["throughput"], "requests_per_sec") == 1.0171575756131475
