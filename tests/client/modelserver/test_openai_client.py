@@ -11,6 +11,7 @@ def mock_client() -> MagicMock:
     client.uri = "http://test-uri"
     client.api_config = MagicMock()
     client.api_config.headers = {}
+    client.api_config.response_format = None
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None
