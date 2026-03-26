@@ -11,11 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import multiprocessing as mp
+import sys
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
-from typing import List, Optional
+from typing import List, Optional, Union
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.loadgen import LoadGenerator
+from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
     DataGenType,
     LoadType,
@@ -28,6 +31,7 @@ from inference_perf.config import (
 )
 from inference_perf.datagen import (
     DataGenerator,
+    SessionGenerator,
     MockDataGenerator,
     HFShareGPTDataGenerator,
     SyntheticDataGenerator,
@@ -36,6 +40,7 @@ from inference_perf.datagen import (
     CNNDailyMailDataGenerator,
     InfinityInstructDataGenerator,
     BillsumConversationsDataGenerator,
+    OTelTraceReplayDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -98,6 +103,15 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
+    # Set multiprocessing start method to 'fork' on macOS to avoid pickle issues
+    # This must be done before any multiprocessing operations
+    if sys.platform == "darwin":  # macOS
+        try:
+            mp.set_start_method("fork", force=True)
+        except RuntimeError:
+            # Start method already set, ignore
+            pass
+
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
@@ -244,8 +258,14 @@ def main_cli() -> None:
     if len(config.load.stages) == 0 and config.load.sweep is None:
         raise Exception("Load stages must be configured, or sweep must be configured")
 
-    # Define DataGenerator
-    datagen: DataGenerator
+    # Create multiprocessing manager for OTel trace replay if needed
+    # Must be created before workers are forked
+    mp_manager = None
+    if config.data and config.data.type == DataGenType.OTelTraceReplay and config.load.num_workers > 0:
+        mp_manager = mp.Manager()
+
+    # Define DataGenerator or SessionGenerator
+    datagen: Union[DataGenerator, SessionGenerator]
     if config.data:
         # Common checks for generators that require a tokenizer / distribution
         if config.data.type in set(
@@ -256,6 +276,7 @@ def main_cli() -> None:
                 DataGenType.CNNDailyMail,
                 DataGenType.InfinityInstruct,
                 DataGenType.BillsumConversations,
+                DataGenType.OTelTraceReplay,
             }
         ):
             if tokenizer is None:
@@ -305,15 +326,26 @@ def main_cli() -> None:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.BillsumConversations:
             datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.OTelTraceReplay:
+            datagen = OTelTraceReplayDataGenerator(config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:
         raise Exception("data config missing")
 
-    # Define LoadGenerator
+    # Create session metrics collector only for agentic workflows (OTel trace replay)
+    session_metrics_collector = None
+    if config.data and config.data.type == DataGenType.OTelTraceReplay:
+        session_metrics_collector = SessionMetricsCollector()
+
+    # Define LoadGenerator with session metrics collector
     if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus and config.report.prometheus.per_stage:
         config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
-    loadgen = LoadGenerator(datagen, config.load)
+    loadgen = LoadGenerator(datagen, config.load, session_metrics_collector)
+
+    # Wire session metrics collector into reportgen if it exists
+    if session_metrics_collector:
+        reportgen.session_metrics_collector = session_metrics_collector
 
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
@@ -325,6 +357,10 @@ def main_cli() -> None:
 
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
+
+    # Enrich session metrics before generating reports
+    if session_metrics_collector:
+        session_metrics_collector.enrich_metrics(reportgen.metrics_collector.get_metrics())
 
     # Generate Reports after the tests
     reports = perfrunner.generate_reports(

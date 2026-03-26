@@ -11,25 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import (
-    InferenceAPIData,
-    InferenceInfo,
-    RequestLifecycleMetric,
-    ErrorResponseInfo,
-    LazyLoadInferenceAPIData,
-    SessionLifecycleMetric,
-)
-from .chat import ChatCompletionAPIData, ChatMessage
-from .completion import CompletionAPIData
+
+"""E2E test utilities for inference-perf."""
+
+from .benchmark import BenchmarkResult, run_benchmark_minimal
+from .llm_d_inference_sim import LLMDInferenceSimRunner
+from .testdata import TEST_E2E_DIR, TEST_E2E_TESTDATA, extract_tarball
 
 __all__ = [
-    "InferenceAPIData",
-    "LazyLoadInferenceAPIData",
-    "InferenceInfo",
-    "RequestLifecycleMetric",
-    "ErrorResponseInfo",
-    "SessionLifecycleMetric",
-    "ChatCompletionAPIData",
-    "ChatMessage",
-    "CompletionAPIData",
+    "BenchmarkResult",
+    "run_benchmark_minimal",
+    "LLMDInferenceSimRunner",
+    "TEST_E2E_DIR",
+    "TEST_E2E_TESTDATA",
+    "extract_tarball",
 ]

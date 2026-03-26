@@ -1,0 +1,51 @@
+# OTel Trace Replay Configuration with Session-Based Load
+# This configuration uses trace_session_replay to dispatch entire trace sessions
+
+api:
+  type: chat
+  streaming: false
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    # List of specific OTel JSON trace files
+    trace_files:
+      - "examples/otel/test_traces/simple/simple_chain.json"
+      - "examples/otel/test_traces/simple/simple_chain_alt.json"
+    # Model configuration - use static model
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+    # Request settings
+    default_max_tokens: 100000
+
+    # Error handling
+    include_errors: true
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+
+  # Session concurrency control (moved from data config!)
+  stages:
+    - concurrent_sessions: 1  # Sequential execution (one session at a time)
+
+  num_workers: 3
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-otel-trace-replay-session"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
+
+# Made with Bob

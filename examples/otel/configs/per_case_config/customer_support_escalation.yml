@@ -1,0 +1,50 @@
+# Config for customer_support_escalation.json - Customer support escalation workflow test case
+
+api:
+  type: chat
+  streaming: false
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "examples/otel/test_traces/advanced/customer_support_escalation.json"
+    # Multi-agent customer support workflow with 9 spans testing output substitution:
+    # Phase 1: Coordinator dispatches parallel agents (Technical Specialist + Network Analyst)
+    # Phase 2: Coordinator synthesizes parallel results (fan-in pattern, tests multi-agent substitution)
+    # Phase 3: Customer escalation triggers Senior Analyst + Manager (sequential dependencies)
+    # Phase 4: Final coordination synthesizes all agent outputs (complex fan-in, 5+ dependencies)
+    # Tests: parallel execution, fan-in synthesis, multi-level dependencies, long conversation chains
+    # Critical bug test: Span 4 and Span 8 verify that early outputs remain substituted when new outputs are added
+
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+    default_max_tokens: 200
+
+    include_errors: false
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 1  # Sequential execution
+  num_workers: 20
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-customer-support-escalation"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: false
+    per_request: false
+
+# Made with Bob

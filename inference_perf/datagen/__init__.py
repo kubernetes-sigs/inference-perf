@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import DataGenerator, LazyLoadDataMixin
+from .base import BaseGenerator, DataGenerator, SessionGenerator, LazyLoadDataMixin
 from .mock_datagen import MockDataGenerator
 from .hf_sharegpt_datagen import HFShareGPTDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
@@ -20,9 +20,12 @@ from .shared_prefix_datagen import SharedPrefixDataGenerator
 from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
 from .infinity_instruct_datagen import InfinityInstructDataGenerator
 from .hf_billsum_datagen import BillsumConversationsDataGenerator
+from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 
 __all__ = [
+    "BaseGenerator",
     "DataGenerator",
+    "SessionGenerator",
     "LazyLoadDataMixin",
     "MockDataGenerator",
     "HFShareGPTDataGenerator",
@@ -32,4 +35,5 @@ __all__ = [
     "CNNDailyMailDataGenerator",
     "InfinityInstructDataGenerator",
     "BillsumConversationsDataGenerator",
+    "OTelTraceReplayDataGenerator",
 ]

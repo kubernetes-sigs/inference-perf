@@ -1,0 +1,111 @@
+{
+  "trace_id": "test_trace_003",
+  "span_count": 4,
+  "collected_at": "2026-02-25T10:00:00.000000",
+  "spans": [
+    {
+      "trace_id": "test_trace_003",
+      "span_id": "span_001",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:00.000000",
+      "end_time": "2026-02-25T10:00:02.000000",
+      "attributes": {
+        "exgentic.session.id": "session_003",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What are the main features of Python?\"}]",
+        "gen_ai.output.text": "Python's main features include: 1) Easy to learn syntax, 2) Dynamic typing, 3) Extensive standard library, 4) Cross-platform compatibility, 5) Strong community support."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_003",
+      "span_id": "span_002",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:02.500000",
+      "end_time": "2026-02-25T10:00:04.500000",
+      "attributes": {
+        "exgentic.session.id": "session_003",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What are the main features of JavaScript?\"}]",
+        "gen_ai.output.text": "JavaScript's main features include: 1) Event-driven programming, 2) Asynchronous execution with promises, 3) Prototype-based inheritance, 4) First-class functions, 5) Runs in browsers and Node.js."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_003",
+      "span_id": "span_003",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:03.000000",
+      "end_time": "2026-02-25T10:00:05.000000",
+      "attributes": {
+        "exgentic.session.id": "session_003",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What are the main features of Rust?\"}]",
+        "gen_ai.output.text": "Rust's main features include: 1) Memory safety without garbage collection, 2) Zero-cost abstractions, 3) Ownership system, 4) Fearless concurrency, 5) Pattern matching and algebraic data types."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_003",
+      "span_id": "span_004",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:06.000000",
+      "end_time": "2026-02-25T10:00:09.000000",
+      "attributes": {
+        "exgentic.session.id": "session_003",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Compare these languages based on the features you mentioned: Python's main features include: 1) Easy to learn syntax, 2) Dynamic typing, 3) Extensive standard library, 4) Cross-platform compatibility, 5) Strong community support. JavaScript's main features include: 1) Event-driven programming, 2) Asynchronous execution with promises, 3) Prototype-based inheritance, 4) First-class functions, 5) Runs in browsers and Node.js. Rust's main features include: 1) Memory safety without garbage collection, 2) Zero-cost abstractions, 3) Ownership system, 4) Fearless concurrency, 5) Pattern matching and algebraic data types.\"}]",
+        "gen_ai.output.text": "Comparison: Python excels in ease of use and rapid development. JavaScript dominates web development with its event-driven model. Rust provides the best performance and memory safety. Python and JavaScript use garbage collection while Rust uses ownership. All three have strong communities but serve different niches: Python for data science/scripting, JavaScript for web, Rust for systems programming."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    }
+  ]
+}
