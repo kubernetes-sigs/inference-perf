@@ -1,0 +1,85 @@
+{
+  "trace_id": "paris_conversation_chain_COPY",
+  "span_count": 3,
+  "collected_at": "2026-02-25T10:00:00.000000",
+  "spans": [
+    {
+      "trace_id": "paris_conversation_chain",
+      "span_id": "capital_question",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:00.000000",
+      "end_time": "2026-02-25T10:00:02.500000",
+      "attributes": {
+        "exgentic.session.id": "session",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What is the capital of France?\"}]",
+        "gen_ai.output.text": "The capital of France is Paris. Paris is not only the capital but also the largest city in France, known for its art, fashion, gastronomy, and culture."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "paris_conversation_chain",
+      "span_id": "landmarks_question",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:03.000000",
+      "end_time": "2026-02-25T10:00:05.000000",
+      "attributes": {
+        "exgentic.session.id": "session",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What is the capital of France?\"}, {\"role\": \"assistant\", \"content\": \"The capital of France is Paris. Paris is not only the capital but also the largest city in France, known for its art, fashion, gastronomy, and culture.\"}, {\"role\": \"user\", \"content\": \"Tell me more about Paris landmarks.\"}]",
+        "gen_ai.output.text": "Paris is home to many iconic landmarks including the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, the Arc de Triomphe, and the Sacré-Cœur Basilica. The Eiffel Tower is perhaps the most famous, standing at 330 meters tall."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "paris_conversation_chain",
+      "span_id": "eiffel_tower_height",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:06.000000",
+      "end_time": "2026-02-25T10:00:08.000000",
+      "attributes": {
+        "exgentic.session.id": "session",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What is the capital of France?\"}, {\"role\": \"assistant\", \"content\": \"The capital of France is Paris. Paris is not only the capital but also the largest city in France, known for its art, fashion, gastronomy, and culture.\"}, {\"role\": \"user\", \"content\": \"Tell me more about Paris landmarks.\"}, {\"role\": \"assistant\", \"content\": \"Paris is home to many iconic landmarks including the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, the Arc de Triomphe, and the Sacré-Cœur Basilica. The Eiffel Tower is perhaps the most famous, standing at 330 meters tall.\"}, {\"role\": \"user\", \"content\": \"How tall is the Eiffel Tower exactly?\"}]",
+        "gen_ai.output.text": "The Eiffel Tower stands at exactly 330 meters (1,083 feet) tall, including its antennas. Without the antennas, it is 300 meters (984 feet) tall."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    }
+  ]
+}

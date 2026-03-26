@@ -1,0 +1,294 @@
+{
+  "trace_id": "example_prefix_sharing_demo",
+  "span_count": 7,
+  "collected_at": "2026-02-26T15:50:00.000000",
+  "spans": [
+    {
+      "trace_id": "independent_trace_1",
+      "span_id": "span_independent_1",
+      "parent_span_id": null,
+      "name": "chat independent_1",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:00.000000+00:00",
+      "end_time": "2026-02-26T10:00:01.000000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "independent_1",
+        "gen_ai.usage.prompt_tokens": 50,
+        "gen_ai.usage.completion_tokens": 20,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What is the capital of France?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"The capital of France is Paris.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "independent_1",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "independent_trace_2",
+      "span_id": "span_independent_2",
+      "parent_span_id": null,
+      "name": "chat independent_2",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:02.000000+00:00",
+      "end_time": "2026-02-26T10:00:03.000000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "independent_2",
+        "gen_ai.usage.prompt_tokens": 45,
+        "gen_ai.usage.completion_tokens": 15,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What is 2 + 2?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"2 + 2 equals 4.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "independent_2",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "conversation_trace",
+      "span_id": "span_conv_turn1",
+      "parent_span_id": null,
+      "name": "chat conversation_turn1",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:04.000000+00:00",
+      "end_time": "2026-02-26T10:00:05.000000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "conv_turn1",
+        "gen_ai.usage.prompt_tokens": 100,
+        "gen_ai.usage.completion_tokens": 50,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a helpful assistant that provides detailed explanations about programming concepts.\"}, {\"role\": \"user\", \"content\": \"Can you explain what a hash table is?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"A hash table is a data structure that implements an associative array, mapping keys to values using a hash function.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "conversation",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "conversation_trace",
+      "span_id": "span_conv_turn2",
+      "parent_span_id": "span_conv_turn1",
+      "name": "chat conversation_turn2",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:06.000000+00:00",
+      "end_time": "2026-02-26T10:00:07.500000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "conv_turn2",
+        "gen_ai.usage.prompt_tokens": 180,
+        "gen_ai.usage.completion_tokens": 60,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a helpful assistant that provides detailed explanations about programming concepts.\"}, {\"role\": \"user\", \"content\": \"Can you explain what a hash table is?\"}, {\"role\": \"assistant\", \"content\": \"A hash table is a data structure that implements an associative array, mapping keys to values using a hash function.\"}, {\"role\": \"user\", \"content\": \"What is the time complexity for lookups?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"Hash table lookups have an average time complexity of O(1), meaning constant time. However, in the worst case with many collisions, it can degrade to O(n).\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "conversation",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "conversation_trace",
+      "span_id": "span_conv_turn3",
+      "parent_span_id": "span_conv_turn2",
+      "name": "chat conversation_turn3",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:08.000000+00:00",
+      "end_time": "2026-02-26T10:00:09.800000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "conv_turn3",
+        "gen_ai.usage.prompt_tokens": 270,
+        "gen_ai.usage.completion_tokens": 70,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a helpful assistant that provides detailed explanations about programming concepts.\"}, {\"role\": \"user\", \"content\": \"Can you explain what a hash table is?\"}, {\"role\": \"assistant\", \"content\": \"A hash table is a data structure that implements an associative array, mapping keys to values using a hash function.\"}, {\"role\": \"user\", \"content\": \"What is the time complexity for lookups?\"}, {\"role\": \"assistant\", \"content\": \"Hash table lookups have an average time complexity of O(1), meaning constant time. However, in the worst case with many collisions, it can degrade to O(n).\"}, {\"role\": \"user\", \"content\": \"How do you handle collisions?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"There are two main collision resolution strategies: 1) Chaining - where each bucket contains a linked list of entries, and 2) Open addressing - where collisions are resolved by probing for the next available slot.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "conversation",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "conversation_trace",
+      "span_id": "span_conv_turn4",
+      "parent_span_id": "span_conv_turn3",
+      "name": "chat conversation_turn4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:10.000000+00:00",
+      "end_time": "2026-02-26T10:00:11.500000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "conv_turn4",
+        "gen_ai.usage.prompt_tokens": 380,
+        "gen_ai.usage.completion_tokens": 55,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a helpful assistant that provides detailed explanations about programming concepts.\"}, {\"role\": \"user\", \"content\": \"Can you explain what a hash table is?\"}, {\"role\": \"assistant\", \"content\": \"A hash table is a data structure that implements an associative array, mapping keys to values using a hash function.\"}, {\"role\": \"user\", \"content\": \"What is the time complexity for lookups?\"}, {\"role\": \"assistant\", \"content\": \"Hash table lookups have an average time complexity of O(1), meaning constant time. However, in the worst case with many collisions, it can degrade to O(n).\"}, {\"role\": \"user\", \"content\": \"How do you handle collisions?\"}, {\"role\": \"assistant\", \"content\": \"There are two main collision resolution strategies: 1) Chaining - where each bucket contains a linked list of entries, and 2) Open addressing - where collisions are resolved by probing for the next available slot.\"}, {\"role\": \"user\", \"content\": \"Which strategy is better?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"It depends on your use case. Chaining is simpler and handles high load factors well, while open addressing has better cache locality and lower memory overhead for small tables.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "conversation",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "independent_trace_3",
+      "span_id": "span_independent_3",
+      "parent_span_id": null,
+      "name": "chat independent_3",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-26T10:00:12.000000+00:00",
+      "end_time": "2026-02-26T10:00:13.000000+00:00",
+      "attributes": {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4o",
+        "gen_ai.response.model": "gpt-4o",
+        "gen_ai.response.id": "independent_3",
+        "gen_ai.usage.prompt_tokens": 40,
+        "gen_ai.usage.completion_tokens": 10,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"What's the weather like?\"}]",
+        "gen_ai.output.messages": "[{\"role\": \"assistant\", \"content\": \"I don't have access to real-time weather data.\"}]",
+        "gen_ai.response.finish_reason": "stop"
+      },
+      "resource_attributes": {
+        "telemetry.sdk.language": "python",
+        "telemetry.sdk.name": "opentelemetry",
+        "telemetry.sdk.version": "1.39.1",
+        "service.name": "prefix_sharing_demo",
+        "service.version": "1.0.0",
+        "service.namespace": "demo",
+        "deployment.environment.name": "example",
+        "benchmark.name": "prefix_sharing_demo",
+        "agent.name": "Demo Agent",
+        "task.id": "independent_3",
+        "task.reward": 1.0,
+        "task.success": true,
+        "agent.model": "gpt-4o",
+        "agent.provider": "openai"
+      },
+      "status": {
+        "code": 0,
+        "message": ""
+      }
+    }
+  ]
+}

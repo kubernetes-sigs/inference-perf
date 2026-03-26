@@ -27,9 +27,15 @@ def setup_logging(level: str) -> None:
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level}")
 
+    # Use detailed format for DEBUG level, original format for others
+    if numeric_level == logging.DEBUG:
+        log_format = "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s - %(message)s"
+    else:
+        log_format =  "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format=log_format,
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True,
     )

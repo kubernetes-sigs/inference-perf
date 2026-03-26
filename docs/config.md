@@ -13,6 +13,8 @@
    - [Storage](#storage)
    - [Tokenizer](#tokenizer)
 3. [Full Configuration Examples](#full-configuration-examples)
+4. [Advanced Use Cases](#advanced-use-cases)
+   - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
 
 ## Overview
 
@@ -44,7 +46,7 @@ Configures the test data generation methodology:
 
 ```yaml
 data:
-  type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct # Data generation type
+  type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct|otel_trace_replay # Data generation type
   path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
@@ -76,13 +78,15 @@ data:
       std_dev: 5
 ```
 
+**Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
+
 ### Load Configuration
 
 Defines the benchmarking load pattern:
 
 ```yaml
 load:
-  type: constant|poisson|concurrent # Load pattern type
+  type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
@@ -92,13 +96,15 @@ load:
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
-  base_seed: 12345                    # Optional: base random seed for reproducibility (default: current time in ms)
+  base_seed: 12345                  # Optional: base random seed for reproducibility (default: current time in ms)
   lora_traffic_split:               # Optional: MultiLoRA traffic splitting
     - name: adapter_1               # LoRA adapter name
       split: 0.5                    # Traffic weight (must sum to 1.0)
     - name: adapter_2
       split: 0.5
 ```
+
+**Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
 
 #### Load Sweeps
 
@@ -289,7 +295,7 @@ load:
   stages:
   - rate: 1
     duration: 30
-api: 
+api:
   type: chat
 server:
   type: vllm
@@ -315,3 +321,177 @@ report:
     summary: true
     per_stage: true
 ```
+
+## Advanced Use Cases
+
+### OpenTelemetry Trace Replay
+
+Replay real-world LLM workloads captured as OpenTelemetry traces. This feature enables benchmarking with production traffic patterns, including complex dependency graphs, multi-turn conversations, and agent workflows.
+
+#### Overview
+
+OTel trace replay reconstructs the original call graph from trace files, preserving:
+- **Sequential dependencies** — requests that must wait for predecessors
+- **Parallel fan-outs** — concurrent requests with no dependencies
+- **Shared-prefix patterns** — requests sharing common message history (KV-cache opportunities)
+- **Output-aware replay** — substitutes recorded assistant messages with actual generated text for realistic growing-context behavior
+
+#### How It Works
+
+1. **Trace → Replay Graph**: Each trace file is converted to a directed acyclic graph (DAG) where:
+   - LLM spans become nodes
+   - Dependencies are inferred from message content (assistant messages matching predecessor outputs)
+   - Timing gaps between calls are preserved as `wait_ms` delays
+
+2. **Session-Based Execution**: Each trace file represents one *session*. The load generator controls:
+   - How many sessions run concurrently (`concurrent_sessions`)
+   - How many sessions to process per stage (`num_sessions`)
+   - Optional rate limiting for session starts (`session_rate`)
+
+3. **Output Substitution**: When a request depends on a predecessor's output, the recorded assistant message is replaced at runtime with the actual generated text, ensuring realistic KV-cache behavior for multi-turn conversations and agent chains.
+
+#### Configuration
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    # Source — specify one:
+    trace_files:                                  # List of specific trace files
+      - "path/to/trace1.json"
+      - "path/to/trace2.json"
+    trace_directory: "path/to/traces/"            # OR: all .json files in directory
+
+    # Model configuration
+    use_static_model: true                        # Override recorded model names
+    static_model_name: "my-model"                 # Model to use for all requests
+    model_mapping:                                # OR: remap per recorded name
+      "gpt-4": "my-model"
+      "gpt-3.5-turbo": "my-other-model"
+
+    # Generation parameters
+    default_max_tokens: 1000                      # Fallback if output tokens are set to 0 in the otel file
+
+    # Error handling
+    include_errors: false                         # Skip spans with error status, that is, status != 0 (default)
+    skip_invalid_files: true                      # Skip unparseable trace files during replay
+
+load:
+  type: trace_session_replay                      # Required for otel_trace_replay
+  stages:
+    - concurrent_sessions: 4                      # Max sessions active simultaneously
+      num_sessions: 20                            # Run 20 sessions in this stage
+      session_rate: 2.0                           # Optional: start max 2 sessions/sec
+      timeout: 300                                # Optional: stage timeout in seconds
+  num_workers: 4                                  # Worker processes
+  worker_max_concurrency: 10                      # Max concurrent requests per worker
+```
+
+#### Stage Configuration
+
+**`concurrent_sessions`** (required): Controls session-level concurrency
+- `0` = unlimited (all sessions active at once, stress test mode)
+- `N > 0` = at most N sessions active; when one completes, the next starts
+
+**`num_sessions`** (optional): Number of sessions to run in this stage
+- If omitted, runs all remaining sessions in the corpus
+- Stages advance through the corpus sequentially (like standard load stages)
+
+**`session_rate`** (optional): Rate limit for starting new sessions
+- Omit for no rate limiting
+- Useful for controlled ramp-up scenarios
+
+**`timeout`** (optional): Wall-clock safety limit
+- If exceeded, in-flight sessions are cancelled and stage exits as FAILED
+
+#### Trace File Format
+
+Traces must be JSON files with a `spans` array. Each LLM span requires:
+
+```json
+{
+  "span_id": "unique-id",
+  "trace_id": "trace-id",
+  "start_time": "2024-01-01T00:00:00Z",
+  "end_time": "2024-01-01T00:00:01Z",
+  "name": "chat gpt-4",
+  "attributes": {
+    "gen_ai.request.model": "gpt-4",
+    "gen_ai.input.messages": "[{\"role\":\"user\",\"content\":\"hello\"}]",
+    "gen_ai.output.text": "hi there",
+    "gen_ai.usage.prompt_tokens": 10,
+    "gen_ai.usage.completion_tokens": 5
+  }
+}
+```
+
+Token counts are read from `gen_ai.usage.prompt_tokens` / `gen_ai.usage.completion_tokens` (also accepts `input_tokens` / `output_tokens`). If absent, a 4 chars/token estimate is used.
+
+#### Example Configurations
+
+**Simple Sequential Replay:**
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "examples/otel/test_traces/simple/simple_chain.json"
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+    default_max_tokens: 100
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 1  # One session at a time
+  num_workers: 4
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+```
+
+**Multi-Stage with Rate Limiting:**
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_directory: "examples/otel/test_traces/advanced"
+    use_static_model: true
+    static_model_name: "my-model"
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+      num_sessions: 10
+      session_rate: 1.0      # Warm-up: 2 concurrent, 1/sec start rate
+    - concurrent_sessions: 5
+      num_sessions: 20
+      session_rate: 2.0      # Ramp-up: 5 concurrent, 2/sec start rate
+    - concurrent_sessions: 10
+                             # Final stage: 10 concurrent, all remaining sessions
+  num_workers: 8
+  worker_max_concurrency: 20
+```
+
+#### Use Cases
+
+- **Production Traffic Replay**: Benchmark with real user interaction patterns
+- **Agent Workflow Testing**: Replay complex multi-step agent traces with tool calls
+- **Multi-Turn Conversation Analysis**: Test KV-cache efficiency with realistic conversation flows
+- **Dependency Graph Validation**: Verify server behavior under complex request dependencies
+- **Comparative Analysis**: Replay the same traces against different model configurations
+
+#### Architecture Notes
+
+Unlike standard data generators that produce independent requests, OTel trace replay operates at the session granularity. Each session is a complete trace file with an internal dependency graph. The load generator:
+
+1. Activates sessions according to `concurrent_sessions` limit
+2. Dispatches all events for a session immediately (workers handle internal parallelism)
+3. Each event blocks until its predecessors complete and outputs are available
+4. Tracks session completion and starts new sessions as slots become available
+
+This design preserves the causal structure of the original workload while allowing the load generator to control session-level concurrency and throughput.

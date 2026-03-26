@@ -1,0 +1,137 @@
+{
+  "trace_id": "test_trace_002",
+  "span_count": 5,
+  "collected_at": "2026-02-25T10:00:00.000000",
+  "spans": [
+    {
+      "trace_id": "test_trace_002",
+      "span_id": "span_001",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:00.000000",
+      "end_time": "2026-02-25T10:00:02.000000",
+      "attributes": {
+        "exgentic.session.id": "session_002",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Analyze this code for bugs.\"}]",
+        "gen_ai.output.text": "I'll analyze the code for potential bugs. Please provide the code you'd like me to review."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_002",
+      "span_id": "span_002",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:02.500000",
+      "end_time": "2026-02-25T10:00:05.000000",
+      "attributes": {
+        "exgentic.session.id": "session_002",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1000,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Analyze this code for bugs.\"}, {\"role\": \"assistant\", \"content\": \"I'll analyze the code for potential bugs. Please provide the code you'd like me to review.\"}, {\"role\": \"user\", \"content\": \"def calculate(x, y): return x / y\"}]",
+        "gen_ai.output.text": "Bug found: Division by zero error. The function doesn't handle the case when y is 0. Recommendation: Add a check for y == 0 before division."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_002",
+      "span_id": "span_003",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:03.000000",
+      "end_time": "2026-02-25T10:00:05.500000",
+      "attributes": {
+        "exgentic.session.id": "session_002",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1000,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Analyze this code for bugs.\"}, {\"role\": \"assistant\", \"content\": \"I'll analyze the code for potential bugs. Please provide the code you'd like me to review.\"}, {\"role\": \"user\", \"content\": \"def process_list(items): return [x * 2 for x in items]\"}]",
+        "gen_ai.output.text": "The code looks good but could be improved. Consider adding type hints and handling None input: def process_list(items: list) -> list: if items is None: return []; return [x * 2 for x in items]"
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_002",
+      "span_id": "span_004",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:06.000000",
+      "end_time": "2026-02-25T10:00:08.000000",
+      "attributes": {
+        "exgentic.session.id": "session_002",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Analyze this code for bugs.\"}, {\"role\": \"assistant\", \"content\": \"I'll analyze the code for potential bugs. Please provide the code you'd like me to review.\"}, {\"role\": \"user\", \"content\": \"def calculate(x, y): return x / y\"}, {\"role\": \"assistant\", \"content\": \"Bug found: Division by zero error. The function doesn't handle the case when y is 0. Recommendation: Add a check for y == 0 before division.\"}, {\"role\": \"user\", \"content\": \"def process_list(items): return [x * 2 for x in items]\"}, {\"role\": \"assistant\", \"content\": \"The code looks good but could be improved. Consider adding type hints and handling None input: def process_list(items: list) -> list: if items is None: return []; return [x * 2 for x in items]\"}, {\"role\": \"user\", \"content\": \"Now write a fixed version of the calculate function.\"}]",
+        "gen_ai.output.text": "Here's the fixed version: def calculate(x, y): if y == 0: raise ValueError('Cannot divide by zero'); return x / y. This version explicitly handles the division by zero case."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_002",
+      "span_id": "span_005",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-02-25T10:00:08.500000",
+      "end_time": "2026-02-25T10:00:10.000000",
+      "attributes": {
+        "exgentic.session.id": "session_002",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"Analyze this code for bugs.\"}, {\"role\": \"assistant\", \"content\": \"I'll analyze the code for potential bugs. Please provide the code you'd like me to review.\"}, {\"role\": \"user\", \"content\": \"def calculate(x, y): return x / y\"}, {\"role\": \"assistant\", \"content\": \"Bug found: Division by zero error. The function doesn't handle the case when y is 0. Recommendation: Add a check for y == 0 before division.\"}, {\"role\": \"user\", \"content\": \"def process_list(items): return [x * 2 for x in items]\"}, {\"role\": \"assistant\", \"content\": \"The code looks good but could be improved. Consider adding type hints and handling None input: def process_list(items: list) -> list: if items is None: return []; return [x * 2 for x in items]\"}, {\"role\": \"user\", \"content\": \"Now write a fixed version of the calculate function.\"}, {\"role\": \"assistant\", \"content\": \"Here's the fixed version: def calculate(x, y): if y == 0: raise ValueError('Cannot divide by zero'); return x / y. This version explicitly handles the division by zero case.\"}, {\"role\": \"user\", \"content\": \"Also fix the process_list function.\"}]",
+        "gen_ai.output.text": "Here's the improved process_list function: def process_list(items: list) -> list: if items is None: return []; return [x * 2 for x in items]. This version includes type hints and handles None input gracefully."
+      },
+      "resource_attributes": {
+        "service.name": "test-service"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    }
+  ]
+}

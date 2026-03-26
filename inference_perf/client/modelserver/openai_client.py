@@ -106,7 +106,7 @@ class openAIModelServerClient(ModelServerClient):
             if self._session is None:
                 self._session = openAIModelServerClientSession(self)
             session = self._session
-        await session.process_request(data, stage_id, scheduled_time, lora_adapter)
+        return await session.process_request(data, stage_id, scheduled_time, lora_adapter)
 
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
@@ -151,7 +151,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
     async def process_request(
         self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
-    ) -> None:
+    ) -> Optional[ErrorResponseInfo]:
         # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
         effective_model_name = lora_adapter if lora_adapter else self.client.model_name
         payload = await data.to_payload(
@@ -186,6 +186,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                 response = resp
                 try:
+                    # Read response body once to avoid double-read issue
+                    response_content = await response.text()
+                    
                     if response.status == 200:
                         response_info = await data.process_response(
                             response=response,
@@ -195,16 +198,14 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         )
                     else:
                         error = ErrorResponseInfo(
-                            error_msg=await response.text(),
+                            error_msg=response_content,
                             error_type=f"HTTP Error {response.status}",
                         )
-                finally:
-                    # Always try to consume the payload to return the connection to the pool
-                    try:
-                        response_content = await response.text()
-                    except Exception:
-                        if not response_content:
-                            response_content = "Failed to read response text"
+                except Exception as read_error:
+                    # Handle errors reading response body
+                    if not response_content:
+                        response_content = f"Failed to read response text: {read_error}"
+                    raise
 
         except aiohttp.ClientError as e:
             caught_exception = e
@@ -232,6 +233,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
+            session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
             info=response_info if response_info else InferenceInfo(),
@@ -267,6 +269,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
+
+        # Return error if any (for load_generator to handle)
+        return error
 
     async def close(self) -> None:
         await self.session.close()

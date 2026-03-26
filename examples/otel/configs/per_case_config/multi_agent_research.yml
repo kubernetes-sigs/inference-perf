@@ -1,0 +1,43 @@
+# Config for multi_agent_research.json - Multi-agent research workflow test case
+
+api:
+  type: chat
+  streaming: false
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "examples/otel/test_traces/advanced/multi_agent_research.json"
+
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+    default_max_tokens: 200
+
+    include_errors: false
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 1  # Sequential execution
+  num_workers: 20
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-multi-agent-research"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: false
+    per_request: false
+
+# Made with Bob

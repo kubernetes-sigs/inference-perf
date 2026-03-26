@@ -35,6 +35,7 @@ class ErrorResponseInfo(BaseModel):
 
 class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
+    session_id: Optional[str] = None
     scheduled_time: float
     start_time: float
     end_time: float
@@ -47,9 +48,25 @@ class RequestLifecycleMetric(BaseModel):
     tpot_slo_sec: Optional[float] = None
 
 
+class SessionLifecycleMetric(BaseModel):
+    session_id: str
+    stage_id: int
+    file_path: str
+    start_time: float
+    end_time: float
+    duration_sec: float
+    num_nodes: int
+    num_nodes_completed: int
+    success: Optional[bool] = None
+    error: Optional[ErrorResponseInfo] = None
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+
+
 class InferenceAPIData(BaseModel):
     # loadgen should assign this request to preferred worker if possible
     preferred_worker_id: int = -1  # no preferred worker by default
+    session_id: Optional[str] = None  # set by loadgen for session-based workloads
 
     @abstractmethod
     def get_api_type(self) -> APIType:
@@ -70,6 +87,10 @@ class InferenceAPIData(BaseModel):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         raise NotImplementedError
+
+    def on_completion(self, info: InferenceInfo) -> None:
+        """Called after every request completes (real or mock). Override to add post-completion side effects."""
+        pass
 
     async def process_failure(
         self,

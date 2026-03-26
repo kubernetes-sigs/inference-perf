@@ -1,0 +1,241 @@
+{
+  "trace_id": "test_trace_006",
+  "span_count": 9,
+  "collected_at": "2026-03-17T08:00:00.000000",
+  "spans": [
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_001_initial_complaint",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:00.000000",
+      "end_time": "2026-03-17T08:00:02.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"My SmartHome Hub keeps disconnecting from WiFi every few hours. This has been happening for a week and it's really frustrating!\"}]",
+        "gen_ai.output.text": "I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate."
+      },
+      "resource_attributes": {
+        "service.name": "coordinator-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_002_technical_analysis",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:03.000000",
+      "end_time": "2026-03-17T08:00:06.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1000,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a Technical Specialist for SmartHome devices.\"}, {\"role\": \"user\", \"content\": \"Customer reports: SmartHome Hub disconnecting from WiFi every few hours for a week. Coordinator response: I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}]",
+        "gen_ai.output.text": "Technical Analysis: The disconnection pattern suggests a firmware memory leak in version 2.3.1. This affects approximately 15% of devices and causes WiFi module instability after prolonged operation."
+      },
+      "resource_attributes": {
+        "service.name": "technical-specialist-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_003_network_analysis",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:03.500000",
+      "end_time": "2026-03-17T08:00:06.500000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1000,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a Network Analyst specializing in WiFi connectivity.\"}, {\"role\": \"user\", \"content\": \"Customer reports: SmartHome Hub disconnecting from WiFi every few hours for a week. Coordinator response: I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}]",
+        "gen_ai.output.text": "Network Analysis: The device shows normal WiFi signal strength and router compatibility. No DHCP conflicts detected. The issue is not network-related but appears to be device-side."
+      },
+      "resource_attributes": {
+        "service.name": "network-analyst-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_004_coordinator_synthesis",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:07.000000",
+      "end_time": "2026-03-17T08:00:10.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"My SmartHome Hub keeps disconnecting from WiFi every few hours.\"}, {\"role\": \"assistant\", \"content\": \"I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}, {\"role\": \"user\", \"content\": \"What did your team find?\"}]",
+        "gen_ai.output.text": "Based on our team's analysis, the issue is a firmware bug causing memory leaks. The network is fine. Solution: Update to firmware 2.3.2 which fixes this memory leak. This should resolve your disconnection issues."
+      },
+      "resource_attributes": {
+        "service.name": "coordinator-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_005_customer_escalation",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:15.000000",
+      "end_time": "2026-03-17T08:00:17.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"My SmartHome Hub keeps disconnecting from WiFi every few hours.\"}, {\"role\": \"assistant\", \"content\": \"I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}, {\"role\": \"user\", \"content\": \"What did your team find?\"}, {\"role\": \"assistant\", \"content\": \"Based on our team's analysis, the issue is a firmware bug causing memory leaks. The network is fine. Solution: Update to firmware 2.3.2 which fixes this memory leak. This should resolve your disconnection issues.\"}, {\"role\": \"user\", \"content\": \"I tried the firmware update but the problem still happens! I want a refund or replacement!\"}]",
+        "gen_ai.output.text": "I sincerely apologize that the firmware update didn't resolve your issue. Since the standard solution failed, I'm escalating to our Senior Technical Analyst and Customer Success Manager for further investigation."
+      },
+      "resource_attributes": {
+        "service.name": "coordinator-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_006_senior_analysis",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:18.000000",
+      "end_time": "2026-03-17T08:00:21.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1000,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a Senior Technical Analyst. Review escalated cases.\"}, {\"role\": \"user\", \"content\": \"Escalated case: Customer tried firmware 2.3.2 update but WiFi disconnections persist. Previous diagnosis: firmware memory leak. Network analysis showed no network issues. What's the actual problem?\"}]",
+        "gen_ai.output.text": "Root Cause Analysis: Since firmware update failed, this is a hardware defect. The WiFi module itself is faulty - likely from the Q2 2025 manufacturing batch with known thermal issues. The chip overheats and enters protection mode. Firmware can't fix hardware. Recommendation: Device replacement required."
+      },
+      "resource_attributes": {
+        "service.name": "senior-technical-analyst-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_007_manager_resolution",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:22.000000",
+      "end_time": "2026-03-17T08:00:25.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"system\", \"content\": \"You are a Customer Success Manager with authority to approve replacements and compensation.\"}, {\"role\": \"user\", \"content\": \"Case summary: WiFi disconnections, firmware update failed. Senior Analyst found: Root Cause Analysis: Since firmware update failed, this is a hardware defect. The WiFi module itself is faulty - likely from the Q2 2025 manufacturing batch with known thermal issues. The chip overheats and enters protection mode. Firmware can't fix hardware. Recommendation: Device replacement required.\"}]",
+        "gen_ai.output.text": "Resolution: I'm approving an immediate replacement device via overnight shipping at no cost. Additionally, I'm providing a $50 account credit for your inconvenience and extending your warranty by one year. Your new device is from our latest batch without the thermal defect."
+      },
+      "resource_attributes": {
+        "service.name": "customer-success-manager-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_008_final_coordination",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:26.000000",
+      "end_time": "2026-03-17T08:00:29.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 1500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"My SmartHome Hub keeps disconnecting from WiFi.\"}, {\"role\": \"assistant\", \"content\": \"I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}, {\"role\": \"user\", \"content\": \"What did your team find?\"}, {\"role\": \"assistant\", \"content\": \"Based on our team's analysis, the issue is a firmware bug causing memory leaks. The network is fine. Solution: Update to firmware 2.3.2 which fixes this memory leak. This should resolve your disconnection issues.\"}, {\"role\": \"user\", \"content\": \"I tried the firmware update but the problem still happens!\"}, {\"role\": \"assistant\", \"content\": \"I sincerely apologize that the firmware update didn't resolve your issue. Since the standard solution failed, I'm escalating to our Senior Technical Analyst and Customer Success Manager for further investigation.\"}, {\"role\": \"user\", \"content\": \"What's the resolution?\"}]",
+        "gen_ai.output.text": "Perfect! Our team has identified the root cause - a hardware defect in your device's WiFi module. Your Customer Success Manager has approved: 1) Replacement device arriving tomorrow via overnight shipping, 2) $50 account credit, 3) Extended warranty. You'll receive tracking info within the hour."
+      },
+      "resource_attributes": {
+        "service.name": "coordinator-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    },
+    {
+      "trace_id": "test_trace_006",
+      "span_id": "span_009_customer_satisfaction",
+      "parent_span_id": null,
+      "name": "chat gpt-4",
+      "kind": "SPAN_KIND_INTERNAL",
+      "start_time": "2026-03-17T08:00:30.000000",
+      "end_time": "2026-03-17T08:00:32.000000",
+      "attributes": {
+        "exgentic.session.id": "session_006",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "openai",
+        "gen_ai.request.model": "gpt-4",
+        "gen_ai.request.max_tokens": 500,
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.input.messages": "[{\"role\": \"user\", \"content\": \"My SmartHome Hub keeps disconnecting from WiFi.\"}, {\"role\": \"assistant\", \"content\": \"I understand your frustration. Let me coordinate with our specialist team to diagnose this issue. I'll dispatch our Technical Specialist and Network Analyst to investigate.\"}, {\"role\": \"user\", \"content\": \"What did your team find?\"}, {\"role\": \"assistant\", \"content\": \"Based on our team's analysis, the issue is a firmware bug causing memory leaks. The network is fine. Solution: Update to firmware 2.3.2 which fixes this memory leak. This should resolve your disconnection issues.\"}, {\"role\": \"user\", \"content\": \"I tried the firmware update but the problem still happens!\"}, {\"role\": \"assistant\", \"content\": \"I sincerely apologize that the firmware update didn't resolve your issue. Since the standard solution failed, I'm escalating to our Senior Technical Analyst and Customer Success Manager for further investigation.\"}, {\"role\": \"user\", \"content\": \"What's the resolution?\"}, {\"role\": \"assistant\", \"content\": \"Perfect! Our team has identified the root cause - a hardware defect in your device's WiFi module. Your Customer Success Manager has approved: 1) Replacement device arriving tomorrow via overnight shipping, 2) $50 account credit, 3) Extended warranty. You'll receive tracking info within the hour.\"}, {\"role\": \"user\", \"content\": \"Thank you so much! That's exactly what I needed. I appreciate the thorough investigation.\"}]",
+        "gen_ai.output.text": "You're very welcome! I'm glad our team could identify the hardware issue and provide a comprehensive solution. Your replacement is being prepared now. If you have any issues with the new device, please contact us directly using case number CS-2026-0317-006."
+      },
+      "resource_attributes": {
+        "service.name": "coordinator-agent"
+      },
+      "status": {
+        "code": 1,
+        "message": ""
+      }
+    }
+  ]
+}

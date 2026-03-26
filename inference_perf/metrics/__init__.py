@@ -1,4 +1,4 @@
-# Copyright 2026 The Kubernetes Authors.
+# Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,25 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import (
-    InferenceAPIData,
-    InferenceInfo,
-    RequestLifecycleMetric,
-    ErrorResponseInfo,
-    LazyLoadInferenceAPIData,
-    SessionLifecycleMetric,
-)
-from .chat import ChatCompletionAPIData, ChatMessage
-from .completion import CompletionAPIData
+
+"""Metrics collection and management."""
+
+from .session_collector import SessionMetricsCollector
 
 __all__ = [
-    "InferenceAPIData",
-    "LazyLoadInferenceAPIData",
-    "InferenceInfo",
-    "RequestLifecycleMetric",
-    "ErrorResponseInfo",
-    "SessionLifecycleMetric",
-    "ChatCompletionAPIData",
-    "ChatMessage",
-    "CompletionAPIData",
+    "SessionMetricsCollector",
 ]
+
+# Made with Bob

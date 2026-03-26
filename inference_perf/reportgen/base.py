@@ -13,18 +13,22 @@
 # limitations under the License.
 import logging
 from collections import defaultdict
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from inference_perf.datagen import DataGenerator, SessionGenerator
 
 
 import numpy as np
 from pydantic import BaseModel
 
-from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
+from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig, SessionLifecycleReportConfig
+from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -457,10 +461,13 @@ class ReportGenerator:
         metrics_client: Optional[MetricsClient],
         metrics_collector: RequestDataCollector,
         config: "Config",
+        datagen: Optional[Union["DataGenerator", "SessionGenerator"]] = None,
     ) -> None:
         self.metrics_collector = metrics_collector
         self.metrics_client = metrics_client
         self.config = config
+        self.datagen = datagen
+        self.session_metrics_collector: Optional[SessionMetricsCollector] = None
 
     def get_metrics_collector(self) -> RequestDataCollector:
         """
@@ -563,8 +570,90 @@ class ReportGenerator:
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
 
+        # Session-level reports (OTel agentic workloads only)
+        if self.session_metrics_collector and report_config.session_lifecycle:
+            session_reports = self.generate_session_reports(
+                self.session_metrics_collector.get_metrics(),
+                report_config.session_lifecycle,
+                percentiles,
+            )
+            lifecycle_reports.extend(session_reports)
+
         lifecycle_reports.append(self.generate_config_report())
         return lifecycle_reports
+
+    def summarize_sessions(self, metrics: List[SessionLifecycleMetric], percentiles: List[float]) -> dict:
+        """Compute aggregated stats across a list of session lifecycle metrics."""
+        num_sessions = len(metrics)
+        num_succeeded = sum(1 for m in metrics if m.success is True)
+        num_failed = sum(1 for m in metrics if m.success is False)
+
+        sessions_per_second = 0.0
+        if num_sessions > 0:
+            total_span = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
+            if total_span > 0:
+                sessions_per_second = num_sessions / total_span
+
+        return {
+            "num_sessions": num_sessions,
+            "num_sessions_succeeded": num_succeeded,
+            "num_sessions_failed": num_failed,
+            "sessions_per_second": sessions_per_second,
+            "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
+            "num_nodes": summarize([float(m.num_nodes) for m in metrics], percentiles),
+            "total_input_tokens": summarize(
+                [float(m.total_input_tokens) for m in metrics if m.total_input_tokens is not None], percentiles
+            ),
+            "total_output_tokens": summarize(
+                [float(m.total_output_tokens) for m in metrics if m.total_output_tokens is not None], percentiles
+            ),
+        }
+
+    def generate_session_reports(
+        self,
+        session_metrics: List[SessionLifecycleMetric],
+        report_config: SessionLifecycleReportConfig,
+        percentiles: List[float],
+    ) -> List[ReportFile]:
+        """Generate session-level lifecycle reports.
+        
+        Note: Session metrics should be enriched (via SessionMetricsCollector.enrich_metrics())
+        before calling this method.
+        """
+        reports: List[ReportFile] = []
+
+        if not session_metrics:
+            return reports
+
+        if report_config.summary:
+            reports.append(
+                ReportFile(
+                    name="summary_session_lifecycle_metrics",
+                    contents=self.summarize_sessions(session_metrics, percentiles),
+                )
+            )
+
+        if report_config.per_stage:
+            stage_buckets: dict[int, List[SessionLifecycleMetric]] = defaultdict(list)
+            for m in session_metrics:
+                stage_buckets[m.stage_id].append(m)
+            for stage_id, stage_metrics in stage_buckets.items():
+                reports.append(
+                    ReportFile(
+                        name=f"stage_{stage_id}_session_lifecycle_metrics",
+                        contents=self.summarize_sessions(stage_metrics, percentiles),
+                    )
+                )
+
+        if report_config.per_session:
+            reports.append(
+                ReportFile(
+                    name="per_session_lifecycle_metrics",
+                    contents=[m.model_dump() for m in session_metrics],
+                )
+            )
+
+        return reports
 
     def generate_prometheus_metrics_report(
         self, runtime_parameters: PerfRuntimeParameters, report_config: PrometheusMetricsReportConfig

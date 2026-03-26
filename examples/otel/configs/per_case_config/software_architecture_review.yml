@@ -1,0 +1,67 @@
+# Config for software_architecture_review.json - Complex multi-agent architecture review workflow
+
+api:
+  type: chat
+  streaming: false
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "examples/otel/test_traces/advanced/software_architecture_review.json"
+    # Complex multi-agent architecture review workflow with 15 spans testing output substitution
+    # across deep dependency chains and parallel specialist agents.
+    #
+    # ARCHITECTURE:
+    # Main conversation thread (6 spans): 001 → 006 → 010 → 011 → 014 → 015
+    # Independent specialist agents (9 spans): 002-005 (initial), 007-009 (refinement), 012-013 (HA/DR)
+    #
+    # WORKFLOW:
+    # 1. Span 001: Lead architect receives request, dispatches 4 specialists
+    # 2. Spans 002-005: Parallel specialist analyses (Scalability, Security, Data, Cost)
+    # 3. Span 006: Lead synthesizes 4 analyses (4-way fan-in), identifies conflicts
+    # 4. Spans 007-009: Independent specialist refinements (with system messages)
+    # 5. Span 010: Lead synthesizes refinements (depends on 001, 006)
+    # 6. Span 011: User asks about HA/DR
+    # 7. Spans 012-013: Parallel HA/DR specialist analyses (with system messages)
+    # 8. Span 014: Lead synthesizes HA/DR strategy (depends on 001, 006, 010, 011)
+    # 9. Span 015: Final executive summary (depends on full conversation: 001, 006, 010, 011, 014)
+    #
+    # KEY FEATURES:
+    # - Tests multi-level output substitution (5 levels deep: 001→006→010→011→014→015)
+    # - Specialist agents use system messages (separate conversation contexts)
+    # - Findings incorporated as user summaries (not direct assistant dependencies)
+    # - Multiple fan-in patterns (4-way, 2-way)
+    # - Validates message count matching across shared segments
+
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+    default_max_tokens: 150
+
+    include_errors: false
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 1  # Sequential execution
+  num_workers: 20
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-software-architecture-review"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: false
+    per_request: false
+
+# Made with Bob
