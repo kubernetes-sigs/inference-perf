@@ -59,7 +59,7 @@ from functools import partial
 import logging
 import uvloop
 import numpy as np
-from tqdm import tqdm
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn
 import signal
 
 logger = logging.getLogger(__name__)
@@ -308,8 +308,9 @@ class LoadGenerator:
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
+        progress_ctx: Optional[Progress] = None,
     ) -> None:
-        logger.info("Stage %d - run started", stage_id)
+        logger.debug("Stage %d - run started", stage_id)
 
         if timeout is not None and cancel_signal is None:
             raise Exception("run_stage timeout requires cancel_signal to be not None!")
@@ -350,31 +351,33 @@ class LoadGenerator:
             )
 
         # Wait until all requests are finished processing
-        with tqdm(total=1.0, desc=f"Stage {stage_id} progress") as pbar:
-            timed_out = False
-            timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
-            prog, last = min(1.0, max(timeout_progress, finished_requests_counter.value / num_requests)), 0.0
-            pbar.update(prog)
-            last = prog
-            while finished_requests_counter.value < num_requests:
-                if timeout and start_time + timeout < time.perf_counter():
-                    pbar.close()
-                    logger.info(f"Loadgen timed out after {timeout:0.2f}s")
-                    timed_out = True
-                    break
-                if self.interrupt_sig:
-                    pbar.close()
-                    logger.info("Loadgen encountered SIGINT")
-                    break
-                if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                    logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
-                    timed_out = True
-                    break
-                await sleep(1)
-                timeout_progress = (time.perf_counter() - start_time) / timeout if timeout else 0
-                prog = min(1.0, max(timeout_progress, finished_requests_counter.value / num_requests))
-                pbar.update(prog - last)
-                last = prog
+        stage_task = None
+        if progress_ctx:
+            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Requests", total=num_requests)
+
+        timed_out = False
+        while finished_requests_counter.value < num_requests:
+            if timeout and start_time + timeout < time.perf_counter():
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                logger.info(f"Loadgen timed out after {timeout:0.2f}s")
+                timed_out = True
+                break
+            if self.interrupt_sig:
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                logger.info("Loadgen encountered SIGINT")
+                break
+            if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
+                timed_out = True
+                break
+            await sleep(1)
+            if progress_ctx and stage_task:
+                progress_ctx.update(stage_task, completed=finished_requests_counter.value)
+
+        if progress_ctx and stage_task:
+            progress_ctx.remove_task(stage_task)
 
         # Trigger cleanup if timed out or received SIGINT
         if (timed_out or self.interrupt_sig) and cancel_signal:
@@ -401,7 +404,7 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=concurrency_level,
         )
-        logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
+        logger.debug("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
     async def preprocess(
         self,
@@ -536,6 +539,18 @@ class LoadGenerator:
                 stop_signal.set()
                 return
 
+        # Create progress context for all stages
+        progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+        )
+        progress.start()
+        overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+
         for stage_id, stage in enumerate(self.stages):
             # Update worker concurrency for concurrent load type
             if self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
@@ -563,12 +578,16 @@ class LoadGenerator:
                 request_phase,
                 cancel_signal,
                 concurrency_level=concurrency_level,
+                progress_ctx=progress,
             )
             # If we encountered a SIGINT, we can break out of run stages loop
             if self.interrupt_sig:
                 break
+            progress.update(overall_task, advance=1)
             if self.stageInterval:
                 await sleep(self.stageInterval)
+
+        progress.stop()
 
         # Reset the request phase to get workers out of their final wait()
         request_phase.set()
@@ -578,6 +597,18 @@ class LoadGenerator:
         if self.num_workers > 0:
             return await self.mp_run(client)
 
+        # Create progress context
+        progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+        )
+        progress.start()
+        overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+
         for stage_id, stage in enumerate(self.stages):
             timer = self.get_timer(stage.rate, stage.duration)
             start_time_epoch = time.time()
@@ -585,9 +616,15 @@ class LoadGenerator:
             end_time = start_time + stage.duration
             stage_status = StageStatus.RUNNING
             logger.info("Stage %d - run started", stage_id)
+            
+            num_requests = int(stage.rate * stage.duration)
+            stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
+            
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
-                for _, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                    if progress and stage_task:
+                        progress.update(stage_task, completed=count + 1)
                     request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                     lora_adapter = self._get_lora_adapter()
                     if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
@@ -608,6 +645,10 @@ class LoadGenerator:
                         continue
                     else:
                         break
+                        
+            progress.update(stage_task, completed=1.0)
+            progress.remove_task(stage_task) # Clean up after completion
+            
             if stage_status == StageStatus.RUNNING:
                 stage_status = StageStatus.COMPLETED
                 logger.info("Stage %d - run completed", stage_id)
@@ -621,8 +662,11 @@ class LoadGenerator:
                 status=stage_status,
                 concurrency_level=None,
             )
+            progress.update(overall_task, advance=1)
             if self.stageInterval and stage_id < len(self.stages) - 1:
                 await sleep(self.stageInterval)
+
+        progress.stop()
 
     async def stop(self) -> None:
         for worker in self.workers:

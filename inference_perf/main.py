@@ -59,6 +59,7 @@ from inference_perf.client.requestdatacollector import (
 from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile
+from inference_perf.utils.cli_summary import print_summary_table
 from inference_perf.logger import setup_logging
 import asyncio
 import time
@@ -339,6 +340,9 @@ def main_cli() -> None:
 
     # Save Reports
     perfrunner.save_reports(reports=reports)
+
+    # Print summary table to CLI
+    print_summary_table(reports)
 
     perfrunner.stop()
 
