@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from inference_perf.datagen.export_replay_graph_to_dot import export_to_dot
 from inference_perf.datagen.otel_trace_utils import reconstruct_llm_output, reconstruct_llm_input,  \
     reconstruct_each_part_in_message_info
 
@@ -384,30 +385,134 @@ def is_causal_dep(a: RawCall, b: RawCall) -> bool:
             return True
     #try matching parts
     if isinstance(a.out_message, ComplexOtelMessage) and "parts" in a.out_message.message_info and len(a.out_message.message_info["parts"]) > 1:
-        #this means this output message contains several part, and will be interpreted as more than one message in the calls history
-        first_part_match_candidates = []
-        first_part_text = a.out_message.message_info["parts_text"][0]
-        for i in range(len(b.messages)):
-            if output_matches_message(first_part_text, b.messages[i]):
-                first_part_match_candidates.append(i)
-        for candidate_i in first_part_match_candidates:
-            candidate_ok = True
-            #in case of a tool call, we'll see first the tool call, and then the result of the execution.
-            offset = 1 if a.out_message.message_info["parts"][0]["type"] != "tool_call" else 2
-            for part, part_text in zip(a.out_message.message_info["parts"][1:], a.out_message.message_info["parts_text"][1:]):
-                #part_text is the text that would appear in the input messages list. we also need part to determine the type, to set the offset
-                next_index_to_check = candidate_i + offset
-                if next_index_to_check >= len(b.messages):
-                    candidate_ok = False
-                    break
-                if not output_matches_message(part_text, b.messages[next_index_to_check]):
-                    candidate_ok = False
-                    break
-                else:
-                    offset = 1 if part["type"] != "tool_call" else 2
-            if candidate_ok:
+        #this means this output message contains several parts, and will be interpreted as more than one message in the calls history
+        parts = a.out_message.message_info["parts"]
+        parts_text = a.out_message.message_info["parts_text"]
+        
+        # Determine structure: check if first part is content (text) or tool_call
+        first_part_is_content = parts[0]["type"] != "tool_call"
+        
+        # Case 1: Only tool calls [tool_call_1, tool_call_2, ..., tool_call_n]
+        # Case 2: Content + tool calls [content, tool_call_1, tool_call_2, ..., tool_call_n]
+        
+        if not first_part_is_content:
+            # Case 1: Only tool calls - each tool call appears separately in input messages
+            return _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False)
+        else:
+            # Case 2: Content + tool calls - try two matching strategies:
+            # Strategy A: Each part appears separately (content has offset 1, tools have offset 2)
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False):
                 return True
+            # Strategy B: Content is combined with each tool call
+            # [content + tool_call_1, content + tool_call_2, ..., content + tool_call_n]
+            # Combined messages are treated as tool calls (offset 2)
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=True):
+                return True
+        
         return False
+    return False
+
+
+def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_content_with_tools: bool) -> bool:
+    """
+    Unified function to match parts in b_messages.
+    
+    Args:
+        parts: List of part dictionaries with 'type' field
+        parts_text: List of text representations for each part
+        b_messages: List of messages to search in
+        combine_content_with_tools: If True and first part is content, expect content combined with each tool call
+    
+    Returns:
+        True if a valid match is found
+    """
+    if not parts or not parts_text or not b_messages:
+        return False
+    
+    # Determine what we're matching
+    first_part_is_content = parts[0]["type"] != "tool_call"
+    
+    # For combine mode, we need content + tool calls
+    if combine_content_with_tools:
+        if not first_part_is_content or len(parts) < 2:
+            return False
+        if not all(part["type"] == "tool_call" for part in parts[1:]):
+            return False
+        
+        # When combining: skip content in parts list, but check for it in each message
+        content_text = parts_text[0]
+        parts_to_match = parts[1:]
+        parts_text_to_match = parts_text[1:]
+    else:
+        # Standard mode: match all parts separately
+        content_text = None
+        parts_to_match = parts
+        parts_text_to_match = parts_text
+    
+    # Find candidates for the first part to match
+    first_part_text = parts_text_to_match[0]
+    first_part_match_candidates = []
+    
+    for i in range(len(b_messages)):
+        msg = b_messages[i]
+        
+        # Prepare text to match for first part
+        if combine_content_with_tools:
+            # Concatenate content with first tool call text
+            text_to_match = content_text + '\n' +first_part_text
+        else:
+            # Just the first part text
+            text_to_match = first_part_text
+        
+        # Check if the text matches
+        if output_matches_message(text_to_match, msg):
+            first_part_match_candidates.append(i)
+    
+    # Try each candidate position
+    for candidate_i in first_part_match_candidates:
+        candidate_ok = True
+        
+        # Calculate offset after first matched part
+        if combine_content_with_tools:
+            # Combined content+tool is treated as tool call (offset 2)
+            offset = 2
+        else:
+            # Separate parts: 1 for content, 2 for tool_call
+            offset = 1 if parts_to_match[0]["type"] != "tool_call" else 2
+        
+        # Check remaining parts
+        for part, part_text in zip(parts_to_match[1:], parts_text_to_match[1:]):
+            next_index_to_check = candidate_i + offset
+            if next_index_to_check >= len(b_messages):
+                candidate_ok = False
+                break
+            
+            msg = b_messages[next_index_to_check]
+            
+            # Prepare text to match
+            if combine_content_with_tools:
+                # Concatenate content with tool call text
+                text_to_match = content_text + '\n' + part_text
+            else:
+                # Just the part text
+                text_to_match = part_text
+            
+            # Check if the text matches the message
+            if not output_matches_message(text_to_match, msg):
+                candidate_ok = False
+                break
+            
+            # Update offset for next part
+            if combine_content_with_tools:
+                # Combined content+tool is treated as tool call (offset 2)
+                offset += 2
+            else:
+                # Separate parts: 1 for content, 2 for tool_call
+                offset += 1 if part["type"] != "tool_call" else 2
+        
+        if candidate_ok:
+            return True
+    
     return False
 
 
@@ -976,6 +1081,25 @@ def summarize_graph(graph: ReplayGraph) -> str:
     return "\n".join(lines)
 
 
+def visualize_graph(graph, output_file) -> None:
+    """
+    Export graph to DOT format and optionally render to PNG.
+
+    Args:
+        graph: ReplayGraph object
+        test_name: Name of the test (used for filename)
+        output_dir: Directory to save output files
+    """
+
+    # Convert graph to JSON format expected by export_to_dot
+    graph_dict = graph_to_dict(graph)
+
+    # Export to DOT
+    export_to_dot(graph_dict, str(output_file))
+
+
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -992,6 +1116,7 @@ def main() -> None:
     ap.add_argument("--output", required=True, help="Output replay graph JSON file")
     ap.add_argument("--include_errors", action="store_true", help="Include spans with error status")
     ap.add_argument("--summary", action="store_true", help="Print human-readable graph summary")
+    ap.add_argument("--vis_output", default=None, help="If provided, is the path to the graph structure to be displayed in https://viz-js.com/")
     args = ap.parse_args()
 
     data = json.loads(Path(args.input).read_text(encoding="utf-8"))
@@ -1014,6 +1139,8 @@ def main() -> None:
 
     if args.summary:
         print_graph(graph)
+    if args.vis_output:
+        visualize_graph(graph, args.vis_output)
 
 
 if __name__ == "__main__":
