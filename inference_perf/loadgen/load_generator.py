@@ -19,6 +19,7 @@ from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceRep
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
+from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
@@ -50,7 +51,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
+from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict, Any
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -407,6 +408,26 @@ class LoadGenerator:
         )  # Sessions waiting to start
         completed_session_ids: Set[str] = set()  # Session IDs that have completed
         session_dispatch_times: Dict[str, float] = {}  # session_id → wall-clock dispatch time
+        
+        # Cache OTEL instrumentation to avoid redundant calls
+        otel_instr = get_otel_instrumentation()
+        session_spans: Dict[str, object] = {}  # session_id → OTEL span object
+        stage_span = None  # Stage-level span (if trace_per_stage is enabled)
+        stage_context_dict = None  # Stage-level context for propagation
+
+        # Start stage-level span if trace_per_stage is enabled
+        if otel_instr.trace_per_stage:
+            stage_info = {
+                "num_sessions": effective_num_sessions,
+                "concurrent_sessions": concurrent_sessions,
+            }
+            if session_rate is not None:
+                stage_info["session_rate"] = session_rate
+            if timeout is not None:
+                stage_info["timeout"] = timeout
+            
+            stage_span, stage_context_dict = otel_instr.start_stage_span(stage_id, stage_info)
+            logger.info(f"Started stage-level OTEL span for stage {stage_id}")
 
         # Track dispatch timing
         sessions_dispatched = 0
@@ -451,6 +472,16 @@ class LoadGenerator:
                 f"Starting session {session_idx}: {session_id} "
                 f"({len(active_session_indices)} active, {len(pending_session_indices)} pending)"
             )
+
+            # Start OTEL session span (as child of stage span if trace_per_stage is enabled)
+            parent_ctx = stage_context_dict if otel_instr.trace_per_stage else None
+            span, context_dict = otel_instr.start_session_span(session_id, session_info, parent_ctx)
+            if span is not None:
+                session_spans[session_id] = span
+            
+            # Store OTEL context in shared state for workers to access
+            if context_dict and hasattr(self.datagen, 'shared_state'):
+                self.datagen.shared_state.store_session_otel_context(session_id, context_dict)
 
             # Activate session in DataGen (marks root nodes as ready)
             self.datagen.activate_session(session_id)
@@ -498,17 +529,35 @@ class LoadGenerator:
                     pbar.close()
                     logger.info("Loadgen encountered SIGINT")
                     stage_status = StageStatus.FAILED
+                    # Clean up any active session spans (using cached otel_instr)
+                    for sid in list(session_spans.keys()):
+                        otel_instr.end_session_span(session_spans[sid], "Session interrupted by SIGINT")
+                        if hasattr(self.datagen, 'shared_state'):
+                            self.datagen.shared_state.cleanup_session_otel_context(sid)
+                        del session_spans[sid]
                     break
 
                 if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                     logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                     stage_status = StageStatus.FAILED
+                    # Clean up any active session spans (using cached otel_instr)
+                    for sid in list(session_spans.keys()):
+                        otel_instr.end_session_span(session_spans[sid], f"Session failed due to circuit breaker: {cb.name}")
+                        if hasattr(self.datagen, 'shared_state'):
+                            self.datagen.shared_state.cleanup_session_otel_context(sid)
+                        del session_spans[sid]
                     break
 
                 if timeout is not None and time.perf_counter() - start_time >= timeout:
                     pbar.close()
                     logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
                     stage_status = StageStatus.FAILED
+                    # Clean up any active session spans (using cached otel_instr)
+                    for sid in list(session_spans.keys()):
+                        otel_instr.end_session_span(session_spans[sid], "Session timed out")
+                        if hasattr(self.datagen, 'shared_state'):
+                            self.datagen.shared_state.cleanup_session_otel_context(sid)
+                        del session_spans[sid]
                     break
 
                 # Check for completed sessions
@@ -522,6 +571,21 @@ class LoadGenerator:
                         if session_id not in completed_session_ids:
                             completed_session_ids.add(session_id)
                             newly_completed.append(session_idx)
+                            
+                            # End OTEL session span and cleanup context (using cached otel_instr)
+                            if session_id in session_spans:
+                                # Check if session failed
+                                session_failed = (hasattr(self.datagen, 'shared_state') and
+                                                self.datagen.shared_state.is_session_failed(session_id))
+                                error_msg = "Session failed" if session_failed else None
+                                otel_instr.end_session_span(session_spans[session_id], error_msg)
+                                
+                                # Cleanup OTEL context to prevent memory leak
+                                if hasattr(self.datagen, 'shared_state'):
+                                    self.datagen.shared_state.cleanup_session_otel_context(session_id)
+                                
+                                del session_spans[session_id]
+                            
                             logger.info(
                                 f"Session {session_idx} ({session_id}) completed "
                                 f"({len(completed_session_ids)}/{effective_num_sessions} total)"
@@ -586,6 +650,12 @@ class LoadGenerator:
         # Clear the request_phase event to force worker gather
         request_phase.clear()
         request_queue.join()
+
+        # End stage-level span if trace_per_stage is enabled
+        if stage_span is not None:
+            error_msg = None if stage_status == StageStatus.COMPLETED else "Stage failed or timed out"
+            otel_instr.end_stage_span(stage_span, error_msg)
+            logger.info(f"Ended stage-level OTEL span for stage {stage_id}")
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,

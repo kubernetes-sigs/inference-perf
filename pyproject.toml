@@ -25,6 +25,14 @@ license = {text = "Apache-2.0"}
 inference-perf = "inference_perf:main_cli"
 
 [project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.30.0",
+    "opentelemetry-sdk>=1.30.0",
+    "opentelemetry-instrumentation>=0.51b0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.51b0",
+    "opentelemetry-semantic-conventions-ai>=0.5.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.30.0",
+]
 analysis = [
     "matplotlib>=3.9.0",
 ]
