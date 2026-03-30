@@ -341,7 +341,7 @@ class LoadGenerator:
         for _ in range(num_requests):
             request_data = next(data_generator)
             lora_adapter = self._get_lora_adapter()
-            worker_id = request_data.prefered_worker_id
+            worker_id = request_data.preferred_worker_id
             if worker_id >= 0:
                 worker_id = worker_id % active_workers
             request_queue.put(
@@ -490,7 +490,7 @@ class LoadGenerator:
 
     async def mp_run(self, client: ModelServerClient) -> None:
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
-            self.num_workers if self.datagen.is_prefered_worker_requested() else 1
+            self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)

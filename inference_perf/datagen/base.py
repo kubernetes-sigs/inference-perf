@@ -66,8 +66,8 @@ class DataGenerator(ABC):
     def is_shared_prefix_supported(self) -> bool:
         raise NotImplementedError
 
-    # notify load gen whether request has prefered worker
-    def is_prefered_worker_requested(self) -> bool:
+    # notify load gen whether request has preferred worker
+    def is_preferred_worker_requested(self) -> bool:
         return False
 
 

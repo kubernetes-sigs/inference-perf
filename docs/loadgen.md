@@ -344,4 +344,4 @@ load:
   },
 ```
 
-If you notice issues with the delay or achieved rate, that means the benchmarking machine or the concurreny parameters need to be tweaked further.
+If you notice issues with the delay or achieved rate, that means the benchmarking machine or the concurrency parameters need to be tweaked further.
