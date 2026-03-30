@@ -194,8 +194,7 @@ via `asyncio.Event` until predecessors have written their outputs to the `NodeOu
 
 This design means all requests for a session are enqueued immediately (so the worker pool can
 handle parallelism within the graph), but each request only *executes* once its predecessors
-have completed — signalled via `NodeOutputRegistry` on the same worker, with completion
-forwarded to `SessionSharedState` for the main-process session pool loop.
+have completed — signalled via `NodeOutputRegistry` on the same worker.
 
 ## Load generator: `run_stage` vs `run_session_stage`
 
