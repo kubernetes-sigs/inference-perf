@@ -54,7 +54,6 @@ Two orthogonal coordination problems exist in this system:
     - Main process consumes from queue in check_session_completed()
 
 OTelChatCompletionAPIData holds refs to WorkerSessionTracker and completion_queue.
-No Manager.dict() instances are used; all cross-process communication is via Queue.
 """
 
 import asyncio
@@ -148,7 +147,6 @@ class WorkerSessionTracker:
     - Whether the session has failed
     - Node completion times
 
-    This eliminates the need for Manager.dict() and polling for node completion tracking.
     Session completion is communicated to main process via mp.Queue.
     """
 

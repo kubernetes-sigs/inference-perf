@@ -82,7 +82,7 @@ This is possible because session-to-worker affinity ensures all nodes of a sessi
 - `failed` status
 - `node_completion_times` dict
 
-The main process consumes from this queue in `check_session_completed()` using non-blocking `get_nowait()`, updating `SessionGraphState` when notifications arrive. This replaces the previous polling-based approach that checked `Manager.dict()` for every node.
+The main process consumes from this queue in `check_session_completed()` using non-blocking `get_nowait()`, updating `SessionGraphState` when notifications arrive.
 
 **`OTelChatCompletionAPIData`** — a `ChatCompletionAPIData` subclass that carries the `node_id`, `predecessor_node_ids`, `input_segments`, and references to `registry`, `worker_tracker`, and `completion_queue`. Before the HTTP request is dispatched, `wait_for_predecessors_and_substitute()` is called:
 
