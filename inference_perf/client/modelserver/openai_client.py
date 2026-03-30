@@ -159,8 +159,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
     def _get_session_otel_context(self, data: InferenceAPIData) -> Optional[Dict[str, str]]:
         """Get session OTEL context if available (for OTel trace replay)."""
-        if hasattr(data, 'get_session_otel_context'):
-            return data.get_session_otel_context()
+
+        if hasattr(data, 'otel_context') and data.otel_context is not None:
+            return data.otel_context
+        
         return None
 
     def _record_otel_metrics(
