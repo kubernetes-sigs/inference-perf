@@ -152,42 +152,47 @@ class WorkerSessionTracker:
 
     def __init__(self):
         """Initialize empty tracking state."""
-        # Map: qualified_node_id -> completion_time
-        self._node_completions: Dict[str, float] = {}
+        # Nested map: session_id -> {node_id -> completion_time}
+        self._node_completions: Dict[str, Dict[str, float]] = {}
 
         # Set of session_ids that have failed
         self._failed_sessions: Set[str] = set()
 
-    def record_node_completed(self, qualified_node_id: str, completion_time: float) -> None:
+    def record_node_completed(self, session_id: str, node_id: str, completion_time: float) -> None:
         """Record that a node has completed.
 
         Args:
-            qualified_node_id: Full node ID (session_id:node_xxx)
+            session_id: The session ID
+            node_id: The node ID (unqualified, e.g., "node_0")
             completion_time: Wall-clock time when node completed
         """
-        self._node_completions[qualified_node_id] = completion_time
+        if session_id not in self._node_completions:
+            self._node_completions[session_id] = {}
+        self._node_completions[session_id][node_id] = completion_time
 
-    def is_node_completed(self, qualified_node_id: str) -> bool:
+    def is_node_completed(self, session_id: str, node_id: str) -> bool:
         """Check if a node has completed.
 
         Args:
-            qualified_node_id: Full node ID (session_id:node_xxx)
+            session_id: The session ID
+            node_id: The node ID (unqualified, e.g., "node_0")
 
         Returns:
             True if the node has completed
         """
-        return qualified_node_id in self._node_completions
+        return session_id in self._node_completions and node_id in self._node_completions[session_id]
 
-    def get_node_completion_time(self, qualified_node_id: str) -> Optional[float]:
+    def get_node_completion_time(self, session_id: str, node_id: str) -> Optional[float]:
         """Get the completion time for a node.
 
         Args:
-            qualified_node_id: Full node ID (session_id:node_xxx)
+            session_id: The session ID
+            node_id: The node ID (unqualified, e.g., "node_0")
 
         Returns:
             Completion time, or None if not completed
         """
-        return self._node_completions.get(qualified_node_id)
+        return self._node_completions.get(session_id, {}).get(node_id)
 
     def mark_session_failed(self, session_id: str) -> None:
         """Mark a session as failed.
@@ -217,7 +222,7 @@ class WorkerSessionTracker:
         Returns:
             Number of completed nodes
         """
-        return sum(1 for node_id in self._node_completions if node_id.startswith(f"{session_id}:"))
+        return len(self._node_completions.get(session_id, {}))
 
     def get_session_completion_times(self, session_id: str) -> Dict[str, float]:
         """Get all node completion times for a session.
@@ -228,8 +233,7 @@ class WorkerSessionTracker:
         Returns:
             Dict mapping node_id to completion_time
         """
-        prefix = f"{session_id}:"
-        return {node_id: time for node_id, time in self._node_completions.items() if node_id.startswith(prefix)}
+        return self._node_completions.get(session_id, {}).copy()
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +425,9 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
             logger.info(f"Node {self.node_id} skipping - session {session_id} has failed (pre-wait check)")
             self.skip_request = True
             self.registry.record(self.node_id, "", self.messages)
-            self.worker_tracker.record_node_completed(self.node_id, time.perf_counter())
+            # Extract node_id from qualified node_id
+            node_id = self.node_id.split(":", 1)[1] if ":" in self.node_id else self.node_id
+            self.worker_tracker.record_node_completed(session_id, node_id, time.perf_counter())
             return
 
         if self.predecessor_node_ids:
@@ -437,7 +443,9 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
                 logger.info(f"Node {self.node_id} skipping - session {session_id} has failed (post-wait check)")
                 self.skip_request = True
                 self.registry.record(self.node_id, "", self.messages)
-                self.worker_tracker.record_node_completed(self.node_id, time.perf_counter())
+                # Extract node_id from qualified node_id
+                node_id = self.node_id.split(":", 1)[1] if ":" in self.node_id else self.node_id
+                self.worker_tracker.record_node_completed(session_id, node_id, time.perf_counter())
                 return
 
         # Wait additional delay specified in wait_ms
@@ -535,18 +543,19 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
             f"calling registry record for node {self.node_id} num input messages {len(self.messages)} and output: {output_text}"
         )
         completion_time = time.perf_counter()
-        self.worker_tracker.record_node_completed(self.node_id, completion_time)
+        session_id = self._extract_session_id()
+        node_id = self.node_id.split(":", 1)[1] if ":" in self.node_id else self.node_id
+        self.worker_tracker.record_node_completed(session_id, node_id, completion_time)
         logger.debug(f"Recorded node completion in worker tracker for {self.node_id}")
 
         # Check if this was the last node in the session
-        session_id = self._extract_session_id()
         completed_count = self.worker_tracker.get_session_node_count(session_id)
 
         if completed_count == self.total_nodes_in_session:
             # Session complete! Notify main process via queue
             logger.info(f"Session {session_id} completed all {self.total_nodes_in_session} nodes in worker")
 
-            # Gather completion data
+            # Gather completion data (node_ids are already unqualified in nested structure)
             completion_data = {
                 "session_id": session_id,
                 "completion_time": completion_time,
@@ -1228,10 +1237,9 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                 # Update state for the completed session
                 completed_state = self.session_graph_state.get(completed_session_id)
                 if completed_state is not None:
-                    # Mark all nodes as completed
+                    # Mark all nodes as completed (node_ids are already unqualified)
                     node_times = completion_data.get("node_completion_times", {})
-                    for qualified_node_id, completion_time in node_times.items():
-                        node_id = qualified_node_id.split(":", 1)[1] if ":" in qualified_node_id else qualified_node_id
+                    for node_id, completion_time in node_times.items():
                         if node_id not in completed_state.completed_nodes:
                             completed_state.completed_nodes.add(node_id)
                             completed_state.node_completion_times[node_id] = completion_time
