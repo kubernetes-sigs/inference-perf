@@ -67,6 +67,7 @@ class InferenceAPIData(BaseModel):
     # loadgen should assign this request to preferred worker if possible
     preferred_worker_id: int = -1  # no preferred worker by default
     session_id: Optional[str] = None  # set by loadgen for session-based workloads
+    otel_context: Optional[dict[str, str]] = None  # OTEL trace context for distributed tracing
 
     @abstractmethod
     def get_api_type(self) -> APIType:

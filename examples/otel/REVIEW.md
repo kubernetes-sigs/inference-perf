@@ -66,38 +66,50 @@ OTel traces contain LLM spans with timestamps and message content. The generator
 
 A key design goal is that replay is *faithful*: downstream calls see the **actual generated output** of their predecessors, not the static recorded text. This is important for KV cache reuse measurement — the cache must be populated with the real generated tokens.
 
-Two orthogonal coordination problems exist in this system, handled by two dedicated objects:
+Three coordination mechanisms handle this system:
 
 **`NodeOutputRegistry`** — solves the intra-worker problem: coroutines on the same worker's event loop need to wait for a predecessor's output before building their request. The registry holds plain in-process dicts (`node_id → output text`, `node_id → input messages`) and one `asyncio.Event` per node. When a node completes, `record()` writes the output and fires the event, immediately unblocking any dependent coroutines. No IPC is involved — session-to-worker affinity (see below) guarantees that every node in a session runs on the same worker, so cross-process sharing is never needed. `NodeOutputRegistry` has no `Manager` dependency.
 
-**`SessionSharedState`** — solves the cross-process problem: the main process drives the session pool loop and needs two facts that workers produce:
-1. Which nodes have completed (to detect session completion).
-2. Which sessions have failed (to skip dependent nodes and retire sessions early).
+**`WorkerSessionTracker`** — solves per-worker session state tracking. Each worker independently tracks:
+1. Which nodes have completed (with completion times)
+2. Which sessions have failed
 
-Both are stored in `Manager.dict()` instances inside `SessionSharedState`, which is the single place in the codebase where multiprocessing proxies are created. Workers call `shared_state.record_node_completed()` and `shared_state.mark_session_failed()`; the main process calls `shared_state.is_node_completed()` and `shared_state.is_session_failed()`.
+This is possible because session-to-worker affinity ensures all nodes of a session run on the same worker. The tracker uses plain in-process dicts with no IPC overhead. When the last node of a session completes, the worker detects this locally and pushes a completion notification to the queue.
 
-**`OTelChatCompletionAPIData`** — a `ChatCompletionAPIData` subclass that carries the `node_id`, `predecessor_node_ids`, `input_segments`, and references to both `registry` and `shared_state`. Before the HTTP request is dispatched, `wait_for_predecessors_and_substitute()` is called:
+**`session_completion_queue`** — solves the cross-process communication problem using event-driven architecture instead of polling. When a worker detects that the last node of a session has completed (by comparing completed node count to total nodes), it pushes a completion notification to an `mp.Queue` containing:
+- `session_id`
+- `completion_time`
+- `failed` status
+- `node_completion_times` dict
 
-1. Checks `shared_state` for pre-existing session failure (fast-path skip).
+The main process consumes from this queue in `check_session_completed()` using non-blocking `get_nowait()`, updating `SessionGraphState` when notifications arrive. This replaces the previous polling-based approach that checked `Manager.dict()` for every node.
+
+**`OTelChatCompletionAPIData`** — a `ChatCompletionAPIData` subclass that carries the `node_id`, `predecessor_node_ids`, `input_segments`, and references to `registry`, `worker_tracker`, and `completion_queue`. Before the HTTP request is dispatched, `wait_for_predecessors_and_substitute()` is called:
+
+1. Checks `worker_tracker` for pre-existing session failure (fast-path skip).
 2. Awaits all predecessor nodes in parallel via `asyncio.gather` over `registry.require_async()`, suspending the coroutine without consuming OS threads.
-3. Checks `shared_state` again for session failure after waiting (a predecessor may have failed while waiting).
+3. Checks `worker_tracker` again for session failure after waiting (a predecessor may have failed while waiting).
 4. Substitutes `output` and `shared` segments in the message list with actual predecessor outputs from the registry.
 
-After the HTTP response is processed, `on_completion()` registers the output in `registry` (unblocking dependents on the same worker) and records the completion in `shared_state` (making it visible to the main process) — in a single call, with no callback indirection.
+After the HTTP response is processed, `on_completion()`:
+1. Registers the output in `registry` (unblocking dependents on the same worker)
+2. Records the completion in `worker_tracker`
+3. Checks if this was the last node in the session; if so, pushes completion notification to `completion_queue`
 
-**`SessionGraphState`** — tracks graph traversal per session (ready, dispatched, completed node sets). `check_session_completed()` reads from `shared_state.node_completions` to sync completed nodes into the local graph state, returning `True` when all nodes are accounted for.
+**`SessionGraphState`** — tracks graph traversal per session (ready, dispatched, completed node sets). `check_session_completed()` consumes from `completion_queue` to update the local graph state, returning `True` when all nodes are accounted for.
 
 ### Session-to-Worker Affinity
 
 All events of a session are routed to the same worker process. This is set by assigning `prefered_worker_id` on each `LazyLoadInferenceAPIData` in `get_session_events()`. Worker affinity means:
 - `NodeOutputRegistry` can use plain dicts with no IPC overhead.
+- `WorkerSessionTracker` can use plain dicts with no IPC overhead.
 - `asyncio.Event` waiting works correctly (all coroutines of a session share the same event loop).
 - Output substitution always finds predecessor outputs in the local cache.
-- `SessionSharedState` only needs to carry completion signals and failure flags — not actual output data.
+- Only session completion notifications need cross-process communication (via queue).
 
 ### Failure Handling
 
-If an LLM call fails (HTTP error), `process_failure()` calls `shared_state.mark_session_failed()`. Any dependent nodes check `shared_state.is_session_failed()` at the pre- and post-wait points in `wait_for_predecessors_and_substitute()`, set `skip_request = True`, and call `on_completion()` with an empty output — propagating the failure through the graph without issuing further HTTP requests. The main process detects the failed session via the same `shared_state` when it polls `check_session_completed()`.
+If an LLM call fails (HTTP error), `process_failure()` calls `worker_tracker.mark_session_failed()`. Any dependent nodes check `worker_tracker.is_session_failed()` at the pre- and post-wait points in `wait_for_predecessors_and_substitute()`, set `skip_request = True`, and call `on_completion()` with an empty output — propagating the failure through the graph without issuing further HTTP requests. The main process detects the failed session when the completion notification arrives via the queue (with `failed: True` status).
 
 ### Configuration
 
