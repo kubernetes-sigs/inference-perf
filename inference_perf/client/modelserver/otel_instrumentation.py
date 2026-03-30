@@ -35,6 +35,7 @@ try:
     from opentelemetry.trace import Status, StatusCode, Span
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.id_generator import IdGenerator
     from opentelemetry.semconv_ai import SpanAttributes
     from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
     
@@ -45,8 +46,38 @@ except ImportError:
     Span = None  # type: ignore
     SpanAttributes = None  # type: ignore
     TraceContextTextMapPropagator = None  # type: ignore
+    IdGenerator = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+class CryptographicIdGenerator(IdGenerator):
+    """
+    Custom ID generator that uses os.urandom() for cryptographically secure random IDs.
+    
+    This bypasses Python's random module completely, ensuring unique Trace and Span IDs
+    even when the random seed is fixed for reproducibility in other parts of the application.
+    
+    OpenTelemetry spec requires that IDs cannot be 0, so we regenerate if we get 0.
+    """
+    
+    def generate_span_id(self) -> int:
+        """Generate a random 64-bit span ID using os.urandom()."""
+        # Generate 8 random bytes and convert to a 64-bit integer
+        # Ensure the ID is never 0 (OpenTelemetry spec requirement)
+        span_id = 0
+        while span_id == 0:
+            span_id = int.from_bytes(os.urandom(8), byteorder='big')
+        return span_id
+    
+    def generate_trace_id(self) -> int:
+        """Generate a random 128-bit trace ID using os.urandom()."""
+        # Generate 16 random bytes and convert to a 128-bit integer
+        # Ensure the ID is never 0 (OpenTelemetry spec requirement)
+        trace_id = 0
+        while trace_id == 0:
+            trace_id = int.from_bytes(os.urandom(16), byteorder='big')
+        return trace_id
 
 
 class OTelInstrumentation:
@@ -102,8 +133,13 @@ class OTelInstrumentation:
             
             # Create resource with service name
             resource = Resource(attributes={SERVICE_NAME: self.service_name})
-            provider = TracerProvider(resource=resource)
+            
+            # Use custom ID generator to ensure unique IDs even with fixed random seed
+            id_generator = CryptographicIdGenerator()
+            provider = TracerProvider(resource=resource, id_generator=id_generator)
             trace.set_tracer_provider(provider)
+            
+            logger.info("Using CryptographicIdGenerator for unique trace/span IDs")
             
             # Configure exporter based on otlp_endpoint
             if self.otlp_endpoint:
