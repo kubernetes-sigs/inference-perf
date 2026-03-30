@@ -62,7 +62,7 @@ class openAIModelServerClient(ModelServerClient):
         self.cert_path = cert_path
         self.key_path = key_path
         self.lora_config = lora_config
-        
+
         # Initialize OTEL instrumentation (configured via environment variables)
         self.otel = get_otel_instrumentation()
 
@@ -117,7 +117,7 @@ class openAIModelServerClient(ModelServerClient):
         if self._session is not None:
             await self._session.close()
             self._session = None
-        
+
         # Shutdown OTEL instrumentation to flush pending spans
         if self.otel:
             self.otel.shutdown()
@@ -160,9 +160,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
     def _get_session_otel_context(self, data: InferenceAPIData) -> Optional[Dict[str, str]]:
         """Get session OTEL context if available (for OTel trace replay)."""
 
-        if hasattr(data, 'otel_context') and data.otel_context is not None:
+        if hasattr(data, "otel_context") and data.otel_context is not None:
             return data.otel_context
-        
+
         return None
 
     def _record_otel_metrics(
@@ -183,34 +183,34 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 "completion_tokens": response_info.output_tokens,
                 "total_latency": end_time - start_time,
             }
-            
+
             # Calculate TTFT if token times are available
             if response_info.output_token_times and len(response_info.output_token_times) > 0:
                 ttft = response_info.output_token_times[0] - start_time
                 otel_response_info["time_to_first_token"] = ttft
-                
+
                 # Calculate average TPOT if we have multiple tokens
                 if len(response_info.output_token_times) > 1:
                     total_decode_time = response_info.output_token_times[-1] - response_info.output_token_times[0]
                     num_decode_tokens = len(response_info.output_token_times) - 1
                     tpot = total_decode_time / num_decode_tokens if num_decode_tokens > 0 else 0
                     otel_response_info["time_per_output_token"] = tpot
-            
+
             # Add finish reason from extra_info if available
             if "finish_reason" in response_info.extra_info:
                 otel_response_info["finish_reason"] = response_info.extra_info["finish_reason"]
-            
+
             # Extract input and output following GenAI semantic conventions
             try:
                 # Extract input based on request type
-                if hasattr(data, 'messages'):
+                if hasattr(data, "messages"):
                     # Chat completion - serialize messages as JSON string (gen_ai.input.messages)
                     input_messages = [{"role": msg.role, "content": msg.content} for msg in data.messages]
                     otel_response_info["input_messages"] = json.dumps(input_messages)
-                elif hasattr(data, 'prompt'):
+                elif hasattr(data, "prompt"):
                     # Text completion - store as prompt string (gen_ai.prompt)
                     otel_response_info["input_prompt"] = data.prompt
-                
+
                 # Extract output text (gen_ai.output.text)
                 if response and response.status == 200 and response_content:
                     response_json = json.loads(response_content)
@@ -226,7 +226,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             otel_response_info["output_text"] = output_text
             except Exception as e:
                 logger.debug(f"Failed to extract messages for OTEL: {e}")
-            
+
             self.client.otel.record_response_metrics(
                 span=span,
                 response_info=otel_response_info,
@@ -263,7 +263,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
             headers.update(self.client.api_config.headers)
 
         request_data = json.dumps(payload)
-        
+
         # Determine operation name based on API type
         operation_name = "chat.completions" if self.client.api_config.type == APIType.Chat else "completions"
 
@@ -290,7 +290,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     try:
                         # Read response body once to avoid double-read issue
                         response_content = await response.text()
-                        
+
                         if response.status == 200:
                             response_info = await data.process_response(
                                 response=response,
@@ -323,7 +323,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
 
             end_time = time.perf_counter()
-            
+
             # Record OTEL metrics
             self._record_otel_metrics(
                 span=span,
