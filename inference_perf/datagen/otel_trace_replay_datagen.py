@@ -154,9 +154,11 @@ class SessionSharedState:
         if manager is not None:
             self._node_completions: Dict[str, float] = manager.dict()  # type: ignore[assignment]
             self._failed_sessions: Dict[str, bool] = manager.dict()  # type: ignore[assignment]
+            self._session_otel_contexts: Dict[str, Dict[str, str]] = manager.dict()  # type: ignore[assignment]
         else:
             self._node_completions = {}
             self._failed_sessions = {}
+            self._session_otel_contexts = {}
 
     # -- node completion --
 
@@ -183,6 +185,23 @@ class SessionSharedState:
     def is_session_failed(self, session_id: str) -> bool:
         """Return True if the session has been marked as failed."""
         return self._failed_sessions.get(session_id, False)
+
+    # -- OTEL context propagation --
+
+    def store_session_otel_context(self, session_id: str, context_dict: Dict[str, str]) -> None:
+        """Store serialized OTEL context for a session. Called from main process."""
+        self._session_otel_contexts[session_id] = context_dict
+        logger.debug(f"Stored OTEL context for session {session_id}")
+
+    def get_session_otel_context(self, session_id: str) -> Optional[Dict[str, str]]:
+        """Retrieve serialized OTEL context for a session. Called from worker processes."""
+        return self._session_otel_contexts.get(session_id)
+    
+    def cleanup_session_otel_context(self, session_id: str) -> None:
+        """Remove OTEL context after session completes to prevent memory leak."""
+        if session_id in self._session_otel_contexts:
+            del self._session_otel_contexts[session_id]
+            logger.debug(f"Cleaned up OTEL context for session {session_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +363,23 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
     # Flag to skip HTTP request (set when session fails)
     skip_request: bool = False
 
+    def _extract_session_id(self) -> str:
+        """Extract session_id from qualified node_id.
+        
+        Returns:
+            The session_id portion of the node_id
+        """
+        return self.node_id.split(":")[0] if ":" in self.node_id else self.node_id
+
+    def get_session_otel_context(self) -> Optional[Dict[str, str]]:
+        """Retrieve the OTEL context for this request's session.
+        
+        Returns:
+            Serialized OTEL context dict, or None if not available
+        """
+        session_id = self._extract_session_id()
+        return self.shared_state.get_session_otel_context(session_id)
+
     async def wait_for_predecessors_and_substitute(self) -> None:
         """Wait for all predecessor nodes to complete, then substitute output segments.
 
@@ -355,7 +391,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         enforced by session-to-worker affinity in get_session_events().
         """
         # Extract session_id from node_id (format: "session_id:node_xxx")
-        session_id = self.node_id.split(":")[0] if ":" in self.node_id else self.node_id
+        session_id = self._extract_session_id()
 
         # Pre-wait check: if session already failed, skip immediately.
         if self.shared_state.is_session_failed(session_id):
@@ -588,7 +624,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         logger.error(f"Request failed for node {self.node_id}: {type(exception).__name__}: {str(exception)}")
 
         # Extract session_id from node_id (format: "session_id:node_xxx")
-        session_id = self.node_id.split(":")[0] if ":" in self.node_id else self.node_id
+        session_id = self._extract_session_id()
 
         # Mark the entire session as failed to prevent other nodes from processing
         self.shared_state.mark_session_failed(session_id)
