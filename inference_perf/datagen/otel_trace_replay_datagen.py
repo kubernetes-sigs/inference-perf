@@ -1211,11 +1211,42 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
         logger.info(f"Activated session {session_id} with {len(root_nodes)} root nodes")
 
+    def _process_completion_queue(self) -> None:
+        """Process all pending completion notifications from the queue.
+        
+        Internal helper that drains the completion queue and updates
+        session_graph_state for all completed sessions.
+        """
+        if self.session_completion_queue is None:
+            return
+        
+        try:
+            while True:
+                completion_data = self.session_completion_queue.get_nowait()
+                completed_session_id = completion_data["session_id"]
+                
+                # Update state for the completed session
+                completed_state = self.session_graph_state.get(completed_session_id)
+                if completed_state is not None:
+                    # Mark all nodes as completed
+                    node_times = completion_data.get("node_completion_times", {})
+                    for qualified_node_id, completion_time in node_times.items():
+                        node_id = qualified_node_id.split(":", 1)[1] if ":" in qualified_node_id else qualified_node_id
+                        if node_id not in completed_state.completed_nodes:
+                            completed_state.completed_nodes.add(node_id)
+                            completed_state.node_completion_times[node_id] = completion_time
+                    
+                    completed_state.is_complete = True
+                    logger.info(f"Session {completed_session_id} marked complete from queue notification")
+        except Exception:
+            # Queue is empty, no more completions to process
+            pass
+
     def check_session_completed(self, session_id: str) -> bool:
         """Check if a specific session has completed all its nodes.
 
-        This method now consumes from the completion queue instead of polling shared_state.
-        Workers push completion notifications when the last node of a session finishes.
+        Processes all pending completion notifications first, then checks
+        the requested session's status.
 
         Args:
             session_id: The session ID to check
@@ -1223,38 +1254,14 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         Returns:
             True if all nodes in the session have completed, False otherwise
         """
+        # Process all pending completions first
+        self._process_completion_queue()
+        
+        # Then check the requested session
         state = self.session_graph_state.get(session_id)
         if state is None:
             logger.warning(f"Attempted to check unknown session: {session_id}")
             return False
-
-        # If already marked complete, return immediately
-        if state.is_complete:
-            return True
-
-        # Try to consume completion notifications from the queue (non-blocking)
-        if self.session_completion_queue is not None:
-            try:
-                while True:
-                    completion_data = self.session_completion_queue.get_nowait()
-                    completed_session_id = completion_data["session_id"]
-
-                    # Update state for the completed session
-                    completed_state = self.session_graph_state.get(completed_session_id)
-                    if completed_state is not None:
-                        # Mark all nodes as completed
-                        node_times = completion_data.get("node_completion_times", {})
-                        for qualified_node_id, completion_time in node_times.items():
-                            node_id = qualified_node_id.split(":", 1)[1] if ":" in qualified_node_id else qualified_node_id
-                            if node_id not in completed_state.completed_nodes:
-                                completed_state.completed_nodes.add(node_id)
-                                completed_state.node_completion_times[node_id] = completion_time
-
-                        completed_state.is_complete = True
-                        logger.info(f"Session {completed_session_id} marked complete from queue notification")
-            except Exception:
-                # Queue is empty, no more completions to process
-                pass
 
         return state.is_complete
 
