@@ -87,19 +87,27 @@ class OTelInstrumentation:
     Provides tracing capabilities following GenAI semantic conventions.
     """
 
-    def __init__(self):
+    def __init__(self, service_name: Optional[str] = None, enabled: Optional[bool] = None):
         """
         Initialize OTEL instrumentation.
 
-        Reads configuration from environment variables:
+        Args:
+            service_name: Service name for tracing (overrides OTEL_SERVICE_NAME env var)
+            enabled: Whether to enable tracing (overrides OTEL_TRACES_ENABLED env var)
+
+        Reads configuration from environment variables if not provided:
         - OTEL_TRACES_ENABLED: Set to "true" to enable tracing (default: false)
         - OTEL_EXPORTER_OTLP_ENDPOINT: OTLP endpoint (e.g., "http://localhost:4317")
         - OTEL_SERVICE_NAME: Service name (default: "inference-perf")
         - OTEL_TRACE_PER_STAGE: Set to "true" to create one trace per stage instead of per session (default: false)
         """
-        # Read configuration from environment variables
-        enabled = os.getenv("OTEL_TRACES_ENABLED", "false").lower() == "true"
-        self.service_name = os.getenv("OTEL_SERVICE_NAME", "inference-perf")
+        # Read configuration from environment variables or use provided values
+        if enabled is None:
+            enabled = os.getenv("OTEL_TRACES_ENABLED", "false").lower() == "true"
+        if service_name is None:
+            service_name = os.getenv("OTEL_SERVICE_NAME", "inference-perf")
+        
+        self.service_name = service_name
         self.otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         self.trace_per_stage = os.getenv("OTEL_TRACE_PER_STAGE", "false").lower() == "true"
 
@@ -465,11 +473,15 @@ class OTelInstrumentation:
 _global_instrumentation: Optional[OTelInstrumentation] = None
 
 
-def get_otel_instrumentation() -> OTelInstrumentation:
+def get_otel_instrumentation(service_name: Optional[str] = None, enabled: Optional[bool] = None) -> OTelInstrumentation:
     """
     Get or create the global OTEL instrumentation instance.
 
-    Configuration is read from environment variables:
+    Args:
+        service_name: Service name for tracing (overrides OTEL_SERVICE_NAME env var)
+        enabled: Whether to enable tracing (overrides OTEL_TRACES_ENABLED env var)
+
+    Configuration is read from environment variables if not provided:
     - OTEL_TRACES_ENABLED: Set to "true" to enable tracing
     - OTEL_EXPORTER_OTLP_ENDPOINT: OTLP endpoint (e.g., "http://localhost:4317")
     - OTEL_SERVICE_NAME: Service name (default: "inference-perf")
@@ -480,9 +492,54 @@ def get_otel_instrumentation() -> OTelInstrumentation:
     global _global_instrumentation
 
     if _global_instrumentation is None:
-        _global_instrumentation = OTelInstrumentation()
+        _global_instrumentation = OTelInstrumentation(service_name=service_name, enabled=enabled)
 
     return _global_instrumentation
+
+
+def configure_otel(service_name: Optional[str] = None, enabled: Optional[bool] = None) -> None:
+    """
+    Configure the global OTEL instrumentation instance.
+
+    This function allows programmatic configuration of OTEL settings,
+    overriding environment variables. It will recreate the global instance
+    with the new settings.
+
+    Args:
+        service_name: Service name for tracing (overrides OTEL_SERVICE_NAME env var)
+        enabled: Whether to enable tracing (overrides OTEL_TRACES_ENABLED env var)
+    """
+    global _global_instrumentation
+
+    # Shutdown existing instance if it exists
+    if _global_instrumentation is not None:
+        _global_instrumentation.shutdown()
+
+    # Temporarily override environment variables
+    original_service_name = os.getenv("OTEL_SERVICE_NAME")
+    original_enabled = os.getenv("OTEL_TRACES_ENABLED")
+
+    try:
+        if service_name is not None:
+            os.environ["OTEL_SERVICE_NAME"] = service_name
+        if enabled is not None:
+            os.environ["OTEL_TRACES_ENABLED"] = "true" if enabled else "false"
+
+        # Create new instance with updated configuration
+        _global_instrumentation = OTelInstrumentation()
+
+    finally:
+        # Restore original environment variables
+        if service_name is not None:
+            if original_service_name is not None:
+                os.environ["OTEL_SERVICE_NAME"] = original_service_name
+            else:
+                os.environ.pop("OTEL_SERVICE_NAME", None)
+        if enabled is not None:
+            if original_enabled is not None:
+                os.environ["OTEL_TRACES_ENABLED"] = original_enabled
+            else:
+                os.environ.pop("OTEL_TRACES_ENABLED", None)
 
 
 # Made with Bob
