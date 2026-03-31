@@ -189,18 +189,7 @@ class Worker(mp.Process):
                             self.active_requests_counter.value += 1
                             inflight = True
 
-                        error = await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
-
-                        # Check if this was an OTel request and if it failed (HTTP error)
-                        if error is not None and hasattr(request_data, "process_failure"):
-                            exception = Exception(f"{error.error_type}: {error.error_msg}")
-                            await request_data.process_failure(
-                                response=None,
-                                config=self.client.api_config,
-                                tokenizer=self.client.tokenizer,
-                                exception=exception,
-                                lora_adapter=lora_adapter,
-                            )
+                        await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
                     except CancelledError:
                         pass
                     except Exception as e:
@@ -417,7 +406,7 @@ class LoadGenerator:
 
         # Start stage-level span if trace_per_stage is enabled
         if otel_instr.trace_per_stage:
-            stage_info = {
+            stage_info: Dict[str, Union[int, float]] = {
                 "num_sessions": effective_num_sessions,
                 "concurrent_sessions": concurrent_sessions,
             }
@@ -465,6 +454,8 @@ class LoadGenerator:
             nonlocal sessions_dispatched, last_dispatch_time, next_dispatch_time
 
             # Get session info
+            if not isinstance(self.datagen, SessionGenerator):
+                raise TypeError("Expected SessionGenerator for session-based operations")
             session_info = self.datagen.get_session_info(session_idx)
             session_id = session_info["session_id"]
 
@@ -501,7 +492,8 @@ class LoadGenerator:
                 lazy_data.otel_context = context_dict  # Embed OTEL context in data
 
                 event_time = time.perf_counter()
-                request_queue.put((stage_id, lazy_data, event_time, lora_adapter), worker_id)
+                queue_data = RequestQueueData(stage_id, lazy_data, event_time, lora_adapter)
+                request_queue.put(queue_data, worker_id)
                 dispatched_count += 1
 
             # Update session pool
@@ -684,11 +676,8 @@ class LoadGenerator:
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if self.datagen.trace is not None:
-            if isinstance(self.datagen, DataGenerator):
-                num_requests = self.datagen.get_request_count()
-            else:
-                raise TypeError("run_stage with trace requires DataGenerator")
+        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
+            num_requests = self.datagen.get_request_count()
         else:
             num_requests = int(rate * duration)
 

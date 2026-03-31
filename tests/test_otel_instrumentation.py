@@ -21,7 +21,7 @@ from inference_perf.client.modelserver.otel_instrumentation import (
 )
 
 
-def test_otel_instrumentation_init():
+def test_otel_instrumentation_init() -> None:
     """Test OTEL instrumentation initialization."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
     assert otel.service_name == "test-service"
@@ -29,7 +29,7 @@ def test_otel_instrumentation_init():
     assert isinstance(otel.enabled, bool)
 
 
-def test_otel_instrumentation_disabled():
+def test_otel_instrumentation_disabled() -> None:
     """Test OTEL instrumentation when disabled."""
     otel = OTelInstrumentation(service_name="test-service", enabled=False)
     assert otel.service_name == "test-service"
@@ -37,7 +37,7 @@ def test_otel_instrumentation_disabled():
     assert otel.tracer is None
 
 
-def test_trace_llm_request_disabled():
+def test_trace_llm_request_disabled() -> None:
     """Test tracing when OTEL is disabled."""
     otel = OTelInstrumentation(service_name="test-service", enabled=False)
 
@@ -49,7 +49,7 @@ def test_trace_llm_request_disabled():
         assert span is None
 
 
-def test_record_response_metrics_disabled():
+def test_record_response_metrics_disabled() -> None:
     """Test recording metrics when OTEL is disabled."""
     otel = OTelInstrumentation(service_name="test-service", enabled=False)
 
@@ -61,7 +61,7 @@ def test_record_response_metrics_disabled():
     )
 
 
-def test_get_otel_instrumentation():
+def test_get_otel_instrumentation() -> None:
     """Test getting global OTEL instrumentation instance."""
     otel1 = get_otel_instrumentation(service_name="test-service", enabled=True)
     otel2 = get_otel_instrumentation(service_name="test-service", enabled=True)
@@ -70,7 +70,7 @@ def test_get_otel_instrumentation():
     assert otel1 is otel2
 
 
-def test_configure_otel():
+def test_configure_otel() -> None:
     """Test configuring global OTEL instrumentation."""
     configure_otel(service_name="new-service", enabled=True)
     otel = get_otel_instrumentation()
@@ -78,7 +78,7 @@ def test_configure_otel():
     assert otel.service_name == "new-service"
 
 
-def test_trace_llm_request_with_data():
+def test_trace_llm_request_with_data() -> None:
     """Test tracing with request data."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
 
@@ -100,7 +100,7 @@ def test_trace_llm_request_with_data():
             pass
 
 
-def test_record_response_metrics_with_data():
+def test_record_response_metrics_with_data() -> None:
     """Test recording response metrics with data."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
 
@@ -126,7 +126,7 @@ def test_record_response_metrics_with_data():
         )
 
 
-def test_record_response_metrics_with_error():
+def test_record_response_metrics_with_error() -> None:
     """Test recording response metrics with error."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
 
@@ -140,6 +140,3 @@ def test_record_response_metrics_with_error():
             response_info=None,
             error="Connection timeout",
         )
-
-
-# Made with Bob

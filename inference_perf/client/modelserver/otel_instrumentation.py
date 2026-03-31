@@ -42,11 +42,10 @@ try:
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
-    trace = None  # type: ignore
-    Span = None  # type: ignore
-    SpanAttributes = None  # type: ignore
-    TraceContextTextMapPropagator = None  # type: ignore
-    IdGenerator = None  # type: ignore
+    trace = None  # type: ignore[assignment]
+    SpanAttributes = None  # type: ignore[assignment,misc]
+    TraceContextTextMapPropagator = None  # type: ignore[assignment,misc]
+    IdGenerator = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +184,7 @@ class OTelInstrumentation:
         self._provider = provider  # Store provider for shutdown
         logger.info(f"OTEL instrumentation enabled for service: {self.service_name}")
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """Shutdown the tracer provider and flush all pending spans."""
         if hasattr(self, "_provider") and self._provider:
             try:
@@ -202,7 +201,7 @@ class OTelInstrumentation:
         model_name: str,
         request_data: Optional[Dict[str, Any]] = None,
         parent_context: Optional[Dict[str, str]] = None,
-    ):
+    ) -> Any:
         """
         Context manager for tracing LLM requests.
 
@@ -221,7 +220,7 @@ class OTelInstrumentation:
 
         # Extract parent context if provided
         ctx = None
-        if parent_context and TraceContextTextMapPropagator:
+        if parent_context and OTEL_AVAILABLE and TraceContextTextMapPropagator is not None:
             try:
                 propagator = TraceContextTextMapPropagator()
                 ctx = propagator.extract(parent_context)
@@ -232,7 +231,7 @@ class OTelInstrumentation:
         with self.tracer.start_as_current_span(f"llm.{operation_name}", kind=trace.SpanKind.CLIENT, context=ctx) as span:
             try:
                 # Set standard GenAI attributes using semantic conventions
-                if SpanAttributes:
+                if OTEL_AVAILABLE and SpanAttributes is not None:
                     # Core GenAI attributes
                     span.set_attribute(SpanAttributes.LLM_SYSTEM, "openai_compatible")
                     span.set_attribute(SpanAttributes.LLM_REQUEST_MODEL, model_name)
@@ -283,7 +282,7 @@ class OTelInstrumentation:
             else:
                 span.set_status(Status(StatusCode.OK))
 
-            if response_info and SpanAttributes:
+            if response_info and OTEL_AVAILABLE and SpanAttributes is not None:
                 # Token usage
                 if "prompt_tokens" in response_info:
                     span.set_attribute(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, response_info["prompt_tokens"])
@@ -350,7 +349,7 @@ class OTelInstrumentation:
 
         # Extract parent context if provided
         ctx = None
-        if parent_context and TraceContextTextMapPropagator:
+        if parent_context and OTEL_AVAILABLE and TraceContextTextMapPropagator is not None:
             try:
                 propagator = TraceContextTextMapPropagator()
                 ctx = propagator.extract(parent_context)
@@ -375,7 +374,7 @@ class OTelInstrumentation:
 
         # Serialize the span context for cross-process propagation
         context_dict: Dict[str, str] = {}
-        if TraceContextTextMapPropagator:
+        if OTEL_AVAILABLE and TraceContextTextMapPropagator is not None:
             propagator = TraceContextTextMapPropagator()
             # Create a context with this span as current
             ctx = trace.set_span_in_context(span)
@@ -420,7 +419,7 @@ class OTelInstrumentation:
 
         # Serialize the span context for cross-process propagation
         context_dict: Dict[str, str] = {}
-        if TraceContextTextMapPropagator:
+        if OTEL_AVAILABLE and TraceContextTextMapPropagator is not None:
             propagator = TraceContextTextMapPropagator()
             # Create a context with this span as current
             ctx = trace.set_span_in_context(span)
@@ -540,6 +539,3 @@ def configure_otel(service_name: Optional[str] = None, enabled: Optional[bool] =
                 os.environ["OTEL_TRACES_ENABLED"] = original_enabled
             else:
                 os.environ.pop("OTEL_TRACES_ENABLED", None)
-
-
-# Made with Bob

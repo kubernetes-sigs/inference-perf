@@ -29,7 +29,7 @@ import json
 from typing import Dict, List, Any, Union, Optional
 
 
-def reconstruct_llm_output(response_data: Union[str, Dict, List]) -> str:
+def reconstruct_llm_output(response_data: Union[str, Dict[str, Any], List[Any]]) -> str:
     """
     Reconstruct the raw LLM output from any parsed response structure.
 
@@ -56,15 +56,17 @@ def reconstruct_llm_output(response_data: Union[str, Dict, List]) -> str:
     """
 
     # Parse if string
+    data_to_process: Union[str, Dict[str, Any], List[Any]] = response_data
     if isinstance(response_data, str):
         try:
-            response_data = json.loads(response_data)
+            parsed_data: Union[Dict[str, Any], List[Any]] = json.loads(response_data)
+            data_to_process = parsed_data
         except json.JSONDecodeError:
             # If it's not JSON, assume it's already raw text
             return response_data
 
     # Extract the message content
-    message = _extract_message(response_data)
+    message = _extract_message(data_to_process)
 
     if not message:
         return ""
@@ -87,7 +89,7 @@ def reconstruct_llm_output(response_data: Union[str, Dict, List]) -> str:
     return "\n".join(output_parts) if output_parts else ""
 
 
-def _extract_message(data: Any) -> Optional[Dict]:
+def _extract_message(data: Any) -> Optional[Dict[str, Any]]:
     """
     Extract the assistant message from various response formats.
 
@@ -109,14 +111,18 @@ def _extract_message(data: Any) -> Optional[Dict]:
     elif isinstance(data, dict):
         # Check for OpenAI choices format
         if "choices" in data and data["choices"]:
-            choice = data["choices"][0]
+            choice: Any = data["choices"][0]
             if "message" in choice:
-                return choice["message"]
-            return choice
+                result: Dict[str, Any] = choice["message"]
+                return result
+            # Cast choice to Dict[str, Any] since we know it's a dict at this point
+            choice_dict: Dict[str, Any] = choice
+            return choice_dict
 
         # Check for direct message key
         if "message" in data:
-            return data["message"]
+            msg: Dict[str, Any] = data["message"]
+            return msg
 
         # Check if data itself is a message
         if "role" in data or "content" in data or "parts" in data or "tool_calls" in data:
@@ -125,7 +131,7 @@ def _extract_message(data: Any) -> Optional[Dict]:
     return None
 
 
-def _extract_text_content(message: Dict) -> str:
+def _extract_text_content(message: Dict[str, Any]) -> str:
     """
     Extract text content from a message.
 
@@ -167,7 +173,7 @@ def _extract_text_content(message: Dict) -> str:
     return "\n".join(text_parts)
 
 
-def _extract_tool_calls(message: Dict) -> List[Dict]:
+def _extract_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract tool calls from a message.
 
@@ -206,7 +212,7 @@ def _extract_tool_calls(message: Dict) -> List[Dict]:
     return tool_calls
 
 
-def _format_tool_call(tool_call: Dict) -> str:
+def _format_tool_call(tool_call: Dict[str, Any]) -> str:
     """
     Format a tool call as the LLM would have generated it.
 
@@ -223,7 +229,7 @@ def _format_tool_call(tool_call: Dict) -> str:
     return f"<|tool_call|>{function_name}<|tool_args|>{arguments}<|end|>"
 
 
-def reconstruct_each_part_in_message_info(message_info):
+def reconstruct_each_part_in_message_info(message_info: Dict[str, Any]) -> Dict[str, Any]:
     # towards matching output messages with input messages, transform each part to a stand alone text message
     message_info["parts_text"] = []
     if "parts" not in message_info:
@@ -236,7 +242,7 @@ def reconstruct_each_part_in_message_info(message_info):
     return message_info
 
 
-def reconstruct_llm_input(input_message: Union[str, Dict]) -> str:
+def reconstruct_llm_input(input_message: Union[str, Dict[str, Any]]) -> str:
     """
     Reconstruct the raw LLM input from a single parsed message structure.
 
@@ -263,27 +269,29 @@ def reconstruct_llm_input(input_message: Union[str, Dict]) -> str:
         Hello
     """
     # Parse if string
+    message_to_process: Union[str, Dict[str, Any]] = input_message
     if isinstance(input_message, str):
         try:
-            input_message = json.loads(input_message)
+            parsed_input: Dict[str, Any] = json.loads(input_message)
+            message_to_process = parsed_input
         except json.JSONDecodeError:
             # If it's not JSON, return as-is
             return input_message
 
-    if not isinstance(input_message, dict):
+    if not isinstance(message_to_process, dict):
         return ""
 
     # Extract content (no role prefix)
-    content = input_message.get("content")
+    content = message_to_process.get("content")
 
     if content is None:
         # Check for parts field (OTEL format)
-        if "parts" in input_message:
-            return _extract_content_from_parts(input_message["parts"])
+        if "parts" in message_to_process:
+            return _extract_content_from_parts(message_to_process["parts"])
 
         # Check for tool_calls field (assistant messages with only tool calls)
-        if "tool_calls" in input_message:
-            tool_calls = _extract_tool_calls(input_message)
+        if "tool_calls" in message_to_process:
+            tool_calls = _extract_tool_calls(message_to_process)
             if tool_calls:
                 return "\n".join(_format_tool_call(tc) for tc in tool_calls)
 
@@ -297,7 +305,7 @@ def reconstruct_llm_input(input_message: Union[str, Dict]) -> str:
     return ""
 
 
-def _extract_content_from_parts(parts: List[Dict]) -> str:
+def _extract_content_from_parts(parts: List[Dict[str, Any]]) -> str:
     """Extract text content from OTEL parts format."""
     content_parts = []
 
@@ -341,7 +349,7 @@ def _extract_content_from_parts(parts: List[Dict]) -> str:
     return "\n".join(content_parts)
 
 
-def _extract_content_from_list(content_list: List) -> str:
+def _extract_content_from_list(content_list: List[Any]) -> str:
     """Extract text content from content list format."""
     content_parts = []
 
@@ -394,7 +402,9 @@ def estimate_token_count(text: str, chars_per_token: float = 4.0) -> int:
     return int(len(text) / chars_per_token)
 
 
-def reconstruct_with_token_estimate(response_data: Union[str, Dict, List], chars_per_token: float = 4.0) -> Dict[str, Any]:
+def reconstruct_with_token_estimate(
+    response_data: Union[str, Dict[str, Any], List[Any]], chars_per_token: float = 4.0
+) -> Dict[str, Any]:
     """
     Reconstruct LLM output and provide token estimate.
 
@@ -411,7 +421,9 @@ def reconstruct_with_token_estimate(response_data: Union[str, Dict, List], chars
     return {"raw_output": raw_output, "estimated_tokens": estimated_tokens, "character_count": len(raw_output)}
 
 
-def reconstruct_input_with_token_estimate(input_message: Union[str, Dict], chars_per_token: float = 4.0) -> Dict[str, Any]:
+def reconstruct_input_with_token_estimate(
+    input_message: Union[str, Dict[str, Any]], chars_per_token: float = 4.0
+) -> Dict[str, Any]:
     """
     Reconstruct LLM input and provide token estimate.
 
@@ -606,5 +618,3 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("All examples completed!")
     print("=" * 80)
-
-# Made with Bob
