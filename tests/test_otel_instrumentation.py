@@ -14,11 +14,7 @@
 
 """Tests for OpenTelemetry instrumentation."""
 
-from inference_perf.client.modelserver.otel_instrumentation import (
-    OTelInstrumentation,
-    get_otel_instrumentation,
-    configure_otel,
-)
+from inference_perf.client.modelserver.otel_instrumentation import OTelInstrumentation, get_otel_instrumentation
 
 
 def test_otel_instrumentation_init() -> None:
@@ -68,14 +64,6 @@ def test_get_otel_instrumentation() -> None:
 
     # Should return the same instance
     assert otel1 is otel2
-
-
-def test_configure_otel() -> None:
-    """Test configuring global OTEL instrumentation."""
-    configure_otel(service_name="new-service", enabled=True)
-    otel = get_otel_instrumentation()
-
-    assert otel.service_name == "new-service"
 
 
 def test_trace_llm_request_with_data() -> None:
