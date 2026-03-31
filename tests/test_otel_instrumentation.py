@@ -41,7 +41,7 @@ def test_otel_instrumentation_disabled():
 def test_trace_llm_request_disabled():
     """Test tracing when OTEL is disabled."""
     otel = OTelInstrumentation(service_name="test-service", enabled=False)
-    
+
     with otel.trace_llm_request(
         operation_name="chat.completions",
         model_name="test-model",
@@ -53,7 +53,7 @@ def test_trace_llm_request_disabled():
 def test_record_response_metrics_disabled():
     """Test recording metrics when OTEL is disabled."""
     otel = OTelInstrumentation(service_name="test-service", enabled=False)
-    
+
     # Should not raise an error
     otel.record_response_metrics(
         span=None,
@@ -66,7 +66,7 @@ def test_get_otel_instrumentation():
     """Test getting global OTEL instrumentation instance."""
     otel1 = get_otel_instrumentation(service_name="test-service", enabled=True)
     otel2 = get_otel_instrumentation(service_name="test-service", enabled=True)
-    
+
     # Should return the same instance
     assert otel1 is otel2
 
@@ -75,21 +75,21 @@ def test_configure_otel():
     """Test configuring global OTEL instrumentation."""
     configure_otel(service_name="new-service", enabled=True)
     otel = get_otel_instrumentation()
-    
+
     assert otel.service_name == "new-service"
 
 
 def test_trace_llm_request_with_data():
     """Test tracing with request data."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
-    
+
     request_data = {
         "max_tokens": 100,
         "temperature": 0.7,
         "top_p": 0.9,
         "stream": True,
     }
-    
+
     with otel.trace_llm_request(
         operation_name="chat.completions",
         model_name="test-model",
@@ -104,7 +104,7 @@ def test_trace_llm_request_with_data():
 def test_record_response_metrics_with_data():
     """Test recording response metrics with data."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
-    
+
     response_info = {
         "prompt_tokens": 50,
         "completion_tokens": 100,
@@ -114,7 +114,7 @@ def test_record_response_metrics_with_data():
         "finish_reason": "stop",
         "response_id": "test-123",
     }
-    
+
     with otel.trace_llm_request(
         operation_name="chat.completions",
         model_name="test-model",
@@ -130,7 +130,7 @@ def test_record_response_metrics_with_data():
 def test_record_response_metrics_with_error():
     """Test recording response metrics with error."""
     otel = OTelInstrumentation(service_name="test-service", enabled=True)
-    
+
     with otel.trace_llm_request(
         operation_name="chat.completions",
         model_name="test-model",
@@ -141,5 +141,6 @@ def test_record_response_metrics_with_error():
             response_info=None,
             error="Connection timeout",
         )
+
 
 # Made with Bob

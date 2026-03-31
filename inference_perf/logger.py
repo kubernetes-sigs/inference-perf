@@ -31,7 +31,7 @@ def setup_logging(level: str) -> None:
     if numeric_level == logging.DEBUG:
         log_format = "%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s - %(message)s"
     else:
-        log_format =  "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     logging.basicConfig(
         level=numeric_level,

@@ -271,7 +271,7 @@ class NodeOutputRegistry:
 
     def record(self, node_id: str, output_text: str, messages: List[Any]) -> None:
         """Register output for a completed node and wake any async waiters.
-        
+
         Raises:
             ValueError: If node_id has already been recorded (nodes should only complete once)
         """
@@ -280,7 +280,7 @@ class NodeOutputRegistry:
                 f"Node {node_id} has already been recorded. "
                 f"Each node should only complete once. This indicates a bug in the replay logic."
             )
-        
+
         self._node_output_text[node_id] = output_text
         # Always store messages, even if empty list - successors may need to know the node completed
         self._node_input_messages[node_id] = list(messages) if messages else []
