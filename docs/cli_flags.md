@@ -1,0 +1,95 @@
+# Inference-Perf CLI Flags
+
+These command line flags are automatically generated from the internal `Config` schema. You can override any configuration directly from the CLI without using a yaml configuration file.
+
+| Flag | Type | Description |
+| --- | --- | --- |
+| `--api.type` | Enum (completion, chat) | Matches api.type in config |
+| `--api.streaming` | boolean | Matches api.streaming in config |
+| `--api.headers` | JSON | Matches api.headers in config |
+| `--api.slo_unit` | str | Matches api.slo_unit in config |
+| `--api.slo_tpot_header` | str | Matches api.slo_tpot_header in config |
+| `--api.slo_ttft_header` | str | Matches api.slo_ttft_header in config |
+| `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
+| `--api.response_format.name` | str | Matches api.response_format.name in config |
+| `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations) | Matches data.type in config |
+| `--data.path` | str | Matches data.path in config |
+| `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
+| `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
+| `--data.input_distribution.mean` | float | Matches data.input_distribution.mean in config |
+| `--data.input_distribution.std_dev` | float | Matches data.input_distribution.std_dev in config |
+| `--data.input_distribution.total_count` | int | Matches data.input_distribution.total_count in config |
+| `--data.output_distribution.min` | int | Matches data.output_distribution.min in config |
+| `--data.output_distribution.max` | int | Matches data.output_distribution.max in config |
+| `--data.output_distribution.mean` | float | Matches data.output_distribution.mean in config |
+| `--data.output_distribution.std_dev` | float | Matches data.output_distribution.std_dev in config |
+| `--data.output_distribution.total_count` | int | Matches data.output_distribution.total_count in config |
+| `--data.shared_prefix.num_groups` | int | Matches data.shared_prefix.num_groups in config |
+| `--data.shared_prefix.num_prompts_per_group` | int | Matches data.shared_prefix.num_prompts_per_group in config |
+| `--data.shared_prefix.system_prompt_len` | int | Matches data.shared_prefix.system_prompt_len in config |
+| `--data.shared_prefix.question_len` | int | Matches data.shared_prefix.question_len in config |
+| `--data.shared_prefix.output_len` | int | Matches data.shared_prefix.output_len in config |
+| `--data.shared_prefix.question_distribution.min` | int | Matches data.shared_prefix.question_distribution.min in config |
+| `--data.shared_prefix.question_distribution.max` | int | Matches data.shared_prefix.question_distribution.max in config |
+| `--data.shared_prefix.question_distribution.mean` | float | Matches data.shared_prefix.question_distribution.mean in config |
+| `--data.shared_prefix.question_distribution.std_dev` | float | Matches data.shared_prefix.question_distribution.std_dev in config |
+| `--data.shared_prefix.question_distribution.total_count` | int | Matches data.shared_prefix.question_distribution.total_count in config |
+| `--data.shared_prefix.output_distribution.min` | int | Matches data.shared_prefix.output_distribution.min in config |
+| `--data.shared_prefix.output_distribution.max` | int | Matches data.shared_prefix.output_distribution.max in config |
+| `--data.shared_prefix.output_distribution.mean` | float | Matches data.shared_prefix.output_distribution.mean in config |
+| `--data.shared_prefix.output_distribution.std_dev` | float | Matches data.shared_prefix.output_distribution.std_dev in config |
+| `--data.shared_prefix.output_distribution.total_count` | int | Matches data.shared_prefix.output_distribution.total_count in config |
+| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Matches data.shared_prefix.enable_multi_turn_chat in config |
+| `--data.trace.file` | str | Matches data.trace.file in config |
+| `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
+| `--load.type` | Enum (constant, poisson, trace_replay, concurrent) | Matches load.type in config |
+| `--load.interval` | float | Matches load.interval in config |
+| `--load.stages` | string | Matches load.stages in config |
+| `--load.sweep.type` | Enum (geometric, linear) | Matches load.sweep.type in config |
+| `--load.sweep.num_requests` | int | Matches load.sweep.num_requests in config |
+| `--load.sweep.timeout` | float | Matches load.sweep.timeout in config |
+| `--load.sweep.num_stages` | int | Matches load.sweep.num_stages in config |
+| `--load.sweep.stage_duration` | int | Matches load.sweep.stage_duration in config |
+| `--load.sweep.saturation_percentile` | float | Matches load.sweep.saturation_percentile in config |
+| `--load.num_workers` | int | Matches load.num_workers in config |
+| `--load.worker_max_concurrency` | int | Matches load.worker_max_concurrency in config |
+| `--load.worker_max_tcp_connections` | int | Matches load.worker_max_tcp_connections in config |
+| `--load.trace.file` | str | Matches load.trace.file in config |
+| `--load.trace.format` | Enum (AzurePublicDataset) | Matches load.trace.format in config |
+| `--load.circuit_breakers` | JSON | Matches load.circuit_breakers in config |
+| `--load.request_timeout` | float | Matches load.request_timeout in config |
+| `--load.lora_traffic_split` | JSON | Matches load.lora_traffic_split in config |
+| `--load.base_seed` | int | Matches load.base_seed in config |
+| `--metrics.type` | Enum (prometheus, default) | Matches metrics.type in config |
+| `--metrics.prometheus.scrape_interval` | int | Matches metrics.prometheus.scrape_interval in config |
+| `--metrics.prometheus.url` | string | Matches metrics.prometheus.url in config |
+| `--metrics.prometheus.filters` | JSON | Matches metrics.prometheus.filters in config |
+| `--metrics.prometheus.google_managed` | boolean | Matches metrics.prometheus.google_managed in config |
+| `--report.request_lifecycle.summary` | boolean | Matches report.request_lifecycle.summary in config |
+| `--report.request_lifecycle.per_stage` | boolean | Matches report.request_lifecycle.per_stage in config |
+| `--report.request_lifecycle.per_request` | boolean | Matches report.request_lifecycle.per_request in config |
+| `--report.request_lifecycle.per_adapter` | boolean | Matches report.request_lifecycle.per_adapter in config |
+| `--report.request_lifecycle.per_adapter_stage` | boolean | Matches report.request_lifecycle.per_adapter_stage in config |
+| `--report.request_lifecycle.percentiles` | JSON | Matches report.request_lifecycle.percentiles in config |
+| `--report.prometheus.summary` | boolean | Matches report.prometheus.summary in config |
+| `--report.prometheus.per_stage` | boolean | Matches report.prometheus.per_stage in config |
+| `--storage.local_storage.path` | str | Matches storage.local_storage.path in config |
+| `--storage.local_storage.report_file_prefix` | str | Matches storage.local_storage.report_file_prefix in config |
+| `--storage.google_cloud_storage.path` | str | Matches storage.google_cloud_storage.path in config |
+| `--storage.google_cloud_storage.report_file_prefix` | str | Matches storage.google_cloud_storage.report_file_prefix in config |
+| `--storage.google_cloud_storage.bucket_name` | str | Matches storage.google_cloud_storage.bucket_name in config |
+| `--storage.simple_storage_service.path` | str | Matches storage.simple_storage_service.path in config |
+| `--storage.simple_storage_service.report_file_prefix` | str | Matches storage.simple_storage_service.report_file_prefix in config |
+| `--storage.simple_storage_service.bucket_name` | str | Matches storage.simple_storage_service.bucket_name in config |
+| `--server.type` | Enum (vllm, sglang, tgi, mock) | Matches server.type in config |
+| `--server.model_name` | str | Matches server.model_name in config |
+| `--server.base_url` | str | Matches server.base_url in config |
+| `--server.ignore_eos` | boolean | Matches server.ignore_eos in config |
+| `--server.api_key` | str | Matches server.api_key in config |
+| `--server.cert_path` | str | Matches server.cert_path in config |
+| `--server.key_path` | str | Matches server.key_path in config |
+| `--tokenizer.pretrained_model_name_or_path` | str | Matches tokenizer.pretrained_model_name_or_path in config |
+| `--tokenizer.trust_remote_code` | boolean | Matches tokenizer.trust_remote_code in config |
+| `--tokenizer.token` | str | Matches tokenizer.token in config |
+| `--circuit_breakers` | JSON | Matches circuit_breakers in config |

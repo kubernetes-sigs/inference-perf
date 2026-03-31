@@ -100,6 +100,32 @@ You can configure inference-perf to run with different data generation and load 
 
 Refer to the [config.md](./docs/config.md) for documentation on all supported configuration options.
 
+### Quickstart via Command Line Flags
+
+You can override any configuration directly from the CLI without using a YAML file. To use CLI flags, please refer to the [CLI Flags Documentation](./docs/cli_flags.md).
+
+Here are some simple examples to run with CLI flags:
+
+- **Random workload with 10 requests / sec**: Run inference-perf with random datagen and input/output length of 1024/512 tokens mean.
+    ```
+    inference-perf --server.type vllm --server.base_url http://localhost:8000 --data.type random --load.type constant --load.stages '[{"rate": 10, "duration": 10}]' --data.input_distribution.mean 1024 --data.input_distribution.max 2048 --data.output_distribution.mean 512 --data.output_distribution.max 1024 --api.streaming true
+    ```
+
+- **Simple Multi-turn Chat**: Run a multi-turn chat benchmark with shared prefix datagen. num_groups * num_prompts_per_group represent distinct user sessions and duration controls the number of turns per session.
+    ```
+    inference-perf --server.type vllm --server.base_url http://localhost:8000 --data.type shared_prefix --data.shared_prefix.enable_multi_turn_chat true --data.shared_prefix.num_groups 2 --data.shared_prefix.num_prompts_per_group 5 --data.shared_prefix.system_prompt_len 100 --data.shared_prefix.question_len 50 --data.shared_prefix.output_len 50 --load.stages '[{"rate": 10, "duration": 10}]' --api.streaming true
+    ```
+
+- **Trace Replay with Azure Dataset**: Replay a real-world trace with Azure format.
+    ```
+    inference-perf --server.type vllm --server.base_url http://localhost:8000 --load.type trace_replay --load.trace.file AzureLLMInferenceTrace_conv.csv --data.type random --data.trace.file AzureLLMInferenceTrace_conv.csv --load.stages '[{"rate": 1, "duration": 1}]' --api.streaming true
+    ```
+
+- **Run dataset with 100 QPS**: Run ShareGPT or Billsum dataset with 100 QPS.
+    ```
+    inference-perf --server.type vllm --server.base_url http://localhost:8000 --data.type shareGPT --data.path ShareGPT_V3_unfiltered_cleaned_split.json --load.type constant --load.stages '[{"rate": 100, "duration": 60}]' --api.streaming true
+    ```
+
 ### Datasets
 
 Supported datasets include the following:

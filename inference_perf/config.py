@@ -491,14 +491,19 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def read_config(config_file: str) -> Config:
+def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[str, Any]] = None) -> Config:
     logger = logging.getLogger(__name__)
-    logger.info("Using configuration from: %s", config_file)
-    with open(config_file, "r") as stream:
-        cfg = yaml.safe_load(stream)
+    cfg = {}
+    if config_file:
+        logger.info("Using configuration from: %s", config_file)
+        with open(config_file, "r") as stream:
+            cfg = yaml.safe_load(stream) or {}
 
     default_cfg = Config().model_dump(mode="json")
     merged_cfg = deep_merge(default_cfg, cfg)
+
+    if cli_overrides:
+        merged_cfg = deep_merge(merged_cfg, cli_overrides)
 
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:
