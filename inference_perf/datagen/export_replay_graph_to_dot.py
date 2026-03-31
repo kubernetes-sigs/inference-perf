@@ -122,7 +122,7 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
         else:
             fillcolor = "lightblue"
 
-        lines.append(f'    {node_id} [label="{escape_label(label)}", fillcolor={fillcolor}];')
+        lines.append(f'    "{node_id}" [label="{escape_label(label)}", fillcolor={fillcolor}];')
 
     lines.append('')
 
@@ -133,39 +133,56 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     lines.append('        style=filled;')
     lines.append('        color=lightgray;')
     lines.append('        fontsize=12;')
-    lines.append('        legend_causal [label="Causal\\n(output→input)", shape=box, style=filled, fillcolor=white];')
-    lines.append(
-        '        legend_temporal [label="Temporal\\n(timing fallback)", shape=box, style=filled, fillcolor=white];')
-    lines.append('        legend_causal -> legend_temporal [style=bold, color=blue, label=""];')
-    lines.append('        legend_temporal -> legend_causal [style=bold, color=black, label=""];')
+    lines.append('        legend_full [label="Full Match", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_tool_ids [label="Tool Call IDs", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_split [label="Split Parts", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_combined [label="Content+Tools", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_drop [label="Drop Content", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_temporal [label="Temporal", shape=box, style=filled, fillcolor=white];')
+    lines.append('        legend_full -> legend_tool_ids [style=bold, color=blue, label=""];')
+    lines.append('        legend_tool_ids -> legend_split [style=bold, color=cyan, label=""];')
+    lines.append('        legend_split -> legend_combined [style=bold, color=green, label=""];')
+    lines.append('        legend_combined -> legend_drop [style=bold, color=purple, label=""];')
+    lines.append('        legend_drop -> legend_temporal [style=bold, color=orange, label=""];')
+    lines.append('        legend_temporal -> legend_full [style=bold, color=black, label=""];')
     lines.append('    }')
     lines.append('')
 
     # Add edges
     for node_id, node_data in nodes.items():
         predecessor_ids = node_data.get("predecessor_node_ids", [])
-        causal_predecessor_ids = set(node_data.get("causal_predecessor_ids", []))
+        predecessor_dependency_types = node_data.get("predecessor_dependency_types", {})
         wait_ms = node_data.get("wait_ms", 0)
 
         for pred_id in predecessor_ids:
-            is_causal = pred_id in causal_predecessor_ids
+            dep_type = predecessor_dependency_types.get(pred_id, "temporal")
 
-            # Style edges differently based on type
-            if is_causal:
-                # Causal edges: solid line, bold, blue
+            # Style edges differently based on dependency type
+            if dep_type == "full_match":
                 edge_style = 'style=bold, color=blue'
-                edge_type = 'causal'
-            else:
-                # Temporal edges: dashed line, gray
+                edge_label_prefix = "FM"
+            elif dep_type == "tool_call_ids_matched":
+                edge_style = 'style=bold, color=cyan'
+                edge_label_prefix = "TID"
+            elif dep_type == "split_parts_matched":
+                edge_style = 'style=bold, color=green'
+                edge_label_prefix = "SP"
+            elif dep_type == "content_and_split_tools_match":
+                edge_style = 'style=bold, color=purple'
+                edge_label_prefix = "CT"
+            elif dep_type == "drop_content_split_parts":
+                edge_style = 'style=bold, color=orange'
+                edge_label_prefix = "DC"
+            else:  # temporal
                 edge_style = 'style=bold, color=black'
-                edge_type = 'temporal'
+                edge_label_prefix = "T"
 
             # Build edge label
-            edge_label = ""
+            edge_label = edge_label_prefix
             if wait_ms > 0:
                 edge_label += f" +{wait_ms:.0f}ms"
 
-            lines.append(f'    {pred_id} -> {node_id} [{edge_style}, label="{edge_label}"];')
+            lines.append(f'    "{pred_id}" -> "{node_id}" [{edge_style}, label="{edge_label}"];')
 
     lines.append('}')
 

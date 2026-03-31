@@ -124,13 +124,20 @@ def messages_equal(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
     return a.role == b.role and norm_text(message_content_text(a)) == norm_text(message_content_text(b))
 
 
-def output_matches_message(output_text: str, msg: Dict[str, Any]) -> bool:
+def output_matches_message(output_text: str, msg: Dict[str, Any], allow_partial_match=False) -> bool:
     """Return True if msg is an assistant message whose content matches output_text."""
     if msg.role != "assistant":
         return False
     msg_text = norm_text(message_content_text(msg))
     out_text = norm_text(output_text)
-    return msg_text == out_text
+    if msg_text == out_text:
+        return True
+    if not allow_partial_match:
+        return False
+    else: #try partial match
+        if out_text in msg_text: #out_text is entirely contained in msg_text
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -381,27 +388,93 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
 
 # ---------------------------------------------------------------------------
 # Causal dependency detection (message-level)
-# ---------------------------------------------------------------------------
+from enum import Enum
 
-def is_causal_dep(a: RawCall, b: RawCall) -> bool:
-    """Return True if call B causally depends on call A.
+
+class DEPENDENCY_TYPE(Enum):
+    """Types of dependencies between different llm call nodes."""
+    CAUSAL_FULL_MATCH = "full_match" #full text of output a matches the full text of b
+    CAUSAL_TOOL_CALL_IDS_MATCHED = "tool_call_ids_matched" #all tool call IDs from output a appear in b's messages
+    CAUSAL_SPLIT_PARTS_MATCHED = "split_parts_matched" #the output of a is split into parts, each part appears in b's list of messages.
+    CAUSAL_CONTENT_AND_SPLIT_TOOLS_MATCH = "content_and_split_tools_match" #the output of a contains [content, tool_call_1, tool_call_2, etc], b's list of messages contains [content+tool_call_1, content+tool_call_2, etc).
+    CAUSAL_DROP_CONTENT_SPLIT_PARTS = "drop_content_split_parts" #the output of a contains [content, tool_call_1, tool_call_2, etc], b's list of message contains [tool_call_1, tool_call_2]
+    TEMPORAL = "temporal" #outputs are not matches, this is a temporal dependency only
+
+# ---------------------------------------------------------------------------
+def _try_match_tool_call_ids(a_parts: list, b_messages: list) -> bool:
+    """
+    Check if all tool call IDs from a_parts appear in b_messages.
+    Args:
+        a_parts: List of part dictionaries from output message A
+        b_messages: List of messages from call B
+    
+    Returns:
+        True if all tool calls in a_parts have IDs and all those IDs appear in b_messages
+    """
+    # Extract tool call parts that have IDs
+    tool_call_parts = [p for p in a_parts if p["type"] == "tool_call"]
+    if not tool_call_parts:
+        return False
+    
+    # Get all tool call IDs from a_parts
+    tool_call_ids = [p.get("id") for p in tool_call_parts]
+    
+    # Check if all tool calls have IDs
+    if not all(tc_id is not None for tc_id in tool_call_ids):
+        return False
+    
+    # Extract all tool call IDs from b_messages
+    b_tool_call_ids = set()
+    for msg in b_messages:
+        #we message_info may contain parts to tool_calls.
+        if isinstance(msg, ComplexOtelMessage):
+            if "tool_calls" in msg.message_info:
+                for tool_call in msg.message_info["tool_calls"]:
+                    if tool_call.get("id"):
+                        b_tool_call_ids.add(tool_call["id"])
+            elif "parts" in msg.message_info:
+                for part in msg.message_info["parts"]:
+                    if part["type"] == "tool_call" and part.get("id"):
+                        b_tool_call_ids.add(part["id"])
+
+    # Check if all tool call IDs from a appear in b (order doesn't matter)
+    return all(tc_id in b_tool_call_ids for tc_id in tool_call_ids)
+
+def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
+    """Return the type of causal dependency if call B causally depends on call A, None otherwise.
 
     A call B depends on A if any assistant message in B's message list has content
     that matches A's output text (full content match, not a snippet).
     This means A's output was injected into B's prompt as a prior assistant turn.
+    We start with trying to detect FULL_MATCH dependency. Then, if not detected, we proceed to TOOL_CALL_IDS_MATCHED. If this dependency is not detected either we proceed to the other options.
+    
+    Returns:
+        FULL_MATCH: Full text of output A matches the full text in B
+        TOOL_CALL_IDS_MATCHED: All tool call IDs from output A's tool calls appear in B's messages
+                               (order doesn't matter, just presence of IDs)
+        SPLIT_PARTS_MATCHED: Output of A is split into parts, each part appears separately in B's messages
+        CONTENT_AND_SPLIT_TOOLS_MATCH: Output of A contains [content, tool_call_1, tool_call_2, etc],
+                                        B's messages contain [content+tool_call_1, content+tool_call_2, etc]
+        DROP_CONTENT_SPLIT_PARTS: Output of A contains [content, tool_call_1, tool_call_2, etc],
+                                   B's messages contain [tool_call_1, tool_call_2] (content dropped)
+        None: No causal dependency detected
     """
     if not a.out_message or not b.messages:
-        return False
+        return None
     #match entire output message:
     a_out = norm_text(a.out_message.text)
     for msg in b.messages:
-        if output_matches_message(a_out, msg):
-            return True
+        if output_matches_message(a_out, msg, allow_partial_match=True):
+            return DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
     #try matching parts
     if isinstance(a.out_message, ComplexOtelMessage) and "parts" in a.out_message.message_info and len(a.out_message.message_info["parts"]) > 1:
         #this means this output message contains several parts, and will be interpreted as more than one message in the calls history
         parts = a.out_message.message_info["parts"]
         parts_text = a.out_message.message_info["parts_text"]
+        
+        # First, try matching by tool call IDs
+        if _try_match_tool_call_ids(parts, b.messages):
+            return DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED
         
         # Determine structure: check if first part is content (text) or tool_call
         first_part_is_content = parts[0]["type"] != "tool_call"
@@ -411,20 +484,27 @@ def is_causal_dep(a: RawCall, b: RawCall) -> bool:
         
         if not first_part_is_content:
             # Case 1: Only tool calls - each tool call appears separately in input messages
-            return _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False)
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False):
+                return DEPENDENCY_TYPE.CAUSAL_SPLIT_PARTS_MATCHED
         else:
             # Case 2: Content + tool calls - try two matching strategies:
             # Strategy A: Each part appears separately (content has offset 1, tools have offset 2)
             if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False):
-                return True
+                return DEPENDENCY_TYPE.CAUSAL_SPLIT_PARTS_MATCHED
             # Strategy B: Content is combined with each tool call
             # [content + tool_call_1, content + tool_call_2, ..., content + tool_call_n]
             # Combined messages are treated as tool calls (offset 2)
             if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=True):
-                return True
+                return DEPENDENCY_TYPE.CAUSAL_CONTENT_AND_SPLIT_TOOLS_MATCH
+            # Strategy C: Content is dropped, only tool calls remain
+            # Check if tool calls alone (without content) match
+            tool_call_parts = [p for p in parts if p["type"] == "tool_call"]
+            tool_call_texts = [parts_text[i] for i, p in enumerate(parts) if p["type"] == "tool_call"]
+            if tool_call_parts and _try_match_parts(tool_call_parts, tool_call_texts, b.messages, combine_content_with_tools=False):
+                return DEPENDENCY_TYPE.CAUSAL_DROP_CONTENT_SPLIT_PARTS
         
-        return False
-    return False
+        return None
+    return None
 
 
 def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_content_with_tools: bool) -> bool:
@@ -479,7 +559,7 @@ def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_co
             text_to_match = first_part_text
         
         # Check if the text matches
-        if output_matches_message(text_to_match, msg):
+        if output_matches_message(text_to_match, msg, allow_partial_match=True):
             first_part_match_candidates.append(i)
     
     # Try each candidate position
@@ -512,7 +592,7 @@ def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_co
                 text_to_match = part_text
             
             # Check if the text matches the message
-            if not output_matches_message(text_to_match, msg):
+            if not output_matches_message(text_to_match, msg, allow_partial_match=True):
                 candidate_ok = False
                 break
             
@@ -722,7 +802,7 @@ class GraphNode:
     node_id: str
     call: GraphCall
     predecessor_node_ids: List[str]  # all nodes that must complete before this one starts
-    causal_predecessor_ids: List[str]  # subset of predecessor_node_ids that are causal dependencies - this is stored only for visualization purpose
+    predecessor_dependency_types: Dict[str, str]  # mapping of predecessor node_id to dependency type (for visualization and analysis)
     wait_ms: int  # delay after last predecessor finishes (ms)
     # Timing info (informational, from original trace)
     t_start_ms: int
@@ -770,24 +850,23 @@ def build_graph(
     # ---------------------------------------------------------------------------
     # Step 1: Find direct predecessors for each call
     # ---------------------------------------------------------------------------
-    # predecessor_indices[i] = list of call indices that are DIRECT predecessors of call i
-    predecessor_indices: List[List[int]] = [[] for _ in range(n)]
-    # is_causal_edge[i] = True if predecessor_indices[i] was derived from causal deps
-    #                      False if it was a timing-fallback assignment
-    causal_preds: List[List[int]] = [[] for _ in range(n)] # the list of all causal predecessors per node
+    # predecessor_indices[i] = dict mapping predecessor index to dependency type
+    predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
 
     def is_causal_ancestor(ancestor: int, descendant: int) -> bool:
         """Return True if ancestor is a (transitive) predecessor of descendant
         following only causal edges (not timing-fallback edges)."""
         visited: Set[int] = set()
-        stack = list(causal_preds[descendant])
+        stack = [idx for idx, dep_type in predecessor_indices[descendant].items()
+                 if dep_type != DEPENDENCY_TYPE.TEMPORAL]
         while stack:
             node = stack.pop()
             if node == ancestor:
                 return True
             if node not in visited:
                 visited.add(node)
-                stack.extend(causal_preds[node])
+                stack.extend([idx for idx, dep_type in predecessor_indices[node].items()
+                             if dep_type != DEPENDENCY_TYPE.TEMPORAL])
         return False
 
     def is_valid_predecessor(predecessor_candidate, curr_call):
@@ -800,18 +879,19 @@ def build_graph(
 
     for i in range(1, n):
         # Collect all calls that causally feed call i
-        curr_causal_preds: List[int] = []
+        curr_causal_preds: Dict[int, DEPENDENCY_TYPE] = {}
         for j in range(i - 1, -1, -1):
-            if is_causal_dep(calls[j], calls[i]):
-                curr_causal_preds.append(j)
+            dep_type = get_causal_dep(calls[j], calls[i])
+            if dep_type is not None:
+                curr_causal_preds[j] = dep_type
 
         if curr_causal_preds:
             # Transitive reduction: remove j if it's already a causal ancestor of another
             # causal pred k. Only traverse causal edges — timing-fallback edges do not
             # create transitive relationships that should suppress direct causal deps.
-            direct_preds = [j for j in curr_causal_preds if not any(is_causal_ancestor(j, k) for k in curr_causal_preds if k != j)]
-            predecessor_indices[i] = direct_preds
-            causal_preds[i].extend(predecessor_indices[i])
+            direct_preds = {j: dep_type for j, dep_type in curr_causal_preds.items()
+                           if not any(is_causal_ancestor(j, k) for k in curr_causal_preds.keys() if k != j)}
+            predecessor_indices[i].update(direct_preds)
 
         """
         Add a temporal fallback predecessor (the closest non-overlapping node) if one exists.
@@ -825,9 +905,9 @@ def build_graph(
             if is_valid_predecessor(calls[j], calls[i]):
                 predecessor_index = j
                 break
-        # Only add temporal predecessor if one was found and it's not already a causal predecessor
+        # Only add temporal predecessor if one was found and it's not already a predecessor
         if predecessor_index is not None and predecessor_index not in predecessor_indices[i]:
-            predecessor_indices[i].append(predecessor_index)
+            predecessor_indices[i][predecessor_index] = DEPENDENCY_TYPE.TEMPORAL
 
     # ---------------------------------------------------------------------------
     # Step 2: Compute all ancestors per call (for segment decomposition)
@@ -835,12 +915,12 @@ def build_graph(
     def all_ancestor_indices(call_idx: int) -> List[int]:
         """Return all ancestor call indices (transitive closure of predecessors)."""
         visited: Set[int] = set()
-        stack = list(predecessor_indices[call_idx])
+        stack = list(predecessor_indices[call_idx].keys())
         while stack:
             node = stack.pop()
             if node not in visited:
                 visited.add(node)
-                stack.extend(predecessor_indices[node])
+                stack.extend(predecessor_indices[node].keys())
         return list(visited)
 
     # ---------------------------------------------------------------------------
@@ -889,16 +969,21 @@ def build_graph(
         # Compute wait_ms: gap between when the last predecessor ends and this call starts
         pred_idxs = predecessor_indices[i]
         if pred_idxs:
-            last_pred_end_ms = max(calls[j].t_end_ms for j in pred_idxs)
+            last_pred_end_ms = max(calls[j].t_end_ms for j in pred_idxs.keys())
             wait_ms = max(0, rc.t_start_ms - last_pred_end_ms)
         else:
             wait_ms = 0
 
+        # Build predecessor dependency types mapping
+        predecessor_dependency_types = {
+            node_ids[j]: dep_type.value for j, dep_type in pred_idxs.items()
+        }
+
         nodes[nid] = GraphNode(
             node_id=nid,
             call=graph_call,
-            predecessor_node_ids=[node_ids[j] for j in pred_idxs],
-            causal_predecessor_ids=[node_ids[j] for j in causal_preds[i]],
+            predecessor_node_ids=list(predecessor_dependency_types.keys()),
+            predecessor_dependency_types=predecessor_dependency_types,
             wait_ms=wait_ms,
             t_start_ms=rc.t_start_ms,
             t_end_ms=rc.t_end_ms,
@@ -945,7 +1030,7 @@ def graph_node_to_dict(node: GraphNode) -> Dict[str, Any]:
         "t_start_ms": node.t_start_ms,
         "t_end_ms": node.t_end_ms,
         "predecessor_node_ids": node.predecessor_node_ids,
-        "causal_predecessor_ids": node.causal_predecessor_ids,
+        "predecessor_dependency_types": node.predecessor_dependency_types,
         "wait_ms": node.wait_ms,
         "call": graph_call_to_dict(node.call),
     }
