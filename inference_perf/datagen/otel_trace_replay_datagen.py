@@ -406,7 +406,6 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         """
         return self.node_id.split(":")[0] if ":" in self.node_id else self.node_id
 
-
     async def wait_for_predecessors_and_substitute(self) -> None:
         """Wait for all predecessor nodes to complete, then substitute output segments.
 
@@ -812,21 +811,24 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
-        # Determine loading mode: directory or list of files
+        # Determine trace files to load
         if self.otel_config.trace_directory:
             self.trace_dir: Optional[Path] = Path(self.otel_config.trace_directory)
-            self.load_mode = "directory"
 
             if not self.trace_dir.exists():
                 raise ValueError(f"Trace directory does not exist: {self.trace_dir}")
-
             if not self.trace_dir.is_dir():
                 raise ValueError(f"Trace directory path is not a directory: {self.trace_dir}")
+
+            # Load all JSON files from directory
+            self.trace_files_list = sorted(self.trace_dir.glob("*.json"))
+            if not self.trace_files_list:
+                raise ValueError(f"No JSON files found in {self.trace_dir}")
+
         elif self.otel_config.trace_files:
             # Multiple files mode
             self.trace_files_list = resolve_trace_files(self.otel_config.trace_files)
-            self.load_mode = "files_list"
-            self.trace_dir = None  # Not needed for files_list mode
+            self.trace_dir = None
 
             # Validate all files exist and are JSON
             for trace_file in self.trace_files_list:
@@ -873,42 +875,20 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         logger.debug(f"Loaded {len(self.sessions)} sessions with {len(self.all_events)} total events")
 
     def _load_trace_files(self) -> None:
-        """Load and process OTel JSON files based on the configured mode."""
-        if self.load_mode == "files_list":
-            # Multiple files mode: load specific list of files
-            logger.info(f"Loading {len(self.trace_files_list)} specified trace files")
-            for file_index, trace_file in enumerate(self.trace_files_list):
-                try:
-                    session = self._process_trace_file(trace_file, file_index)
-                    if session:
-                        self.sessions.append(session)
-                        node_count = len(session.graph.nodes)
-                        logger.info(f"Loaded session {session.session_id} from {trace_file.name} with {node_count} nodes")
-                except Exception as e:
-                    logger.error(f"Failed to process trace file {trace_file}: {e}")
-                    if not self.otel_config.skip_invalid_files:
-                        raise
-        elif self.load_mode == "directory":
-            # Directory mode: load all JSON files from the directory
-            trace_files = sorted(self.trace_dir.glob("*.json"))
+        """Load and process OTel JSON files."""
+        logger.info(f"Loading {len(self.trace_files_list)} trace files")
 
-            if not trace_files:
-                logger.warning(f"No JSON files found in {self.trace_dir}")
-                return
-
-            logger.info(f"Found {len(trace_files)} trace files in {self.trace_dir}")
-
-            for file_index, trace_file in enumerate(trace_files):
-                try:
-                    session = self._process_trace_file(trace_file, file_index)
-                    if session:
-                        self.sessions.append(session)
-                        node_count = len(session.graph.nodes)
-                        logger.info(f"Loaded session {session.session_id} from {trace_file.name} with {node_count} nodes")
-                except Exception as e:
-                    logger.error(f"Failed to process trace file {trace_file}: {e}")
-                    if not self.otel_config.skip_invalid_files:
-                        raise
+        for file_index, trace_file in enumerate(self.trace_files_list):
+            try:
+                session = self._process_trace_file(trace_file, file_index)
+                if session:
+                    self.sessions.append(session)
+                    node_count = len(session.graph.nodes)
+                    logger.info(f"Loaded session {session.session_id} from {trace_file.name} with {node_count} nodes")
+            except Exception as e:
+                logger.error(f"Failed to process trace file {trace_file}: {e}")
+                if not self.otel_config.skip_invalid_files:
+                    raise
 
         # Randomize session order using base_seed for reproducibility
         random.seed(self.base_seed)
@@ -1222,18 +1202,18 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
     def _process_completion_queue(self) -> None:
         """Process all pending completion notifications from the queue.
-        
+
         Internal helper that drains the completion queue and updates
         session_graph_state for all completed sessions.
         """
         if self.session_completion_queue is None:
             return
-        
+
         try:
             while True:
                 completion_data = self.session_completion_queue.get_nowait()
                 completed_session_id = completion_data["session_id"]
-                
+
                 # Update state for the completed session
                 completed_state = self.session_graph_state.get(completed_session_id)
                 if completed_state is not None:
@@ -1243,7 +1223,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                         if node_id not in completed_state.completed_nodes:
                             completed_state.completed_nodes.add(node_id)
                             completed_state.node_completion_times[node_id] = completion_time
-                    
+
                     completed_state.is_complete = True
                     logger.info(f"Session {completed_session_id} marked complete from queue notification")
         except Exception:
@@ -1264,7 +1244,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         """
         # Process all pending completions first
         self._process_completion_queue()
-        
+
         # Then check the requested session
         state = self.session_graph_state.get(session_id)
         if state is None:
@@ -1338,9 +1318,8 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             original_messages=event.messages,
             expected_output_content=event.expected_output,
             otel_context=data.otel_context,
-            session_id = data.session_id,
-            prefered_worker_id = data.prefered_worker_id
-
+            session_id=data.session_id,
+            prefered_worker_id=data.prefered_worker_id,
         )
 
         return actual_data
