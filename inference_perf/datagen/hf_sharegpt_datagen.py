@@ -66,14 +66,14 @@ class HFShareGPTDataGenerator(DataGenerator):
         next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
+        return [APIType.CHAT, APIType.COMPLETION]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.sharegpt_dataset is None:
             return
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type == APIType.COMPLETION:
             yield from self.get_completion_data()
-        elif self.api_config.type == APIType.Chat:
+        elif self.api_config.type == APIType.CHAT:
             yield from self.get_chat_data()
         raise Exception("Unsupported API type")
 

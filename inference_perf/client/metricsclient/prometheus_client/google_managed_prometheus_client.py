@@ -32,7 +32,9 @@ class GoogleManagedPrometheusMetricsClient(PrometheusMetricsClient):
         credentials, project_id = google.auth.default()  # type: ignore[no-untyped-call,unused-ignore]
         self.credentials = credentials
         self.project_id = project_id
-        config.url = HttpUrl(f"https://monitoring.googleapis.com/v1/projects/{self.project_id}/location/global/prometheus")
+        config.url = str(
+            HttpUrl(f"https://monitoring.googleapis.com/v1/projects/{self.project_id}/location/global/prometheus")
+        )
         super().__init__(config)
 
     def get_headers(self) -> dict[str, Any]:

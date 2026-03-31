@@ -16,6 +16,7 @@
 import sys
 import datetime
 
+
 def get_license_template():
     year = datetime.date.today().year
     return f"""# Copyright {year} The Kubernetes Authors.
@@ -33,9 +34,10 @@ def get_license_template():
 # limitations under the License.
 """
 
+
 def check_file(filename, template):
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(filename, "r", encoding="utf-8") as f:
             content = f.read()
             if not content.startswith(template):
                 print(f"File missing or incorrect license header: {filename}")
@@ -45,16 +47,18 @@ def check_file(filename, template):
         return False
     return True
 
+
 def main():
     template = get_license_template()
     failed = False
     for filename in sys.argv[1:]:
         if not check_file(filename, template):
             failed = True
-    
+
     if failed:
         sys.exit(1)
     print("All files passed license check.")
+
 
 if __name__ == "__main__":
     main()

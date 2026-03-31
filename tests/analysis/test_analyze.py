@@ -176,6 +176,7 @@ def mock_report_data() -> ResponsesSummary:
 
 @pytest.mark.asyncio
 async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummary) -> None:
+    pytest.importorskip("matplotlib")
     # Creating a temporary directory for the test report
     r = tmp_path / "test_report"
     r.mkdir()

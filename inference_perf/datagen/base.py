@@ -34,11 +34,11 @@ class DataGenerator(ABC):
             raise Exception(f"Unsupported API type {api_config}")
 
         if (
-            config.input_distribution is not None or config.output_distribution is not None
+            "input_distribution" in config.model_fields_set or "output_distribution" in config.model_fields_set
         ) and not self.is_io_distribution_supported():
             raise Exception("IO distribution not supported for this data generator")
 
-        if config.shared_prefix is not None and not self.is_shared_prefix_supported():
+        if config.shared_prefix and config.shared_prefix.num_groups > 0 and not self.is_shared_prefix_supported():
             raise Exception("Shared prefix not supported for this data generator")
 
         if tokenizer is not None:

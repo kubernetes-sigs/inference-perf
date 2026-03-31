@@ -60,7 +60,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
             raise ValueError(f"Invalid dataset path: {self.config.path}")
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
+        return [APIType.CHAT, APIType.COMPLETION]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.billsum_dataset is not None:
@@ -79,7 +79,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
                 ):
                     continue
 
-                if self.api_config.type == APIType.Completion:
+                if self.api_config.type == APIType.COMPLETION:
                     try:
                         prompt = data[self.data_key][0].get(self.content_key)
                         completion = data[self.data_key][1].get(self.content_key)
@@ -104,7 +104,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
-                elif self.api_config.type == APIType.Chat:
+                elif self.api_config.type == APIType.CHAT:
                     yield ChatCompletionAPIData(
                         messages=[
                             ChatMessage(

@@ -1,0 +1,386 @@
+syntax = "proto3";
+
+package api.config.v1;
+
+import "buf/validate/validate.proto";
+
+// APIType represents the API format type.
+enum APIType {
+    API_TYPE_UNSPECIFIED = 0;
+    COMPLETION = 1;
+    CHAT = 2;
+}
+
+// ResponseFormatType represents structured output options.
+enum ResponseFormatType {
+    RESPONSE_FORMAT_TYPE_UNSPECIFIED = 0;
+    JSON_SCHEMA = 1;
+    JSON_OBJECT = 2;
+}
+
+// ResponseFormat represents structured output options.
+message ResponseFormat {
+    // The type of response format (e.g. JSON_SCHEMA).
+    ResponseFormatType type = 1;
+    // The name of the format (optional).
+    string name = 2;
+    // The JSON schema string (required for JSON_SCHEMA).
+    string json_schema = 3;
+}
+
+// APIConfig is the configuration for the API endpoint.
+message APIConfig {
+    // The type of API (COMPLETION or CHAT).
+    APIType type = 1;
+    // Whether to use streaming responses.
+    bool streaming = 2;
+    // Custom HTTP headers to send with requests.
+    map<string, string> headers = 3;
+    // Unit for SLO thresholds (e.g., "ms").
+    string slo_unit = 4;
+    // Header name for TPOT SLO.
+    string slo_tpot_header = 5;
+    // Header name for TTFT SLO.
+    string slo_ttft_header = 6;
+    // Structured output configuration.
+    ResponseFormat response_format = 7;
+}
+
+enum TraceFormat {
+    TRACE_FORMAT_UNSPECIFIED = 0;
+    AZURE_PUBLIC_DATASET = 1;
+}
+
+// TraceConfig is the configuration for trace replay.
+message TraceConfig {
+    // Path to the trace file.
+    string file = 1;
+    // Format of the trace file (e.g. AZURE_PUBLIC_DATASET).
+    TraceFormat format = 2;
+}
+
+enum DataGenType {
+    DATA_GEN_TYPE_UNSPECIFIED = 0;
+    MOCK = 1;
+    SHAREGPT = 2;
+    SYNTHETIC = 3;
+    RANDOM = 4;
+    SHARED_PREFIX = 5;
+    CNN_DAILYMAIL = 6;
+    INFINITY_INSTRUCT = 7;
+    BILLSUM_CONVERSATIONS = 8;
+}
+
+// Distribution defines a range and statistical parameters for random values.
+message Distribution {
+    // Minimum value.
+    int32 min = 1; // validate: ge=0
+    // Maximum value.
+    int32 max = 2; // validate: ge=0
+    // Mean value.
+    float mean = 3; // validate: ge=0
+    // Standard deviation.
+    float std_dev = 4; // validate: ge=0
+    // Total count of values to generate (optional).
+    optional int32 total_count = 5;
+}
+
+// SharedPrefix defines parameters for testing shared prefix caching.
+message SharedPrefix {
+    // Number of prompt groups.
+    int32 num_groups = 1;
+    // Number of prompts per group.
+    int32 num_prompts_per_group = 2;
+    // Length of the common system prompt.
+    int32 system_prompt_len = 3;
+    // Length of the question part.
+    int32 question_len = 4;
+    // Length of the expected output.
+    int32 output_len = 5;
+    // Distribution for question lengths (optional).
+    Distribution question_distribution = 6;
+    // Distribution for output lengths (optional).
+    Distribution output_distribution = 7;
+    // Whether to enable multi-turn chat simulation.
+    bool enable_multi_turn_chat = 8;
+}
+
+// DataConfig is the configuration for the dataset or data generator.
+message DataConfig {
+    // The type of data generator to use (e.g., SHAREGPT, RANDOM).
+    DataGenType type = 1;
+    // Path to the dataset file (required for some types).
+    optional string path = 2;
+    // Distribution of input lengths (for RANDOM).
+    Distribution input_distribution = 3;
+    // Distribution of output lengths (for RANDOM).
+    Distribution output_distribution = 4;
+    // Configuration for shared prefix testing.
+    SharedPrefix shared_prefix = 5;
+    // Configuration for trace replay.
+    TraceConfig trace = 6;
+
+    option (buf.validate.message).cel = {
+        id: "data_config.infinity_instruct_requires_path",
+        message: "path must be provided if type is INFINITY_INSTRUCT",
+        expression: "this.type != 7 || has(this.path)"
+    };
+    option (buf.validate.message).cel = {
+        id: "data_config.random_requires_distributions",
+        message: "input and output distributions are required for RANDOM",
+        expression: "this.type != 4 || (has(this.input_distribution) && has(this.output_distribution))"
+    };
+}
+
+enum ModelServerType {
+    MODEL_SERVER_TYPE_UNSPECIFIED = 0;
+    VLLM = 1;
+    SGLANG = 2;
+    TGI = 3;
+    MOCK_SERVER = 4;
+}
+
+enum LoadType {
+    LOAD_TYPE_UNSPECIFIED = 0;
+    CONSTANT = 1;
+    POISSON = 2;
+    TRACE_REPLAY = 3;
+    CONCURRENT = 4;
+}
+
+// StandardLoadStage defines a load stage with a fixed rate and duration.
+message StandardLoadStage {
+    // The request rate (requests per second).
+    float rate = 1; // validate: gt=0
+    // The duration of the stage in seconds.
+    int32 duration = 2; // validate: gt=0
+    // Optional total number of requests (overrides duration if set).
+    optional int32 num_requests = 3;
+    // Optional concurrency level (overrides rate if set).
+    optional int32 concurrency_level = 4;
+}
+
+// ConcurrentLoadStage defines a load stage with a fixed concurrency level.
+message ConcurrentLoadStage {
+    // The total number of requests to send.
+    int32 num_requests = 1; // validate: gt=0
+    // The fixed concurrency level (number of in-flight requests).
+    int32 concurrency_level = 2; // validate: gt=0
+    // Optional request rate (unused if concurrency is fixed).
+    optional float rate = 3;
+    // Optional duration (unused if num_requests is fixed).
+    optional int32 duration = 4;
+}
+
+// StageGenType defines the type of stage generation for sweeps.
+enum StageGenType {
+    STAGE_GEN_TYPE_UNSPECIFIED = 0;
+    GEOMETRIC = 1;
+    LINEAR = 2;
+}
+
+// SweepConfig defines parameters for a load sweep.
+message SweepConfig {
+    // The type of stage generation (GEOMETRIC or LINEAR).
+    StageGenType type = 1;
+    // Number of requests per stage.
+    // p2p: {"default": 1, "gt": 0}
+    int32 num_requests = 2;
+    // Timeout for each stage in seconds.
+    // p2p: {"default": 1.0, "gt": 0.0}
+    float timeout = 3;
+    // Number of stages in the sweep.
+    // p2p: {"default": 1, "gt": 0}
+    int32 num_stages = 4;
+    // Duration of each stage in seconds.
+    // p2p: {"default": 1, "gt": 0}
+    int32 stage_duration = 5;
+    // Percentile to use for saturation detection (e.g. 90.0).
+    // p2p: {"default": 0.0, "ge": 0.0, "le": 100.0}
+    float saturation_percentile = 6;
+}
+
+// MultiLoRAConfig defines traffic split for a specific LoRA adapter.
+message MultiLoRAConfig {
+    // The name of the LoRA adapter.
+    string name = 1;
+    // The fraction of traffic to send to this adapter (0.0 to 1.0).
+    float split = 2; // validate: ge=0, le=1
+}
+
+// LoadConfig defines parameters for the load generator.
+message LoadConfig {
+    // The type of load to generate (CONSTANT, POISSON, etc.).
+    LoadType type = 1;
+    // Interval between requests or stages in seconds.
+    float interval = 2; // validate: gt=0
+    // List of stages for standard load.
+    repeated StandardLoadStage standard_stages = 3;
+    // List of stages for concurrent load.
+    repeated ConcurrentLoadStage concurrent_stages = 4;
+    // Configuration for parameter sweep.
+    SweepConfig sweep = 5;
+    // Number of worker processes.
+    int32 num_workers = 6; // validate: ge=1
+    // Max concurrency per worker.
+    int32 worker_max_concurrency = 7;
+    // Max TCP connections per worker.
+    int32 worker_max_tcp_connections = 8;
+    // Configuration for trace replay (if applicable).
+    TraceConfig trace = 9;
+    // List of circuit breakers to enable.
+    repeated string circuit_breakers = 10;
+    // Timeout for requests in seconds (optional).
+    optional float request_timeout = 11;
+    // Traffic split for Multi-LoRA setups.
+    repeated MultiLoRAConfig lora_traffic_split = 12;
+    // Base seed for random number generation.
+    optional int64 base_seed = 13;
+}
+
+// StorageConfigBase defines basic storage configuration.
+message StorageConfigBase {
+    // Path to the storage directory or bucket.
+    string path = 1;
+    // Prefix for report files.
+    optional string report_file_prefix = 2;
+}
+
+// GoogleCloudStorageConfig defines configuration for GCS storage.
+message GoogleCloudStorageConfig {
+    // Path within the bucket.
+    string path = 1;
+    // Prefix for report files.
+    optional string report_file_prefix = 2;
+    // Name of the GCS bucket.
+    string bucket_name = 3;
+}
+
+// SimpleStorageServiceConfig defines configuration for S3 storage.
+message SimpleStorageServiceConfig {
+    // Path within the bucket.
+    string path = 1;
+    // Prefix for report files.
+    optional string report_file_prefix = 2;
+    // Name of the S3 bucket.
+    string bucket_name = 3;
+}
+
+// StorageConfig defines available storage backends.
+message StorageConfig {
+    // Local filesystem storage.
+    StorageConfigBase local_storage = 1;
+    // Google Cloud Storage.
+    GoogleCloudStorageConfig google_cloud_storage = 2;
+    // Amazon S3 or compatible storage.
+    SimpleStorageServiceConfig simple_storage_service = 3;
+}
+
+// RequestLifecycleMetricsReportConfig defines configuration for request lifecycle metrics reports.
+message RequestLifecycleMetricsReportConfig {
+    // Whether to include a summary.
+    optional bool summary = 1;
+    // Whether to include per-stage metrics.
+    optional bool per_stage = 2;
+    // Whether to include per-request metrics.
+    optional bool per_request = 3;
+    // Whether to include per-adapter metrics.
+    optional bool per_adapter = 4;
+    // Whether to include per-adapter-stage metrics.
+    optional bool per_adapter_stage = 5;
+    // Percentiles to report (e.g. 50.0, 90.0, 99.0).
+    repeated float percentiles = 6;
+}
+
+// PrometheusMetricsReportConfig defines configuration for Prometheus metrics reports.
+message PrometheusMetricsReportConfig {
+    // Whether to include a summary.
+    optional bool summary = 1;
+    // Whether to include per-stage metrics.
+    optional bool per_stage = 2;
+}
+
+// ReportConfig defines configuration for generated reports.
+message ReportConfig {
+    // Configuration for request lifecycle metrics reports.
+    RequestLifecycleMetricsReportConfig request_lifecycle = 1;
+    // Configuration for Prometheus metrics reports.
+    PrometheusMetricsReportConfig prometheus = 2;
+}
+
+// MetricsClientType defines the type of metrics client.
+enum MetricsClientType {
+    METRICS_CLIENT_TYPE_UNSPECIFIED = 0;
+    PROMETHEUS = 1;
+    DEFAULT = 2;
+}
+
+// PrometheusClientConfig defines configuration for a Prometheus metrics client.
+message PrometheusClientConfig {
+    // Scrape interval in seconds.
+    int32 scrape_interval = 1;
+    // URL of the Prometheus server (not needed if google_managed is true).
+    optional string url = 2;
+    // Filters for metrics.
+    repeated string filters = 3;
+    // Whether to use Google Managed Prometheus.
+    bool google_managed = 4;
+}
+
+// MetricsClientConfig defines configuration for metrics collection.
+message MetricsClientConfig {
+    // The type of metrics client to use.
+    MetricsClientType type = 1;
+    // Configuration for Prometheus client (required if type is PROMETHEUS).
+    PrometheusClientConfig prometheus = 2;
+}
+
+// ModelServerClientConfig defines configuration for the connection to the model server.
+message ModelServerClientConfig {
+    // The type of model server (VLLM, SGLANG, etc.).
+    ModelServerType type = 1;
+    // The name of the model to use.
+    optional string model_name = 2;
+    // Base URL of the model server.
+    string base_url = 3;
+    // Whether to ignore EOS tokens (continue generating until max tokens).
+    bool ignore_eos = 4;
+    // API key for authentication (optional).
+    optional string api_key = 5;
+    // Path to client certificate (optional).
+    optional string cert_path = 6;
+    // Path to client private key (optional).
+    optional string key_path = 7;
+}
+
+// CustomTokenizerConfig defines configuration for a custom tokenizer.
+message CustomTokenizerConfig {
+    // Name or path of the pretrained model/tokenizer.
+    optional string pretrained_model_name_or_path = 1;
+    // Whether to trust remote code when loading tokenizer.
+    optional bool trust_remote_code = 2;
+    // Authentication token (optional).
+    optional string token = 3;
+}
+
+// Config is the root configuration message.
+message Config {
+    // API configuration.
+    APIConfig api = 1;
+    // Data generator configuration.
+    DataConfig data = 2;
+    // Load generator configuration.
+    LoadConfig load = 3;
+    // Metrics collection configuration.
+    MetricsClientConfig metrics = 4;
+    // Report generation configuration.
+    ReportConfig report = 5;
+    // Storage configuration.
+    StorageConfig storage = 6;
+    // Model server client configuration.
+    ModelServerClientConfig server = 7;
+    // Custom tokenizer configuration.
+    CustomTokenizerConfig tokenizer = 8;
+    // List of circuit breakers to enable globally.
+    repeated string circuit_breakers = 9;
+}

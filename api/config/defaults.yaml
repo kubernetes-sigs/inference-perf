@@ -1,0 +1,37 @@
+# Language-agnostic defaults for inference-perf
+api:
+  type: completion
+  streaming: false
+  slo_unit: "ms"
+  slo_tpot_header: "x-slo-tpot-ms"
+  slo_ttft_header: "x-slo-ttft-ms"
+data:
+  type: mock
+load:
+  type: constant
+  interval: 1.0
+  num_workers: 0 # Placeholder for max(1, cpu_count())
+  worker_max_concurrency: 100
+  worker_max_tcp_connections: 2500
+  base_seed: 0 # Placeholder for timestamp
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
+    per_adapter: true
+    per_adapter_stage: false
+    percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
+  prometheus:
+    summary: true
+    per_stage: false
+storage:
+  local_storage:
+    path: "reports-{{ timestamp }}"
+server:
+  type: vllm
+  ignore_eos: true
+metrics:
+  prometheus:
+    scrape_interval: 15
+    google_managed: false

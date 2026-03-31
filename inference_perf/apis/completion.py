@@ -29,7 +29,7 @@ class CompletionAPIData(InferenceAPIData):
     model_response: str = ""
 
     def get_api_type(self) -> APIType:
-        return APIType.Completion
+        return APIType.COMPLETION
 
     def get_route(self) -> str:
         return "/v1/completions"

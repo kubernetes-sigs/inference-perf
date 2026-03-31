@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: .
+    excludes:
+      - .venv
+deps:
+  - buf.build/bufbuild/protovalidate
+lint:
+  use:
+    - STANDARD
+    - COMMENT_MESSAGE
+    - COMMENT_FIELD
+  except:
+    - ENUM_VALUE_PREFIX

@@ -16,7 +16,7 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
 
         self.load_config = LoadConfig(
             type=LoadType.CONSTANT,
-            stages=[StandardLoadStage(rate=1.0, duration=1)],
+            standard_stages=[StandardLoadStage(rate=1.0, duration=1)],
             num_workers=0,  # 0 workers uses run()
             worker_max_concurrency=10,
         )

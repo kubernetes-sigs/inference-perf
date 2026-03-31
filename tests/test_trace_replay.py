@@ -52,9 +52,9 @@ class TestTraceReplay:
             mock_tokenizer_obj.vocab_size = 1000
             mock_tokenizer.get_tokenizer.return_value = mock_tokenizer_obj
 
-            api_config = APIConfig(type=APIType.Completion)
+            api_config = APIConfig(type=APIType.COMPLETION)
             trace_config = TraceConfig(file=str(temp_path), format=TraceFormat.AZURE_PUBLIC_DATASET)
-            data_config = DataConfig(type=DataGenType.Random, trace=trace_config)
+            data_config = DataConfig(type=DataGenType.RANDOM, trace=trace_config)
 
             datagen = RandomDataGenerator(api_config=api_config, config=data_config, tokenizer=mock_tokenizer)
 

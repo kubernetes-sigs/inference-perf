@@ -23,15 +23,15 @@ class MockDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.COMPLETION, APIType.CHAT]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type == APIType.COMPLETION:
             while True:
                 i += 1
                 yield CompletionAPIData(prompt="text" + str(i))
-        elif self.api_config.type == APIType.Chat:
+        elif self.api_config.type == APIType.CHAT:
             while True:
                 i += 1
                 yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="text" + str(i))])

@@ -93,7 +93,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.COMPLETION]
 
     def is_io_distribution_supported(self) -> bool:
         return True

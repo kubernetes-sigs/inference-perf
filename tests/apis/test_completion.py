@@ -19,7 +19,7 @@ from inference_perf.config import APIType
 @pytest.mark.asyncio
 async def test_completion_api_data() -> None:
     data = CompletionAPIData(prompt="Hello, world!")
-    assert data.get_api_type() == APIType.Completion
+    assert data.get_api_type() == APIType.COMPLETION
     assert data.prompt == "Hello, world!"
     assert await data.to_payload("test-model", 100, False, True) == {
         "model": "test-model",

@@ -35,6 +35,8 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         tokenizer: Optional[CustomTokenizer],
     ) -> None:
         super().__init__(api_config, config, tokenizer)
+        self.input_lengths: np.ndarray
+        self.output_lengths: np.ndarray
 
         if self.trace is None:
             # let's read the trace file and get the input and output lengths
@@ -99,7 +101,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         return min(len(self.input_lengths), len(self.output_lengths))
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.COMPLETION]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -113,7 +115,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type == APIType.COMPLETION:
             tokens = np.random.randint(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
             prompt_text = self.tokenizer.get_tokenizer().decode(tokens.tolist())
             return CompletionAPIData(prompt=prompt_text, max_tokens=self.output_lengths[n])
@@ -121,7 +123,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type != APIType.COMPLETION:
             raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
 
         i = 0

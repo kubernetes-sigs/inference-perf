@@ -14,7 +14,7 @@
 
 from abc import abstractmethod
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig, to_api_format
 from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
@@ -163,7 +163,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Add response_format for structured output if configured
         if self.client.api_config.response_format:
-            payload["response_format"] = self.client.api_config.response_format.to_api_format()
+            payload["response_format"] = to_api_format(self.client.api_config.response_format)
 
         headers = {"Content-Type": "application/json"}
 

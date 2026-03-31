@@ -62,7 +62,7 @@ class CNNDailyMailDataGenerator(DataGenerator):
         next(self.cnn_dailymail_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.COMPLETION]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.cnn_dailymail_dataset is None:
@@ -70,7 +70,7 @@ class CNNDailyMailDataGenerator(DataGenerator):
 
         assert self.tokenizer is not None
 
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type != APIType.COMPLETION:
             raise Exception("Unsupported API type")
 
         while True:

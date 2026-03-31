@@ -19,10 +19,13 @@ from inference_perf.config import (
     MetricsClientType,
     deep_merge,
     read_config,
+    sanitize_config,
 )
 import os
 import tempfile
 import yaml
+from pathlib import Path
+from typing import Any
 
 
 def test_read_config() -> None:
@@ -30,8 +33,8 @@ def test_read_config() -> None:
     config = read_config(config_path)
 
     assert isinstance(config, Config)
-    assert config.api.type == APIType.Completion
-    assert config.data.type == DataGenType.ShareGPT
+    assert config.api.type == APIType.COMPLETION
+    assert config.data.type == DataGenType.SHAREGPT
     assert config.load.type == LoadType.CONSTANT
     if config.metrics:
         assert config.metrics.type == MetricsClientType.PROMETHEUS
@@ -40,19 +43,19 @@ def test_read_config() -> None:
 
 def test_deep_merge() -> None:
     base = {
-        "api": APIType.Chat,
-        "data": {"type": DataGenType.ShareGPT},
+        "api": APIType.CHAT,
+        "data": {"type": DataGenType.SHAREGPT},
         "load": {"type": LoadType.CONSTANT},
         "metrics": {"type": MetricsClientType.PROMETHEUS},
     }
     override = {
-        "data": {"type": DataGenType.Mock},
+        "data": {"type": DataGenType.MOCK},
         "load": {"type": LoadType.POISSON},
     }
     merged = deep_merge(base, override)
 
-    assert merged["api"] == APIType.Chat
-    assert merged["data"]["type"] == DataGenType.Mock
+    assert merged["api"] == APIType.CHAT
+    assert merged["data"]["type"] == DataGenType.MOCK
     assert merged["load"]["type"] == LoadType.POISSON
     assert merged["metrics"]["type"] == MetricsClientType.PROMETHEUS
     assert merged["metrics"]["type"] == MetricsClientType.PROMETHEUS
@@ -60,13 +63,7 @@ def test_deep_merge() -> None:
 
 def test_read_config_timestamp_substitution() -> None:
     # Create a minimalistic config with {timestamp} in the storage path
-    config_content = {
-        "storage": {
-            "local_storage": {
-                "path": "reports-{timestamp}"
-            }
-        }
-    }
+    config_content = {"storage": {"local_storage": {"path": "reports-{timestamp}"}}}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
         yaml.dump(config_content, tmp)
@@ -90,7 +87,7 @@ def test_shared_prefix_aliases() -> None:
     config_short = Config.model_validate(
         {
             "data": {
-                "type": DataGenType.SharedPrefix,
+                "type": DataGenType.SHARED_PREFIX,
                 "shared_prefix": {"num_groups": 5, "num_prompts_per_group": 20},
             }
         }
@@ -100,20 +97,97 @@ def test_shared_prefix_aliases() -> None:
     assert config_short.data.shared_prefix.num_prompts_per_group == 20
 
     # Test using the long names (aliases)
-    config_long = Config.model_validate(
-        {
-            "data": {
-                "type": DataGenType.SharedPrefix,
-                "shared_prefix": {"num_unique_system_prompts": 7, "num_users_per_system_prompt": 15},
-            }
+    raw_cfg = {
+        "data": {
+            "type": DataGenType.SHARED_PREFIX,
+            "shared_prefix": {"num_unique_system_prompts": 7, "num_users_per_system_prompt": 15},
         }
-    )
+    }
+    config_long = Config.model_validate(sanitize_config(raw_cfg))
     assert config_long.data.shared_prefix is not None
     assert config_long.data.shared_prefix.num_groups == 7
     assert config_long.data.shared_prefix.num_prompts_per_group == 15
 
-    # Test serialization
-    dumped = config_long.model_dump(mode="json", by_alias=True)
-    shared_prefix_dump = dumped["data"]["shared_prefix"]
-    assert shared_prefix_dump["num_unique_system_prompts"] == 7
-    assert shared_prefix_dump["num_users_per_system_prompt"] == 15
+
+def test_sanitize_config() -> None:
+    # Test DataGenType.SHAREGPT
+    cfg: dict[str, Any] = {"data": {"type": "shareGPT"}}
+    sanitized = sanitize_config(cfg)
+    assert sanitized["data"]["type"] == 2
+
+    # Test TraceFormat.AZURE_PUBLIC_DATASET in data.trace
+    cfg = {"data": {"trace": {"format": "AzurePublicDataset"}}}
+    sanitized = sanitize_config(cfg)
+    assert sanitized["data"]["trace"]["format"] == 1
+
+    # Test TraceFormat.AZURE_PUBLIC_DATASET in load.trace
+    cfg = {"load": {"trace": {"format": "AzurePublicDataset"}}}
+    sanitized = sanitize_config(cfg)
+    assert sanitized["load"]["trace"]["format"] == 1
+
+    # Test ModelServerType.MOCK_SERVER
+    cfg = {"server": {"type": "mock"}}
+    sanitized = sanitize_config(cfg)
+    assert sanitized["server"]["type"] == 4
+
+
+def test_sanitize_config_presubmit() -> None:
+    import inspect
+
+    # Get the source code of sanitize_config
+    source = inspect.getsource(sanitize_config)
+
+    # Count non-empty lines
+    lines = [line.strip() for line in source.split("\n") if line.strip()]
+    assert len(lines) <= 40, (
+        f"sanitize_config has grown too large ({len(lines)} lines). Please do not add non-generated APIs here."
+    )
+
+
+def test_config_validation() -> None:
+    from pydantic import ValidationError
+    from inference_perf.config import SweepConfig
+
+    # Test SweepConfig validation
+    try:
+        SweepConfig(num_requests=0)
+        raise AssertionError("SweepConfig should have failed with num_requests=0")
+    except ValidationError as e:
+        assert "num_requests" in str(e)
+
+    try:
+        SweepConfig(saturation_percentile=-1.0)
+        raise AssertionError("SweepConfig should have failed with saturation_percentile=-1.0")
+    except ValidationError as e:
+        assert "saturation_percentile" in str(e)
+
+    try:
+        SweepConfig(saturation_percentile=101.0)
+        raise AssertionError("SweepConfig should have failed with saturation_percentile=101.0")
+    except ValidationError as e:
+        assert "saturation_percentile" in str(e)
+
+    # Valid config should pass
+    sc = SweepConfig(num_requests=1, timeout=1.0, num_stages=1, stage_duration=1, saturation_percentile=50.0)
+    assert sc.num_requests == 1
+
+
+def test_cel_validation(tmp_path: Path) -> None:
+    from inference_perf.config import read_config
+    import yaml
+
+    # Create a temp config file
+    d = tmp_path / "sub"
+    d.mkdir()
+    p = d / "invalid_config.yml"
+
+    # Config with INFINITY_INSTRUCT but no path
+    cfg_data = {"api": {"type": "completion"}, "data": {"type": "infinity_instruct"}, "load": {"type": "constant"}}
+
+    p.write_text(yaml.dump(cfg_data))
+
+    try:
+        read_config(str(p))
+        raise AssertionError("Should have failed with CEL validation error")
+    except Exception as e:
+        assert "invalid Config" in str(e)

@@ -13,11 +13,11 @@
 # limitations under the License.
 import json
 import logging
-from typing import List
+from typing import List, cast
 from google.cloud import storage
 from google.cloud.exceptions import GoogleCloudError
 from inference_perf.client.filestorage import StorageClient
-from inference_perf.config import GoogleCloudStorageConfig
+from inference_perf.config import GoogleCloudStorageConfig, StorageConfigBase
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 class GoogleCloudStorageClient(StorageClient):
     def __init__(self, config: GoogleCloudStorageConfig) -> None:
-        super().__init__(config=config)
+        super().__init__(config=cast(StorageConfigBase, config))
         logger.debug("Created new GCS client")
         self.output_bucket = config.bucket_name
         self.client = storage.Client()

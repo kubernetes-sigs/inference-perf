@@ -232,10 +232,11 @@ class Worker(mp.Process):
 
 class LoadGenerator:
     def __init__(self, datagen: DataGenerator, load_config: LoadConfig) -> None:
+        self.load_config = load_config
         self.datagen = datagen
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
-        self.stages = load_config.stages
+        self.stages = load_config.concurrent_stages if self.load_type == LoadType.CONCURRENT else load_config.standard_stages
         self.stage_runtime_info = dict[int, StageRuntimeInfo]()
         self.num_workers = load_config.num_workers
         self.worker_max_concurrency = load_config.worker_max_concurrency
@@ -256,10 +257,10 @@ class LoadGenerator:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
         self.lora_adapters: Optional[List[str]] = None
         self.lora_weights: Optional[List[float]] = None
-        if load_config.lora_traffic_split is not None:
+        if load_config.lora_traffic_split:
             self.lora_adapters = [config.name for config in load_config.lora_traffic_split]
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
-        self.base_seed: int = load_config.base_seed
+        self.base_seed: int = load_config.base_seed if load_config.base_seed is not None else int(time.time() * 1000)
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -333,7 +334,7 @@ class LoadGenerator:
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if self.datagen.trace is not None:
+        if self.datagen.trace and self.datagen.trace.file:
             num_requests = self.datagen.get_request_count()
         else:
             num_requests = int(rate * duration)
@@ -496,6 +497,8 @@ class LoadGenerator:
                 return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
             elif gen_type == StageGenType.LINEAR:
                 return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
+            else:
+                raise ValueError(f"Unsupported StageGenType: {gen_type}")
 
         rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
         self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
@@ -539,7 +542,7 @@ class LoadGenerator:
             )
             self.workers[-1].start()
 
-        if self.sweep_config:
+        if "sweep" in self.load_config.model_fields_set and self.sweep_config.num_requests > 0:
             try:
                 await self.preprocess(
                     client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal

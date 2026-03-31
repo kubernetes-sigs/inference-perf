@@ -53,7 +53,7 @@ class SGlangModelServerClient(openAIModelServerClient):
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.COMPLETION, APIType.CHAT]
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return PrometheusMetricMetadata(

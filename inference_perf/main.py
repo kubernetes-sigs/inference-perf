@@ -135,7 +135,7 @@ def main_cli() -> None:
 
     # Define Circuit Breakers
     if config.circuit_breakers:
-        init_circuit_breakers(config.circuit_breakers)
+        init_circuit_breakers(config.circuit_breakers)  # type: ignore[arg-type]
 
     # Define Metrics Client
     metrics_client: Optional[MetricsClient] = None
@@ -151,9 +151,9 @@ def main_cli() -> None:
     if config.storage:
         if config.storage.local_storage:
             storage_clients.append(LocalStorageClient(config=config.storage.local_storage))
-        if config.storage.google_cloud_storage:
+        if config.storage.google_cloud_storage and config.storage.google_cloud_storage.bucket_name:
             storage_clients.append(GoogleCloudStorageClient(config=config.storage.google_cloud_storage))
-        if config.storage.simple_storage_service:
+        if config.storage.simple_storage_service and config.storage.simple_storage_service.bucket_name:
             storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))
 
     # Define Report Generator
@@ -225,7 +225,7 @@ def main_cli() -> None:
             )
             # tgi_client supports inferring the tokenizer
             tokenizer = model_server_client.tokenizer
-        if config.server.type == ModelServerType.MOCK:
+        if config.server.type == ModelServerType.MOCK_SERVER:
             model_server_client = MockModelServerClient(
                 reportgen.get_metrics_collector(),
                 api_config=config.api,
@@ -239,10 +239,14 @@ def main_cli() -> None:
 
     # Check load exists so datagen can derive total_count from the
     # stage configurations.
-    if config.load is None:
+    if config.load.type == LoadType.LOAD_TYPE_UNSPECIFIED:
         raise Exception("load config missing")
 
-    if len(config.load.stages) == 0 and config.load.sweep is None:
+    if (
+        len(config.load.concurrent_stages) == 0
+        and len(config.load.standard_stages) == 0
+        and config.load.sweep.num_requests == 0
+    ):
         raise Exception("Load stages must be configured, or sweep must be configured")
 
     # Define DataGenerator
@@ -251,12 +255,12 @@ def main_cli() -> None:
         # Common checks for generators that require a tokenizer / distribution
         if config.data.type in set(
             {
-                DataGenType.ShareGPT,
-                DataGenType.Synthetic,
-                DataGenType.Random,
-                DataGenType.CNNDailyMail,
-                DataGenType.InfinityInstruct,
-                DataGenType.BillsumConversations,
+                DataGenType.SHAREGPT,
+                DataGenType.SYNTHETIC,
+                DataGenType.RANDOM,
+                DataGenType.CNN_DAILYMAIL,
+                DataGenType.INFINITY_INSTRUCT,
+                DataGenType.BILLSUM_CONVERSATIONS,
             }
         ):
             if tokenizer is None:
@@ -265,7 +269,7 @@ def main_cli() -> None:
                     "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
                 )
 
-        if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
+        if config.data.type in [DataGenType.SYNTHETIC, DataGenType.RANDOM]:
             if config.data.trace is None:
                 if config.data.input_distribution is None:
                     raise Exception(
@@ -284,27 +288,27 @@ def main_cli() -> None:
                     elif isinstance(stage, ConcurrentLoadStage):
                         max_requests = max(max_requests, stage.num_requests)
                 total_count = max_requests + 1
-                if config.data.input_distribution.total_count is None:
+                if config.data.input_distribution.total_count == 0:
                     config.data.input_distribution.total_count = total_count
-                if config.data.output_distribution.total_count is None:
+                if config.data.output_distribution.total_count == 0:
                     config.data.output_distribution.total_count = total_count
 
-        if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
+        if config.data.type == DataGenType.SHARED_PREFIX and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 
-        if config.data.type == DataGenType.ShareGPT:
+        if config.data.type == DataGenType.SHAREGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.CNNDailyMail:
+        elif config.data.type == DataGenType.CNN_DAILYMAIL:
             datagen = CNNDailyMailDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.Synthetic:
+        elif config.data.type == DataGenType.SYNTHETIC:
             datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.Random:
+        elif config.data.type == DataGenType.RANDOM:
             datagen = RandomDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.SharedPrefix:
+        elif config.data.type == DataGenType.SHARED_PREFIX:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.InfinityInstruct:
+        elif config.data.type == DataGenType.INFINITY_INSTRUCT:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
-        elif config.data.type == DataGenType.BillsumConversations:
+        elif config.data.type == DataGenType.BILLSUM_CONVERSATIONS:
             datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)

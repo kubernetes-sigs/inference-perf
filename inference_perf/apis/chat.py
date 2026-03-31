@@ -33,7 +33,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     max_tokens: int = 0
 
     def get_api_type(self) -> APIType:
-        return APIType.Chat
+        return APIType.CHAT
 
     def get_route(self) -> str:
         return "/v1/chat/completions"

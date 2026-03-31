@@ -52,7 +52,7 @@ class InfinityInstructDataGenerator(DataGenerator):
         next(self.infinity_instruct_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.COMPLETION, APIType.CHAT]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.infinity_instruct_dataset is not None:
@@ -65,7 +65,7 @@ class InfinityInstructDataGenerator(DataGenerator):
                 if not conversations:
                     continue
 
-                if self.api_config.type == APIType.Completion:
+                if self.api_config.type == APIType.COMPLETION:
                     try:
                         # The last message is the completion
                         completion_message = conversations[-1]
@@ -98,7 +98,7 @@ class InfinityInstructDataGenerator(DataGenerator):
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
-                elif self.api_config.type == APIType.Chat:
+                elif self.api_config.type == APIType.CHAT:
                     try:
                         messages: List[ChatMessage] = []
                         for conv in conversations:

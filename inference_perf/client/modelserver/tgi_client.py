@@ -53,7 +53,7 @@ class TGImodelServerClient(openAIModelServerClient):
         self.metric_filters = additional_filters
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.COMPLETION, APIType.CHAT]
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         return PrometheusMetricMetadata(

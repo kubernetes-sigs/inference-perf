@@ -102,6 +102,15 @@ async def run_benchmark_minimal(
     cfg_path = await _process_yaml_config(config, wd)
 
     env = os.environ.copy()
+
+    # Ensure generated code and project root are in PYTHONPATH
+    python_path = env.get("PYTHONPATH", "")
+    project_root = Path(__file__).resolve().parent.parent.parent
+    new_paths = [str(project_root), str(project_root / "api/generated/python")]
+    if python_path:
+        new_paths.append(python_path)
+    env["PYTHONPATH"] = ":".join(new_paths)
+
     if extra_env:
         env.update({k: str(v) for k, v in extra_env.items()})
 

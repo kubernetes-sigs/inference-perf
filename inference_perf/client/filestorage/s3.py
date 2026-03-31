@@ -13,10 +13,10 @@
 # limitations under the License.
 import json
 import logging
-from typing import List
+from typing import List, cast
 import boto3
 from inference_perf.client.filestorage import StorageClient
-from inference_perf.config import SimpleStorageServiceConfig
+from inference_perf.config import SimpleStorageServiceConfig, StorageConfigBase
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class SimpleStorageServiceClient(StorageClient):
     def __init__(self, config: SimpleStorageServiceConfig) -> None:
-        super().__init__(config=config)
+        super().__init__(config=cast(StorageConfigBase, config))
         logger.debug("Created new S3 client")
         self.output_bucket = config.bucket_name
         self.client = boto3.client("s3")
