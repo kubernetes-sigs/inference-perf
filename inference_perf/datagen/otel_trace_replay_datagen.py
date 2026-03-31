@@ -270,22 +270,28 @@ class NodeOutputRegistry:
         self._node_events: Dict[str, asyncio.Event] = {}
 
     def record(self, node_id: str, output_text: str, messages: List[Any]) -> None:
-        """Register output for a completed node and wake any async waiters."""
+        """Register output for a completed node and wake any async waiters.
+        
+        Raises:
+            ValueError: If node_id has already been recorded (nodes should only complete once)
+        """
+        if node_id in self._node_output_text:
+            raise ValueError(
+                f"Node {node_id} has already been recorded. "
+                f"Each node should only complete once. This indicates a bug in the replay logic."
+            )
+        
         self._node_output_text[node_id] = output_text
-        if messages:
-            self._node_input_messages[node_id] = list(messages)
+        # Always store messages, even if empty list - successors may need to know the node completed
+        self._node_input_messages[node_id] = list(messages) if messages else []
 
         # Signal any coroutine waiting on this node (same worker only).
         if node_id in self._node_events:
             self._node_events[node_id].set()
             logger.debug(f"Set asyncio.Event for node {node_id}")
 
-    def get(self, node_id: str) -> Optional[str]:
-        """Return the output text for node_id, or None if not yet registered."""
-        return self._node_output_text.get(node_id)
-
     def get_output_by_node_id(self, node_id: str) -> Optional[str]:
-        """Return the output text for a given node_id."""
+        """Return the output text for a given node_id, or None if not yet registered."""
         return self._node_output_text.get(node_id)
 
     def get_messages_by_node_id(self, node_id: str) -> Optional[List[Any]]:
