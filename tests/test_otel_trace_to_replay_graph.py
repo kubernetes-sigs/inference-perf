@@ -618,7 +618,11 @@ def test_growing_prefix() -> None:
     )
 
     # All turns T2-T4 have an output segment
-    for node_id, call_id in [("node_001_span_T2", "span_T2"), ("node_002_span_T3", "span_T3"), ("node_003_span_T4", "span_T4")]:
+    for node_id, call_id in [
+        ("node_001_span_T2", "span_T2"),
+        ("node_002_span_T3", "span_T3"),
+        ("node_003_span_T4", "span_T4"),
+    ]:
         segs = graph.nodes[node_id].call.input_segments
         seg_types = [s.type for s in segs]
         assert "output" in seg_types, f"{call_id} should have an output segment, got {seg_types}"

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-
 # !/usr/bin/env python3
 """
 Export ReplayGraph to Graphviz DOT format for visualization.
@@ -33,7 +32,7 @@ import subprocess
 
 def escape_label(text: str) -> str:
     """Escape special characters for DOT labels."""
-    return text.replace('"', '\\"').replace('\n', '\\n')
+    return text.replace('"', '\\"').replace("\n", "\\n")
 
 
 def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
@@ -45,10 +44,10 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
 
     lines = []
     lines.append("digraph ReplayGraph {")
-    lines.append('    rankdir=TB;')
+    lines.append("    rankdir=TB;")
     lines.append('    node [shape=box, style="rounded,filled", fontname="Arial"];')
     lines.append('    edge [fontname="Arial", fontsize=10];')
-    lines.append('')
+    lines.append("")
 
     # Add title as a label
     title = f"Replay Graph\\n{len(nodes)} nodes"
@@ -56,8 +55,8 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
         title += f"\\nSource: {source_file.split('/')[-1]}"
     lines.append(f'    labelloc="t";')
     lines.append(f'    label="{escape_label(title)}";')
-    lines.append(f'    fontsize=16;')
-    lines.append('')
+    lines.append(f"    fontsize=16;")
+    lines.append("")
 
     # Add nodes
     for node_id, node_data in nodes.items():
@@ -78,7 +77,7 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
             f"({node_id})",
             f"Start: {t_start:.0f}ms",
             f"i.token: {input_tokens} | o.token: {output_tokens}",
-            f"Duration: {duration:.1f}ms"
+            f"Duration: {duration:.1f}ms",
         ]
 
         # Add wait time if non-zero
@@ -110,7 +109,7 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
         seg_summary = [
             f"shared:{shared_msgs}m/{shared_total}t",
             f"output:{output_total}t",
-            f"unq:{unique_msgs}m/{unique_total}t"
+            f"unq:{unique_msgs}m/{unique_total}t",
         ]
         label_parts.append(" | ".join(seg_summary))
 
@@ -124,15 +123,15 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
 
         lines.append(f'    "{node_id}" [label="{escape_label(label)}", fillcolor={fillcolor}];')
 
-    lines.append('')
+    lines.append("")
 
     # Add legend
-    lines.append('    // Legend')
-    lines.append('    subgraph cluster_legend {')
+    lines.append("    // Legend")
+    lines.append("    subgraph cluster_legend {")
     lines.append('        label="Edge Types";')
-    lines.append('        style=filled;')
-    lines.append('        color=lightgray;')
-    lines.append('        fontsize=12;')
+    lines.append("        style=filled;")
+    lines.append("        color=lightgray;")
+    lines.append("        fontsize=12;")
     lines.append('        legend_full [label="Full Match", shape=box, style=filled, fillcolor=white];')
     lines.append('        legend_tool_ids [label="Tool Call IDs", shape=box, style=filled, fillcolor=white];')
     lines.append('        legend_split [label="Split Parts", shape=box, style=filled, fillcolor=white];')
@@ -145,8 +144,8 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     lines.append('        legend_combined -> legend_drop [style=bold, color=purple, label=""];')
     lines.append('        legend_drop -> legend_temporal [style=bold, color=orange, label=""];')
     lines.append('        legend_temporal -> legend_full [style=bold, color=black, label=""];')
-    lines.append('    }')
-    lines.append('')
+    lines.append("    }")
+    lines.append("")
 
     # Add edges
     for node_id, node_data in nodes.items():
@@ -159,22 +158,22 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
 
             # Style edges differently based on dependency type
             if dep_type == "full_match":
-                edge_style = 'style=bold, color=blue'
+                edge_style = "style=bold, color=blue"
                 edge_label_prefix = "FM"
             elif dep_type == "tool_call_ids_matched":
-                edge_style = 'style=bold, color=cyan'
+                edge_style = "style=bold, color=cyan"
                 edge_label_prefix = "TID"
             elif dep_type == "split_parts_matched":
-                edge_style = 'style=bold, color=green'
+                edge_style = "style=bold, color=green"
                 edge_label_prefix = "SP"
             elif dep_type == "content_and_split_tools_match":
-                edge_style = 'style=bold, color=purple'
+                edge_style = "style=bold, color=purple"
                 edge_label_prefix = "CT"
             elif dep_type == "drop_content_split_parts":
-                edge_style = 'style=bold, color=orange'
+                edge_style = "style=bold, color=orange"
                 edge_label_prefix = "DC"
             else:  # temporal
-                edge_style = 'style=bold, color=black'
+                edge_style = "style=bold, color=black"
                 edge_label_prefix = "T"
 
             # Build edge label
@@ -184,12 +183,11 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
 
             lines.append(f'    "{pred_id}" -> "{node_id}" [{edge_style}, label="{edge_label}"];')
 
-    lines.append('}')
+    lines.append("}")
 
     # Write to file
     output_path = Path(output_file)
-    output_path.write_text('\n'.join(lines), encoding='utf-8')
+    output_path.write_text("\n".join(lines), encoding="utf-8")
 
     print(f"\n📊 Graph visualization saved to: {output_file}")
     print(f"   View online at: https://viz-js.com/")
-

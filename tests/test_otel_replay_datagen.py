@@ -28,6 +28,7 @@ Key architectural principles tested:
 3. Event-driven completion: queue notifications, not polling
 4. Nested dict structure: efficient O(1) lookups without string operations
 """
+
 import asyncio
 import json
 import multiprocessing as mp
@@ -80,9 +81,7 @@ def make_mock_tokenizer():
 def make_mock_response(content: str) -> MagicMock:
     """Return a mock aiohttp ClientResponse for non-streaming mode."""
     response = MagicMock()
-    response.json = AsyncMock(return_value={
-        "choices": [{"message": {"role": "assistant", "content": content}}]
-    })
+    response.json = AsyncMock(return_value={"choices": [{"message": {"role": "assistant", "content": content}}]})
     return response
 
 
@@ -95,6 +94,7 @@ def make_mock_api_config_streaming(streaming: bool = False) -> MagicMock:
 # ---------------------------------------------------------------------------
 # NodeOutputRegistry tests
 # ---------------------------------------------------------------------------
+
 
 class TestNodeOutputRegistry:
     """Test intra-worker output coordination via asyncio.Event."""
@@ -142,11 +142,10 @@ class TestNodeOutputRegistry:
         """Recording the same node twice should raise ValueError."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "first output", [])
-        
+
         # Attempting to record the same node again should raise ValueError
         with pytest.raises(ValueError, match="Node node_001 has already been recorded"):
             reg.record("node_001", "second output", [])
-
 
     def test_get_messages_by_node_id(self):
         """get_messages_by_node_id returns input messages."""
@@ -163,7 +162,7 @@ class TestNodeOutputRegistry:
         """Recording with empty messages list should still store the messages (as empty list)."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "output", [])
-        
+
         # Should return empty list, not None
         retrieved = reg.get_messages_by_node_id("node_001")
         assert retrieved is not None
@@ -173,6 +172,7 @@ class TestNodeOutputRegistry:
 # ---------------------------------------------------------------------------
 # WorkerSessionTracker tests
 # ---------------------------------------------------------------------------
+
 
 class TestWorkerSessionTracker:
     """Test per-worker session state tracking with nested dict structure."""
@@ -221,6 +221,7 @@ class TestWorkerSessionTracker:
 # OTelChatCompletionAPIData tests
 # ---------------------------------------------------------------------------
 
+
 class TestOTelChatCompletionAPIData:
     """Test output capture, substitution, and completion notification."""
 
@@ -268,15 +269,15 @@ class TestOTelChatCompletionAPIData:
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
         api_data = self._make_api_data("session_1:node_0", registry, tracker, total_nodes=2)
-        
+
         info = OTelInferenceInfo(
             output_text="test output",
             input_tokens=10,
             output_tokens=5,
         )
-        
+
         api_data.on_completion(info)
-        
+
         # Should be recorded in tracker with unqualified node_id
         assert tracker.is_node_completed("session_1", "node_0")
         assert tracker.get_node_completion_time("session_1", "node_0") is not None
@@ -286,26 +287,26 @@ class TestOTelChatCompletionAPIData:
         """on_completion pushes to queue when last node completes."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
-        
+
         # Use a mock queue that captures put_nowait calls
         completion_notifications = []
         mock_queue = MagicMock()
         mock_queue.put_nowait = lambda data: completion_notifications.append(data)
-        
+
         # Session has 2 nodes total
         # First complete node_0
         api_data_0 = self._make_api_data("session_1:node_0", registry, tracker, mock_queue, total_nodes=2)
         info_0 = OTelInferenceInfo(output_text="first", input_tokens=5, output_tokens=3)
         api_data_0.on_completion(info_0)
-        
+
         # No notification yet (only 1 of 2 nodes complete)
         assert len(completion_notifications) == 0
-        
+
         # Now complete node_1 (the last node)
         api_data_1 = self._make_api_data("session_1:node_1", registry, tracker, mock_queue, total_nodes=2)
         info_1 = OTelInferenceInfo(output_text="done", input_tokens=5, output_tokens=3)
         api_data_1.on_completion(info_1)
-        
+
         # Should now have completion notification
         assert len(completion_notifications) == 1
         completion_data = completion_notifications[0]
@@ -320,16 +321,16 @@ class TestOTelChatCompletionAPIData:
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
         tracker.mark_session_failed("session_1")
-        
+
         api_data = self._make_api_data(
             "session_1:node_1",
             registry,
             tracker,
             predecessor_node_ids=["session_1:node_0"],
         )
-        
+
         await api_data.wait_for_predecessors_and_substitute()
-        
+
         # Should have set skip_request flag
         assert api_data.skip_request is True
         # Should have recorded empty output
@@ -340,10 +341,10 @@ class TestOTelChatCompletionAPIData:
         """wait_for_predecessors_and_substitute waits for predecessors and substitutes output."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
-        
+
         # Set up predecessor output
         registry.record("session_1:node_0", "Predecessor output", [])
-        
+
         # Create node with output segment
         messages = [
             {"role": "user", "content": "Question"},
@@ -353,7 +354,7 @@ class TestOTelChatCompletionAPIData:
             InputSegment(type="unique", message_count=1, token_count=5),
             InputSegment(type="output", message_count=1, token_count=10, source_node_id="session_1:node_0"),
         ]
-        
+
         api_data = OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Question"), ChatMessage(role="assistant", content="RECORDED")],
             max_tokens=50,
@@ -366,18 +367,18 @@ class TestOTelChatCompletionAPIData:
             input_segments=segments,
             original_messages=messages,
         )
-        
+
         await api_data.wait_for_predecessors_and_substitute()
-        
+
         # Messages should be substituted
         assert len(api_data.messages) == 2
         assert api_data.messages[1].content == "Predecessor output"
 
 
-
 # ---------------------------------------------------------------------------
 # OTelTraceReplayDataGenerator tests - Critical queue processing logic
 # ---------------------------------------------------------------------------
+
 
 class TestOTelTraceReplayDataGenerator:
     """Test the main generator class, focusing on queue processing and session lifecycle."""
@@ -386,12 +387,13 @@ class TestOTelTraceReplayDataGenerator:
         """_process_completion_queue drains queue and updates session_graph_state."""
         # Create generator with mock queue
         gen = object.__new__(OTelTraceReplayDataGenerator)
-        
+
         # Set up session state
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
+
         mock_graph = MagicMock()
         mock_graph.nodes = {"node_0": MagicMock(), "node_1": MagicMock()}
-        
+
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
@@ -404,13 +406,14 @@ class TestOTelTraceReplayDataGenerator:
                 is_complete=False,
             )
         }
-        
+
         # Create queue with completion notification
         completion_notifications = []
         mock_queue = MagicMock()
-        
+
         # Simulate queue with one item, then empty
         call_count = [0]
+
         def get_nowait_side_effect():
             call_count[0] += 1
             if call_count[0] == 1:
@@ -422,13 +425,13 @@ class TestOTelTraceReplayDataGenerator:
                 }
             else:
                 raise Exception("Queue empty")
-        
+
         mock_queue.get_nowait = get_nowait_side_effect
         gen.session_completion_queue = mock_queue
-        
+
         # Process queue
         gen._process_completion_queue()
-        
+
         # Session should be marked complete
         state = gen.session_graph_state["session_1"]
         assert state.is_complete is True
@@ -440,12 +443,13 @@ class TestOTelTraceReplayDataGenerator:
     def test_check_session_completed_processes_queue_first(self):
         """check_session_completed processes queue before checking status."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
-        
+
         # Set up session state
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
+
         mock_graph = MagicMock()
         mock_graph.nodes = {"node_0": MagicMock()}
-        
+
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
@@ -458,9 +462,10 @@ class TestOTelTraceReplayDataGenerator:
                 is_complete=False,  # Not yet complete
             )
         }
-        
+
         # Create queue with completion notification
         call_count = [0]
+
         def get_nowait_side_effect():
             call_count[0] += 1
             if call_count[0] == 1:
@@ -472,15 +477,15 @@ class TestOTelTraceReplayDataGenerator:
                 }
             else:
                 raise Exception("Queue empty")
-        
+
         mock_queue = MagicMock()
         mock_queue.get_nowait = get_nowait_side_effect
         gen.session_completion_queue = mock_queue
-        
+
         assert gen.session_graph_state["session_1"].is_complete is False
         # Check completion - should process queue first
         result = gen.check_session_completed("session_1")
-        
+
         # Should return True because queue notification marked it complete
         assert result is True
         assert gen.session_graph_state["session_1"].is_complete is True
@@ -488,12 +493,13 @@ class TestOTelTraceReplayDataGenerator:
     def test_check_session_completed_returns_false_for_incomplete(self):
         """check_session_completed returns False for incomplete sessions."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
-        
+
         # Set up incomplete session state
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
+
         mock_graph = MagicMock()
         mock_graph.nodes = {"node_0": MagicMock(), "node_1": MagicMock()}
-        
+
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
@@ -506,38 +512,38 @@ class TestOTelTraceReplayDataGenerator:
                 is_complete=False,
             )
         }
-        
+
         # Empty queue
         mock_queue = MagicMock()
         mock_queue.get_nowait = MagicMock(side_effect=Exception("Queue empty"))
         gen.session_completion_queue = mock_queue
-        
+
         # Check completion
         result = gen.check_session_completed("session_1")
-        
+
         # Should return False
         assert result is False
 
     def test_activate_session_marks_root_nodes_ready(self):
         """activate_session marks root nodes (no predecessors) as ready."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
-        
+
         # Set up session with graph
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
-        
+
         # Create mock graph with root and non-root nodes
         root_node = MagicMock()
         root_node.predecessor_node_ids = []
-        
+
         child_node = MagicMock()
         child_node.predecessor_node_ids = ["node_0"]
-        
+
         mock_graph = MagicMock()
         mock_graph.nodes = {
             "node_0": root_node,
             "node_1": child_node,
         }
-        
+
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
@@ -555,7 +561,7 @@ class TestOTelTraceReplayDataGenerator:
 
         # Activate session
         gen.activate_session("session_1")
-        
+
         # Root node should be ready
         state = gen.session_graph_state["session_1"]
         assert state.is_active is True
@@ -565,14 +571,15 @@ class TestOTelTraceReplayDataGenerator:
     def test_multiple_sessions_complete_independently(self):
         """Multiple sessions can complete independently via queue."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
-        
+
         # Set up two sessions
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
+
         mock_graph_1 = MagicMock()
         mock_graph_1.nodes = {"node_0": MagicMock()}
         mock_graph_2 = MagicMock()
         mock_graph_2.nodes = {"node_0": MagicMock()}
-        
+
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
@@ -595,7 +602,7 @@ class TestOTelTraceReplayDataGenerator:
                 is_complete=False,
             ),
         }
-        
+
         # Queue has completions for both sessions
         completions = [
             {
@@ -611,8 +618,9 @@ class TestOTelTraceReplayDataGenerator:
                 "node_completion_times": {"node_0": 200.0},
             },
         ]
-        
+
         call_count = [0]
+
         def get_nowait_side_effect():
             if call_count[0] < len(completions):
                 result = completions[call_count[0]]
@@ -620,14 +628,14 @@ class TestOTelTraceReplayDataGenerator:
                 return result
             else:
                 raise Exception("Queue empty")
-        
+
         mock_queue = MagicMock()
         mock_queue.get_nowait = get_nowait_side_effect
         gen.session_completion_queue = mock_queue
-        
+
         # Process queue
         gen._process_completion_queue()
-        
+
         # Both sessions should be complete
         assert gen.session_graph_state["session_1"].is_complete is True
         assert gen.session_graph_state["session_2"].is_complete is True
@@ -636,6 +644,7 @@ class TestOTelTraceReplayDataGenerator:
 # ---------------------------------------------------------------------------
 # End-to-end: build graph from simple_chain.json + simulate output substitution
 # ---------------------------------------------------------------------------
+
 
 class TestEndToEndSimpleChain:
     """
@@ -679,35 +688,34 @@ class TestEndToEndSimpleChain:
         # Build events from graph
         session_id = "test_session"
         from dataclasses import replace as dc_replace
+
         events = []
         for node in graph.nodes.values():
             gc = node.call
             qualified_node_id = f"{session_id}:{node.node_id}"
-            qualified_predecessor_ids = [
-                f"{session_id}:{pid}" for pid in node.predecessor_node_ids
-            ]
+            qualified_predecessor_ids = [f"{session_id}:{pid}" for pid in node.predecessor_node_ids]
             qualified_segments = [
-                dc_replace(seg, source_node_id=f"{session_id}:{seg.source_node_id}")
-                if seg.source_node_id is not None
-                else seg
+                dc_replace(seg, source_node_id=f"{session_id}:{seg.source_node_id}") if seg.source_node_id is not None else seg
                 for seg in gc.input_segments
             ]
-            events.append(OTelTraceReplayEvent(
-                call_id=gc.call_id,
-                node_id=qualified_node_id,
-                file_index=0,
-                t_start_ms=node.t_start_ms,
-                t_end_ms=node.t_end_ms,
-                model=gc.model,
-                messages=gc.messages,
-                expected_output=gc.expected_output,
-                input_segments=qualified_segments,
-                expected_output_tokens=gc.expected_output_tokens,
-                temperature=gc.temperature,
-                max_tokens_recorded=gc.max_tokens_recorded,
-                predecessor_node_ids=qualified_predecessor_ids,
-                wait_ms=node.wait_ms,
-            ))
+            events.append(
+                OTelTraceReplayEvent(
+                    call_id=gc.call_id,
+                    node_id=qualified_node_id,
+                    file_index=0,
+                    t_start_ms=node.t_start_ms,
+                    t_end_ms=node.t_end_ms,
+                    model=gc.model,
+                    messages=gc.messages,
+                    expected_output=gc.expected_output,
+                    input_segments=qualified_segments,
+                    expected_output_tokens=gc.expected_output_tokens,
+                    temperature=gc.temperature,
+                    max_tokens_recorded=gc.max_tokens_recorded,
+                    predecessor_node_ids=qualified_predecessor_ids,
+                    wait_ms=node.wait_ms,
+                )
+            )
         events.sort(key=lambda e: e.t_start_ms)
 
         # Set up registry, tracker, queue
@@ -728,7 +736,7 @@ class TestEndToEndSimpleChain:
         node_ids = sorted(graph.nodes.keys())
         first_node_id = node_ids[0]
         second_node_id = node_ids[1]
-        
+
         qualified_first_node_id = f"{session_id}:{first_node_id}"
         qualified_second_node_id = f"{session_id}:{second_node_id}"
 
@@ -770,5 +778,6 @@ class TestEndToEndSimpleChain:
     # which uses a short 0.1s timeout. The architectural correctness (asyncio.Event-based
     # waiting, session-to-worker affinity, output substitution) is thoroughly tested
     # by the other tests in this suite.
+
 
 # Made with Bob

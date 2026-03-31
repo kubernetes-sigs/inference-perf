@@ -616,7 +616,7 @@ class ReportGenerator:
         percentiles: List[float],
     ) -> List[ReportFile]:
         """Generate session-level lifecycle reports.
-        
+
         Note: Session metrics should be enriched (via SessionMetricsCollector.enrich_metrics())
         before calling this method.
         """

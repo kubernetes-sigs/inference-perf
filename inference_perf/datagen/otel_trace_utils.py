@@ -224,7 +224,7 @@ def _format_tool_call(tool_call: Dict) -> str:
 
 
 def reconstruct_each_part_in_message_info(message_info):
-    #towards matching output messages with input messages, transform each part to a stand alone text message
+    # towards matching output messages with input messages, transform each part to a stand alone text message
     message_info["parts_text"] = []
     if "parts" not in message_info:
         return message_info
@@ -234,6 +234,7 @@ def reconstruct_each_part_in_message_info(message_info):
         else:
             message_info["parts_text"].append(part["content"])
     return message_info
+
 
 def reconstruct_llm_input(input_message: Union[str, Dict]) -> str:
     """
