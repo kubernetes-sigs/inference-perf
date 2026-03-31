@@ -5,6 +5,18 @@ system (e.g. an agent framework instrumented with OTel); inference-perf reconstr
 original call graph — including sequential dependencies, parallel fan-outs, and shared-prefix
 patterns — and drives those calls against the target inference server under test.
 
+## Why use OTel trace replay?
+
+Standard load types (`constant`, `poisson`, `concurrent`) generate independent, single-turn requests.
+Agentic applications — tool-calling agents, multi-turn conversations, RAG pipelines — produce **chains
+of dependent LLM calls** where each call's input includes the output of predecessors.
+
+OTel trace replay enables you to:
+1. Benchmark **realistic agentic workloads** with proper dependency chains
+2. Measure **KV cache effectiveness** with actual growing-context patterns
+3. Test **session-level behavior** (success rates, end-to-end latency)
+4. Replay **production traffic patterns** captured from real systems
+
 ## How it works
 
 ### 1. Trace → Replay Graph
@@ -225,6 +237,39 @@ dependency graph itself — root nodes run immediately, dependent nodes wait. Th
 size (`num_workers` × `worker_max_concurrency`) sets the ceiling on how many LLM calls can be
 in flight across all sessions simultaneously.
 
+## Session-Level Metrics
+
+In addition to per-request metrics (TTFT, TPOT, throughput), OTel trace replay produces
+**session-level metrics** that capture the outcome of complete agentic workflows:
+
+### SessionLifecycleMetric
+
+Each session (one trace file) produces a metric with:
+
+| Field | Description |
+|-------|-------------|
+| `session_id` | Unique session identifier |
+| `stage_id` | Stage that ran this session |
+| `file_path` | Source trace file |
+| `start_time`, `end_time`, `duration_sec` | Wall-clock timing for the entire session |
+| `num_nodes` | Total LLM calls in the session |
+| `num_nodes_completed` | Calls that actually completed |
+| `success` | `True` if all nodes completed without error |
+| `error` | First error encountered, if any |
+| `total_input_tokens`, `total_output_tokens` | Aggregated across all calls in the session |
+
+### Reports
+
+After a run, three session report files are generated:
+
+- **`summary_lifecycle_metrics.json`** — aggregate statistics across all sessions (count, success rate,
+  mean/p50/p90/p99 duration and token counts)
+- **`stage_N_lifecycle_metrics.json`** — same statistics grouped by stage
+- **Session detail CSV** — one row per session with all fields (for detailed analysis)
+
+These complement the standard per-request metrics, giving you both micro (individual LLM calls) and
+macro (complete workflows) views of performance.
+
 ## Quick start
 
 ```bash
@@ -242,3 +287,53 @@ python -m inference_perf.datagen.otel_trace_to_replay_graph \
   --output /tmp/graph.json \
   --summary
 ```
+
+---
+
+## Advanced: Generator Architecture
+
+*This section is for advanced users and contributors. Skip if you just want to use trace replay.*
+
+### Two Generator Hierarchies
+
+The codebase has two distinct generator types, both inheriting from `BaseGenerator`:
+
+**`DataGenerator`** — Used by standard load types (`random`, `shared_prefix`, `cnn_dailymail`)
+- Implements `get_data()` iterator yielding independent requests
+- Works with `load.type: constant`, `poisson`, or `concurrent`
+- Requests are fully independent
+
+**`SessionGenerator`** — Used exclusively for trace replay
+- Implements session-oriented methods instead of `get_data()`
+- Works with `load.type: trace_session_replay`
+- Requests within a session are **causally dependent**
+
+### Why SessionGenerator Exists
+
+OTel trace replay cannot use the `DataGenerator` model because:
+1. Requests inside a trace are **causally dependent** — call B cannot start until call A finishes
+2. A's actual output must be injected into B's prompt (not the recorded text)
+3. A flat iterator has no way to express "don't yield this yet" or "substitute with live output"
+
+`OTelTraceReplayDataGenerator` works at the granularity of whole *sessions* (one trace file = one session).
+
+### SessionGenerator API
+
+| Method | Purpose |
+|--------|---------|
+| `get_session_count()` | Total sessions in the corpus |
+| `get_session_info(index)` | Metadata (session_id, file_path, num_events) |
+| `activate_session(session_id)` | Marks root nodes as ready to dispatch |
+| `get_session_events(index)` | Returns all events for a session |
+| `check_session_completed(session_id)` | Returns `True` when all nodes finished |
+| `build_session_metric(...)` | Constructs a `SessionLifecycleMetric` |
+| `cleanup_session(session_id)` | Releases per-session state |
+
+All requests for a session are enqueued immediately (for parallelism), but each request only
+*executes* once its predecessors complete — signalled via `NodeOutputRegistry` on the same worker.
+
+### Backwards Compatibility
+
+All changes are additive. The `SessionGenerator` path is only activated when
+`data.type: otel_trace_replay` is set. Existing data generators, load types, and reports
+are unmodified.
