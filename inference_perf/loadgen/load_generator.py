@@ -22,6 +22,7 @@ from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.config import (
     LoadConfig,
     LoadType,
@@ -385,7 +386,6 @@ class LoadGenerator:
         start_time = time.perf_counter()
 
         # Get total number of sessions
-        from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 
         if not isinstance(self.datagen, OTelTraceReplayDataGenerator):
             raise ValueError("Session-based replay requires OTelTraceReplayDataGenerator")
@@ -925,8 +925,6 @@ class LoadGenerator:
                 return
 
         if self.load_type == LoadType.TRACE_SESSION_REPLAY:
-            from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
-
             if isinstance(self.datagen, OTelTraceReplayDataGenerator):
                 total_sessions = self.datagen.get_session_count()
                 total_requested = sum(
