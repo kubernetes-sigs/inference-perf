@@ -33,10 +33,9 @@ import asyncio
 import json
 import multiprocessing as mp
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import List, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -408,7 +407,6 @@ class TestOTelTraceReplayDataGenerator:
         }
 
         # Create queue with completion notification
-        completion_notifications = []
         mock_queue = MagicMock()
 
         # Simulate queue with one item, then empty

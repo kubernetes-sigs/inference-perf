@@ -53,6 +53,7 @@ import argparse
 import json
 import logging
 import re
+from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -400,7 +401,6 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
 
 # ---------------------------------------------------------------------------
 # Causal dependency detection (message-level)
-from enum import Enum
 
 
 class DEPENDENCY_TYPE(Enum):
@@ -598,7 +598,7 @@ def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_co
             offset = 1 if parts_to_match[0]["type"] != "tool_call" else 2
 
         # Check remaining parts
-        for part, part_text in zip(parts_to_match[1:], parts_text_to_match[1:]):
+        for part, part_text in zip(parts_to_match[1:], parts_text_to_match[1:], strict=False):
             next_index_to_check = candidate_i + offset
             if next_index_to_check >= len(b_messages):
                 candidate_ok = False

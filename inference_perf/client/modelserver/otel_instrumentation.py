@@ -32,9 +32,9 @@ from contextlib import contextmanager
 
 try:
     from opentelemetry import trace
-    from opentelemetry.trace import Status, StatusCode, Span
+    from opentelemetry.trace import Status, StatusCode
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.export import ConsoleSpanExporter
     from opentelemetry.sdk.trace.id_generator import IdGenerator
     from opentelemetry.semconv_ai import SpanAttributes
     from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
@@ -106,7 +106,7 @@ class OTelInstrumentation:
             enabled = os.getenv("OTEL_TRACES_ENABLED", "false").lower() == "true"
         if service_name is None:
             service_name = os.getenv("OTEL_SERVICE_NAME", "inference-perf")
-        
+
         self.service_name = service_name
         self.otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         self.trace_per_stage = os.getenv("OTEL_TRACE_PER_STAGE", "false").lower() == "true"

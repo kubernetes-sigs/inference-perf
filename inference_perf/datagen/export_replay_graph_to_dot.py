@@ -23,11 +23,8 @@ Usage:
 Then visualize at: https://viz-js.com/
 """
 
-import argparse
-import json
 from pathlib import Path
 from typing import Any, Dict
-import subprocess
 
 
 def escape_label(text: str) -> str:
@@ -53,9 +50,9 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     title = f"Replay Graph\\n{len(nodes)} nodes"
     if source_file:
         title += f"\\nSource: {source_file.split('/')[-1]}"
-    lines.append(f'    labelloc="t";')
+    lines.append('    labelloc="t";')
     lines.append(f'    label="{escape_label(title)}";')
-    lines.append(f"    fontsize=16;")
+    lines.append("    fontsize=16;")
     lines.append("")
 
     # Add nodes
@@ -190,4 +187,4 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
     print(f"\n📊 Graph visualization saved to: {output_file}")
-    print(f"   View online at: https://viz-js.com/")
+    print("   View online at: https://viz-js.com/")

@@ -14,7 +14,6 @@
 
 """Tests for OpenTelemetry instrumentation."""
 
-import pytest
 from inference_perf.client.modelserver.otel_instrumentation import (
     OTelInstrumentation,
     get_otel_instrumentation,
