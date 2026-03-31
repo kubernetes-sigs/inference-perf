@@ -150,7 +150,7 @@ class WorkerSessionTracker:
     Session completion is communicated to main process via mp.Queue.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty tracking state."""
         # Nested map: session_id -> {node_id -> completion_time}
         self._node_completions: Dict[str, Dict[str, float]] = {}
@@ -506,6 +506,10 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
                     logger.warning(f"Node {self.node_id}: output segment has no source_node_id, using recorded content")
                     result.extend(seg_msgs)
             elif seg.type == "shared":
+                if seg.source_node_id is None:
+                    logger.error(f"CRITICAL: Node {self.node_id} shared segment has no source_node_id")
+                    result.extend(seg_msgs)
+                    continue
                 seg_msgs_from_parent = self.registry.get_messages_by_node_id(seg.source_node_id)
                 if seg_msgs_from_parent is None:
                     logger.error(
@@ -737,7 +741,7 @@ class OTelTraceSession:
     start_offset_ms: int = 0  # Offset for staggered session starts
 
 
-def resolve_trace_files(trace_files):
+def resolve_trace_files(trace_files: List[str]) -> List[Path]:
     """
     Extract all relevant files from a list of paths.
 
@@ -1043,7 +1047,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                         t_start_ms=0,  # Not used in graph traversal
                         t_end_ms=0,  # Not used in graph traversal
                         model=gc.model,
-                        messages=gc.messages,
+                        messages=gc.messages,  # type: ignore[arg-type]
                         expected_output=gc.expected_output,
                         input_segments=qualified_segments,
                         expected_output_tokens=gc.expected_output_tokens,
@@ -1345,8 +1349,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         raise ValueError(
             f"Event not found: session={session_id}, node={node_id}. This indicates a bug in the graph traversal logic."
         )
-
-    # Made with Bob
 
     def cleanup_session(self, session_id: str) -> None:
         """Clean up memory for a completed session.

@@ -104,7 +104,7 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def message_content_text(msg: Dict[str, Any]) -> str:
+def message_content_text(msg: OtelMessage) -> str:
     """Extract the text content of a message (handles string or list content)."""
     content = msg.text
     if isinstance(content, list):
@@ -118,17 +118,17 @@ def message_content_text(msg: Dict[str, Any]) -> str:
     return str(content)
 
 
-def message_tokens(msg: Dict[str, Any]) -> int:
+def message_tokens(msg: OtelMessage) -> int:
     """Estimate token count for a single message."""
     return estimate_tokens(message_content_text(msg))
 
 
-def messages_equal(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+def messages_equal(a: OtelMessage, b: OtelMessage) -> bool:
     """Return True if two messages have the same role and content."""
     return a.role == b.role and norm_text(message_content_text(a)) == norm_text(message_content_text(b))
 
 
-def output_matches_message(output_text: str, msg: Dict[str, Any], allow_partial_match=False) -> bool:
+def output_matches_message(output_text: str, msg: OtelMessage, allow_partial_match: bool = False) -> bool:
     """Return True if msg is an assistant message whose content matches output_text."""
     if msg.role != "assistant":
         return False
@@ -178,7 +178,7 @@ def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[st
                 parts.append(
                     {
                         "type": "tool_call",
-                        "id": tc.get("id"),
+                        "id": tc.get("id"),  # type: ignore[dict-item]
                         "name": tc["function"].get("name"),
                         "arguments": tc["function"].get("arguments"),
                     }
@@ -186,7 +186,12 @@ def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[st
             # Direct format: {"name": "...", "arguments": "..."}
             elif "name" in tc:
                 parts.append(
-                    {"type": "tool_call", "id": tc.get("id"), "name": tc.get("name"), "arguments": tc.get("arguments")}
+                    {
+                        "type": "tool_call",
+                        "id": tc.get("id"),  # type: ignore[dict-item]
+                        "name": tc.get("name"),  # type: ignore[dict-item]
+                        "arguments": tc.get("arguments"),  # type: ignore[dict-item]
+                    }
                 )
 
     # Create new message with parts
@@ -225,7 +230,7 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
                         )
                     )
                 elif isinstance(content, str):
-                    res.append(OtelMessage(role=role, text=content))
+                    res.append(OtelMessage(role=role, text=content))  # type: ignore[arg-type]
                 else:
                     res.append(ComplexOtelMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
             else:
@@ -241,7 +246,7 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
 
                 """
                 res.append(ComplexOtelMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
-        return res
+        return res  # type: ignore[return-value]
     else:
         return []
     return []
@@ -388,7 +393,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 t_start_ms=t_start,
                 t_end_ms=t_end,
                 model=str(attrs.get("gen_ai.request.model") or ""),
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 out_message=out_message,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -417,7 +422,7 @@ class DEPENDENCY_TYPE(Enum):
 
 
 # ---------------------------------------------------------------------------
-def _try_match_tool_call_ids(a_parts: list, b_messages: list) -> bool:
+def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dict[str, Any]]) -> bool:
     """
     Check if all tool call IDs from a_parts appear in b_messages.
     Args:
@@ -494,7 +499,7 @@ def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
         parts_text = a.out_message.message_info["parts_text"]
 
         # First, try matching by tool call IDs
-        if _try_match_tool_call_ids(parts, b.messages):
+        if _try_match_tool_call_ids(parts, b.messages):  # type: ignore[arg-type]
             return DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED
 
         # Determine structure: check if first part is content (text) or tool_call
@@ -530,7 +535,9 @@ def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
     return None
 
 
-def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_content_with_tools: bool) -> bool:
+def _try_match_parts(
+    parts: List[Dict[str, Any]], parts_text: List[str], b_messages: List[Any], combine_content_with_tools: bool
+) -> bool:
     """
     Unified function to match parts in b_messages.
 
@@ -576,7 +583,7 @@ def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_co
         # Prepare text to match for first part
         if combine_content_with_tools:
             # Concatenate content with first tool call text
-            text_to_match = content_text + "\n" + first_part_text
+            text_to_match = (content_text or "") + "\n" + (first_part_text or "")
         else:
             # Just the first part text
             text_to_match = first_part_text
@@ -609,7 +616,7 @@ def _try_match_parts(parts: list, parts_text: list, b_messages: list, combine_co
             # Prepare text to match
             if combine_content_with_tools:
                 # Concatenate content with tool call text
-                text_to_match = content_text + "\n" + part_text
+                text_to_match = (content_text or "") + "\n" + (part_text or "")
             else:
                 # Just the part text
                 text_to_match = part_text
@@ -690,7 +697,7 @@ def decompose_input(
         """Convert a list of messages to token count proportionally."""
         if total_msgs == 0 or total_tokens == 0:
             return 0
-        msg_chars = sum(len(message_content_text(m)) for m in msg_list)
+        msg_chars = sum(len(message_content_text(m)) for m in msg_list)  # type: ignore[arg-type,misc]
         total_chars = sum(len(message_content_text(m)) for m in messages)
         if total_chars == 0:
             return 0
@@ -723,7 +730,7 @@ def decompose_input(
             InputSegment(
                 type="shared",
                 message_count=best_prefix_count,
-                token_count=msgs_to_tokens(shared_msgs),
+                token_count=msgs_to_tokens(shared_msgs),  # type: ignore[arg-type]
                 source_node_id=predecessor_node_ids[best_pred_idx],
             )
         )
@@ -756,7 +763,7 @@ def decompose_input(
                     InputSegment(
                         type="unique",
                         message_count=len(remaining_msgs),
-                        token_count=msgs_to_tokens(remaining_msgs),
+                        token_count=msgs_to_tokens(remaining_msgs),  # type: ignore[arg-type]
                     )
                 )
             break
@@ -768,7 +775,7 @@ def decompose_input(
                 InputSegment(
                     type="unique",
                     message_count=len(gap_msgs),
-                    token_count=msgs_to_tokens(gap_msgs),
+                    token_count=msgs_to_tokens(gap_msgs),  # type: ignore[arg-type]
                 )
             )
             cursor = best_out_msg_idx
@@ -776,7 +783,7 @@ def decompose_input(
         # The injected output message
         out_msg = messages[cursor]
         _ct = predecessors[best_out_pred_idx].completion_tokens
-        out_tokens: int = _ct if _ct is not None else msgs_to_tokens([out_msg])
+        out_tokens: int = _ct if _ct is not None else msgs_to_tokens([out_msg])  # type: ignore[list-item]
         segments.append(
             InputSegment(
                 type="output",
@@ -894,7 +901,7 @@ def build_graph(
                 )
         return False
 
-    def is_valid_predecessor(predecessor_candidate, curr_call):
+    def is_valid_predecessor(predecessor_candidate: Any, curr_call: Any) -> bool:
         # checks if candidate can be a predecessor to curr_call. Make sure times are not overlapping
         # since the nodes are sorted, we can assume the candidate doesn't start after curr_call
         if curr_call.t_start_ms < predecessor_candidate.t_end_ms:
@@ -984,7 +991,8 @@ def build_graph(
             call_id=rc.call_id,
             model=rc.model,
             messages=[
-                {"role": x.role, "content": x.text} for x in rc.messages
+                {"role": x.role, "content": x.text}  # type: ignore[misc]
+                for x in rc.messages
             ],  # convert to a list of dictionaries representing a message with role and content only.
             expected_output=(rc.out_message.text or "" if rc.out_message else ""),
             input_segments=segments,
@@ -1095,8 +1103,8 @@ def _segment_label(seg: InputSegment, messages: List[Dict[str, str]]) -> str:
     type_labels = {"shared": "SHARED", "output": "OUTPUT", "unique": "UNIQUE"}
     label = type_labels.get(seg.type, seg.type.upper())
     src = f" <- {seg.source_node_id}" if seg.source_node_id else ""
-    messages = "\n\t\t\t".join(f"{x['role']} : {_shorten_string(x['content'])}" for x in messages)
-    return f"{label}({seg.message_count}msg/{seg.token_count}t{src})\n\t\t\t{messages}"
+    msg_str = "\n\t\t\t".join(f"{x['role']} : {_shorten_string(x['content'])}" for x in messages)
+    return f"{label}({seg.message_count}msg/{seg.token_count}t{src})\n\t\t\t{msg_str}"
 
 
 def _topo_order(graph: ReplayGraph) -> List[str]:
@@ -1122,7 +1130,7 @@ def _topo_order(graph: ReplayGraph) -> List[str]:
     return order
 
 
-def map_input_seq_to_messages(gc):
+def map_input_seq_to_messages(gc: Any) -> list[Any]:
     """
     returns a list of tuples, each tuple contains the sequence, and the corresponding messages
     """
@@ -1206,7 +1214,7 @@ def summarize_graph(graph: ReplayGraph) -> str:
     return "\n".join(lines)
 
 
-def visualize_graph(graph, output_file) -> None:
+def visualize_graph(graph: Any, output_file: Any) -> None:
     """
     Export graph to DOT format and optionally render to PNG.
 
@@ -1272,5 +1280,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# Made with Bob

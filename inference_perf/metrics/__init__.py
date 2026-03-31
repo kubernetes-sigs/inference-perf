@@ -19,5 +19,3 @@ from .session_collector import SessionMetricsCollector
 __all__ = [
     "SessionMetricsCollector",
 ]
-
-# Made with Bob

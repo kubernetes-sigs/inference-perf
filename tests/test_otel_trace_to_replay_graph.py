@@ -183,7 +183,7 @@ def test_sequential_chain() -> None:
     print("\nINPUT calls:")
     for c in calls:
         print(f"  {c.call_id}  t={c.t_start_ms}ms→{c.t_end_ms}ms  messages={len(c.messages)}")
-        print(f"    output: {(c.out_message.text or '')[:60]}...")
+        print(f"    output: {(c.out_message.text if c.out_message else '')[:60]}...")
     print("\nOUTPUT graph:")
     print_graph(graph)
     print("\nSummary:")
@@ -382,7 +382,7 @@ def test_parallel_fan_out() -> None:
     print("\nINPUT calls:")
     for c in calls:
         print(f"  {c.call_id}  t={c.t_start_ms}ms→{c.t_end_ms}ms  messages={len(c.messages)}")
-        print(f"    output: {(c.out_message.text or '')[:60]}...")
+        print(f"    output: {(c.out_message.text if c.out_message else '')[:60]}...")
     print("\nOUTPUT graph:")
     print_graph(graph)
     print("\nSummary:")
@@ -626,6 +626,3 @@ def test_growing_prefix() -> None:
         segs = graph.nodes[node_id].call.input_segments
         seg_types = [s.type for s in segs]
         assert "output" in seg_types, f"{call_id} should have an output segment, got {seg_types}"
-
-
-# Made with Bob

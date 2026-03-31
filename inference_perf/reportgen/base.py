@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 from collections import defaultdict
-from typing import Any, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from inference_perf.datagen import DataGenerator, SessionGenerator
@@ -582,7 +582,7 @@ class ReportGenerator:
         lifecycle_reports.append(self.generate_config_report())
         return lifecycle_reports
 
-    def summarize_sessions(self, metrics: List[SessionLifecycleMetric], percentiles: List[float]) -> dict:
+    def summarize_sessions(self, metrics: List[SessionLifecycleMetric], percentiles: List[float]) -> Dict[str, Any]:
         """Compute aggregated stats across a list of session lifecycle metrics."""
         num_sessions = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)

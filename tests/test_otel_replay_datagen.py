@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # Copyright 2025 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,12 +30,14 @@ Key architectural principles tested:
 4. Nested dict structure: efficient O(1) lookups without string operations
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import multiprocessing as mp
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -70,7 +73,7 @@ def make_api_config() -> APIConfig:
     return APIConfig(type=APIType.Chat, streaming=False)
 
 
-def make_mock_tokenizer():
+def make_mock_tokenizer() -> MagicMock:
     """Return a mock tokenizer that counts words as tokens."""
     tok = MagicMock()
     tok.count_tokens = lambda text: max(1, len((text or "").split()))
@@ -98,30 +101,30 @@ def make_mock_api_config_streaming(streaming: bool = False) -> MagicMock:
 class TestNodeOutputRegistry:
     """Test intra-worker output coordination via asyncio.Event."""
 
-    def test_record_and_get(self):
+    def test_record_and_get(self) -> None:
         """Basic record/retrieve functionality."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "Hello world", [])
         assert reg.get_output_by_node_id("node_001") == "Hello world"
 
-    def test_get_missing_returns_none(self):
+    def test_get_missing_returns_none(self) -> None:
         """Missing nodes return None."""
         reg = NodeOutputRegistry()
         assert reg.get_output_by_node_id("nonexistent") is None
 
-    def test_require_async_already_registered(self):
+    def test_require_async_already_registered(self) -> None:
         """Fast path: output already present before require_async is called."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "Some output", [])
         result = asyncio.run(reg.require_async("node_001"))
         assert result == "Some output"
 
-    def test_require_async_waits_for_record(self):
+    def test_require_async_waits_for_record(self) -> None:
         """require_async suspends via asyncio.Event until record() is called."""
         reg = NodeOutputRegistry()
 
-        async def _run():
-            async def producer():
+        async def _run() -> str:
+            async def producer() -> None:
                 await asyncio.sleep(0.05)
                 reg.record("node_001", "delayed output", [])
 
@@ -131,13 +134,13 @@ class TestNodeOutputRegistry:
         result = asyncio.run(_run())
         assert result == "delayed output"
 
-    def test_require_async_timeout(self):
+    def test_require_async_timeout(self) -> None:
         """require_async raises TimeoutError when output never arrives."""
         reg = NodeOutputRegistry()
         with pytest.raises(TimeoutError):
             asyncio.run(reg.require_async("node_001", timeout_sec=0.1))
 
-    def test_double_record_raises_error(self):
+    def test_double_record_raises_error(self) -> None:
         """Recording the same node twice should raise ValueError."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "first output", [])
@@ -146,7 +149,7 @@ class TestNodeOutputRegistry:
         with pytest.raises(ValueError, match="Node node_001 has already been recorded"):
             reg.record("node_001", "second output", [])
 
-    def test_get_messages_by_node_id(self):
+    def test_get_messages_by_node_id(self) -> None:
         """get_messages_by_node_id returns input messages."""
         reg = NodeOutputRegistry()
         messages = [ChatMessage(role="user", content="hello")]
@@ -157,7 +160,7 @@ class TestNodeOutputRegistry:
         assert retrieved[0].role == "user"
         assert retrieved[0].content == "hello"
 
-    def test_record_with_empty_messages(self):
+    def test_record_with_empty_messages(self) -> None:
         """Recording with empty messages list should still store the messages (as empty list)."""
         reg = NodeOutputRegistry()
         reg.record("node_001", "output", [])
@@ -176,28 +179,28 @@ class TestNodeOutputRegistry:
 class TestWorkerSessionTracker:
     """Test per-worker session state tracking with nested dict structure."""
 
-    def test_record_and_check_node_completion(self):
+    def test_record_and_check_node_completion(self) -> None:
         """Basic node completion tracking."""
         tracker = WorkerSessionTracker()
         tracker.record_node_completed("session_1", "node_0", 1.0)
         assert tracker.is_node_completed("session_1", "node_0")
         assert not tracker.is_node_completed("session_1", "node_1")
 
-    def test_get_node_completion_time(self):
+    def test_get_node_completion_time(self) -> None:
         """Retrieve completion time for a node."""
         tracker = WorkerSessionTracker()
         tracker.record_node_completed("session_1", "node_0", 123.456)
         assert tracker.get_node_completion_time("session_1", "node_0") == 123.456
         assert tracker.get_node_completion_time("session_1", "node_1") is None
 
-    def test_mark_and_check_session_failed(self):
+    def test_mark_and_check_session_failed(self) -> None:
         """Session failure tracking."""
         tracker = WorkerSessionTracker()
         assert not tracker.is_session_failed("session_1")
         tracker.mark_session_failed("session_1")
         assert tracker.is_session_failed("session_1")
 
-    def test_get_session_node_count(self):
+    def test_get_session_node_count(self) -> None:
         """Count completed nodes per session."""
         tracker = WorkerSessionTracker()
         tracker.record_node_completed("session_1", "node_0", 1.0)
@@ -207,7 +210,7 @@ class TestWorkerSessionTracker:
         assert tracker.get_session_node_count("session_2") == 1
         assert tracker.get_session_node_count("session_3") == 0
 
-    def test_get_session_completion_times(self):
+    def test_get_session_completion_times(self) -> None:
         """Retrieve all completion times for a session."""
         tracker = WorkerSessionTracker()
         tracker.record_node_completed("session_1", "node_0", 1.0)
@@ -229,7 +232,7 @@ class TestOTelChatCompletionAPIData:
         node_id: str,
         registry: NodeOutputRegistry,
         worker_tracker: WorkerSessionTracker,
-        completion_queue: Optional[mp.Queue] = None,
+        completion_queue: Optional[mp.Queue[Any]] = None,
         total_nodes: int = 1,
         predecessor_node_ids: Optional[List[str]] = None,
     ) -> OTelChatCompletionAPIData:
@@ -245,7 +248,7 @@ class TestOTelChatCompletionAPIData:
         )
 
     @pytest.mark.asyncio
-    async def test_non_streaming_captures_output(self):
+    async def test_non_streaming_captures_output(self) -> None:
         """process_response captures output and registers it."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
@@ -263,7 +266,7 @@ class TestOTelChatCompletionAPIData:
         assert info.output_text == "Paris is the capital of France."
 
     @pytest.mark.asyncio
-    async def test_on_completion_records_in_tracker(self):
+    async def test_on_completion_records_in_tracker(self) -> None:
         """on_completion records node completion in WorkerSessionTracker."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
@@ -282,7 +285,7 @@ class TestOTelChatCompletionAPIData:
         assert tracker.get_node_completion_time("session_1", "node_0") is not None
 
     @pytest.mark.asyncio
-    async def test_on_completion_pushes_to_queue_when_session_complete(self):
+    async def test_on_completion_pushes_to_queue_when_session_complete(self) -> None:
         """on_completion pushes to queue when last node completes."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
@@ -315,7 +318,7 @@ class TestOTelChatCompletionAPIData:
         assert len(completion_data["node_completion_times"]) == 2
 
     @pytest.mark.asyncio
-    async def test_wait_for_predecessors_skips_on_session_failure(self):
+    async def test_wait_for_predecessors_skips_on_session_failure(self) -> None:
         """wait_for_predecessors_and_substitute skips if session already failed."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
@@ -336,7 +339,7 @@ class TestOTelChatCompletionAPIData:
         assert registry.get_output_by_node_id("session_1:node_1") == ""
 
     @pytest.mark.asyncio
-    async def test_wait_for_predecessors_waits_and_substitutes(self):
+    async def test_wait_for_predecessors_waits_and_substitutes(self) -> None:
         """wait_for_predecessors_and_substitute waits for predecessors and substitutes output."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
@@ -382,7 +385,7 @@ class TestOTelChatCompletionAPIData:
 class TestOTelTraceReplayDataGenerator:
     """Test the main generator class, focusing on queue processing and session lifecycle."""
 
-    def test_process_completion_queue_updates_session_state(self):
+    def test_process_completion_queue_updates_session_state(self) -> None:
         """_process_completion_queue drains queue and updates session_graph_state."""
         # Create generator with mock queue
         gen = object.__new__(OTelTraceReplayDataGenerator)
@@ -412,7 +415,7 @@ class TestOTelTraceReplayDataGenerator:
         # Simulate queue with one item, then empty
         call_count = [0]
 
-        def get_nowait_side_effect():
+        def get_nowait_side_effect() -> Any:
             call_count[0] += 1
             if call_count[0] == 1:
                 return {
@@ -438,7 +441,7 @@ class TestOTelTraceReplayDataGenerator:
         assert state.node_completion_times["node_0"] == 100.0
         assert state.node_completion_times["node_1"] == 120.0
 
-    def test_check_session_completed_processes_queue_first(self):
+    def test_check_session_completed_processes_queue_first(self) -> None:
         """check_session_completed processes queue before checking status."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
@@ -464,7 +467,7 @@ class TestOTelTraceReplayDataGenerator:
         # Create queue with completion notification
         call_count = [0]
 
-        def get_nowait_side_effect():
+        def get_nowait_side_effect() -> Any:
             call_count[0] += 1
             if call_count[0] == 1:
                 return {
@@ -488,7 +491,7 @@ class TestOTelTraceReplayDataGenerator:
         assert result is True
         assert gen.session_graph_state["session_1"].is_complete is True
 
-    def test_check_session_completed_returns_false_for_incomplete(self):
+    def test_check_session_completed_returns_false_for_incomplete(self) -> None:
         """check_session_completed returns False for incomplete sessions."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
@@ -522,7 +525,7 @@ class TestOTelTraceReplayDataGenerator:
         # Should return False
         assert result is False
 
-    def test_activate_session_marks_root_nodes_ready(self):
+    def test_activate_session_marks_root_nodes_ready(self) -> None:
         """activate_session marks root nodes (no predecessors) as ready."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
@@ -566,7 +569,7 @@ class TestOTelTraceReplayDataGenerator:
         assert "node_0" in state.ready_nodes
         assert "node_1" not in state.ready_nodes  # Child node not ready yet
 
-    def test_multiple_sessions_complete_independently(self):
+    def test_multiple_sessions_complete_independently(self) -> None:
         """Multiple sessions can complete independently via queue."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
@@ -619,7 +622,7 @@ class TestOTelTraceReplayDataGenerator:
 
         call_count = [0]
 
-        def get_nowait_side_effect():
+        def get_nowait_side_effect() -> Any:
             if call_count[0] < len(completions):
                 result = completions[call_count[0]]
                 call_count[0] += 1
@@ -653,7 +656,7 @@ class TestEndToEndSimpleChain:
     """
 
     @pytest.fixture
-    def graph_and_calls(self):
+    def graph_and_calls(self) -> Any:
         if not SIMPLE_CHAIN_JSON.exists():
             pytest.skip(f"Test trace not found: {SIMPLE_CHAIN_JSON}")
         data = json.loads(SIMPLE_CHAIN_JSON.read_text())
@@ -662,12 +665,12 @@ class TestEndToEndSimpleChain:
         graph = build_graph(calls)
         return graph, calls
 
-    def test_graph_has_three_nodes(self, graph_and_calls):
+    def test_graph_has_three_nodes(self, graph_and_calls: Any) -> None:
         """Verify simple_chain.json produces 3-node graph."""
         graph, _ = graph_and_calls
         assert len(graph.nodes) == 3
 
-    def test_node_001_has_output_segment(self, graph_and_calls):
+    def test_node_001_has_output_segment(self, graph_and_calls: Any) -> None:
         """Second node should have output segment from first node."""
         graph, _ = graph_and_calls
         node_ids = sorted(graph.nodes.keys())
@@ -676,7 +679,7 @@ class TestEndToEndSimpleChain:
         seg_types = [s.type for s in node_001.call.input_segments]
         assert "output" in seg_types, f"Expected output segment in {node_ids[1]}, got: {seg_types}"
 
-    def test_output_substitution_end_to_end(self, graph_and_calls):
+    def test_output_substitution_end_to_end(self, graph_and_calls: Any) -> None:
         """
         Simulate: node_000 completes with DIFFERENT output than recorded.
         Verify: node_001's messages use the new output after substitution.
@@ -719,7 +722,7 @@ class TestEndToEndSimpleChain:
         # Set up registry, tracker, queue
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
-        queue = mp.Queue()
+        queue: mp.Queue[Any] = mp.Queue()
         gen = object.__new__(OTelTraceReplayDataGenerator)
         gen.all_events = events
         gen.output_registry = registry
@@ -776,6 +779,3 @@ class TestEndToEndSimpleChain:
     # which uses a short 0.1s timeout. The architectural correctness (asyncio.Event-based
     # waiting, session-to-worker affinity, output substitution) is thoroughly tested
     # by the other tests in this suite.
-
-
-# Made with Bob

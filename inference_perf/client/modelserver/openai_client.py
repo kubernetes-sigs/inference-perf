@@ -110,7 +110,7 @@ class openAIModelServerClient(ModelServerClient):
             if self._session is None:
                 self._session = openAIModelServerClientSession(self)
             session = self._session
-        return await session.process_request(data, stage_id, scheduled_time, lora_adapter)
+        await session.process_request(data, stage_id, scheduled_time, lora_adapter)
 
     async def close(self) -> None:
         """Close the internal session created by process_request, if any."""
@@ -206,7 +206,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 if hasattr(data, "messages"):
                     # Chat completion - serialize messages as JSON string (gen_ai.input.messages)
                     input_messages = [{"role": msg.role, "content": msg.content} for msg in data.messages]
-                    otel_response_info["input_messages"] = json.dumps(input_messages)
+                    otel_response_info["input_messages"] = json.dumps(input_messages)  # type: ignore[assignment]
                 elif hasattr(data, "prompt"):
                     # Text completion - store as prompt string (gen_ai.prompt)
                     otel_response_info["input_prompt"] = data.prompt
@@ -240,7 +240,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
     async def process_request(
         self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
-    ) -> Optional[ErrorResponseInfo]:
+    ) -> None:
         # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
         effective_model_name = lora_adapter if lora_adapter else self.client.model_name
         payload = await data.to_payload(
@@ -383,9 +383,6 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
-
-        # Return error if any (for load_generator to handle)
-        return error
 
     async def close(self) -> None:
         await self.session.close()
