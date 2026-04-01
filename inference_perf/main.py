@@ -13,6 +13,7 @@
 # limitations under the License.
 import multiprocessing as mp
 import sys
+import os
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
 from typing import List, Optional
@@ -116,6 +117,7 @@ def main_cli() -> None:
     # Parse command line arguments
     parser = ArgumentParser()
     parser.add_argument("-c", "--config_file", help="Config File", required=False)
+    parser.add_argument("--url", help="Model server URL to auto-detect and run", required=False)
     parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False)
     parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False)
     parser.add_argument(
@@ -132,11 +134,32 @@ def main_cli() -> None:
         analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
-    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level"}
+    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level", "url"}
     cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
     cli_overrides = unflatten_dict(cli_overrides_flat)
 
-    config = read_config(args.config_file, cli_overrides)
+    # 1. Load base config if file exists
+    config = None
+    if args.config_file:
+        if os.path.exists(args.config_file):
+            config = read_config(args.config_file)
+        else:
+            parser.error(f"Config file not found: {args.config_file}")
+
+    # 2. Apply URL auto-detection if provided
+    if args.url:
+        from inference_perf.detector.detector import autofill_config
+
+        config = autofill_config(args.url, base_config=config)
+    elif not config:
+        parser.error("No configuration found. Please provide a valid config file or a --url.")
+
+    # 3. Apply CLI overrides
+    if cli_overrides:
+        from inference_perf.config import deep_merge
+        config_dict = config.model_dump(mode="json")
+        merged_dict = deep_merge(config_dict, cli_overrides)
+        config = Config(**merged_dict)
 
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
