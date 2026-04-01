@@ -24,7 +24,7 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
             self.load_generator = LoadGenerator(self.mock_datagen, self.load_config)
 
     @patch("inference_perf.loadgen.load_generator.Progress")
-    async def test_run_progress(self, mock_progress_class):
+    async def test_run_progress(self, mock_progress_class: MagicMock) -> None:
         mock_progress = mock_progress_class.return_value
         mock_overall_task = MagicMock()
         mock_stage_task = MagicMock()
@@ -35,9 +35,8 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         # Override get_timer to prevent actual sleeping
         mock_timer = MagicMock()
         mock_timer.start_timer.return_value = [0.0]
-        self.load_generator.get_timer = MagicMock(return_value=mock_timer)
-
-        await self.load_generator.run(mock_client)
+        with patch.object(self.load_generator, "get_timer", return_value=mock_timer):
+            await self.load_generator.run(mock_client)
 
         # Check that Progress was started and stopped
         mock_progress.start.assert_called_once()
