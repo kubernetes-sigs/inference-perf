@@ -102,6 +102,12 @@ async def run_benchmark_minimal(
     cfg_path = await _process_yaml_config(config, wd)
 
     env = os.environ.copy()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    if "PYTHONPATH" in env:
+        env["PYTHONPATH"] = f"{repo_root}:{env['PYTHONPATH']}"
+    else:
+        env["PYTHONPATH"] = str(repo_root)
+
     if extra_env:
         env.update({k: str(v) for k, v in extra_env.items()})
 

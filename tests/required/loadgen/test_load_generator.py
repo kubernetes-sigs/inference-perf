@@ -234,6 +234,8 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
                 await self.load_generator.run(self.mock_client)
 
             self.assertEqual(mock_tg.create_task.call_count, 2)
+            for call in mock_tg.create_task.call_args_list:
+                call.args[0].close()
             self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "COMPLETED")
 
     async def test_drain(self) -> None:
