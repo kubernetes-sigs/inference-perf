@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from inference_perf.utils.cli_summary import extract_stage_id, print_summary_table
 from inference_perf.utils.report_file import ReportFile
 
