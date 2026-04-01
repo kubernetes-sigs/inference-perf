@@ -778,4 +778,85 @@ class TestEndToEndSimpleChain:
     # The timeout behavior is tested in TestNodeOutputRegistry.test_require_async_timeout
     # which uses a short 0.1s timeout. The architectural correctness (asyncio.Event-based
     # waiting, session-to-worker affinity, output substitution) is thoroughly tested
+
+
+# ---------------------------------------------------------------------------
+# Error path tests for process_failure
+# ---------------------------------------------------------------------------
+
+
+class TestOTelChatCompletionAPIDataErrorPaths:
+    """Test error handling paths in OTelChatCompletionAPIData."""
+
+    @pytest.mark.asyncio
+    async def test_process_failure_marks_session_failed(self) -> None:
+        """process_failure marks session as failed and registers empty output."""
+        registry = NodeOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Test")],
+            max_tokens=50,
+            node_id="session_1:node_0",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_nodes_in_session=1,
+            predecessor_node_ids=[],
+        )
+
+        # Simulate a failure
+        exception = ValueError("Test error")
+        config = make_mock_api_config_streaming(streaming=False)
+        tokenizer = make_mock_tokenizer()
+        result = await api_data.process_failure(None, config, tokenizer, exception)
+
+        # Session should be marked as failed
+        assert tracker.is_session_failed("session_1")
+
+        # Empty output should be registered
+        assert registry.get_output_by_node_id("session_1:node_0") == ""
+
+        # Should return empty inference info (base InferenceInfo, not OTelInferenceInfo)
+        assert isinstance(result, OTelInferenceInfo)
+        assert result.output_text == ""
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_wait_for_predecessors_post_wait_failure_check(self) -> None:
+        """Test post-wait failure check skips node if session failed during wait."""
+        registry = NodeOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Create node with predecessor
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Test")],
+            max_tokens=50,
+            node_id="session_1:node_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_nodes_in_session=2,
+            predecessor_node_ids=["session_1:node_0"],
+        )
+
+        # Register predecessor output first
+        registry.record("session_1:node_0", "predecessor output", [])
+
+        # Mark session as failed (simulating failure during wait)
+        tracker.mark_session_failed("session_1")
+
+        # Wait for predecessors - should detect failure and skip
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Should have set skip_request flag
+        assert api_data.skip_request is True
+
+        # Should have recorded empty output
+        assert registry.get_output_by_node_id("session_1:node_1") == ""
+
+        # Node should be marked as completed
+        assert tracker.is_node_completed("session_1", "node_1")
+
     # by the other tests in this suite.
