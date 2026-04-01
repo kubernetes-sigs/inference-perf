@@ -77,6 +77,7 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
 )
 from inference_perf.apis.chat import ChatMessage
+from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.datagen.base import SessionGenerator, LazyLoadDataMixin
 from inference_perf.datagen.otel_trace_to_replay_graph import (
@@ -592,32 +593,10 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         output_text: str = ""
 
         if config.streaming:
-            output_text = ""
-            output_token_times: List[float] = []
-            buffer = b""
-            async for chunk in response.content.iter_any():
-                buffer += chunk
-                while b"\n\n" in buffer:
-                    message, buffer = buffer.split(b"\n\n", 1)
-                    output_token_times.append(time.perf_counter())
-                    for line in message.split(sep=b"\n"):
-                        if line.startswith(b"data:"):
-                            data_str = line.removeprefix(b"data: ").strip()
-                            if data_str == b"[DONE]":
-                                break
-                            try:
-                                data = json.loads(data_str)
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    content = delta.get("content")
-                                    if content:
-                                        output_text += content
-                            except (json.JSONDecodeError, IndexError):
-                                continue
-                    else:
-                        continue
-                    break
+            # Use shared streaming parser with chat-specific content extraction
+            output_text, output_token_times = await parse_sse_stream(
+                response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+            )
 
             prompt_text = "".join([msg.content for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
