@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
+from inference_perf.client.modelserver.base import GaugeResult
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
@@ -206,163 +207,56 @@ def calculate_goodput_metrics(
     return result
 
 
+def _hist(h: GaugeResult) -> Dict[str, float]:
+    return {"mean": h.avg, "median": h.median, "p90": h.p90, "p99": h.p99}
+
+
+def _ratio(num: float, den: float) -> float:
+    return (num / den) * 100.0 if den > 0 else 0.0
+
+
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
         benchmark_time_seconds=0.0,
         load_summary={},  # model server doesn't report failed requests
         failures={},
         successes={
-            "count": metrics.total_requests,
-            "rate": metrics.requests_per_second,
-            "prompt_len": {
-                "mean": metrics.avg_prompt_tokens,
-                "rate": metrics.prompt_tokens_per_second,
-            },
-            "output_len": {
-                "mean": metrics.avg_output_tokens,
-                "rate": metrics.output_tokens_per_second,
-            },
-            "queue_len": {
-                "mean": metrics.avg_queue_length,
-            },
-            "request_latency": {
-                "mean": metrics.avg_request_latency,
-                "median": metrics.median_request_latency,
-                "p90": metrics.p90_request_latency,
-                "p99": metrics.p99_request_latency,
-            },
-            "time_to_first_token": {
-                "mean": metrics.avg_time_to_first_token,
-                "median": metrics.median_time_to_first_token,
-                "p90": metrics.p90_time_to_first_token,
-                "p99": metrics.p99_time_to_first_token,
-            },
-            "time_per_output_token": {
-                "mean": metrics.avg_time_per_output_token,
-                "median": metrics.median_time_per_output_token,
-                "p90": metrics.p90_time_per_output_token,
-                "p99": metrics.p99_time_per_output_token,
-            },
-            "kv_cache_usage_percentage": {
-                "mean": metrics.avg_kv_cache_usage,
-                "median": metrics.median_kv_cache_usage,
-                "p90": metrics.p90_kv_cache_usage,
-                "p99": metrics.p99_kv_cache_usage,
-            },
-            "num_requests_swapped": {
-                "mean": metrics.num_requests_swapped,
-            },
-            "num_preemptions_total": {"mean": metrics.num_preemptions_total},
-            "prefix_cache_hit_percent": {
-                "mean": (metrics.prefix_cache_hits / metrics.prefix_cache_queries) * 100.0
-                if metrics.prefix_cache_queries > 0
-                else 0.0
-            },
-            "inter_token_latency": {
-                "mean": metrics.avg_inter_token_latency,
-                "median": metrics.median_inter_token_latency,
-                "p90": metrics.p90_inter_token_latency,
-                "p99": metrics.p99_inter_token_latency,
-            },
-            "num_requests_running": {
-                "mean": metrics.avg_num_requests_running,
-            },
-            "request_queue_time": {
-                "mean": metrics.avg_request_queue_time,
-                "median": metrics.median_request_queue_time,
-                "p90": metrics.p90_request_queue_time,
-                "p99": metrics.p99_request_queue_time,
-            },
-            "request_inference_time": {
-                "mean": metrics.avg_request_inference_time,
-                "median": metrics.median_request_inference_time,
-                "p90": metrics.p90_request_inference_time,
-                "p99": metrics.p99_request_inference_time,
-            },
-            "request_prefill_time": {
-                "mean": metrics.avg_request_prefill_time,
-                "median": metrics.median_request_prefill_time,
-                "p90": metrics.p90_request_prefill_time,
-                "p99": metrics.p99_request_prefill_time,
-            },
-            "request_decode_time": {
-                "mean": metrics.avg_request_decode_time,
-                "median": metrics.median_request_decode_time,
-                "p90": metrics.p90_request_decode_time,
-                "p99": metrics.p99_request_decode_time,
-            },
-            "request_prompt_tokens": {
-                "mean": metrics.avg_request_prompt_tokens,
-                "median": metrics.median_request_prompt_tokens,
-                "p90": metrics.p90_request_prompt_tokens,
-                "p99": metrics.p99_request_prompt_tokens,
-            },
-            "request_generation_tokens": {
-                "mean": metrics.avg_request_generation_tokens,
-                "median": metrics.median_request_generation_tokens,
-                "p90": metrics.p90_request_generation_tokens,
-                "p99": metrics.p99_request_generation_tokens,
-            },
-            "request_max_num_generation_tokens": {
-                "mean": metrics.avg_request_max_num_generation_tokens,
-                "median": metrics.median_request_max_num_generation_tokens,
-                "p90": metrics.p90_request_max_num_generation_tokens,
-                "p99": metrics.p99_request_max_num_generation_tokens,
-            },
-            "request_params_n": {
-                "mean": metrics.avg_request_params_n,
-                "median": metrics.median_request_params_n,
-                "p90": metrics.p90_request_params_n,
-                "p99": metrics.p99_request_params_n,
-            },
-            "request_params_max_tokens": {
-                "mean": metrics.avg_request_params_max_tokens,
-                "median": metrics.median_request_params_max_tokens,
-                "p90": metrics.p90_request_params_max_tokens,
-                "p99": metrics.p99_request_params_max_tokens,
-            },
-            "request_success_count": metrics.request_success_count,
-            "iteration_tokens": {
-                "mean": metrics.avg_iteration_tokens,
-                "median": metrics.median_iteration_tokens,
-                "p90": metrics.p90_iteration_tokens,
-                "p99": metrics.p99_iteration_tokens,
-            },
-            "prompt_tokens_cached": metrics.prompt_tokens_cached,
-            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed,
+            "count": metrics.requests.total,
+            "rate": metrics.requests.per_second,
+            "prompt_len": {"mean": metrics.prompt_tokens.avg, "rate": metrics.prompt_tokens.per_second},
+            "output_len": {"mean": metrics.output_tokens.avg, "rate": metrics.output_tokens.per_second},
+            "queue_len": {"mean": metrics.queue_length.avg},
+            "request_latency": _hist(metrics.request_latency),
+            "time_to_first_token": _hist(metrics.time_to_first_token),
+            "time_per_output_token": _hist(metrics.time_per_output_token),
+            "kv_cache_usage_percentage": _hist(metrics.kv_cache_usage),
+            "num_requests_swapped": {"mean": metrics.num_requests_swapped.value},
+            "num_preemptions_total": {"mean": metrics.num_preemptions_total.value},
+            "prefix_cache_hit_percent": {"mean": _ratio(metrics.prefix_cache_hits.value, metrics.prefix_cache_queries.value)},
+            "inter_token_latency": _hist(metrics.inter_token_latency),
+            "num_requests_running": {"mean": metrics.num_requests_running.avg},
+            "request_queue_time": _hist(metrics.request_queue_time),
+            "request_inference_time": _hist(metrics.request_inference_time),
+            "request_prefill_time": _hist(metrics.request_prefill_time),
+            "request_decode_time": _hist(metrics.request_decode_time),
+            "request_prompt_tokens": _hist(metrics.request_prompt_tokens),
+            "request_generation_tokens": _hist(metrics.request_generation_tokens),
+            "request_max_num_generation_tokens": _hist(metrics.request_max_num_generation_tokens),
+            "request_params_n": _hist(metrics.request_params_n),
+            "request_params_max_tokens": _hist(metrics.request_params_max_tokens),
+            "request_success_count": metrics.request_success_count.value,
+            "iteration_tokens": _hist(metrics.iteration_tokens),
+            "prompt_tokens_cached": metrics.prompt_tokens_cached.value,
+            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed.value,
             "external_prefix_cache_hit_percent": {
-                "mean": (metrics.external_prefix_cache_hits / metrics.external_prefix_cache_queries) * 100.0
-                if metrics.external_prefix_cache_queries > 0
-                else 0.0
+                "mean": _ratio(metrics.external_prefix_cache_hits.value, metrics.external_prefix_cache_queries.value)
             },
-            "mm_cache_hit_percent": {
-                "mean": (metrics.mm_cache_hits / metrics.mm_cache_queries) * 100.0 if metrics.mm_cache_queries > 0 else 0.0
-            },
-            "corrupted_requests": metrics.corrupted_requests,
-            "request_prefill_kv_computed_tokens": {
-                "mean": metrics.avg_request_prefill_kv_computed_tokens,
-                "median": metrics.median_request_prefill_kv_computed_tokens,
-                "p90": metrics.p90_request_prefill_kv_computed_tokens,
-                "p99": metrics.p99_request_prefill_kv_computed_tokens,
-            },
-            "kv_block_idle_before_evict": {
-                "mean": metrics.avg_kv_block_idle_before_evict,
-                "median": metrics.median_kv_block_idle_before_evict,
-                "p90": metrics.p90_kv_block_idle_before_evict,
-                "p99": metrics.p99_kv_block_idle_before_evict,
-            },
-            "kv_block_lifetime": {
-                "mean": metrics.avg_kv_block_lifetime,
-                "median": metrics.median_kv_block_lifetime,
-                "p90": metrics.p90_kv_block_lifetime,
-                "p99": metrics.p99_kv_block_lifetime,
-            },
-            "kv_block_reuse_gap": {
-                "mean": metrics.avg_kv_block_reuse_gap,
-                "median": metrics.median_kv_block_reuse_gap,
-                "p90": metrics.p90_kv_block_reuse_gap,
-                "p99": metrics.p99_kv_block_reuse_gap,
-            },
+            "mm_cache_hit_percent": {"mean": _ratio(metrics.mm_cache_hits.value, metrics.mm_cache_queries.value)},
+            "corrupted_requests": metrics.corrupted_requests.value,
+            "request_prefill_kv_computed_tokens": _hist(metrics.request_prefill_kv_computed_tokens),
+            "kv_block_idle_before_evict": _hist(metrics.kv_block_idle_before_evict),
+            "kv_block_lifetime": _hist(metrics.kv_block_lifetime),
+            "kv_block_reuse_gap": _hist(metrics.kv_block_reuse_gap),
         },
     )
 
