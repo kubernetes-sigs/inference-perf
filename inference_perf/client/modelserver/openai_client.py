@@ -23,7 +23,7 @@ from inference_perf.apis import (
     StreamedInferenceResponseInfo,
 )
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
+from .base import ModelServerClient, ModelServerClientSession, Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation
 from typing import List, Optional, Any, Dict
 import aiohttp
@@ -36,6 +36,45 @@ import ssl
 
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAIMetrics(BaseMetrics):
+    def __init__(
+        self,
+        prompt_tokens: Metric,
+        output_tokens: Metric,
+        requests: Metric,
+        request_latency: Metric,
+        queue_length: Metric,
+        time_per_output_token: Metric,
+        custom_metrics: Optional[List[Metric]] = None,
+    ) -> None:
+        super().__init__(custom_metrics)
+        self.prompt_tokens = prompt_tokens
+        self.output_tokens = output_tokens
+        self.requests = requests
+        self.request_latency = request_latency
+        self.queue_length = queue_length
+        self.time_per_output_token = time_per_output_token
+
+    def get_all_metrics(self) -> List[Metric]:
+        seen = set()
+        metrics = []
+
+        def add_metric(m: Metric) -> None:
+            if id(m) not in seen:
+                seen.add(id(m))
+                metrics.append(m)
+
+        for attr_value in self.__dict__.values():
+            if isinstance(attr_value, Metric):
+                add_metric(attr_value)
+            elif isinstance(attr_value, list):
+                for item in attr_value:
+                    if isinstance(item, Metric):
+                        add_metric(item)
+
+        return metrics
 
 
 class openAIModelServerClient(ModelServerClient):
@@ -136,7 +175,7 @@ class openAIModelServerClient(ModelServerClient):
         return []
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
 
     def get_supported_models(self) -> List[dict[str, Any]]:

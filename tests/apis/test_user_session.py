@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.apis import InferenceAPIData
-from inference_perf.client.modelserver.base import ModelServerClient, PrometheusMetricMetadata
+from inference_perf.client.modelserver.base import ModelServerClient, BaseMetrics
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -94,7 +94,7 @@ class SessionTrackingClient(ModelServerClient):
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
 
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> BaseMetrics:
         raise NotImplementedError
 
 
