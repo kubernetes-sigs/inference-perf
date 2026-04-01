@@ -33,4 +33,4 @@ async def test_simple_mock_client_benchmark():
     assert stage_report["load_summary"]["achieved_rate"] > 1 or stage_report["load_summary"]["achieved_rate"] == pytest.approx(
         1, abs=0.2
     ), "the achieved rate should be close to 1.0"
-    assert summary_report["successes"]["count"] == 10
+    assert int(summary_report["successes"]["count"]) == 10

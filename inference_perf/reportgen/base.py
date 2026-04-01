@@ -26,6 +26,7 @@ from inference_perf.client.metricsclient.prometheus_client import PrometheusMetr
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig
 from inference_perf.utils import ReportFile
+from api.generated.python.api.outputs.reports.native.v1 import native_pb2
 
 logger = logging.getLogger(__name__)
 
@@ -171,164 +172,201 @@ def calculate_slo_metrics(
     return slo_metrics
 
 
-def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
-    return ResponsesSummary(
-        load_summary={},  # model server doesn't report failed requests
-        failures={},
-        successes={
-            "count": metrics.total_requests,
-            "rate": metrics.requests_per_second,
-            "prompt_len": {
-                "mean": metrics.avg_prompt_tokens,
-                "rate": metrics.prompt_tokens_per_second,
-            },
-            "output_len": {
-                "mean": metrics.avg_output_tokens,
-                "rate": metrics.output_tokens_per_second,
-            },
-            "queue_len": {
-                "mean": metrics.avg_queue_length,
-            },
-            "request_latency": {
-                "mean": metrics.avg_request_latency,
-                "median": metrics.median_request_latency,
-                "p90": metrics.p90_request_latency,
-                "p99": metrics.p99_request_latency,
-            },
-            "time_to_first_token": {
-                "mean": metrics.avg_time_to_first_token,
-                "median": metrics.median_time_to_first_token,
-                "p90": metrics.p90_time_to_first_token,
-                "p99": metrics.p99_time_to_first_token,
-            },
-            "time_per_output_token": {
-                "mean": metrics.avg_time_per_output_token,
-                "median": metrics.median_time_per_output_token,
-                "p90": metrics.p90_time_per_output_token,
-                "p99": metrics.p99_time_per_output_token,
-            },
-            "kv_cache_usage_percentage": {
-                "mean": metrics.avg_kv_cache_usage,
-                "median": metrics.median_kv_cache_usage,
-                "p90": metrics.p90_kv_cache_usage,
-                "p99": metrics.p99_kv_cache_usage,
-            },
-            "num_requests_swapped": {
-                "mean": metrics.num_requests_swapped,
-            },
-            "num_preemptions_total": {"mean": metrics.num_preemptions_total},
-            "prefix_cache_hit_percent": {
-                "mean": (metrics.prefix_cache_hits / metrics.prefix_cache_queries) * 100.0
-                if metrics.prefix_cache_queries > 0
-                else 0.0
-            },
-            "inter_token_latency": {
-                "mean": metrics.avg_inter_token_latency,
-                "median": metrics.median_inter_token_latency,
-                "p90": metrics.p90_inter_token_latency,
-                "p99": metrics.p99_inter_token_latency,
-            },
-            "num_requests_running": {
-                "mean": metrics.avg_num_requests_running,
-            },
-            "request_queue_time": {
-                "mean": metrics.avg_request_queue_time,
-                "median": metrics.median_request_queue_time,
-                "p90": metrics.p90_request_queue_time,
-                "p99": metrics.p99_request_queue_time,
-            },
-            "request_inference_time": {
-                "mean": metrics.avg_request_inference_time,
-                "median": metrics.median_request_inference_time,
-                "p90": metrics.p90_request_inference_time,
-                "p99": metrics.p99_request_inference_time,
-            },
-            "request_prefill_time": {
-                "mean": metrics.avg_request_prefill_time,
-                "median": metrics.median_request_prefill_time,
-                "p90": metrics.p90_request_prefill_time,
-                "p99": metrics.p99_request_prefill_time,
-            },
-            "request_decode_time": {
-                "mean": metrics.avg_request_decode_time,
-                "median": metrics.median_request_decode_time,
-                "p90": metrics.p90_request_decode_time,
-                "p99": metrics.p99_request_decode_time,
-            },
-            "request_prompt_tokens": {
-                "mean": metrics.avg_request_prompt_tokens,
-                "median": metrics.median_request_prompt_tokens,
-                "p90": metrics.p90_request_prompt_tokens,
-                "p99": metrics.p99_request_prompt_tokens,
-            },
-            "request_generation_tokens": {
-                "mean": metrics.avg_request_generation_tokens,
-                "median": metrics.median_request_generation_tokens,
-                "p90": metrics.p90_request_generation_tokens,
-                "p99": metrics.p99_request_generation_tokens,
-            },
-            "request_max_num_generation_tokens": {
-                "mean": metrics.avg_request_max_num_generation_tokens,
-                "median": metrics.median_request_max_num_generation_tokens,
-                "p90": metrics.p90_request_max_num_generation_tokens,
-                "p99": metrics.p99_request_max_num_generation_tokens,
-            },
-            "request_params_n": {
-                "mean": metrics.avg_request_params_n,
-                "median": metrics.median_request_params_n,
-                "p90": metrics.p90_request_params_n,
-                "p99": metrics.p99_request_params_n,
-            },
-            "request_params_max_tokens": {
-                "mean": metrics.avg_request_params_max_tokens,
-                "median": metrics.median_request_params_max_tokens,
-                "p90": metrics.p90_request_params_max_tokens,
-                "p99": metrics.p99_request_params_max_tokens,
-            },
-            "request_success_count": metrics.request_success_count,
-            "iteration_tokens": {
-                "mean": metrics.avg_iteration_tokens,
-                "median": metrics.median_iteration_tokens,
-                "p90": metrics.p90_iteration_tokens,
-                "p99": metrics.p99_iteration_tokens,
-            },
-            "prompt_tokens_cached": metrics.prompt_tokens_cached,
-            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed,
-            "external_prefix_cache_hit_percent": {
-                "mean": (metrics.external_prefix_cache_hits / metrics.external_prefix_cache_queries) * 100.0
-                if metrics.external_prefix_cache_queries > 0
-                else 0.0
-            },
-            "mm_cache_hit_percent": {
-                "mean": (metrics.mm_cache_hits / metrics.mm_cache_queries) * 100.0 if metrics.mm_cache_queries > 0 else 0.0
-            },
-            "corrupted_requests": metrics.corrupted_requests,
-            "request_prefill_kv_computed_tokens": {
-                "mean": metrics.avg_request_prefill_kv_computed_tokens,
-                "median": metrics.median_request_prefill_kv_computed_tokens,
-                "p90": metrics.p90_request_prefill_kv_computed_tokens,
-                "p99": metrics.p99_request_prefill_kv_computed_tokens,
-            },
-            "kv_block_idle_before_evict": {
-                "mean": metrics.avg_kv_block_idle_before_evict,
-                "median": metrics.median_kv_block_idle_before_evict,
-                "p90": metrics.p90_kv_block_idle_before_evict,
-                "p99": metrics.p99_kv_block_idle_before_evict,
-            },
-            "kv_block_lifetime": {
-                "mean": metrics.avg_kv_block_lifetime,
-                "median": metrics.median_kv_block_lifetime,
-                "p90": metrics.p90_kv_block_lifetime,
-                "p99": metrics.p99_kv_block_lifetime,
-            },
-            "kv_block_reuse_gap": {
-                "mean": metrics.avg_kv_block_reuse_gap,
-                "median": metrics.median_kv_block_reuse_gap,
-                "p90": metrics.p90_kv_block_reuse_gap,
-                "p99": metrics.p99_kv_block_reuse_gap,
-            },
-        },
+def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> Any:
+    def fill_stats(
+        msg: Any,
+        mean: float,
+        median: Optional[float] = None,
+        p90: Optional[float] = None,
+        p99: Optional[float] = None,
+        rate: Optional[float] = None,
+    ) -> None:
+        msg.mean = mean
+        if median is not None:
+            msg.percentiles["median"] = median
+        if p90 is not None:
+            msg.percentiles["p90"] = p90
+        if p99 is not None:
+            msg.percentiles["p99"] = p99
+        if rate is not None:
+            msg.rate = rate
+
+    report = native_pb2.NativeReport()
+    report.successes.count = metrics.total_requests
+    report.successes.rate = metrics.requests_per_second
+
+    fill_stats(report.successes.prompt_len, metrics.avg_prompt_tokens, rate=metrics.prompt_tokens_per_second)
+    fill_stats(report.successes.output_len, metrics.avg_output_tokens, rate=metrics.output_tokens_per_second)
+    fill_stats(report.successes.queue_len, metrics.avg_queue_length)
+
+    fill_stats(
+        report.successes.latency.request_latency,
+        metrics.avg_request_latency,
+        metrics.median_request_latency,
+        metrics.p90_request_latency,
+        metrics.p99_request_latency,
     )
+    fill_stats(
+        report.successes.latency.time_to_first_token,
+        metrics.avg_time_to_first_token,
+        metrics.median_time_to_first_token,
+        metrics.p90_time_to_first_token,
+        metrics.p99_time_to_first_token,
+    )
+    fill_stats(
+        report.successes.latency.time_per_output_token,
+        metrics.avg_time_per_output_token,
+        metrics.median_time_per_output_token,
+        metrics.p90_time_per_output_token,
+        metrics.p99_time_per_output_token,
+    )
+
+    fill_stats(
+        report.successes.kv_cache_usage_percentage,
+        metrics.avg_kv_cache_usage,
+        metrics.median_kv_cache_usage,
+        metrics.p90_kv_cache_usage,
+        metrics.p99_kv_cache_usage,
+    )
+
+    fill_stats(report.successes.num_requests_swapped, metrics.num_requests_swapped)
+    fill_stats(report.successes.num_preemptions_total, metrics.num_preemptions_total)
+
+    prefix_cache_hit = (
+        (metrics.prefix_cache_hits / metrics.prefix_cache_queries) * 100.0 if metrics.prefix_cache_queries > 0 else 0.0
+    )
+    fill_stats(report.successes.prefix_cache_hit_percent, prefix_cache_hit)
+
+    fill_stats(
+        report.successes.latency.inter_token_latency,
+        metrics.avg_inter_token_latency,
+        metrics.median_inter_token_latency,
+        metrics.p90_inter_token_latency,
+        metrics.p99_inter_token_latency,
+    )
+
+    fill_stats(report.successes.num_requests_running, metrics.avg_num_requests_running)
+
+    fill_stats(
+        report.successes.request_queue_time,
+        metrics.avg_request_queue_time,
+        metrics.median_request_queue_time,
+        metrics.p90_request_queue_time,
+        metrics.p99_request_queue_time,
+    )
+    fill_stats(
+        report.successes.request_inference_time,
+        metrics.avg_request_inference_time,
+        metrics.median_request_inference_time,
+        metrics.p90_request_inference_time,
+        metrics.p99_request_inference_time,
+    )
+    fill_stats(
+        report.successes.request_prefill_time,
+        metrics.avg_request_prefill_time,
+        metrics.median_request_prefill_time,
+        metrics.p90_request_prefill_time,
+        metrics.p99_request_prefill_time,
+    )
+    fill_stats(
+        report.successes.request_decode_time,
+        metrics.avg_request_decode_time,
+        metrics.median_request_decode_time,
+        metrics.p90_request_decode_time,
+        metrics.p99_request_decode_time,
+    )
+
+    fill_stats(
+        report.successes.request_prompt_tokens,
+        metrics.avg_request_prompt_tokens,
+        metrics.median_request_prompt_tokens,
+        metrics.p90_request_prompt_tokens,
+        metrics.p99_request_prompt_tokens,
+    )
+    fill_stats(
+        report.successes.request_generation_tokens,
+        metrics.avg_request_generation_tokens,
+        metrics.median_request_generation_tokens,
+        metrics.p90_request_generation_tokens,
+        metrics.p99_request_generation_tokens,
+    )
+    fill_stats(
+        report.successes.request_max_num_generation_tokens,
+        metrics.avg_request_max_num_generation_tokens,
+        metrics.median_request_max_num_generation_tokens,
+        metrics.p90_request_max_num_generation_tokens,
+        metrics.p99_request_max_num_generation_tokens,
+    )
+    fill_stats(
+        report.successes.request_params_n,
+        metrics.avg_request_params_n,
+        metrics.median_request_params_n,
+        metrics.p90_request_params_n,
+        metrics.p99_request_params_n,
+    )
+    fill_stats(
+        report.successes.request_params_max_tokens,
+        metrics.avg_request_params_max_tokens,
+        metrics.median_request_params_max_tokens,
+        metrics.p90_request_params_max_tokens,
+        metrics.p99_request_params_max_tokens,
+    )
+
+    report.successes.request_success_count = metrics.request_success_count
+
+    fill_stats(
+        report.successes.iteration_tokens,
+        metrics.avg_iteration_tokens,
+        metrics.median_iteration_tokens,
+        metrics.p90_iteration_tokens,
+        metrics.p99_iteration_tokens,
+    )
+
+    report.successes.prompt_tokens_cached = metrics.prompt_tokens_cached
+    report.successes.prompt_tokens_recomputed = metrics.prompt_tokens_recomputed
+
+    ext_prefix_hit = (
+        (metrics.external_prefix_cache_hits / metrics.external_prefix_cache_queries) * 100.0
+        if metrics.external_prefix_cache_queries > 0
+        else 0.0
+    )
+    fill_stats(report.successes.external_prefix_cache_hit_percent, ext_prefix_hit)
+
+    mm_hit = (metrics.mm_cache_hits / metrics.mm_cache_queries) * 100.0 if metrics.mm_cache_queries > 0 else 0.0
+    fill_stats(report.successes.mm_cache_hit_percent, mm_hit)
+
+    report.successes.corrupted_requests = metrics.corrupted_requests
+
+    fill_stats(
+        report.successes.request_prefill_kv_computed_tokens,
+        metrics.avg_request_prefill_kv_computed_tokens,
+        metrics.median_request_prefill_kv_computed_tokens,
+        metrics.p90_request_prefill_kv_computed_tokens,
+        metrics.p99_request_prefill_kv_computed_tokens,
+    )
+    fill_stats(
+        report.successes.kv_block_idle_before_evict,
+        metrics.avg_kv_block_idle_before_evict,
+        metrics.median_kv_block_idle_before_evict,
+        metrics.p90_kv_block_idle_before_evict,
+        metrics.p99_kv_block_idle_before_evict,
+    )
+    fill_stats(
+        report.successes.kv_block_lifetime,
+        metrics.avg_kv_block_lifetime,
+        metrics.median_kv_block_lifetime,
+        metrics.p90_kv_block_lifetime,
+        metrics.p99_kv_block_lifetime,
+    )
+    fill_stats(
+        report.successes.kv_block_reuse_gap,
+        metrics.avg_kv_block_reuse_gap,
+        metrics.median_kv_block_reuse_gap,
+        metrics.p90_kv_block_reuse_gap,
+        metrics.p99_kv_block_reuse_gap,
+    )
+
+    return report
 
 
 def summarize_requests(
@@ -336,7 +374,17 @@ def summarize_requests(
     percentiles: List[float],
     stage_rate: Optional[float] = None,
     stage_concurrency: Optional[int] = None,
-) -> ResponsesSummary:
+) -> Any:
+    def dict_to_msg(d: Optional[dict[str, float]], msg: Any) -> None:
+        if d is None:
+            return
+        msg.mean = d.get("mean", 0.0)
+        msg.min = d.get("min", 0.0)
+        msg.max = d.get("max", 0.0)
+        for k, v in d.items():
+            if k not in ["mean", "min", "max"]:
+                msg.percentiles[k] = v
+
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
 
@@ -345,24 +393,18 @@ def summarize_requests(
     schedule_deltas = [x.start_time - x.scheduled_time for x in metrics]
     send_duration = max(x.start_time for x in metrics) - min(x.start_time for x in metrics)
 
-    load_summary: dict[Any, Any] = {
-        "count": len(metrics),
-        "schedule_delay": summarize(schedule_deltas, percentiles),
-    }
+    report = native_pb2.NativeReport()
+
+    report.load_summary.count = len(metrics)
+    dict_to_msg(summarize(schedule_deltas, percentiles), report.load_summary.schedule_delay)
+    report.load_summary.send_duration = send_duration
 
     if stage_rate is not None:
-        # Guard against zero send_duration to avoid ZeroDivisionError when all
-        # requests have identical start times or there is only a single request.
         achieved_rate = len(metrics) / send_duration if send_duration > 0 else 0.0
-        load_summary = {
-            "count": len(metrics),
-            "schedule_delay": summarize(schedule_deltas, percentiles),
-            "send_duration": send_duration,
-            "requested_rate": stage_rate,
-            "achieved_rate": achieved_rate,
-        }
+        report.load_summary.requested_rate = stage_rate
+        report.load_summary.achieved_rate = achieved_rate
         if stage_concurrency is not None:
-            load_summary["concurrency"] = stage_concurrency
+            report.load_summary.concurrency = stage_concurrency
 
     # --- Pre-calculate Metrics for all successful requests ---
     # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
@@ -408,47 +450,74 @@ def summarize_requests(
     valid_tpot = [v for v in tpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
 
-    successes_dict = {
-        "count": len(all_successful),
-        "latency": {
-            "request_latency": summarize(
-                [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
-            ),
-            "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
-            "time_per_output_token": summarize(valid_tpot, percentiles),
-            "time_to_first_token": summarize(valid_ttft, percentiles),
-            "inter_token_latency": summarize(inter_token_latencies, percentiles),
-        },
-        "throughput": {
-            "input_tokens_per_sec": (
-                sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
-            ),
-            "output_tokens_per_sec": (
-                sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
-            ),
-            "total_tokens_per_sec": (
-                sum(safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens) for x in all_successful) / total_time
-                if total_time > 0
-                else 0.0
-            ),
-            "requests_per_sec": (len(all_successful) / total_time if total_time > 0 else 0.0),
-        },
-        "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
-        "output_len": summarize(
-            [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
-        ),
-    }
-    if slo_metrics:
-        successes_dict["slo_metrics"] = slo_metrics
-    return ResponsesSummary(
-        load_summary=load_summary,
-        successes=successes_dict,
-        failures={
-            "count": len(all_failed),
-            "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
-            "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed], percentiles),
-        },
+    report.successes.count = len(all_successful)
+
+    dict_to_msg(
+        summarize([(successful.end_time - successful.start_time) for successful in all_successful], percentiles),
+        report.successes.latency.request_latency,
     )
+    dict_to_msg(summarize(ntpot_values, percentiles), report.successes.latency.normalized_time_per_output_token)
+    dict_to_msg(summarize(valid_tpot, percentiles), report.successes.latency.time_per_output_token)
+    dict_to_msg(summarize(valid_ttft, percentiles), report.successes.latency.time_to_first_token)
+    dict_to_msg(summarize(inter_token_latencies, percentiles), report.successes.latency.inter_token_latency)
+
+    report.successes.throughput.input_tokens_per_sec = (
+        sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+    )
+    report.successes.throughput.output_tokens_per_sec = (
+        sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+    )
+    report.successes.throughput.total_tokens_per_sec = (
+        sum(safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens) for x in all_successful) / total_time
+        if total_time > 0
+        else 0.0
+    )
+    report.successes.throughput.requests_per_sec = len(all_successful) / total_time if total_time > 0 else 0.0
+
+    dict_to_msg(
+        summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
+        report.successes.prompt_len,
+    )
+    dict_to_msg(
+        summarize([float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles),
+        report.successes.output_len,
+    )
+
+    if slo_metrics:
+        if "ttft_slo" in slo_metrics:
+            m = slo_metrics["ttft_slo"]
+            report.successes.slo_metrics.ttft_slo.attainment_pct = m["attainment_pct"]
+            report.successes.slo_metrics.ttft_slo.requests_met = m["requests_met"]
+            report.successes.slo_metrics.ttft_slo.requests_failed = m["requests_failed"]
+            report.successes.slo_metrics.ttft_slo.total_requests = m["total_requests"]
+            report.successes.slo_metrics.ttft_slo.slo = m["slo"]
+        if "tpot_slo" in slo_metrics:
+            m = slo_metrics["tpot_slo"]
+            report.successes.slo_metrics.tpot_slo.attainment_pct = m["attainment_pct"]
+            report.successes.slo_metrics.tpot_slo.requests_met = m["requests_met"]
+            report.successes.slo_metrics.tpot_slo.requests_failed = m["requests_failed"]
+            report.successes.slo_metrics.tpot_slo.total_requests = m["total_requests"]
+            report.successes.slo_metrics.tpot_slo.slo = m["slo"]
+        if "combined_slo" in slo_metrics:
+            m = slo_metrics["combined_slo"]
+            report.successes.slo_metrics.combined_slo.attainment_pct = m["attainment_pct"]
+            report.successes.slo_metrics.combined_slo.requests_met = m["requests_met"]
+            report.successes.slo_metrics.combined_slo.requests_failed = m["requests_failed"]
+            report.successes.slo_metrics.combined_slo.total_requests = m["total_requests"]
+            report.successes.slo_metrics.combined_slo.ttft_slo = m["ttft_slo"]
+            report.successes.slo_metrics.combined_slo.tpot_slo = m["tpot_slo"]
+            report.successes.slo_metrics.combined_slo.goodput_rate = m["goodput_rate"]
+
+    report.failures.count = len(all_failed)
+    dict_to_msg(
+        summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
+        report.failures.request_latency,
+    )
+    dict_to_msg(
+        summarize([safe_float(failed.info.input_tokens) for failed in all_failed], percentiles), report.failures.prompt_len
+    )
+
+    return report
 
 
 class ReportGenerator:
@@ -494,7 +563,7 @@ class ReportGenerator:
             if len(request_metrics) != 0:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
-                    contents=summarize_requests(request_metrics, percentiles).model_dump(),
+                    contents=summarize_requests(request_metrics, percentiles),
                 )
                 lifecycle_reports.append(report_file)
 
@@ -509,12 +578,12 @@ class ReportGenerator:
                 if concurrency_level is not None:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, percentiles, stage_rate, concurrency_level).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate, concurrency_level),
                     )
                 else:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate),
                     )
                 lifecycle_reports.append(report_file)
 
@@ -542,7 +611,7 @@ class ReportGenerator:
                     adapter_buckets[metric.info.lora_adapter].append(metric)
             for adapter, metrics in adapter_buckets.items():
                 report_file = ReportFile(
-                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles).model_dump()
+                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles)
                 )
                 lifecycle_reports.append(report_file)
 
@@ -556,7 +625,7 @@ class ReportGenerator:
                 stage_rate = runtime_parameters.stages[stage_id].rate
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
-                    contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                    contents=summarize_requests(metrics, percentiles, stage_rate),
                 )
                 lifecycle_reports.append(report_file)
 
@@ -588,7 +657,7 @@ class ReportGenerator:
             if collected_metrics is not None:
                 report_file = ReportFile(
                     name="summary_prometheus_metrics",
-                    contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
+                    contents=summarize_prometheus_metrics(collected_metrics),
                 )
                 prometheus_metrics_reports.append(report_file)
             else:
@@ -600,7 +669,7 @@ class ReportGenerator:
                 if collected_metrics is not None:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_prometheus_metrics",
-                        contents=summarize_prometheus_metrics(collected_metrics).model_dump(),
+                        contents=summarize_prometheus_metrics(collected_metrics),
                     )
                     prometheus_metrics_reports.append(report_file)
                 else:

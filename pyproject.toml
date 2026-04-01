@@ -63,6 +63,7 @@ types = [
     "types-requests>=2.32.0.20250328",
     "types-tqdm>=4.67.0.20250809",
     "types-jmespath>=1.0.2.20250809",
+    "types-protobuf",
 ]
 
 [build-system]
@@ -95,7 +96,7 @@ validate = {composite = ["format", "lint", "type-check"]}
 # The GitHub editor is 127 chars wide
 line-length = 127
 indent-width = 4
-exclude = ["api/generated"]
+exclude = ["api/generated", "llm-d-benchmark"]
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.

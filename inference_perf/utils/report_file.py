@@ -28,4 +28,9 @@ class ReportFile:
         return f"{self.name}.{self.file_type}"
 
     def get_contents(self) -> Any:
+        from google.protobuf.message import Message
+        from google.protobuf import json_format
+
+        if isinstance(self.contents, Message):
+            return json_format.MessageToDict(self.contents, preserving_proto_field_name=True)
         return self.contents

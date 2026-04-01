@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+// Package for native output reports.
+package api.outputs.reports.native.v1;
+
+// Summary statistics for a metric.
+message SummaryStats {
+  // Mean value.
+  double mean = 1;
+  // Minimum value.
+  double min = 2;
+  // Maximum value.
+  double max = 3;
+  // Percentiles (e.g., "p50", "p90").
+  map<string, double> percentiles = 4;
+  // Optional rate, used in some metrics.
+  double rate = 5;
+}
+
+// Latency metrics for successful requests.
+message LatencyMetrics {
+  // Request latency (End - Start).
+  SummaryStats request_latency = 1;
+  // Normalized time per output token.
+  SummaryStats normalized_time_per_output_token = 2;
+  // Time per output token.
+  SummaryStats time_per_output_token = 3;
+  // Time to first token.
+  SummaryStats time_to_first_token = 4;
+  // Inter-token latency.
+  SummaryStats inter_token_latency = 5;
+}
+
+// Throughput metrics for successful requests.
+message ThroughputMetrics {
+  // Input tokens per second.
+  double input_tokens_per_sec = 1;
+  // Output tokens per second.
+  double output_tokens_per_sec = 2;
+  // Total tokens per second.
+  double total_tokens_per_sec = 3;
+  // Requests per second.
+  double requests_per_sec = 4;
+}
+
+// SLO attainment details.
+message SloAttainment {
+  // Attainment percentage.
+  double attainment_pct = 1;
+  // Number of requests meeting SLO.
+  int64 requests_met = 2;
+  // Number of requests failing SLO.
+  int64 requests_failed = 3;
+  // Total number of requests.
+  int64 total_requests = 4;
+  // SLO threshold value.
+  double slo = 5;
+}
+
+// Combined SLO attainment details.
+message CombinedSloAttainment {
+  // Attainment percentage.
+  double attainment_pct = 1;
+  // Number of requests meeting SLO.
+  int64 requests_met = 2;
+  // Number of requests failing SLO.
+  int64 requests_failed = 3;
+  // Total number of requests.
+  int64 total_requests = 4;
+  // TTFT SLO threshold.
+  double ttft_slo = 5;
+  // TPOT SLO threshold.
+  double tpot_slo = 6;
+  // Goodput rate.
+  double goodput_rate = 7;
+}
+
+// SLO metrics summary.
+message SloMetrics {
+  // TTFT SLO attainment.
+  SloAttainment ttft_slo = 1;
+  // TPOT SLO attainment.
+  SloAttainment tpot_slo = 2;
+  // Combined SLO attainment.
+  CombinedSloAttainment combined_slo = 3;
+}
+
+// Metrics for successful requests.
+message SuccessesMetrics {
+  // Total count of successful requests.
+  int64 count = 1;
+  // Latency metrics.
+  LatencyMetrics latency = 2;
+  // Throughput metrics.
+  ThroughputMetrics throughput = 3;
+  // Prompt length statistics.
+  SummaryStats prompt_len = 4;
+  // Output length statistics.
+  SummaryStats output_len = 5;
+  // SLO metrics.
+  SloMetrics slo_metrics = 6;
+
+  // Prometheus specific or shared metrics
+  // Overall rate.
+  double rate = 7;
+  // Queue length statistics.
+  SummaryStats queue_len = 8;
+  // KV cache usage percentage.
+  SummaryStats kv_cache_usage_percentage = 9;
+  // Number of requests swapped.
+  SummaryStats num_requests_swapped = 10;
+  // Number of preemptions total.
+  SummaryStats num_preemptions_total = 11;
+  // Prefix cache hit percentage.
+  SummaryStats prefix_cache_hit_percent = 12;
+  // Inter-token latency.
+  SummaryStats inter_token_latency = 13;
+  // Number of requests running.
+  SummaryStats num_requests_running = 14;
+  // Request queue time.
+  SummaryStats request_queue_time = 15;
+  // Request inference time.
+  SummaryStats request_inference_time = 16;
+  // Request prefill time.
+  SummaryStats request_prefill_time = 17;
+  // Request decode time.
+  SummaryStats request_decode_time = 18;
+  // Request prompt tokens.
+  SummaryStats request_prompt_tokens = 19;
+  // Request generation tokens.
+  SummaryStats request_generation_tokens = 20;
+  // Request max num generation tokens.
+  SummaryStats request_max_num_generation_tokens = 21;
+  // Request params n.
+  SummaryStats request_params_n = 22;
+  // Request params max tokens.
+  SummaryStats request_params_max_tokens = 23;
+  // Request success count.
+  double request_success_count = 24;
+  // Iteration tokens.
+  SummaryStats iteration_tokens = 25;
+  // Prompt tokens cached.
+  double prompt_tokens_cached = 26;
+  // Prompt tokens recomputed.
+  double prompt_tokens_recomputed = 27;
+  // External prefix cache hit percentage.
+  SummaryStats external_prefix_cache_hit_percent = 28;
+  // MM cache hit percentage.
+  SummaryStats mm_cache_hit_percent = 29;
+  // Corrupted requests.
+  double corrupted_requests = 30;
+  // Request prefill KV computed tokens.
+  SummaryStats request_prefill_kv_computed_tokens = 31;
+  // KV block idle before evict.
+  SummaryStats kv_block_idle_before_evict = 32;
+  // KV block lifetime.
+  SummaryStats kv_block_lifetime = 33;
+  // KV block reuse gap.
+  SummaryStats kv_block_reuse_gap = 34;
+}
+
+// Metrics for failed requests.
+message FailuresMetrics {
+  // Total count of failed requests.
+  int64 count = 1;
+  // Request latency statistics.
+  SummaryStats request_latency = 2;
+  // Prompt length statistics.
+  SummaryStats prompt_len = 3;
+}
+
+// Summary of the load applied.
+message LoadSummary {
+  // Total count of requests.
+  int64 count = 1;
+  // Schedule delay statistics.
+  SummaryStats schedule_delay = 2;
+  // Send duration.
+  double send_duration = 3;
+  // Requested rate.
+  double requested_rate = 4;
+  // Achieved rate.
+  double achieved_rate = 5;
+  // Concurrency level.
+  int64 concurrency = 6;
+}
+
+// Native report containing all metrics.
+message NativeReport {
+  // Load summary.
+  LoadSummary load_summary = 1;
+  // Metrics for successful requests.
+  SuccessesMetrics successes = 2;
+  // Metrics for failed requests.
+  FailuresMetrics failures = 3;
+}
