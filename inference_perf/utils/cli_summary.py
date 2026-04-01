@@ -43,25 +43,27 @@ def print_summary_table(reports: List[ReportFile]) -> None:
 
     # Sort stages by ID
     sorted_stages = sorted(stage_reports.keys())
-    
+
     console = Console()
-    table = Table(title="[bold magenta]Inference Performance Summary[/bold magenta]", show_header=True, header_style="bold cyan")
-    
+    table = Table(
+        title="[bold magenta]Inference Performance Summary[/bold magenta]", show_header=True, header_style="bold cyan"
+    )
+
     table.add_column("Stage", justify="right")
     table.add_column("Req Rate", justify="right")
     table.add_column("Achieved Rate", justify="right")
     table.add_column("Error Rate", justify="right")
-    
+
     # TTFT Columns
     table.add_column("TTFT Mean\n(ms)", justify="right")
     table.add_column("TTFT Med\n(ms)", justify="right")
     table.add_column("TTFT P90\n(ms)", justify="right")
-    
+
     # ITL Columns
     table.add_column("ITL Mean\n(ms)", justify="right")
     table.add_column("ITL Med\n(ms)", justify="right")
     table.add_column("ITL P90\n(ms)", justify="right")
-    
+
     # Throughput Columns
     table.add_column("Req/s", justify="right")
     table.add_column("In Tokens/s", justify="right")
@@ -73,7 +75,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         load_summary = contents.get("load_summary", {})
         successes = contents.get("successes", {})
         failures = contents.get("failures", {})
-        
+
         req_rate = load_summary.get("requested_rate", 0.0)
         ach_rate = load_summary.get("achieved_rate", 0.0)
 
@@ -83,20 +85,20 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         total_count = success_count + failed_count
         error_rate = failed_count / total_count if total_count > 0 else 0.0
         error_rate_pct = error_rate * 100.0
-        
+
         error_color = "red" if error_rate > 0.05 else ("yellow" if error_rate > 0 else "green")
         error_str = f"[{error_color}]{error_rate_pct:0.1f}%[/]"
 
         # Latency extraction (convert to ms)
         latency = successes.get("latency", {})
-        
+
         ttft = latency.get("time_to_first_token")
         ttft_mean = ttft_med = ttft_p90 = "-"
         if ttft:
             mean = ttft.get("mean", 0.0) * 1000.0
             median = ttft.get("median", 0.0) * 1000.0
             p90 = ttft.get("p90", 0.0) * 1000.0
-            
+
             ttft_mean = f"{mean:0.1f}"
             ttft_med = f"{median:0.1f}"
             ttft_p90 = f"{p90:0.1f}"
@@ -107,7 +109,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             mean = itl.get("mean", 0.0) * 1000.0
             median = itl.get("median", 0.0) * 1000.0
             p90 = itl.get("p90", 0.0) * 1000.0
-            
+
             itl_mean = f"{mean:0.1f}"
             itl_med = f"{median:0.1f}"
             itl_p90 = f"{p90:0.1f}"
@@ -133,13 +135,15 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             f"{req_per_sec:0.1f}",
             f"{in_tokens:0.1f}",
             f"{out_tokens:0.1f}",
-            f"{tot_tokens:0.1f}"
+            f"{tot_tokens:0.1f}",
         )
 
     console.print(table)
 
     # Token Length Aggregates Table
-    token_table = Table(title="[bold magenta]Token Length Aggregates[/bold magenta]", show_header=True, header_style="bold cyan")
+    token_table = Table(
+        title="[bold magenta]Token Length Aggregates[/bold magenta]", show_header=True, header_style="bold cyan"
+    )
     token_table.add_column("Stage", justify="right")
     token_table.add_column("Prompt Mean", justify="right")
     token_table.add_column("Prompt Med", justify="right")
@@ -166,14 +170,6 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             output_med = f"{output_len.get('median', 0.0):0.1f}"
             output_p90 = f"{output_len.get('p90', 0.0):0.1f}"
 
-        token_table.add_row(
-            str(stage_id),
-            prompt_mean,
-            prompt_med,
-            prompt_p90,
-            output_mean,
-            output_med,
-            output_p90
-        )
+        token_table.add_row(str(stage_id), prompt_mean, prompt_med, prompt_p90, output_mean, output_med, output_p90)
 
     console.print(token_table)

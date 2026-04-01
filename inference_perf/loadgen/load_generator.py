@@ -59,7 +59,15 @@ from functools import partial
 import logging
 import uvloop
 import numpy as np
-from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn
+from rich.progress import (
+    Progress,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    MofNCompleteColumn,
+)
 import signal
 
 logger = logging.getLogger(__name__)
@@ -404,7 +412,9 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=concurrency_level,
         )
-        logger.debug("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
+        logger.debug(
+            "Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id
+        )
 
     async def preprocess(
         self,
@@ -616,10 +626,10 @@ class LoadGenerator:
             end_time = start_time + stage.duration
             stage_status = StageStatus.RUNNING
             logger.info("Stage %d - run started", stage_id)
-            
+
             num_requests = int(stage.rate * stage.duration)
             stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
-            
+
             async with TaskGroup() as tg:
                 time_generator = timer.start_timer(start_time)
                 for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
@@ -645,10 +655,10 @@ class LoadGenerator:
                         continue
                     else:
                         break
-                        
+
             progress.update(stage_task, completed=1.0)
-            progress.remove_task(stage_task) # Clean up after completion
-            
+            progress.remove_task(stage_task)  # Clean up after completion
+
             if stage_status == StageStatus.RUNNING:
                 stage_status = StageStatus.COMPLETED
                 logger.info("Stage %d - run completed", stage_id)

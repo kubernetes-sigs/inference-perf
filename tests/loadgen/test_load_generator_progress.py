@@ -4,6 +4,7 @@ from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.config import LoadConfig, LoadType, StandardLoadStage
 from inference_perf.apis import InferenceAPIData
 
+
 class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.mock_datagen = MagicMock()
@@ -12,9 +13,9 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         mock_data.prefered_worker_id = -1
         self.mock_datagen.get_data.return_value = [mock_data]
         self.mock_datagen.is_prefered_worker_requested.return_value = False
-        
+
         self.load_config = LoadConfig(
-            type=LoadType.CONSTANT, 
+            type=LoadType.CONSTANT,
             stages=[StandardLoadStage(rate=1.0, duration=1)],
             num_workers=0,  # 0 workers uses run()
             worker_max_concurrency=10,
@@ -30,7 +31,7 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         mock_progress.add_task.side_effect = [mock_overall_task, mock_stage_task]
 
         mock_client = AsyncMock()
-        
+
         # Override get_timer to prevent actual sleeping
         mock_timer = MagicMock()
         mock_timer.start_timer.return_value = [0.0]
@@ -41,13 +42,14 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         # Check that Progress was started and stopped
         mock_progress.start.assert_called_once()
         mock_progress.stop.assert_called_once()
-        
+
         # Check overall and stage tasks added
         self.assertEqual(mock_progress.add_task.call_count, 2)
-        
+
         # Check that it calls completed=1.0 at the end of the stage.
         mock_progress.update.assert_any_call(mock_stage_task, completed=1.0)
         mock_progress.remove_task.assert_any_call(mock_stage_task)
+
 
 if __name__ == "__main__":
     unittest.main()
