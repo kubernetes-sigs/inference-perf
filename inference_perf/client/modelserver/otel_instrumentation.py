@@ -27,10 +27,19 @@ Environment Variables:
 
 import logging
 import os
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING, cast
 from contextlib import contextmanager
 
-try:
+if TYPE_CHECKING:
+    # Local stub for type checking - avoids "Any" issues with --ignore-missing-imports
+    class IdGeneratorBase:
+        """Stub base class for type checking."""
+
+        def generate_span_id(self) -> int: ...
+        def generate_trace_id(self) -> int: ...
+
+    OTEL_AVAILABLE: bool
+    # Import other types for type checking
     from opentelemetry import trace
     from opentelemetry.trace import Status, StatusCode
     from opentelemetry.sdk.trace import TracerProvider
@@ -38,19 +47,32 @@ try:
     from opentelemetry.sdk.trace.id_generator import IdGenerator
     from opentelemetry.semconv_ai import SpanAttributes
     from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+else:
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace import Status, StatusCode
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import ConsoleSpanExporter
+        from opentelemetry.sdk.trace.id_generator import IdGenerator as IdGeneratorBase
+        from opentelemetry.semconv_ai import SpanAttributes
+        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-    OTEL_AVAILABLE = True
-except ImportError:
-    OTEL_AVAILABLE = False
-    trace = None  # type: ignore[assignment]
-    SpanAttributes = None  # type: ignore[assignment,misc]
-    TraceContextTextMapPropagator = None  # type: ignore[assignment,misc]
-    IdGenerator = None  # type: ignore[assignment,misc]
+        OTEL_AVAILABLE = True
+    except ImportError:
+        IdGeneratorBase = object
+        OTEL_AVAILABLE = False
+        trace = None  # type: ignore[assignment]
+        SpanAttributes = None  # type: ignore[assignment]
+        TraceContextTextMapPropagator = None  # type: ignore[assignment]
+        Status = None  # type: ignore[assignment]
+        StatusCode = None  # type: ignore[assignment]
+        TracerProvider = None  # type: ignore[assignment]
+        ConsoleSpanExporter = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
 
-class CryptographicIdGenerator(IdGenerator):
+class CryptographicIdGenerator(IdGeneratorBase):
     """
     Custom ID generator that uses os.urandom() for cryptographically secure random IDs.
 
@@ -143,7 +165,8 @@ class OTelInstrumentation:
 
             # Use custom ID generator to ensure unique IDs even with fixed random seed
             id_generator = CryptographicIdGenerator()
-            provider = TracerProvider(resource=resource, id_generator=id_generator)
+            # Cast needed because our stub doesn't match the real IdGenerator type
+            provider = TracerProvider(resource=resource, id_generator=cast("IdGenerator", id_generator))
             trace.set_tracer_provider(provider)
 
             logger.info("Using CryptographicIdGenerator for unique trace/span IDs")

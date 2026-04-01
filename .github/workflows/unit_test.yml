@@ -26,8 +26,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          pdm sync -d
-          pdm install -G analysis
+          pdm sync -d -G analysis -G otel
       - name: Run Unit Tests
         run: |
           pdm run test
