@@ -18,3 +18,11 @@ repos:
     - id: mypy
       name: run static type check
       args: [--strict, --ignore-missing-imports]
+- repo: local
+  hooks:
+    - id: check-license
+      name: check license headers
+      entry: python scripts/check_license.py
+      language: python
+      files: \.py$
+
