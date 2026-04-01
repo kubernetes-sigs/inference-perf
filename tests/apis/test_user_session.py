@@ -15,6 +15,7 @@
 """Tests for LocalUserSession lifecycle."""
 
 import multiprocessing as mp
+import re
 import pytest
 from collections import defaultdict
 from queue import Empty
@@ -45,6 +46,11 @@ def _mock_tokenizer() -> MagicMock:
     hf.decode = MagicMock(side_effect=lambda ids, **kw: f"tok_{len(ids)}")
     hf.batch_decode = MagicMock(side_effect=lambda batch, **kw: [f"tok_{len(ids)}" for ids in batch])
     tok.get_tokenizer.return_value = hf
+    # Match the decode mock's "tok_N" format so count_tokens returns a real int
+    # (the exact-length datagen path compares this against target_len).
+    tok.count_tokens = MagicMock(
+        side_effect=lambda text: sum(int(n) for n in re.findall(r"tok_(\d+)", text)) if isinstance(text, str) else 0
+    )
     return tok
 
 
@@ -112,11 +118,11 @@ class TestLocalUserSessionLifecycle:
 
     def test_clear_instances_resets_all_sessions(self) -> None:
         s1 = LocalUserSession.get_instance("sess_a")
-        s1.contexts = "accumulated context"
+        s1.context = "accumulated context"
         s1._current_round = 3
 
         s2 = LocalUserSession.get_instance("sess_b")
-        s2.contexts = "other context"
+        s2.context = "other context"
 
         LocalUserSession.clear_instances()
 
@@ -125,9 +131,9 @@ class TestLocalUserSessionLifecycle:
 
         assert new_s1 is not s1
         assert new_s2 is not s2
-        assert new_s1.contexts == ""
+        assert new_s1.context == ""
         assert new_s1._current_round == 0
-        assert new_s2.contexts == ""
+        assert new_s2.context == ""
 
     def test_context_does_not_leak_across_stage_boundary(self) -> None:
         """
@@ -137,13 +143,13 @@ class TestLocalUserSessionLifecycle:
 
         """
         session = LocalUserSession.get_instance("user_0")
-        session.contexts = "system prompt Q1 A1 Q2 A2"
+        session.context = "system prompt Q1 A1 Q2 A2"
         session._current_round = 2
 
         LocalUserSession.clear_instances()
 
         session_s1 = LocalUserSession.get_instance("user_0")
-        assert session_s1.contexts == ""
+        assert session_s1.context == ""
         assert session_s1._current_round == 0
 
     @pytest.mark.asyncio

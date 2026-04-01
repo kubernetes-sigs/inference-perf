@@ -81,8 +81,9 @@ class InfinityInstructDataGenerator(DataGenerator):
                             continue
 
                         assert self.tokenizer is not None
+                        prompt_ids = self.tokenizer.get_tokenizer().encode(prompt)
+                        prompt_tokens = len(prompt_ids)
                         completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
 
                         if self.input_distribution:
                             if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
@@ -100,6 +101,7 @@ class InfinityInstructDataGenerator(DataGenerator):
                         continue
                 elif self.api_config.type == APIType.Chat:
                     try:
+                        assert self.tokenizer is not None
                         messages: List[ChatMessage] = []
                         for conv in conversations:
                             role = "user" if conv.get("from") == "human" else "assistant"

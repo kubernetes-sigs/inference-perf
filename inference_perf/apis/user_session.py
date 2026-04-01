@@ -32,7 +32,7 @@ class LocalUserSession:
 
     def __init__(self, user_session_id: str, context: str = ""):
         self.user_session_id = user_session_id
-        self.contexts = context if context else ""
+        self.context = context if context else ""
         self._current_round = 0
         self._in_flight: Optional[asyncio.Lock] = None
         self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
@@ -65,10 +65,10 @@ class LocalUserSession:
             await future
         await self._in_flight.acquire()
         self._current_round += 1
-        return self.contexts
+        return self.context
 
     def update_context(self, response: str) -> None:
-        self.contexts = response
+        self.context = response
 
         self._ensure_initialized()
         assert self._waiting_rounds is not None

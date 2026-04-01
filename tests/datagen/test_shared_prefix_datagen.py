@@ -14,6 +14,7 @@
 
 import pytest
 from unittest.mock import MagicMock
+from typing import Any
 
 from inference_perf.config import (
     APIConfig,
@@ -39,6 +40,18 @@ def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     hf_tok.decode = MagicMock(side_effect=lambda ids, **kw: f"text_{len(ids)}")
     hf_tok.batch_decode = MagicMock(side_effect=lambda batch, **kw: [f"text_{len(ids)}" for ids in batch])
     mock_tokenizer.get_tokenizer.return_value = hf_tok
+
+    def count_tokens(text: str) -> int:
+        parts = text.split()
+        total = 0
+        for p in parts:
+            if p.startswith("text_"):
+                total += int(p[5:])
+            else:
+                total += 1
+        return total
+
+    mock_tokenizer.count_tokens.side_effect = count_tokens
     return mock_tokenizer
 
 
@@ -218,4 +231,60 @@ def test_shared_prefix_datagen_token_counts(
 
         # The actual token count might be slightly different due to the space
         # and how tokens are combined. We'll check if it's very close.
-        assert abs(len(token_ids) - expected_min_len) <= 5, f"Prompt: '{prompt}', Tokens: {len(token_ids)}"
+        assert len(token_ids) == expected_min_len, (
+            f"Prompt: '{prompt}', Tokens: {len(token_ids)}, Expected: {expected_min_len}"
+        )
+
+
+# --- Tests from shared-prefix-fix (Dummy Tokenizer based) ---
+
+
+class DummyTokenizer:
+    vocab_size = 1000
+    all_special_ids = [1, 2, 3]
+
+    def encode(self, text: str) -> list[int]:
+        try:
+            return [int(t) for t in text.split()]
+        except ValueError:
+            return [4, 5, 6]
+
+    def decode(self, tokens: list[int], **kwargs: Any) -> str:
+        return " ".join(str(t) for t in tokens)
+
+    def batch_decode(self, sequences: list[list[int]], **kwargs: Any) -> list[str]:
+        return [self.decode(seq) for seq in sequences]
+
+
+class DummyCustomTokenizer(CustomTokenizer):
+    def __init__(self) -> None:
+        pass
+
+    def get_tokenizer(self) -> Any:
+        return DummyTokenizer()
+
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
+
+def test_shared_prefix_datagen_excludes_special_tokens() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.SharedPrefix,
+        shared_prefix=SharedPrefix(
+            num_groups=2,
+            num_prompts_per_group=3,
+            system_prompt_len=10,
+            question_len=20,
+            output_len=15,
+            enable_multi_turn_chat=False,
+        ),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+
+    # Verify token IDs generated do not contain special tokens
+    tokens = generator._generate_random_token_ids(100)
+    for token in tokens:
+        assert token not in [1, 2, 3]

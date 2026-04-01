@@ -30,11 +30,11 @@ class MockDataGenerator(DataGenerator):
         if self.api_config.type == APIType.Completion:
             while True:
                 i += 1
-                yield CompletionAPIData(prompt="text" + str(i))
+                yield CompletionAPIData(prompt=f"1 2 3 {i}")
         elif self.api_config.type == APIType.Chat:
             while True:
                 i += 1
-                yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="text" + str(i))])
+                yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content=f"mock prompt {i}")])
         else:
             raise Exception("Unsupported API type")
 

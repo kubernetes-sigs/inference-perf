@@ -1,4 +1,5 @@
 import asyncio
+import re
 import unittest
 from unittest.mock import MagicMock
 from typing import Any
@@ -23,6 +24,11 @@ def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     hf_tok.decode = MagicMock(side_effect=lambda ids, **kw: f"text_{len(ids)}")
     hf_tok.batch_decode = MagicMock(side_effect=lambda batch, **kw: [f"text_{len(ids)}" for ids in batch])
     mock_tokenizer.get_tokenizer.return_value = hf_tok
+    # Match the decode mock's "text_N" format so count_tokens returns a real int
+    # (the new exact-length datagen path compares this against target_len).
+    mock_tokenizer.count_tokens = MagicMock(
+        side_effect=lambda text: sum(int(n) for n in re.findall(r"text_(\d+)", text)) if isinstance(text, str) else 0
+    )
     return mock_tokenizer
 
 

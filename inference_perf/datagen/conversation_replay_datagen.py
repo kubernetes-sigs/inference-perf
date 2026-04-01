@@ -220,7 +220,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 context=bp.system_prompt,
             )
             logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
-        elif len(self.user_sessions[conv_idx].contexts) > 2_700_000:
+        elif len(self.user_sessions[conv_idx].context) > 2_700_000:
             # Safety reset: context is approaching max_model_len.
             # Random Qwen3 tokens decode to ~12 chars/token on average, so
             # 225K tokens ≈ 2.7M chars. Reset to fresh context rather than

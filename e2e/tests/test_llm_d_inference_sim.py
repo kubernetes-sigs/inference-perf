@@ -146,3 +146,68 @@ async def test_completion_successful_run(data: dict, load: dict):
     summary_report = result.reports["summary_lifecycle_metrics.json"]
     assert summary_report, "Missing summary report"
     assert summary_report["successes"]["count"] > 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_chat_successful_run():
+    """
+    Integration test for Chat API that verifies request and response lengths.
+    """
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+
+    load = {
+        "type": "constant",
+        "stages": [{"rate": 1, "duration": 5}],
+        "num_workers": 1,
+    }
+
+    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+        result = await run_benchmark_minimal(
+            {
+                "data": {"type": "mock"},
+                "load": load,
+                "api": {
+                    "type": "chat",
+                    "streaming": True,
+                },
+                "server": {
+                    "type": "vllm",
+                    "model_name": model_name,
+                    "base_url": f"http://{sim.host}:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {
+                    "pretrained_model_name_or_path": str(model_path),
+                },
+                "report": {
+                    "request_lifecycle": {
+                        "summary": True,
+                        "per_stage": True,
+                        "per_request": True,
+                    },
+                },
+            }
+        )
+
+    assert result.success, "Benchmark failed"
+    assert result.reports, "No reports generated from benchmark"
+
+    requests_report = result.reports["per_request_lifecycle_metrics.json"]
+    assert requests_report, "Missing per-request report"
+
+    for request in requests_report:
+        # Verify input tokens (from 'mock prompt i')
+        assert request["info"]["input_tokens"] > 0, "Input tokens should be greater than 0"
+        # Verify output tokens (default max_completion_tokens is 30). The
+        # client-side per-chunk re-tokenization in response_info.output_tokens
+        # is known to drift (HF tokenizer add_special_tokens=True default
+        # injects BOS/EOS per call), so assert against the server's
+        # authoritative count from stream_options.include_usage instead.
+        response_info = request["info"]["response_info"]
+        assert response_info is not None, "Missing response_info on successful streaming request"
+        server_usage = response_info["server_usage"]
+        assert server_usage is not None, "Missing server_usage; expected with stream_options.include_usage=true"
+        completion_tokens = server_usage["completion_tokens"]
+        assert completion_tokens == 30, f"Expected 30 output tokens, got {completion_tokens}"

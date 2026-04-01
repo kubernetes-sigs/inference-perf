@@ -85,10 +85,10 @@ class BillsumConversationsDataGenerator(DataGenerator):
                         completion = data[self.data_key][1].get(self.content_key)
                         if not prompt:
                             continue
-                        # Ensured by main.py logic and __init__ type hint for this class
                         assert self.tokenizer is not None
+                        prompt_ids = self.tokenizer.get_tokenizer().encode(prompt)
+                        prompt_tokens = len(prompt_ids)
                         completion_tokens = self.tokenizer.count_tokens(completion)
-                        prompt_tokens = self.tokenizer.count_tokens(prompt)
 
                         if self.input_distribution:
                             if prompt_tokens < self.input_distribution.min or prompt_tokens > self.input_distribution.max:
@@ -105,15 +105,13 @@ class BillsumConversationsDataGenerator(DataGenerator):
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
                 elif self.api_config.type == APIType.Chat:
-                    yield ChatCompletionAPIData(
-                        messages=[
-                            ChatMessage(
-                                role=conversation[self.role_key],
-                                content=conversation[self.content_key],
-                            )
-                            for conversation in data[self.data_key]
-                        ]
-                    )
+                    assert self.tokenizer is not None
+                    messages = []
+                    for conversation in data[self.data_key]:
+                        role = conversation[self.role_key]
+                        content = conversation[self.content_key]
+                        messages.append(ChatMessage(role=role, content=content))
+                    yield ChatCompletionAPIData(messages=messages)
                 else:
                     raise Exception("Unsupported API type")
 

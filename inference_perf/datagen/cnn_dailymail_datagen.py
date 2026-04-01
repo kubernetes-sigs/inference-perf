@@ -85,7 +85,8 @@ class CNNDailyMailDataGenerator(DataGenerator):
 
                 completion = data[self.highlights_key]
                 completion_tokens = self.tokenizer.count_tokens(completion)
-                prompt_tokens = self.tokenizer.count_tokens(prompt)
+                prompt_ids = self.tokenizer.get_tokenizer().encode(prompt)
+                prompt_tokens = len(prompt_ids)
 
                 if self.input_distribution:
                     if prompt_tokens < self.input_distribution.min:

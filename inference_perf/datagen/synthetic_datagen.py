@@ -11,12 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
+import logging
+from typing import Generator, List, Optional
+
+from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator, LazyLoadDataMixin
-from typing import Generator, List, Optional
-from inference_perf.config import APIConfig, APIType, DataConfig
+from .datagen_utils import converge_to_exact_length_text
+
+logger = logging.getLogger(__name__)
 
 
 class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
@@ -44,7 +49,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.output_distribution.total_count,
         )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
-        self.token_ids = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
+        self.token_ids: list[int] = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
@@ -55,6 +60,42 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     def is_shared_prefix_supported(self) -> bool:
         return False
 
+    def _generate_exact_length_text(self, target_len: int) -> str:
+        """Generates a string from self.token_ids that tokenizes to exactly target_len."""
+        if target_len <= 0:
+            return ""
+
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for generating exact length prompts.")
+
+        # Start with a slice of target_len
+        current_slice_len = target_len
+
+        initial_slice_len = min(target_len, len(self.token_ids))
+        initial_tokens = self.token_ids[:initial_slice_len]
+
+        def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
+            nonlocal current_slice_len
+            if current_len < target_len:
+                diff = target_len - current_len
+                current_slice_len += diff
+            else:
+                diff = current_len - target_len
+                current_slice_len -= diff
+                if current_slice_len <= 0:
+                    current_slice_len = 1  # Keep at least one
+
+            slice_to_use = min(current_slice_len, len(self.token_ids))
+            return self.token_ids[:slice_to_use]
+
+        return converge_to_exact_length_text(
+            tokenizer=self.tokenizer,
+            target_len=target_len,
+            prefix_text="",
+            initial_tokens=initial_tokens,
+            adjust_tokens_fn=adjust_tokens,
+        )
+
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         n = data.data_index
 
@@ -62,8 +103,10 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
 
         if self.api_config.type == APIType.Completion:
+            length = self.input_lengths[n]
+            prompt_text = self._generate_exact_length_text(length)
             return CompletionAPIData(
-                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[n]]),
+                prompt=prompt_text,
                 max_tokens=self.output_lengths[n],
             )
         else:

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from typing import Generator, List, Optional, Union
 
 import numpy as np
@@ -22,6 +23,9 @@ from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import sample_from_distribution
 from .base import DataGenerator, LazyLoadDataMixin
+from .datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
+
+logger = logging.getLogger(__name__)
 
 
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
@@ -47,22 +51,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SharedPrefixDataGenerator but was not initialized.")
 
-        # Initialize vocab_size
-        hf_tokenizer = self.tokenizer.get_tokenizer()
-        if hasattr(hf_tokenizer, "vocab_size") and hf_tokenizer.vocab_size is not None:
-            self.vocab_size: int = hf_tokenizer.vocab_size
-        elif hasattr(hf_tokenizer, "get_vocab") and callable(hf_tokenizer.get_vocab):
-            self.vocab_size = len(hf_tokenizer.get_vocab())
-        else:
-            try:
-                self.vocab_size = len(hf_tokenizer)
-            except TypeError as e:
-                raise ValueError(
-                    "Tokenizer does not have a 'vocab_size' attribute, 'get_vocab()' method, "
-                    "or support len() for vocabulary size. Cannot use random token generation."
-                ) from e
-        if self.vocab_size <= 0:
-            raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
+        self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
 
         if self.shared_prefix is None:
             raise ValueError("Shared Prefix config is required for SharedPrefixDataGenerator")
@@ -140,9 +129,17 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
-        if length == 0:
-            return []
-        return self.rng.integers(0, self.vocab_size, size=length, dtype=np.int64).tolist()  # type: ignore[no-any-return]
+        return random_token_ids(self.rng, self.valid_token_ids, length)
+
+    def _generate_exact_length_text(self, target_len: int, prefix_text: str = "") -> str:
+        """Generates a string that tokenizes to exactly target_len, optionally prefixed.
+
+        If prefix_text is provided, the TOTAL length including prefix will be target_len.
+        Returns the full combined text if prefix_text is provided, else just the generated text.
+        """
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for generating exact length prompts.")
+        return generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len, prefix_text)
 
     def _generate_prompts(self) -> None:
         """Pre-generates all prompts based on the configuration."""
@@ -152,39 +149,30 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.shared_prefix is None:
             raise ValueError("Shared prefix is not available for generating prompts.")
 
-        hf_tokenizer = self.tokenizer.get_tokenizer()
-
         for group_id in range(self.num_groups):
             # Generate a shared prefix (system prompt) with per-group length
             sys_prompt_len = self.system_prompt_lens_per_group[group_id]
-            shared_prefix_token_ids = self._generate_random_token_ids(sys_prompt_len)
-            shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
-
-            # Batch generate all question token IDs for this group
-            all_question_token_ids = [
-                self._generate_random_token_ids(self.question_len_list_per_group[group_id][prompt_id])
-                for prompt_id in range(self.num_prompts_per_group)
-            ]
-
-            # Batch decode all questions at once (much faster than individual decode calls)
-            all_question_texts = hf_tokenizer.batch_decode(all_question_token_ids, skip_special_tokens=True)
+            shared_prefix_text = self._generate_exact_length_text(sys_prompt_len)
 
             for prompt_id in range(self.num_prompts_per_group):
-                question_text = all_question_texts[prompt_id]
+                q_len = self.question_len_list_per_group[group_id][prompt_id]
+                target_total_len = sys_prompt_len + q_len
 
                 if self.enable_multi_turn_chat:
-                    # multi turn chat, create user to keep conversation
+                    full_text = self._generate_exact_length_text(target_total_len, prefix_text=shared_prefix_text)
+                    # Extract question part (skip prefix and space)
+                    question_text = full_text[len(shared_prefix_text) + 1 :]
+
                     self.user_sessions.append(
                         LocalUserSession(
                             user_session_id=f"user_session_{self.num_prompts_per_group * group_id + prompt_id}",
                             context=shared_prefix_text,
                         )
                     )
+                    self.prompts.append(question_text)
                 else:
-                    # Single turn chat, Combine shared prefix and question
-                    question_text = shared_prefix_text + " " + question_text
-
-                self.prompts.append(question_text)
+                    full_text = self._generate_exact_length_text(target_total_len, prefix_text=shared_prefix_text)
+                    self.prompts.append(full_text)
 
         # Flatten output lengths to match prompts ordering
         self.flat_output_lens = [

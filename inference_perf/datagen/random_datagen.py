@@ -11,16 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from pathlib import Path
+from typing import Generator, List, Optional
+
 import numpy as np
-from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
+
+from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.config import APIConfig, APIType, DataConfig, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import generate_distribution
-from .base import DataGenerator, LazyLoadDataMixin
-from typing import Generator, List, Optional
-from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
-import logging
+from .base import DataGenerator, LazyLoadDataMixin
+from .datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +82,18 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-        hf_tokenizer = self.tokenizer.get_tokenizer()
-        if hasattr(hf_tokenizer, "vocab_size") and hf_tokenizer.vocab_size is not None:
-            self.vocab_size: int = hf_tokenizer.vocab_size
-        elif hasattr(hf_tokenizer, "get_vocab") and callable(hf_tokenizer.get_vocab):
-            self.vocab_size = len(hf_tokenizer.get_vocab())
-        else:
-            try:
-                self.vocab_size = len(hf_tokenizer)
-            except TypeError as e:
-                raise ValueError(
-                    "Tokenizer does not have a 'vocab_size' attribute, 'get_vocab()' method, "
-                    "or support len() for vocabulary size. Cannot use random token generation."
-                ) from e
-        if self.vocab_size <= 0:
-            raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
+        self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
+        self.rng: np.random.Generator = np.random.default_rng()
+
+    def _generate_random_token_ids(self, length: int) -> List[int]:
+        """Generates a list of random token IDs of a specified length."""
+        return random_token_ids(self.rng, self.valid_token_ids, length)
+
+    def _generate_exact_length_text(self, target_len: int) -> str:
+        """Generates a string that tokenizes to exactly target_len."""
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for generating exact length prompts.")
+        return generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len)
 
     def get_request_count(self) -> int:
         return min(len(self.input_lengths), len(self.output_lengths))
@@ -114,9 +114,9 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
         if self.api_config.type == APIType.Completion:
-            tokens = np.random.randint(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
-            prompt_text = self.tokenizer.get_tokenizer().decode(tokens.tolist())
-            return CompletionAPIData(prompt=prompt_text, max_tokens=self.output_lengths[n])
+            length = self.input_lengths[n]
+            text = self._generate_exact_length_text(length)
+            return CompletionAPIData(prompt=text, max_tokens=self.output_lengths[n])
         else:
             raise Exception("Unsupported API type")
 

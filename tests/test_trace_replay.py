@@ -50,9 +50,11 @@ class TestTraceReplay:
             # Test 2: Generate data with matching token counts
             mock_tokenizer = Mock()
             mock_tokenizer_obj = Mock()
-            mock_tokenizer_obj.decode.return_value = "test prompt"
+            mock_tokenizer_obj.decode.side_effect = lambda tokens, **kwargs: " ".join(map(str, tokens))
             mock_tokenizer_obj.vocab_size = 1000
+            mock_tokenizer_obj.all_special_ids = []
             mock_tokenizer.get_tokenizer.return_value = mock_tokenizer_obj
+            mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split())
 
             api_config = APIConfig(type=APIType.Completion)
             trace_config = TraceConfig(file=str(temp_path), format=TraceFormat.AZURE_PUBLIC_DATASET)
