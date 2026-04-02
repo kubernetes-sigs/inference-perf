@@ -56,6 +56,7 @@ else:
 from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
 from types import FrameType
 import time
+import math
 import multiprocessing as mp
 from queue import Empty
 from multiprocessing.synchronize import Barrier as SyncBarrier, Event as SyncEvent
@@ -180,6 +181,7 @@ class Worker(mp.Process):
                     lora_adapter: Optional[str],
                 ) -> None:
                     inflight = False
+                    cancelled = False
                     try:
                         current_time = time.perf_counter()
                         sleep_time = request_time - current_time
@@ -203,7 +205,7 @@ class Worker(mp.Process):
 
                         await self.client.process_request(request_data, stage_id, request_time, lora_adapter)
                     except CancelledError:
-                        pass
+                        cancelled = True
                     except Exception as e:
                         logger.error(f"[DEBUG] Exception in task: {type(e).__name__}: {e}", exc_info=True)
                         raise
@@ -211,8 +213,9 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             if inflight:
                                 self.active_requests_counter.value -= 1
-                        with self.finished_requests_counter.get_lock():
-                            self.finished_requests_counter.value += 1
+                        if not cancelled:
+                            with self.finished_requests_counter.get_lock():
+                                self.finished_requests_counter.value += 1
                         queue.task_done()
                         semaphore.release()
 
@@ -703,7 +706,7 @@ class LoadGenerator:
         self,
         stage_id: int,
         rate: float,
-        duration: int,
+        duration: float,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
@@ -728,10 +731,10 @@ class LoadGenerator:
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
+        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None and stage_id >= 0:
             num_requests = self.datagen.get_request_count()
         else:
-            num_requests = int(rate * duration)
+            num_requests = math.ceil(rate * duration)
 
         stage_status = StageStatus.RUNNING
 
@@ -824,43 +827,197 @@ class LoadGenerator:
         cancel_signal: SyncEvent,
     ) -> None:
         """
-        Runs a preliminary load test to automatically determine the server's saturation point
-        and generate a suitable series of load stages for the main benchmark.
+        Runs a Stepped Load (Ramping) test to determine the server's saturation point.
 
-        An aggregator task samples the active requests and then the burn down rate is
-        calculated from the samples. Saturation is derived from a percentile of the
-        sampled burn down rates.
+        Iterates through increasing request rates (steps). For each step:
+        1. Runs for a specific duration.
+        2. Measures the actual throughput (finished requests / time).
+        3. Checks if the system is saturated (Actual Throughput < Target Rate * tolerance).
+
+        If saturation is detected, the previous successful rate is used as the saturation point.
         """
-        logger.info("Running preprocessing stage")
-        results: List[Tuple[float, int]] = []
+        logger.info("Running preprocessing stage (Stepped Load)")
 
         if self.sweep_config is None:
             raise Exception("sweep_config cannot be none")
 
-        # Aggregator collects timestamped value of active_requests throughout the preprocessing
-        async def aggregator() -> None:
+        # Adaptive Saturation Detection (Exponential Search + Binary Refinement)
+        # Phase 1: Probe at moderate rate
+        step_duration = 10
+        if self.sweep_config.stage_duration > 10:
+            step_duration = self.sweep_config.stage_duration
+
+        # 90% is a required empirical buffer rather than an arbitrary choice.
+        # Our `aggregator` loops every 0.5 seconds, which structurally inflates the time window `T_meas`
+        # by up to 0.5s relative to the true completion boundary. At 10 QPS, inflating T_meas by 0.5s
+        # lowers the measured rate formula (`C / T_meas`) by ~5%. At 100 QPS, an extra 0.5s looks like 50 dropped requests!
+        # Without this tolerance, high-throughput measurements will chronically false-trigger saturation.
+        throughput_tolerance = 0.90
+        max_rate_cap = 50000.0
+
+        samples: list[tuple[float, int]] = []
+
+        # Start aggregator for this step
+        async def aggregator(results: List[Tuple[float, int]] = samples) -> None:
             while True:
-                results.append((time.perf_counter(), active_requests_counter.value))
+                results.append((time.perf_counter(), finished_requests_counter.value))
                 await sleep(0.5)
 
         aggregator_task = create_task(aggregator())
 
-        stage_id = -1
-        duration = 5
-        rate = self.sweep_config.num_requests / duration
-        timeout = self.sweep_config.timeout
-        start_time = time.perf_counter()
-        await self.run_stage(
-            stage_id,
-            rate,
-            duration,
-            request_queue,
-            active_requests_counter,
-            finished_requests_counter,
-            request_phase,
-            timeout=timeout,
-            cancel_signal=cancel_signal,
-        )
+        lower_bound = 0.0
+        upper_bound = 0.0
+        saturation_point = 0.0
+        found_saturation = False
+
+        async def measure_rate(target_rate: float) -> tuple[bool, float]:
+            nonlocal samples
+            samples.clear()
+            with finished_requests_counter.get_lock():
+                finished_requests_counter.value = 0
+
+            # Ensure enough duration for low rates to get at least 2 requests
+            current_step_duration: float = float(step_duration)
+            if target_rate > 0 and (2.0 / target_rate) > current_step_duration:
+                current_step_duration = 2.0 / target_rate
+                # Cap at some reasonable max to avoid waiting forever on 0.0001 QPS
+                if current_step_duration > 60:
+                    current_step_duration = 60
+
+            logger.info(f"Preprocessing Step: {target_rate:.2f} QPS for {current_step_duration}s")
+
+            await self.run_stage(
+                -1,
+                target_rate,
+                current_step_duration,
+                request_queue,
+                active_requests_counter,
+                finished_requests_counter,
+                request_phase,
+                timeout=timeout
+                if self.sweep_config and (timeout := self.sweep_config.timeout) > current_step_duration
+                else current_step_duration + 5,
+                cancel_signal=cancel_signal,
+            )
+
+            # Wait for aggregator to catch up (ensures final sample is collected)
+            await sleep(0.6)
+
+            # Analysis
+            valid_results = samples.copy()
+
+            if len(valid_results) < 2:
+                logger.warning(f"Step {target_rate}: Insufficient samples. Using total/duration fallback.")
+                # Fallback: Total finished / Duration
+                with finished_requests_counter.get_lock():
+                    total = finished_requests_counter.value
+                measured = total / current_step_duration
+            else:
+                timestamps = [r[0] for r in valid_results]
+                counts = [r[1] for r in valid_results]
+
+                first_idx = None
+                for i in range(len(counts)):
+                    if counts[i] > 0:
+                        first_idx = max(0, i - 1)
+                        break
+
+                last_idx = len(counts) - 1
+                for i in range(len(counts) - 1, 0, -1):
+                    if counts[i] > counts[i - 1]:
+                        last_idx = i
+                        break
+
+                if first_idx is None or counts[-1] == 0:
+                    measured = 0.0
+                elif last_idx <= first_idx:
+                    try:
+                        measured = (counts[-1] - counts[0]) / (timestamps[-1] - timestamps[0])
+                    except ZeroDivisionError:
+                        measured = 0.0
+                else:
+                    try:
+                        measured = (counts[last_idx] - counts[first_idx]) / (timestamps[last_idx] - timestamps[first_idx])
+                    except ZeroDivisionError:
+                        measured = 0.0
+
+            # Calculate expected rate based on actual scheduled requests
+            num_scheduled = math.ceil(target_rate * current_step_duration)
+            expected_rate = num_scheduled / current_step_duration
+
+            logger.info(f"Step {target_rate}: Expected {expected_rate:.2f}, Measured {measured:.2f}")
+
+            # Determine saturation based on expected rate to handle quantization and aggregator jitter (0.5s)
+            is_saturated = measured < expected_rate * throughput_tolerance
+            if is_saturated:
+                logger.warning(
+                    f"Saturation detected! Measured {measured:.2f} < {throughput_tolerance * 100}% of Expected {expected_rate:.2f} (Target {target_rate:.2f})"
+                )
+
+            return is_saturated, measured
+
+        # Execution Logic
+
+        # 1. Probe
+        is_sat, measured = await measure_rate(1.0)
+
+        lower_bound = 0.1  # A very low safe rate
+        upper_bound = 1.0
+
+        if is_sat:
+            # Saturated at 1.0. Search DOWN.
+            # Check 0.025
+            is_sat_low, measured_low = await measure_rate(0.025)
+            if is_sat_low:
+                # Even 0.025 is saturated.
+                logger.warning("System saturated even at 0.025 QPS. Using minimal capacity.")
+                saturation_point = measured_low
+                found_saturation = True
+                lower_bound = 0.0  # effectively
+                upper_bound = 0.025
+            else:
+                # 0.025 is Safe, 1.0 is Saturated.
+                lower_bound = 0.025
+                upper_bound = 1.0
+                found_saturation = True
+        else:
+            # 1.0 is Safe. Search UP.
+            lower_bound = 1.0
+            current_rate = 2.0
+            found_upper = False
+
+            while current_rate <= max_rate_cap:
+                is_sat, measured = await measure_rate(current_rate)
+                if is_sat:
+                    upper_bound = current_rate
+                    found_upper = True
+                    found_saturation = True
+                    break
+                else:
+                    lower_bound = current_rate
+                    current_rate *= 2.0
+
+            if not found_upper:
+                logger.info("Hit max rate cap without saturation.")
+                saturation_point = lower_bound  # or measured max
+                upper_bound = lower_bound  # No upper bound found implies linear/max
+
+        if found_saturation and lower_bound < upper_bound:
+            # Binary Search Refinement
+            # We have [lower, upper]. Do 3 steps.
+            for _ in range(3):
+                mid = (lower_bound + upper_bound) / 2
+                is_sat, measured = await measure_rate(mid)
+                if is_sat:
+                    upper_bound = mid
+                else:
+                    lower_bound = mid
+
+            saturation_point = lower_bound  # Conservative estimate
+
+        if not found_saturation:
+            # If we never found saturation (e.g. max cap reached), use lower_bound (max safe)
+            saturation_point = lower_bound
 
         aggregator_task.cancel()
         try:
@@ -868,35 +1025,29 @@ class LoadGenerator:
         except CancelledError:
             pass
 
-        # Ensure that we don't calculate saturation based on the post-timeout drain
-        results = [(timestamp, requests) for timestamp, requests in results if timestamp < start_time + timeout]
-        # Calculate the sampled QPS by interval between the samples
-        rates = [
-            abs((current_requests - previous_requests) / (current_timestamp - previous_timestamp))
-            for (current_timestamp, current_requests), (previous_timestamp, previous_requests) in zip(
-                results[1:], results[:-1], strict=True
-            )
-            if current_requests - previous_requests < 0
-        ]
-
-        if len(rates) <= 1:
-            raise Exception(
-                "Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout"
-            )
-
-        # Generate new stages
-        logger.debug(f"Determining saturation from rates: {[f'{rate:0.2f}' for rate in sorted(rates)]}")
-        saturation_point = float(np.percentile(rates, self.sweep_config.saturation_percentile))
-        logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
+        logger.info(f"Saturation point estimated at {saturation_point:0.2f} QPS.")
 
         def generateRates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
-            if gen_type == StageGenType.GEOM:
-                return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
-            elif gen_type == StageGenType.LINEAR:
-                return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
+            # Calculate start_rate based on target_request_rate and size to ensure proper scaling
+            # for both low and high target rates.
+            start_rate = target_request_rate / size
 
-        rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
-        self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
+            if gen_type == StageGenType.GEOM:
+                # Avoid log(0) or similar issues if target is low, but usually target > 1
+                return [
+                    float(round(start_rate + target_request_rate - rr, 2))
+                    for rr in np.geomspace(target_request_rate, start_rate, num=size)
+                ]
+            elif gen_type == StageGenType.LINEAR:
+                return [float(round(r, 2)) for r in np.linspace(start_rate, target_request_rate, size)]
+
+        # Regenerate stages based on found saturation
+        # If we found saturation, we typically want stages leading up to it
+        if saturation_point <= 0:
+            raise Exception("Loadgen preprocessing failed to determine a valid saturation point.")
+
+        gen_rates = generateRates(saturation_point * 1.8, self.sweep_config.num_stages, self.sweep_config.type)
+        self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in gen_rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
     async def mp_run(self, client: ModelServerClient) -> None:

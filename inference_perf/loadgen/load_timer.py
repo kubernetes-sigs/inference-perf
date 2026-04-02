@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
+import math
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, Tuple
 import numpy as np
@@ -46,7 +47,7 @@ class ConstantLoadTimer(LoadTimer):
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        num_requests = int(self._rate * self._duration)
+        num_requests = math.ceil(self._rate * self._duration)
         if num_requests == 0:
             return
 
