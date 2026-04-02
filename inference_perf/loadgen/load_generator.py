@@ -192,8 +192,17 @@ class Worker(mp.Process):
                         queue.task_done()
                         semaphore.release()
 
-                stage_id, request, request_time, lora_adapter = item
-                request_data = LazyLoadDataMixin.get_request(self.datagen, request)
+                try:
+                    stage_id, request, request_time, lora_adapter = item
+                    request_data = LazyLoadDataMixin.get_request(self.datagen, request)
+                except Exception as e:
+                    logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
+                    with self.finished_requests_counter.get_lock():
+                        self.finished_requests_counter.value += 1
+                    self.request_queue.task_done()
+                    semaphore.release()
+                    continue
+
                 task = create_task(
                     schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore, lora_adapter)
                 )
@@ -366,19 +375,19 @@ class LoadGenerator:
         timed_out = False
         while finished_requests_counter.value < num_requests:
             if timeout and start_time + timeout < time.perf_counter():
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
                 logger.info(f"Loadgen timed out after {timeout:0.2f}s")
                 timed_out = True
                 break
             if self.interrupt_sig:
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
                 logger.info("Loadgen encountered SIGINT")
                 break
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                 timed_out = True
+                break
+            if self.workers and len([w for w in self.workers if w.is_alive()]) < self.num_workers:
+                logger.error("A worker process died unexpectedly!")
+                timed_out = True  # Trigger cleanup
                 break
             await sleep(1)
             if progress_ctx and stage_task:
@@ -550,54 +559,51 @@ class LoadGenerator:
                 return
 
         # Create progress context for all stages
-        progress = Progress(
+        with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-        )
-        progress.start()
-        overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        ) as progress:
+            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
 
-        for stage_id, stage in enumerate(self.stages):
-            # Update worker concurrency for concurrent load type
-            if self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
-                logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
-                self._set_worker_concurrency(stage.concurrency_level)
+            for stage_id, stage in enumerate(self.stages):
+                # Update worker concurrency for concurrent load type
+                if self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
+                    logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
+                    self._set_worker_concurrency(stage.concurrency_level)
 
-                # Use the dynamically set rate/duration from main.py
-                rate = getattr(stage, "rate", stage.num_requests)
-                duration = getattr(stage, "duration", 1)
-                concurrency_level = stage.concurrency_level
-            elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
-                rate = stage.rate
-                duration = stage.duration
-                concurrency_level = None
-            else:
-                raise Exception(f"Stage {stage_id} has the wrong load type")
+                    # Use the dynamically set rate/duration from main.py
+                    rate = getattr(stage, "rate", stage.num_requests)
+                    duration = getattr(stage, "duration", 1)
+                    concurrency_level = stage.concurrency_level
+                elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
+                    rate = stage.rate
+                    duration = stage.duration
+                    concurrency_level = None
+                else:
+                    raise Exception(f"Stage {stage_id} has the wrong load type")
 
-            await self.run_stage(
-                stage_id,
-                rate,
-                duration,
-                request_queue,
-                active_requests_counter,
-                finished_requests_counter,
-                request_phase,
-                cancel_signal,
-                concurrency_level=concurrency_level,
-                progress_ctx=progress,
-            )
-            # If we encountered a SIGINT, we can break out of run stages loop
-            if self.interrupt_sig:
-                break
-            progress.update(overall_task, advance=1)
-            if self.stageInterval:
-                await sleep(self.stageInterval)
-
-        progress.stop()
+                await self.run_stage(
+                    stage_id,
+                    rate,
+                    duration,
+                    request_queue,
+                    active_requests_counter,
+                    finished_requests_counter,
+                    request_phase,
+                    cancel_signal,
+                    concurrency_level=concurrency_level,
+                    progress_ctx=progress,
+                )
+                # If we encountered a SIGINT, we can break out of run stages loop
+                if self.interrupt_sig:
+                    break
+                progress.update(overall_task, advance=1)
+                if self.stageInterval:
+                    await sleep(self.stageInterval)
 
         # Reset the request phase to get workers out of their final wait()
         request_phase.set()
@@ -608,75 +614,74 @@ class LoadGenerator:
             return await self.mp_run(client)
 
         # Create progress context
-        progress = Progress(
+        with Progress(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
-        )
-        progress.start()
-        overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        ) as progress:
+            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
 
-        for stage_id, stage in enumerate(self.stages):
-            timer = self.get_timer(stage.rate, stage.duration)
-            start_time_epoch = time.time()
-            start_time = time.perf_counter()
-            end_time = start_time + stage.duration
-            stage_status = StageStatus.RUNNING
-            logger.info("Stage %d - run started", stage_id)
+            for stage_id, stage in enumerate(self.stages):
+                timer = self.get_timer(stage.rate, stage.duration)
+                start_time_epoch = time.time()
+                start_time = time.perf_counter()
+                end_time = start_time + stage.duration
+                stage_status = StageStatus.RUNNING
+                logger.info("Stage %d - run started", stage_id)
 
-            num_requests = int(stage.rate * stage.duration)
-            stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
+                num_requests = int(stage.rate * stage.duration)
+                stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
 
-            async with TaskGroup() as tg:
-                time_generator = timer.start_timer(start_time)
-                for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
-                    if progress and stage_task:
-                        progress.update(stage_task, completed=count + 1)
-                    request_data = LazyLoadDataMixin.get_request(self.datagen, data)
-                    lora_adapter = self._get_lora_adapter()
-                    if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                        logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
-                        stage_status = StageStatus.FAILED
-                        break
-                    now = time.perf_counter()
-                    if time_index < end_time and now < end_time:
+                async with TaskGroup() as tg:
+                    time_generator = timer.start_timer(start_time)
+                    for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                        if progress and stage_task:
+                            progress.update(stage_task, completed=count + 1)
+                        request_data = LazyLoadDataMixin.get_request(self.datagen, data)
+                        lora_adapter = self._get_lora_adapter()
                         if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                             logger.warning(
                                 f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.'
                             )
                             stage_status = StageStatus.FAILED
                             break
-                        if time_index > now:
-                            await sleep(time_index - time.perf_counter())
-                        tg.create_task(client.process_request(request_data, stage_id, time_index, lora_adapter))
-                        continue
-                    else:
-                        break
+                        now = time.perf_counter()
+                        if time_index < end_time and now < end_time:
+                            if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                                logger.warning(
+                                    f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.'
+                                )
+                                stage_status = StageStatus.FAILED
+                                break
+                            if time_index > now:
+                                await sleep(time_index - time.perf_counter())
+                            tg.create_task(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                            continue
+                        else:
+                            break
 
-            progress.update(stage_task, completed=1.0)
-            progress.remove_task(stage_task)  # Clean up after completion
+                progress.update(stage_task, completed=1.0)
+                progress.remove_task(stage_task)  # Clean up after completion
 
-            if stage_status == StageStatus.RUNNING:
-                stage_status = StageStatus.COMPLETED
-                logger.info("Stage %d - run completed", stage_id)
-            else:
-                logger.info("Stage %d - run failed", stage_id)
-            self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                stage_id=stage_id,
-                rate=stage.rate,
-                start_time=start_time_epoch,
-                end_time=time.time(),
-                status=stage_status,
-                concurrency_level=None,
-            )
-            progress.update(overall_task, advance=1)
-            if self.stageInterval and stage_id < len(self.stages) - 1:
-                await sleep(self.stageInterval)
-
-        progress.stop()
+                if stage_status == StageStatus.RUNNING:
+                    stage_status = StageStatus.COMPLETED
+                    logger.info("Stage %d - run completed", stage_id)
+                else:
+                    logger.info("Stage %d - run failed", stage_id)
+                self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+                    stage_id=stage_id,
+                    rate=stage.rate,
+                    start_time=start_time_epoch,
+                    end_time=time.time(),
+                    status=stage_status,
+                    concurrency_level=None,
+                )
+                progress.update(overall_task, advance=1)
+                if self.stageInterval and stage_id < len(self.stages) - 1:
+                    await sleep(self.stageInterval)
 
     async def stop(self) -> None:
         for worker in self.workers:

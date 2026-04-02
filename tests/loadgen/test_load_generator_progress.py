@@ -26,6 +26,8 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
     @patch("inference_perf.loadgen.load_generator.Progress")
     async def test_run_progress(self, mock_progress_class: MagicMock) -> None:
         mock_progress = mock_progress_class.return_value
+        mock_progress_class.return_value.__enter__.return_value = mock_progress
+
         mock_overall_task = MagicMock()
         mock_stage_task = MagicMock()
         mock_progress.add_task.side_effect = [mock_overall_task, mock_stage_task]
@@ -38,9 +40,9 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.load_generator, "get_timer", return_value=mock_timer):
             await self.load_generator.run(mock_client)
 
-        # Check that Progress was started and stopped
-        mock_progress.start.assert_called_once()
-        mock_progress.stop.assert_called_once()
+        # Check that Progress was used as a context manager
+        mock_progress.__enter__.assert_called_once()
+        mock_progress.__exit__.assert_called_once()
 
         # Check overall and stage tasks added
         self.assertEqual(mock_progress.add_task.call_count, 2)
