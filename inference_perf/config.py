@@ -16,7 +16,8 @@ from datetime import datetime
 from enum import Enum
 from os import cpu_count
 import time
-from typing import Any, List, Optional, Union, Dict
+from math import sqrt
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
@@ -98,6 +99,44 @@ class Distribution(BaseModel):
     total_count: Optional[int] = None
 
 
+class DistributionType(str, Enum):
+    NORMAL = "normal"
+    SKEW_NORMAL = "skew_normal"
+    LOGNORMAL = "lognormal"
+    UNIFORM = "uniform"
+    POISSON = "poisson"
+
+
+class DistributionConfig(BaseModel):
+    """Configurable distribution for sampling numeric parameters.
+
+    Supports multiple distribution types with min/max clamping.
+    Specify either std_dev or variance (not both); variance is converted to std_dev internally.
+    """
+
+    distribution: DistributionType = DistributionType.NORMAL
+    mean: float
+    min: int = 0
+    max: int = 4096
+    std_dev: float = 0.0
+    variance: Optional[float] = None
+    skew: float = 0.0  # Only used for skew_normal
+
+    @model_validator(mode="after")
+    def validate_distribution_config(self) -> "DistributionConfig":
+        if self.variance is not None and self.std_dev > 0:
+            raise ValueError("Specify either 'std_dev' or 'variance', not both.")
+        if self.variance is not None:
+            if self.variance < 0:
+                raise ValueError("Variance cannot be negative.")
+            self.std_dev = sqrt(self.variance)
+        if self.min > self.max:
+            raise ValueError(f"min ({self.min}) cannot be greater than max ({self.max}).")
+        if self.std_dev < 0:
+            raise ValueError("std_dev cannot be negative.")
+        return self
+
+
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
 class SharedPrefix(BaseModel):
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
@@ -114,12 +153,30 @@ class SharedPrefix(BaseModel):
         serialization_alias="num_users_per_system_prompt",
     )
 
-    system_prompt_len: int = 100
-    question_len: int = 50
-    output_len: int = 50
+    system_prompt_len: Union[int, DistributionConfig] = 100
+    question_len: Union[int, DistributionConfig] = 50
+    output_len: Union[int, DistributionConfig] = 50
+    num_tool_calls_per_turn: Union[int, DistributionConfig] = 0
+    seed: Optional[int] = None
+
+    # Legacy distribution fields — kept for backward compatibility.
+    # Prefer using inline distribution syntax on question_len/output_len instead.
     question_distribution: Optional[Distribution] = None
     output_distribution: Optional[Distribution] = None
+
     enable_multi_turn_chat: bool = False
+
+    @model_validator(mode="after")
+    def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
+        if isinstance(self.question_len, DistributionConfig) and self.question_distribution is not None:
+            raise ValueError(
+                "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'. Use one or the other."
+            )
+        if isinstance(self.output_len, DistributionConfig) and self.output_distribution is not None:
+            raise ValueError(
+                "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'. Use one or the other."
+            )
+        return self
 
 
 class OTelTraceReplayConfig(BaseModel):
