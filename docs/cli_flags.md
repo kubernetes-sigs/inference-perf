@@ -72,7 +72,6 @@ These command line flags are automatically generated from the internal `Config` 
 | `--load.sweep.timeout` | float | Matches load.sweep.timeout in config |
 | `--load.sweep.num_stages` | int | Matches load.sweep.num_stages in config |
 | `--load.sweep.stage_duration` | int | Matches load.sweep.stage_duration in config |
-| `--load.sweep.saturation_percentile` | float | Matches load.sweep.saturation_percentile in config |
 | `--load.num_workers` | int | Matches load.num_workers in config |
 | `--load.worker_max_concurrency` | int | Matches load.worker_max_concurrency in config |
 | `--load.worker_max_tcp_connections` | int | Matches load.worker_max_tcp_connections in config |

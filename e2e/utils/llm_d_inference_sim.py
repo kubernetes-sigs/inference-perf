@@ -49,6 +49,8 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
         max_waiting_queue_length: int = 10000,
         executable: str = "llm-d-inference-sim",
         wait_until_ready=True,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     ) -> None:
         self.executable = executable
         self.argv = [
@@ -59,6 +61,8 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
         ]
         self._port = port
         self._wait_until_ready = wait_until_ready
+        self._stdout = stdout
+        self._stderr = stderr
 
     @property
     def host(self):
@@ -80,8 +84,8 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
         self._proc = await asyncio.create_subprocess_exec(
             self.executable,
             *self.argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stdout=self._stdout,
+            stderr=self._stderr,
         )
 
         if self._wait_until_ready:
@@ -150,7 +154,9 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
         assert proc
 
         stdout, _ = await proc.communicate()
-        stdout_pretty = textwrap.indent(stdout.decode(), "  | ")
+        stdout_pretty = (
+            textwrap.indent(stdout.decode(), "  | ") if stdout is not None else "  | [Output redirected to parent stdout]"
+        )
         logger.debug(f"server exited with status {proc.returncode}, output:\n{stdout_pretty}")
 
     async def _terminate(self) -> None:
