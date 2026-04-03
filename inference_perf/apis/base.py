@@ -13,19 +13,29 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 from aiohttp import ClientResponse
 from pydantic import BaseModel
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
 
-class InferenceInfo(BaseModel):
-    input_tokens: int = 0
+class UnaryInferenceResponseInfo(BaseModel):
+    output_tokens: int = 0
+
+
+class StreamedInferenceResponseInfo(BaseModel):
+    response_chunks: List[str] = []
+    chunk_times: List[float] = []
     output_tokens: int = 0
     output_token_times: List[float] = []
+
+
+class InferenceInfo(BaseModel):
+    input_tokens: int = 0
     extra_info: dict[str, Any] = {}
     lora_adapter: Optional[str] = None
+    response_info: Optional[Union[UnaryInferenceResponseInfo, StreamedInferenceResponseInfo]] = None
 
 
 class ErrorResponseInfo(BaseModel):

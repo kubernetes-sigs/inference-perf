@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
 from pydantic import BaseModel
-from inference_perf.apis import InferenceAPIData, InferenceInfo
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryInferenceResponseInfo, StreamedInferenceResponseInfo
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
+from inference_perf.apis.streaming_parser import parse_sse_stream
 
 
 class ChatMessage(BaseModel):
@@ -55,7 +56,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with chat-specific content extraction
-            output_text, output_token_times, raw_content = await parse_sse_stream(
+            output_text, output_token_times, raw_content, response_chunks = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
 
@@ -64,8 +65,12 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
-                output_tokens=output_len,
-                output_token_times=output_token_times,
+                response_info=StreamedInferenceResponseInfo(
+                    response_chunks=response_chunks,
+                    chunk_times=output_token_times,
+                    output_tokens=output_len,
+                    output_token_times=output_token_times,
+                ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},
             )
@@ -79,6 +84,6 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text)
             return InferenceInfo(
                 input_tokens=prompt_len,
-                output_tokens=output_len,
+                response_info=UnaryInferenceResponseInfo(output_tokens=output_len),
                 lora_adapter=lora_adapter,
             )

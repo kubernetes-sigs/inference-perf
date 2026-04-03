@@ -15,7 +15,13 @@
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from typing import List, Optional
 from inference_perf.config import APIConfig, APIType
-from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    RequestLifecycleMetric,
+    ErrorResponseInfo,
+    UnaryInferenceResponseInfo,
+)
 from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata
 import asyncio
 import time
@@ -61,7 +67,11 @@ class MockModelServerClient(ModelServerClient):
                     RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=str(await data.to_payload(effective_model_name, 3, False, False)),
-                        info=info,
+                        info=InferenceInfo(
+                            input_tokens=0,
+                            response_info=UnaryInferenceResponseInfo(output_tokens=0),
+                            lora_adapter=lora_adapter,
+                        ),
                         error=None,
                         start_time=start,
                         end_time=time.perf_counter(),
@@ -76,7 +86,7 @@ class MockModelServerClient(ModelServerClient):
                     request_data=str(data.to_payload(effective_model_name, 3, False, False)),
                     info=InferenceInfo(
                         input_tokens=0,
-                        output_tokens=0,
+                        response_info=UnaryInferenceResponseInfo(output_tokens=0),
                         lora_adapter=lora_adapter,
                     ),
                     error=ErrorResponseInfo(

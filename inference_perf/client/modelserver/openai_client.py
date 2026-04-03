@@ -15,7 +15,13 @@
 from abc import abstractmethod
 from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
-from inference_perf.apis import InferenceAPIData, InferenceInfo, RequestLifecycleMetric, ErrorResponseInfo
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    RequestLifecycleMetric,
+    ErrorResponseInfo,
+    StreamedInferenceResponseInfo,
+)
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
 from .otel_instrumentation import get_otel_instrumentation
@@ -208,7 +214,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 if hasattr(data, "messages"):
                     # Chat completion - serialize messages as JSON string (gen_ai.input.messages)
                     input_messages = [{"role": msg.role, "content": msg.content} for msg in data.messages]
-                    otel_response_info["input_messages"] = json.dumps(input_messages)  # type: ignore[assignment]
+                    otel_response_info["input_messages"] = json.dumps(input_messages)
                 elif hasattr(data, "prompt"):
                     # Text completion - store as prompt string (gen_ai.prompt)
                     otel_response_info["input_prompt"] = data.prompt
@@ -393,7 +399,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
         )
 
         # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
-        if metric.info and metric.info.output_token_times:
+        if (
+            metric.info
+            and isinstance(metric.info.response_info, StreamedInferenceResponseInfo)
+            and metric.info.response_info.output_token_times
+        ):
             ttft_threshold = None
             tpot_threshold = None
             slo_unit = getattr(self.client.api_config, "slo_unit", None) or "ms"

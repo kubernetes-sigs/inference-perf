@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import json
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 if TYPE_CHECKING:
     from inference_perf.datagen import DataGenerator, SessionGenerator
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel
 
-from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedInferenceResponseInfo
 from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
 from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
@@ -99,6 +101,7 @@ def calculate_goodput_metrics(
     for i, m in enumerate(metrics):
         is_good = True
 
+<<<<<<< HEAD
         effective_ttft_slo = (
             m.ttft_slo_sec
             if m.ttft_slo_sec is not None
@@ -108,6 +111,49 @@ def calculate_goodput_metrics(
             m.tpot_slo_sec
             if m.tpot_slo_sec is not None
             else (goodput_config.constraints.get("tpot") if goodput_config else None)
+=======
+        # Goodput Calculation Logic
+        ttft_ok = (ttft_met is True) if has_ttft_slo else True
+        tpot_ok = (tpot_met is True) if has_tpot_slo else True
+
+        if ttft_ok and tpot_ok:
+            if m.info.input_tokens is not None and m.info.response_info and m.info.response_info.output_tokens is not None:
+                goodput_token_counts.append(m.info.input_tokens + m.info.response_info.output_tokens)
+
+    total_goodput_tokens = sum(goodput_token_counts)
+    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+
+    # TTFT SLO metrics
+    if has_ttft_slo:
+        ttft_met_count = sum(1 for res in ttft_results if res is True)
+        ttft_failed_count = sum(1 for res in ttft_results if res is False)
+
+        slo_metrics["ttft_slo"] = {
+            "attainment_pct": (ttft_met_count / total * 100) if total > 0 else 0,
+            "requests_met": ttft_met_count,
+            "requests_failed": ttft_failed_count,
+            "total_requests": total,
+            "slo": ttft_slo_limit,
+        }
+
+    # TPOT SLO metrics
+    if has_tpot_slo:
+        tpot_met_count = sum(1 for res in tpot_results if res is True)
+        tpot_failed_count = sum(1 for res in tpot_results if res is False)
+
+        slo_metrics["tpot_slo"] = {
+            "attainment_pct": (tpot_met_count / total * 100) if total > 0 else 0,
+            "requests_met": tpot_met_count,
+            "requests_failed": tpot_failed_count,
+            "total_requests": total,
+            "slo": tpot_slo_limit,
+        }
+
+    # Combined SLO (both must be met)
+    if has_ttft_slo and has_tpot_slo:
+        combined_met = sum(
+            1 for t_res, p_res in zip(ttft_results, tpot_results, strict=True) if t_res is True and p_res is True
+>>>>>>> 4fbc041 (TPOT, ITL from repsonse tokens, not chunks)
         )
 
         effective_itl_slo = goodput_config.constraints.get("itl") if goodput_config else None
@@ -345,6 +391,7 @@ def summarize_requests(
     stage_rate: Optional[float] = None,
     stage_concurrency: Optional[int] = None,
     goodput_config: Optional[GoodputConfig] = None,
+    tokenizer: Optional[CustomTokenizer] = None,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
@@ -383,32 +430,83 @@ def summarize_requests(
     itl_values: List[Optional[float]] = []
     inter_token_latencies: List[float] = []
 
+    mismatched_requests = 0
     for m in all_successful:
-        request_latency_values.append(m.end_time - m.start_time)
+<        request_latency_values.append(m.end_time - m.start_time)
+
+        # Process raw chunks if present and tokenizer is available
+        if (
+            isinstance(m.info.response_info, StreamedInferenceResponseInfo)
+            and m.info.response_info.response_chunks
+            and tokenizer
+        ):
+            output_token_times = []
+            accumulated_tokens = 0
+            parsed_chunks = []
+            expected_output_tokens = None
+
+            for chunk_str, chunk_time in zip(
+                m.info.response_info.response_chunks, m.info.response_info.chunk_times, strict=True
+            ):
+                try:
+                    data = json.loads(chunk_str)
+                    if choices := data.get("choices"):
+                        delta = choices[0]
+                        text = delta.get("text") or delta.get("delta", {}).get("content")
+                        if text:
+                            parsed_chunks.append((text, chunk_time))
+                    if usage := data.get("usage"):
+                        expected_output_tokens = usage.get("completion_tokens")
+                except json.JSONDecodeError:
+                    continue
+
+            prev_time = None
+            for text, chunk_time in parsed_chunks:
+                tokens_in_chunk = tokenizer.count_tokens(text)
+                if tokens_in_chunk > 0:
+                    if prev_time is None:
+                        # First chunk: all tokens get chunk_time
+                        for _ in range(tokens_in_chunk):
+                            output_token_times.append(chunk_time)
+                    else:
+                        # Subsequent chunks: interpolate between prev_time and chunk_time
+                        delta_time = chunk_time - prev_time
+                        for i in range(1, tokens_in_chunk + 1):
+                            token_time = prev_time + i * (delta_time / tokens_in_chunk)
+                            output_token_times.append(token_time)
+                    prev_time = chunk_time
+                    accumulated_tokens += tokens_in_chunk
+
+            m.info.response_info.output_token_times = output_token_times
+            m.info.response_info.output_tokens = accumulated_tokens
+
+            if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
+                mismatched_requests += 1
 
         # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
-        if m.info.output_tokens and m.info.output_tokens > 0:
-            ntpot_values.append((m.end_time - m.start_time) / m.info.output_tokens)
+        if m.info.response_info and m.info.response_info.output_tokens and m.info.response_info.output_tokens > 0:
+            ntpot_values.append((m.end_time - m.start_time) / m.info.response_info.output_tokens)
         else:
             ntpot_values.append(0.0)
 
         # Check if streamable: Must have more than 1 output token timestamp
-        is_streamable = m.info.output_token_times and len(m.info.output_token_times) > 1
-
-        if is_streamable:
+        response_info = m.info.response_info
+        if isinstance(response_info, StreamedInferenceResponseInfo) and len(response_info.output_token_times) > 1:
             # TTFT: First Token Time - Start Time
-            ttft = m.info.output_token_times[0] - m.start_time
+            ttft = response_info.output_token_times[0] - m.start_time
             ttft_values.append(ttft)
 
             # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
-            duration = m.info.output_token_times[-1] - m.info.output_token_times[0]
-            count = len(m.info.output_token_times)
-            tpot = duration / (count - 1)
+            duration = response_info.output_token_times[-1] - response_info.output_token_times[0]
+            if response_info.output_tokens > 1:
+                tpot = duration / (response_info.output_tokens - 1)
+            else:
+                tpot = None
             tpot_values.append(tpot)
 
             # Add inter-token deltas
             request_itl = []
-            for t1, t2 in zip(m.info.output_token_times, m.info.output_token_times[1:], strict=False):
+            for t1, t2 in zip(response_info.output_token_times, response_info.output_token_times[1:], strict=False):
                 inter_token_latencies.append(t2 - t1)
                 request_itl.append(t2 - t1)
 
@@ -445,10 +543,18 @@ def summarize_requests(
                 sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
             ),
             "output_tokens_per_sec": (
-                sum(safe_float(x.info.output_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+                sum(safe_float(x.info.response_info.output_tokens) if x.info.response_info else 0.0 for x in all_successful)
+                / total_time
+                if total_time > 0
+                else 0.0
             ),
             "total_tokens_per_sec": (
-                sum(safe_float(x.info.input_tokens) + safe_float(x.info.output_tokens) for x in all_successful) / total_time
+                sum(
+                    safe_float(x.info.input_tokens)
+                    + (safe_float(x.info.response_info.output_tokens) if x.info.response_info else 0.0)
+                    for x in all_successful
+                )
+                / total_time
                 if total_time > 0
                 else 0.0
             ),
@@ -456,8 +562,14 @@ def summarize_requests(
         },
         "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
         "output_len": summarize(
-            [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
+            [
+                float(v)
+                for success in all_successful
+                if success.info.response_info and (v := success.info.response_info.output_tokens) is not None
+            ],
+            percentiles,
         ),
+        "token_count_mismatches": mismatched_requests,
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
@@ -510,6 +622,12 @@ class ReportGenerator:
         lifecycle_reports = []
         percentiles = report_config.request_lifecycle.percentiles
 
+        tokenizer = None
+        if self.config.tokenizer:
+            from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+            tokenizer = CustomTokenizer(self.config.tokenizer)
+
         # Filter out the preprocessing stage -1
         request_metrics = [
             metric for metric in self.metrics_collector.get_metrics() if metric.stage_id is not None and metric.stage_id >= 0
@@ -520,7 +638,7 @@ class ReportGenerator:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
                     contents=summarize_requests(
-                        request_metrics, percentiles, goodput_config=report_config.goodput
+                        request_metrics, percentiles, goodput_config=report_config.goodput, tokenizer=tokenizer
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -537,14 +655,14 @@ class ReportGenerator:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
                         contents=summarize_requests(
-                            metrics, percentiles, stage_rate, concurrency_level, goodput_config=report_config.goodput
+                            metrics, percentiles, stage_rate, concurrency_level, goodput_config=report_config.goodput, tokenizer=tokenizer
                         ).model_dump(),
                     )
                 else:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
                         contents=summarize_requests(
-                            metrics, percentiles, stage_rate, goodput_config=report_config.goodput
+                            metrics, percentiles, stage_rate, goodput_config=report_config.goodput, tokenizer=tokenizer
                         ).model_dump(),
                     )
                 lifecycle_reports.append(report_file)
@@ -574,7 +692,9 @@ class ReportGenerator:
             for adapter, metrics in adapter_buckets.items():
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_lifecycle_metrics",
-                    contents=summarize_requests(metrics, percentiles, goodput_config=report_config.goodput).model_dump(),
+                    contents=summarize_requests(
+                        metrics, percentiles, goodput_config=report_config.goodput, tokenizer=tokenizer
+                    ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
 
@@ -589,7 +709,7 @@ class ReportGenerator:
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
                     contents=summarize_requests(
-                        metrics, percentiles, stage_rate, goodput_config=report_config.goodput
+                        metrics, percentiles, stage_rate, goodput_config=report_config.goodput, tokenizer=tokenizer
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
