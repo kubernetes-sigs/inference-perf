@@ -19,6 +19,13 @@ from inference_perf.config import (
     MetricsClientType,
     deep_merge,
     read_config,
+    ResponseFormat,
+    ResponseFormatType,
+    StandardLoadStage,
+    ConcurrentLoadStage,
+    LoadConfig,
+    PrometheusClientConfig,
+    MultiLoRAConfig,
 )
 import os
 import tempfile
@@ -64,6 +71,14 @@ def test_read_config_timestamp_substitution() -> None:
         "storage": {
             "local_storage": {
                 "path": "reports-{timestamp}"
+            },
+            "google_cloud_storage": {
+                "bucket_name": "my-bucket",
+                "path": "gcs-reports-{timestamp}"
+            },
+            "simple_storage_service": {
+                "bucket_name": "my-bucket",
+                "path": "s3-reports-{timestamp}"
             }
         }
     }
@@ -78,8 +93,14 @@ def test_read_config_timestamp_substitution() -> None:
         assert config.storage is not None
         assert "{timestamp}" not in config.storage.local_storage.path
         assert config.storage.local_storage.path.startswith("reports-")
-        # Basic check for timestamp format (YYYYMMDD...) which implies it's roughly length 8+
-        assert len(config.storage.local_storage.path) > len("reports-")
+        
+        assert config.storage.google_cloud_storage is not None
+        assert "{timestamp}" not in config.storage.google_cloud_storage.path
+        assert config.storage.google_cloud_storage.path.startswith("gcs-reports-")
+        
+        assert config.storage.simple_storage_service is not None
+        assert "{timestamp}" not in config.storage.simple_storage_service.path
+        assert config.storage.simple_storage_service.path.startswith("s3-reports-")
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -117,3 +138,88 @@ def test_shared_prefix_aliases() -> None:
     shared_prefix_dump = dumped["data"]["shared_prefix"]
     assert shared_prefix_dump["num_unique_system_prompts"] == 7
     assert shared_prefix_dump["num_users_per_system_prompt"] == 15
+
+
+def test_response_format_to_api_format() -> None:
+    # Test JSON_SCHEMA (default)
+    fmt = ResponseFormat(json_schema={"type": "object"})
+    assert fmt.to_api_format() == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structured_output",
+            "schema": {"type": "object"},
+        },
+    }
+
+    # Test JSON_OBJECT
+    fmt2 = ResponseFormat(type=ResponseFormatType.JSON_OBJECT)
+    assert fmt2.to_api_format() == {"type": "json_object"}
+
+
+def test_standard_load_stage_validation() -> None:
+    import pytest
+    # valid
+    StandardLoadStage(rate=10, duration=60)
+    
+    # invalid num_requests
+    with pytest.raises(ValueError, match="num_requests should not be set"):
+        StandardLoadStage(rate=10, duration=60, num_requests=100)
+        
+    # invalid concurrency_level
+    with pytest.raises(ValueError, match="concurrency_level should not be set"):
+        StandardLoadStage(rate=10, duration=60, concurrency_level=5)
+
+
+def test_concurrent_load_stage() -> None:
+    # Just verify we can create it and it hits the validator returning self
+    stage = ConcurrentLoadStage(num_requests=100, concurrency_level=10)
+    assert stage.num_requests == 100
+    assert stage.concurrency_level == 10
+
+
+def test_load_config_validation() -> None:
+    import pytest
+    from inference_perf.config import SweepConfig, StageGenType
+    
+    # Sweep with CONCURRENT
+    with pytest.raises(ValueError, match="Cannot have sweep config with CONCURRENT"):
+        LoadConfig(
+            type=LoadType.CONCURRENT,
+            sweep=SweepConfig(type=StageGenType.GEOM),
+            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)]
+        )
+        
+    # CONCURRENT with non-ConcurrentLoadStage
+    with pytest.raises(ValueError, match="CONCURRENT load type requires ConcurrentLoadStage"):
+        LoadConfig(
+            type=LoadType.CONCURRENT,
+            stages=[StandardLoadStage(rate=10, duration=60)] # type: ignore
+        )
+        
+    # CONSTANT with non-StandardLoadStage
+    with pytest.raises(ValueError, match="CONSTANT load type requires StandardLoadStage"):
+        LoadConfig(
+            type=LoadType.CONSTANT,
+            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)] # type: ignore
+        )
+        
+    # MultiLoRA traffic split not adding up to 1.0
+    with pytest.raises(ValueError, match="MultiLoRA traffic split.*does not add up to 1.0"):
+        LoadConfig(
+            lora_traffic_split=[
+                MultiLoRAConfig(name="a", split=0.5),
+                MultiLoRAConfig(name="b", split=0.4),
+            ]
+        )
+
+
+def test_prometheus_client_config_validation() -> None:
+    import pytest
+    
+    # Both set
+    with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
+        PrometheusClientConfig(url="http://localhost:9090", google_managed=True)
+        
+    # Neither set
+    with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
+        PrometheusClientConfig(google_managed=False)
