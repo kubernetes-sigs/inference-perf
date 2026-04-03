@@ -45,7 +45,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
-| `--load.stages` | string | Matches load.stages in config |
+| `--load.stages` | JSON | Matches load.stages in config |
 | `--load.sweep.type` | Enum (geometric, linear) | Matches load.sweep.type in config |
 | `--load.sweep.num_requests` | int | Matches load.sweep.num_requests in config |
 | `--load.sweep.timeout` | float | Matches load.sweep.timeout in config |

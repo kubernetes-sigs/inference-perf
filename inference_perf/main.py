@@ -138,7 +138,6 @@ def main_cli() -> None:
 
     config = read_config(args.config_file, cli_overrides)
 
-
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
         # The validation is now handled by Pydantic in the config classes

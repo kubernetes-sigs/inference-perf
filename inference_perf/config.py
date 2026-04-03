@@ -493,7 +493,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[str, Any]] = None) -> Config:
     logger = logging.getLogger(__name__)
-    cfg = {}
+    cfg: dict[str, Any] = {}
     if config_file:
         logger.info("Using configuration from: %s", config_file)
         with open(config_file, "r") as stream:
