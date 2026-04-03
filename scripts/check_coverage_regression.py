@@ -70,7 +70,7 @@ def generate_baseline(output_path: Path):
         print("Installing dependencies in baseline environment...")
         # We must make sure we don't accidentally use the parent's __pypackages__ if configured that way,
         # but standard behavior with .venv presence is to use it.
-        run_command("pdm install -dG test", cwd=temp_dir)
+        run_command("pdm install -dG test -G analysis", cwd=temp_dir)
 
         # 3. Run tests
         print("Running tests on main branch...")
