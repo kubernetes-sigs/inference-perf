@@ -3,11 +3,12 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.config import LoadConfig, LoadType, StandardLoadStage
 from inference_perf.apis import InferenceAPIData
+from inference_perf.datagen import DataGenerator
 
 
 class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self.mock_datagen = MagicMock()
+        self.mock_datagen = MagicMock(spec=DataGenerator)
         # Prepare a mock data generator that yields InferenceAPIData
         mock_data = MagicMock(spec=InferenceAPIData)
         mock_data.prefered_worker_id = -1
