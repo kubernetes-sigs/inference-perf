@@ -352,6 +352,7 @@ class LoadGenerator:
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
+        progress_ctx: Optional[Progress] = None,
     ) -> None:
         """Run a session-based trace replay stage.
 
@@ -476,7 +477,7 @@ class LoadGenerator:
             session_info = self.datagen.get_session_info(session_idx)
             session_id = session_info["session_id"]
 
-            logger.info(
+            logger.debug(
                 f"Starting session {session_idx}: {session_id} "
                 f"({len(active_session_indices)} active, {len(pending_session_indices)} pending)"
             )
@@ -524,111 +525,122 @@ class LoadGenerator:
                 session_interval = 1.0 / session_rate
                 next_dispatch_time = max(next_dispatch_time + session_interval, now)
 
-            logger.info(f"Dispatched {dispatched_count} events for session {session_idx}")
+            logger.debug(f"Dispatched {dispatched_count} events for session {session_idx}")
             return dispatched_count
 
         # Main dispatch and wait loop
-        with tqdm(total=1.0, desc=f"Stage {stage_id} progress ({effective_num_sessions} sessions)") as pbar:
-            while True:
-                # Check for interrupts
-                if self.interrupt_sig:
-                    pbar.close()
-                    logger.info("Loadgen encountered SIGINT")
-                    stage_status = StageStatus.FAILED
-                    # Clean up any active session spans (using cached otel_instr)
-                    for sid in list(session_spans.keys()):
-                        otel_instr.end_session_span(session_spans[sid], "Session interrupted by SIGINT")
-                        del session_spans[sid]
-                    break
+        stage_task = None
+        if progress_ctx:
+            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Sessions", total=effective_num_sessions)
 
-                if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                    logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
-                    stage_status = StageStatus.FAILED
-                    # Clean up any active session spans (using cached otel_instr)
-                    for sid in list(session_spans.keys()):
-                        otel_instr.end_session_span(session_spans[sid], f"Session failed due to circuit breaker: {cb.name}")
-                        del session_spans[sid]
-                    break
+        while True:
+            # Check for interrupts
+            if self.interrupt_sig:
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                logger.info("Loadgen encountered SIGINT")
+                stage_status = StageStatus.FAILED
+                # Clean up any active session spans (using cached otel_instr)
+                for sid in list(session_spans.keys()):
+                    otel_instr.end_session_span(session_spans[sid], "Session interrupted by SIGINT")
+                    del session_spans[sid]
+                break
 
-                if timeout is not None and time.perf_counter() - start_time >= timeout:
-                    pbar.close()
-                    logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
-                    stage_status = StageStatus.FAILED
-                    # Clean up any active session spans (using cached otel_instr)
-                    for sid in list(session_spans.keys()):
-                        otel_instr.end_session_span(session_spans[sid], "Session timed out")
-                        del session_spans[sid]
-                    break
+            if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
+                stage_status = StageStatus.FAILED
+                # Clean up any active session spans (using cached otel_instr)
+                for sid in list(session_spans.keys()):
+                    otel_instr.end_session_span(session_spans[sid], f"Session failed due to circuit breaker: {cb.name}")
+                    del session_spans[sid]
+                break
 
-                # Check for completed sessions
-                newly_completed = []
-                for session_idx in list(active_session_indices):
-                    session_info = self.datagen.get_session_info(session_idx)
-                    session_id = session_info["session_id"]
+            if timeout is not None and time.perf_counter() - start_time >= timeout:
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
+                stage_status = StageStatus.FAILED
+                # Clean up any active session spans (using cached otel_instr)
+                for sid in list(session_spans.keys()):
+                    otel_instr.end_session_span(session_spans[sid], "Session timed out")
+                    del session_spans[sid]
+                break
 
-                    # Check if this session completed
-                    if self.datagen.check_session_completed(session_id):
-                        if session_id not in completed_session_ids:
-                            completed_session_ids.add(session_id)
-                            newly_completed.append(session_idx)
+            # Check for completed sessions
+            newly_completed = []
+            for session_idx in list(active_session_indices):
+                session_info = self.datagen.get_session_info(session_idx)
+                session_id = session_info["session_id"]
 
-                            # End OTEL session span (using cached otel_instr)
-                            if session_id in session_spans:
-                                # Check if session failed
-                                session_failed = hasattr(
-                                    self.datagen, "shared_state"
-                                ) and self.datagen.shared_state.is_session_failed(session_id)
-                                error_msg = "Session failed" if session_failed else None
-                                otel_instr.end_session_span(session_spans[session_id], error_msg)
-                                del session_spans[session_id]
+                # Check if this session completed
+                if self.datagen.check_session_completed(session_id):
+                    if session_id not in completed_session_ids:
+                        completed_session_ids.add(session_id)
+                        newly_completed.append(session_idx)
 
-                            logger.info(
-                                f"Session {session_idx} ({session_id}) completed "
-                                f"({len(completed_session_ids)}/{effective_num_sessions} total)"
-                            )
+                        # End OTEL session span (using cached otel_instr)
+                        if session_id in session_spans:
+                            # Check if session failed
+                            session_failed = hasattr(
+                                self.datagen, "shared_state"
+                            ) and self.datagen.shared_state.is_session_failed(session_id)
+                            error_msg = "Session failed" if session_failed else None
+                            otel_instr.end_session_span(session_spans[session_id], error_msg)
+                            del session_spans[session_id]
 
-                # Remove completed sessions from active pool and clean up memory
-                for session_idx in newly_completed:
-                    active_session_indices.discard(session_idx)
+                        logger.debug(
+                            f"Session {session_idx} ({session_id}) completed "
+                            f"({len(completed_session_ids)}/{effective_num_sessions} total)"
+                        )
 
-                    # Build and record session-level metric before cleanup
-                    session_info = self.datagen.get_session_info(session_idx)
-                    session_id = session_info["session_id"]
-                    session_metric = self.datagen.build_session_metric(
-                        session_id=session_id,
-                        stage_id=stage_id,
-                        start_time=session_dispatch_times.get(session_id, start_time_epoch),
-                        end_time=time.time(),
-                    )
+            # Remove completed sessions from active pool and clean up memory
+            for session_idx in newly_completed:
+                active_session_indices.discard(session_idx)
 
-                    # Record in collector instead of datagen
-                    if self.session_metrics_collector:
-                        self.session_metrics_collector.record_metric(session_metric)
+                # Build and record session-level metric before cleanup
+                session_info = self.datagen.get_session_info(session_idx)
+                session_id = session_info["session_id"]
+                session_metric = self.datagen.build_session_metric(
+                    session_id=session_id,
+                    stage_id=stage_id,
+                    start_time=session_dispatch_times.get(session_id, start_time_epoch),
+                    end_time=time.time(),
+                )
 
-                    # Clean up completed session data to prevent memory leaks
-                    self.datagen.cleanup_session(session_id)
+                # Record in collector instead of datagen
+                if self.session_metrics_collector:
+                    self.session_metrics_collector.record_metric(session_metric)
 
-                # Try to start new sessions to fill the pool
-                while should_start_next_session():
-                    session_idx = pending_session_indices.pop(0)
-                    dispatch_session(session_idx)
+                # Clean up completed session data to prevent memory leaks
+                self.datagen.cleanup_session(session_id)
 
-                # Check if we're done
-                if len(completed_session_ids) >= effective_num_sessions:
-                    logger.info(f"All {effective_num_sessions} sessions completed")
-                    break
+            # Try to start new sessions to fill the pool
+            while should_start_next_session():
+                session_idx = pending_session_indices.pop(0)
+                dispatch_session(session_idx)
 
-                # Check if we should stop (no more sessions to start or wait for)
-                if not pending_session_indices and not active_session_indices:
-                    logger.info("No more sessions to dispatch or wait for")
-                    break
+            # Check if we're done
+            if len(completed_session_ids) >= effective_num_sessions:
+                logger.info(f"All {effective_num_sessions} sessions completed")
+                break
 
-                # Sleep and update progress
-                await sleep(1)
+            # Check if we should stop (no more sessions to start or wait for)
+            if not pending_session_indices and not active_session_indices:
+                logger.info("No more sessions to dispatch or wait for")
+                break
 
-                # Update progress bar
-                prog = min(1.0, finished_requests_counter.value / max(1, total_expected_requests))
-                pbar.update(prog - pbar.n)
+            # Sleep and update progress
+            await sleep(1)
+
+            # Update progress
+            if progress_ctx and stage_task:
+                progress_ctx.update(stage_task, completed=len(completed_session_ids))
+
+        # Clean up progress task
+        if progress_ctx and stage_task:
+            progress_ctx.remove_task(stage_task)
 
         # Mark stage as completed if we finished normally
         if stage_status == StageStatus.RUNNING:
@@ -951,6 +963,7 @@ class LoadGenerator:
                         finished_requests_counter,
                         request_phase,
                         cancel_signal,
+                        progress_ctx=progress,
                     )
                 # Update worker concurrency for concurrent load type
                 elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):

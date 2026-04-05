@@ -563,7 +563,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
 
         if completed_count == self.total_nodes_in_session:
             # Session complete! Notify main process via queue
-            logger.info(f"Session {session_id} completed all {self.total_nodes_in_session} nodes in worker")
+            logger.debug(f"Session {session_id} completed all {self.total_nodes_in_session} nodes in worker")
 
             # Gather completion data (node_ids are already unqualified in nested structure)
             completion_data = {
@@ -1187,7 +1187,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         root_nodes = {node_id for node_id, node in state.graph.nodes.items() if not node.predecessor_node_ids}
         state.ready_nodes.update(root_nodes)
 
-        logger.info(f"Activated session {session_id} with {len(root_nodes)} root nodes")
+        logger.debug(f"Activated session {session_id} with {len(root_nodes)} root nodes")
 
     def _process_completion_queue(self) -> None:
         """Process all pending completion notifications from the queue.
@@ -1214,7 +1214,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                             completed_state.node_completion_times[node_id] = completion_time
 
                     completed_state.is_complete = True
-                    logger.info(f"Session {completed_session_id} marked complete from queue notification")
+                    logger.debug(f"Session {completed_session_id} marked complete from queue notification")
         except Exception:
             # Queue is empty, no more completions to process
             pass
