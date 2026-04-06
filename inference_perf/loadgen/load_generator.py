@@ -188,8 +188,8 @@ class Worker(mp.Process):
 
                         # Check if request should be skipped (e.g., session failed in OTel replay)
                         if hasattr(request_data, "skip_request") and request_data.skip_request:
-                            logger.info(
-                                f"[DEBUG] Skipping request - session failure detected: {getattr(request_data, 'node_id', 'unknown')}"
+                            logger.debug(
+                                f"Skipping request - session failure detected: {getattr(request_data, 'node_id', 'unknown')}"
                             )
                             return  # Exit this task, finally block will clean up
 
@@ -282,6 +282,22 @@ class LoadGenerator:
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
         signal.signal(signal.SIGINT, self._sigint_handler)
+
+        # Validate that datagen type matches load_type
+        if self.load_type == LoadType.TRACE_SESSION_REPLAY:
+            if not isinstance(datagen, SessionGenerator):
+                raise TypeError(
+                    f"LoadType.TRACE_SESSION_REPLAY requires SessionGenerator, "
+                    f"but got {type(datagen).__name__}. "
+                    f"Please use a SessionGenerator-based data generator (e.g., OTelTraceReplayDataGenerator)."
+                )
+        else:  # CONSTANT, POISSON, CONCURRENT, TRACE_REPLAY
+            if not isinstance(datagen, DataGenerator):
+                raise TypeError(
+                    f"LoadType {self.load_type.value} requires DataGenerator, "
+                    f"but got {type(datagen).__name__}. "
+                    f"Use LoadType.TRACE_SESSION_REPLAY for SessionGenerator-based data generators."
+                )
         if self.load_type == LoadType.TRACE_REPLAY:
             self.trace = load_config.trace
 
@@ -392,7 +408,7 @@ class LoadGenerator:
         # Compute this stage's session slice from the cursor
         available_sessions = total_sessions - self._session_cursor
         if available_sessions <= 0:
-            logger.warning(f"Stage {stage_id}: no sessions remaining in corpus, skipping")
+            logger.warning(f"Stage {stage_id}: no sessions remaining in trace files, skipping")
             return
         effective_num_sessions = (
             min(stage.num_sessions, available_sessions) if stage.num_sessions is not None else available_sessions
@@ -631,7 +647,7 @@ class LoadGenerator:
                 break
 
             # Sleep and update progress
-            await sleep(1)
+            await sleep(0)
 
             # Update progress
             if progress_ctx and stage_task:
@@ -713,10 +729,7 @@ class LoadGenerator:
         stage_status = StageStatus.RUNNING
 
         time_generator = timer.start_timer(start_time)
-        if isinstance(self.datagen, DataGenerator):
-            data_generator = self.datagen.get_data()
-        else:
-            raise TypeError("run_stage requires DataGenerator, use run_session_stage for SessionGenerator")
+        data_generator = self.datagen.get_data()
         active_workers = self.num_workers
         if concurrency_level:
             # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.

@@ -153,6 +153,3 @@ class TestTokenEstimation:
         assert result["raw_output"] == "Test response"
         assert result["estimated_tokens"] > 0
         assert result["character_count"] == 13
-
-
-# Made with Bob
