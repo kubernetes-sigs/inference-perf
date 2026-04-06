@@ -38,7 +38,7 @@ class GoogleManagedPrometheusMetricsClient(PrometheusMetricsClient):
 
     def get_headers(self) -> dict[str, Any]:
         # Prepare an authentication request - helps format the request auth token
-        auth_req = google.auth.transport.requests.Request()
+        auth_req = google.auth.transport.requests.Request()  # type: ignore[no-untyped-call,unused-ignore]
 
         self.credentials.refresh(auth_req)  # type: ignore[no-untyped-call,unused-ignore]
         if not self.credentials.token:

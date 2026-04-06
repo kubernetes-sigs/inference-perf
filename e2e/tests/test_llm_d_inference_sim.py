@@ -133,8 +133,7 @@ async def test_completion_successful_run(data: dict, load: dict):
                         "per_request": True,
                     },
                 },
-            },
-            extra_env={"PYTHONPATH": "/workspace"}
+            }
         )
 
     assert result.success, "Benchmark failed"

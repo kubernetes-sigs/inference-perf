@@ -13,19 +13,20 @@
 # limitations under the License.
 
 import json
+import pathlib
 import re
-import os
-import sys
 import shutil
-import subprocess
-import time
-from pathlib import Path
+import sys
+
 import pytest
 import requests
 
-from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
+from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.testdata import extract_tarball
+
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
+MAIN_PY_PATH = PROJECT_ROOT / "inference_perf" / "main.py"
 
 TEST_MODEL_NAME = "google/gemma-3-270m"
 TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
@@ -33,70 +34,6 @@ TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
 
 def is_prometheus_available() -> bool:
     return shutil.which("prometheus") is not None
-
-
-@pytest.fixture(scope="module")
-def prometheus_server():
-    """Starts a lightweight ephemeral Prometheus instance."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        config_path = tmp_path / "prometheus.yml"
-
-        # Write minimal config pointing to the simulator
-        config_path.write_text(
-            """
-global:
-  scrape_interval: 1s
-scrape_configs:
-  - job_name: 'llm-d-inference-sim'
-    static_configs:
-      - targets: ['127.0.0.1:18000']
-""",
-            encoding="utf-8",
-        )
-
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-
-        # Start prometheus
-        proc = subprocess.Popen(
-            [
-                "prometheus",
-                f"--config.file={config_path}",
-                f"--storage.tsdb.path={data_dir}",
-                "--web.listen-address=127.0.0.1:9090",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-
-        # Wait for ready
-        ready = False
-        for _ in range(30):
-            try:
-                resp = requests.get("http://127.0.0.1:9090/-/ready", timeout=1)
-                if resp.status_code == 200:
-                    ready = True
-                    break
-            except Exception:
-                pass
-            time.sleep(1)
-
-        if not ready:
-            proc.terminate()
-            stdout, _ = proc.communicate()
-            raise Exception(f"Prometheus failed to become ready. Output:\n{stdout.decode()}")
-
-        yield "http://127.0.0.1:9090"
-
-        # Teardown
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 @pytest.mark.asyncio
@@ -125,7 +62,7 @@ async def test_prometheus_metrics_collection(prometheus_server):
                 },
                 "load": {
                     "type": "constant",
-                    "stages": [{"rate": 5, "duration": 5}],
+                    "stages": [{"rate": 5, "duration": 30}],
                     "num_workers": 1,
                 },
                 "api": {
@@ -157,53 +94,162 @@ async def test_prometheus_metrics_collection(prometheus_server):
                     },
                 },
             },
-            executable=[sys.executable, "/workspace/inference_perf/main.py"],
-            extra_env={"PYTHONPATH": "/workspace"}
+            executable=[sys.executable, str(MAIN_PY_PATH)],
+            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
         )
-        
+
+        # Verify benchmark succeeded before proceeding
+        assert result.success, f"Benchmark failed with output:\n{result.stdout}"
+
         # Debug and verify metrics exposed by simulator
         try:
             resp = requests.get("http://127.0.0.1:18000/metrics", timeout=1)
             metrics_content = resp.text
             print(f"Simulator Metrics Content:\n{metrics_content}")
-            
-            # Verify simulator recorded 25 successes
-            match = re.search(r'vllm:request_success_total\{.*?\} (\d+)', metrics_content)
-            assert match, "vllm:request_success_total not found in simulator metrics"
+
+            # Verify simulator recorded 150 successes (rate 5 * duration 30)
+            match = re.search(r"vllm:request_success(?:_total)?\{.*?\} (\d+)", metrics_content)
+            assert match, "vllm:request_success(_total) not found in simulator metrics"
             sim_success_count = int(match.group(1))
-            assert sim_success_count == 25, f"Expected 25 successes in simulator metrics, got {sim_success_count}"
-            print("Verified 25 successes in simulator metrics")
+            assert sim_success_count == 150, f"Expected 150 successes in simulator metrics, got {sim_success_count}"
+            print("Verified 150 successes in simulator metrics")
         except Exception as e:
             print(f"Failed to get or verify simulator metrics: {e}")
             raise
 
-    if not result.success:
-        print(f"Simulator Stdout:\n{sim.stdout}")
-    assert result.success, f"Benchmark failed with output:\n{result.stdout}"
-
     # Check if Prometheus metrics report was generated
     assert result.reports, "No reports generated"
-    
+
     report_names = list(result.reports.keys())
     print(f"Generated reports: {report_names}")
-    
+
     assert "summary_prometheus_metrics.json" in result.reports, f"Missing prometheus report in {report_names}"
-    
+
     prom_report = result.reports["summary_prometheus_metrics.json"]
     assert prom_report, "Prometheus report is empty"
     assert isinstance(prom_report, dict), "Report should be a dictionary"
-    
+
     print(f"Prometheus Report Content:\n{json.dumps(prom_report, indent=2)}")
-    
+
     # Assertions on content
-    successes_obj = prom_report.get("successes", {})
-    success_count = successes_obj.get("request_success_count", 0.0)
-    print(f"Asserting request_success_count ({success_count}) is greater than 10")
-    # Due to PromQL increase() extrapolation on short windows, we loosen this assertion
-    assert success_count > 10.0, f"Expected > 10 successes in report due to extrapolation, got {success_count}"
-    
+    assert "successes" in prom_report, "Report missing 'successes' section"
+    successes_obj = prom_report["successes"]
+
+    assert "request_success_count" in successes_obj, "Missing 'request_success_count'"
+    success_count = successes_obj["request_success_count"]
+    print(f"Asserting request_success_count ({success_count}) is greater than 100")
+    assert success_count > 100.0, f"Expected > 100 successes in report, got {success_count}"
+
+    assert "rate" in successes_obj, "Missing 'rate' (requests_per_second)"
+    rps = successes_obj["rate"]
+    print(f"Asserting rate/requests_per_second ({rps}) is reasonable")
+    assert 3.0 < rps < 7.0, f"Expected rate around 5, got {rps}"
+
     lifecycle_report = result.reports.get("summary_lifecycle_metrics.json")
     if lifecycle_report:
         print(f"Lifecycle Report Content:\n{json.dumps(lifecycle_report, indent=2)}")
         if lifecycle_report.get("failures", {}).get("count", 0) > 0:
             print(f"Benchmark Stdout:\n{result.stdout}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+@pytest.mark.skipif(not is_prometheus_available(), reason="local environment missing prometheus")
+async def test_prometheus_metrics_collection_chat(prometheus_server):
+    """Verifies that inference-perf can collect metrics from Prometheus for Chat API."""
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+
+    prometheus_url = prometheus_server
+
+    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+        # Run a short benchmark with chat API
+        result = await run_benchmark_minimal(
+            {
+                "data": {
+                    "type": "mock",
+                },
+                "load": {
+                    "type": "constant",
+                    "stages": [{"rate": 5, "duration": 30}],
+                    "num_workers": 1,
+                },
+                "api": {
+                    "type": "chat",
+                    "streaming": True,
+                },
+                "server": {
+                    "type": "vllm",
+                    "model_name": model_name,
+                    "base_url": f"http://127.0.0.1:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {
+                    "pretrained_model_name_or_path": str(model_path),
+                },
+                "metrics": {
+                    "type": "prometheus",
+                    "prometheus": {
+                        "url": prometheus_url,
+                        "scrape_interval": 5,
+                    },
+                },
+                "report": {
+                    "request_lifecycle": {
+                        "summary": True,
+                    },
+                    "prometheus": {
+                        "summary": True,
+                    },
+                },
+            },
+            executable=[sys.executable, str(MAIN_PY_PATH)],
+            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
+        )
+
+        # Verify benchmark succeeded before proceeding
+        assert result.success, f"Benchmark failed with output:\n{result.stdout}"
+
+        # Debug and verify metrics exposed by simulator
+        try:
+            resp = requests.get("http://127.0.0.1:18001/metrics", timeout=1)
+            metrics_content = resp.text
+            print(f"Simulator Metrics Content:\n{metrics_content}")
+
+            # Verify simulator recorded 150 successes
+            match = re.search(r"vllm:request_success(?:_total)?\{.*?\} (\d+)", metrics_content)
+            assert match, "vllm:request_success(_total) not found in simulator metrics"
+            sim_success_count = int(match.group(1))
+            assert sim_success_count == 150, f"Expected 150 successes in simulator metrics, got {sim_success_count}"
+            print("Verified 150 successes in simulator metrics")
+        except Exception as e:
+            print(f"Failed to get or verify simulator metrics: {e}")
+            raise
+
+    # Check if Prometheus metrics report was generated
+    assert result.reports, "No reports generated"
+
+    report_names = list(result.reports.keys())
+    print(f"Generated reports: {report_names}")
+
+    assert "summary_prometheus_metrics.json" in result.reports, f"Missing prometheus report in {report_names}"
+
+    prom_report = result.reports["summary_prometheus_metrics.json"]
+    assert prom_report, "Prometheus report is empty"
+    assert isinstance(prom_report, dict), "Report should be a dictionary"
+
+    print(f"Prometheus Report Content:\n{json.dumps(prom_report, indent=2)}")
+
+    # Assertions on content
+    assert "successes" in prom_report, "Report missing 'successes' section"
+    successes_obj = prom_report["successes"]
+
+    assert "request_success_count" in successes_obj, "Missing 'request_success_count'"
+    success_count = successes_obj["request_success_count"]
+    print(f"Asserting request_success_count ({success_count}) is greater than 100")
+    assert success_count > 100.0, f"Expected > 100 successes in report, got {success_count}"
+
+    assert "rate" in successes_obj, "Missing 'rate' (requests_per_second)"
+    rps = successes_obj["rate"]
+    print(f"Asserting rate/requests_per_second ({rps}) is reasonable")
+    assert 3.0 < rps < 7.0, f"Expected rate around 5, got {rps}"

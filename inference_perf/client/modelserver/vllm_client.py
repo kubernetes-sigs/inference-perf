@@ -176,21 +176,21 @@ class vLLMModelServerClient(openAIModelServerClient):
                 "counter",
                 self.metric_filters,
             ),
-            # Total Requests (using request_success counter in v1)
+            # Total Requests (supports both vllm:request_success and vllm:request_success_total)
             total_requests=ModelServerPrometheusMetric(
-                "vllm:request_success_total",
+                '{__name__=~"vllm:request_success(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             requests_per_second=ModelServerPrometheusMetric(
-                "vllm:request_success_total",
+                '{__name__=~"vllm:request_success(_total)?"}',
                 "rate",
                 "counter",
                 self.metric_filters,
             ),
             request_success_count=ModelServerPrometheusMetric(
-                "vllm:request_success_total",
+                '{__name__=~"vllm:request_success(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,

@@ -105,7 +105,16 @@ class PrometheusQueryBuilder:
         """
         metric_name = self.model_server_metric.name
         filter = self.model_server_metric.filters
-        return {
+
+        use_selector = False
+        if metric_name.startswith("{") and metric_name.endswith("}"):
+            use_selector = True
+            if filter:
+                selector = f"{metric_name[:-1]},{filter}}}"
+            else:
+                selector = metric_name
+
+        queries = {
             "gauge": {
                 "mean": "avg_over_time(%s{%s}[%.0fs])" % (metric_name, filter, self.duration),
                 "median": "quantile_over_time(0.5, %s{%s}[%.0fs])" % (metric_name, filter, self.duration),
@@ -144,6 +153,32 @@ class PrometheusQueryBuilder:
                 % (metric_name, filter, self.duration, self.duration, self.duration),
             },
         }
+
+        if use_selector:
+            queries["gauge"] = {
+                "mean": "avg_over_time(%s[%.0fs])" % (selector, self.duration),
+                "median": "quantile_over_time(0.5, %s[%.0fs])" % (selector, self.duration),
+                "sd": "stddev_over_time(%s[%.0fs])" % (selector, self.duration),
+                "min": "min_over_time(%s[%.0fs])" % (selector, self.duration),
+                "max": "max_over_time(%s[%.0fs])" % (selector, self.duration),
+                "p90": "quantile_over_time(0.9, %s[%.0fs])" % (selector, self.duration),
+                "p99": "quantile_over_time(0.99, %s[%.0fs])" % (selector, self.duration),
+            }
+            queries["counter"] = {
+                "rate": "sum(rate(%s[%.0fs]))" % (selector, self.duration),
+                "increase": "sum(increase(%s[%.0fs]))" % (selector, self.duration),
+                "mean": "avg_over_time(rate(%s[%.0fs])[%.0fs:%.0fs])"
+                % (selector, self.duration, self.duration, self.duration),
+                "max": "max_over_time(rate(%s[%.0fs])[%.0fs:%.0fs])" % (selector, self.duration, self.duration, self.duration),
+                "min": "min_over_time(rate(%s[%.0fs])[%.0fs:%.0fs])" % (selector, self.duration, self.duration, self.duration),
+                "p90": "quantile_over_time(0.9, rate(%s[%.0fs])[%.0fs:%.0fs])"
+                % (selector, self.duration, self.duration, self.duration),
+                "p99": "quantile_over_time(0.99, rate(%s[%.0fs])[%.0fs:%.0fs])"
+                % (selector, self.duration, self.duration, self.duration),
+            }
+            logger.debug(f"Using raw selector for query: {selector}")
+
+        return queries
 
     def build_query(self) -> str:
         """
