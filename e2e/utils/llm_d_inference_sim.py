@@ -150,7 +150,8 @@ class LLMDInferenceSimRunner(AsyncContextDecorator):
         assert proc
 
         stdout, _ = await proc.communicate()
-        stdout_pretty = textwrap.indent(stdout.decode(), "  | ")
+        self.stdout = stdout.decode()
+        stdout_pretty = textwrap.indent(self.stdout, "  | ")
         logger.debug(f"server exited with status {proc.returncode}, output:\n{stdout_pretty}")
 
     async def _terminate(self) -> None:

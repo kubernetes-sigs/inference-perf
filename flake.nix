@@ -43,6 +43,7 @@
                 [
                   llm-d-inference-sim
                   pdm
+                  prometheus
                   python
 
                   # choose either python-lsp-server or pyright:
@@ -60,6 +61,7 @@
                 ];
 
               shellHook = ''
+                export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
                 python -m venv .venv
                 source .venv/bin/activate
                 pdm sync -d

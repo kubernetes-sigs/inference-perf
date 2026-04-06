@@ -85,7 +85,7 @@ async def run_benchmark_minimal(
     config: Union[str, Path, Dict[str, Any]],
     *,
     work_dir: Optional[Union[str, Path]] = None,
-    executable: str = "inference-perf",
+    executable: Union[str, List[str]] = "inference-perf",
     timeout_sec: Optional[int] = 300,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> BenchmarkResult:
@@ -105,7 +105,11 @@ async def run_benchmark_minimal(
     if extra_env:
         env.update({k: str(v) for k, v in extra_env.items()})
 
-    args = [executable, "--config_file", str(cfg_path), "--log-level", "DEBUG"]
+    if isinstance(executable, str):
+        args = [executable]
+    else:
+        args = list(executable)
+    args.extend(["--config_file", str(cfg_path), "--log-level", "DEBUG"])
     logger.debug(f"starting inference-perf, {args=}")
 
     proc = await asyncio.create_subprocess_exec(
