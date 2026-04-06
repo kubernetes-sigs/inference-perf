@@ -1060,7 +1060,6 @@ class LoadGenerator:
                 num_requests = int(stage.rate * stage.duration)
                 stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
 
-
                 if not isinstance(self.datagen, DataGenerator):
                     raise TypeError("Non-multiprocessing run() requires DataGenerator")
 
@@ -1072,7 +1071,9 @@ class LoadGenerator:
                         request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                         lora_adapter = self._get_lora_adapter()
                         if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                            logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
+                            logger.warning(
+                                f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.'
+                            )
                             stage_status = StageStatus.FAILED
                             break
                         now = time.perf_counter()
