@@ -310,8 +310,9 @@ Each session (one trace file) produces a metric with:
 | `stage_id` | Stage that ran this session |
 | `file_path` | Source trace file |
 | `start_time`, `end_time`, `duration_sec` | Wall-clock timing for the entire session |
-| `num_nodes` | Total LLM calls in the session |
-| `num_nodes_completed` | Calls that actually completed |
+| `num_nodes` | Total LLM calls in the session graph |
+| `num_nodes_completed` | Calls that actually executed and returned a response |
+| `num_nodes_cancelled` | Calls skipped because a predecessor failed |
 | `success` | `True` if all nodes completed without error |
 | `error` | First error encountered, if any |
 | `total_input_tokens`, `total_output_tokens` | Aggregated across all calls in the session |
@@ -320,10 +321,13 @@ Each session (one trace file) produces a metric with:
 
 After a run, three session report files are generated:
 
-- **`summary_lifecycle_metrics.json`** — aggregate statistics across all sessions (count, success rate,
-  mean/p50/p90/p99 duration and token counts)
-- **`stage_N_lifecycle_metrics.json`** — same statistics grouped by stage
-- **Session detail CSV** — one row per session with all fields (for detailed analysis)
+- **`summary_session_lifecycle_metrics.json`** — aggregate statistics across all sessions, including:
+  - `num_sessions`, `num_sessions_succeeded`, `num_sessions_failed`
+  - `total_nodes`, `total_nodes_completed`, `total_nodes_cancelled` — cross-session node totals
+  - `num_nodes_cancelled` — per-session distribution (mean, p50, p90, p99)
+  - `session_duration_sec`, `num_nodes`, `total_input_tokens`, `total_output_tokens` distributions
+- **`stage_N_session_lifecycle_metrics.json`** — same statistics grouped by stage
+- **`per_session_lifecycle_metrics.json`** — one entry per session with all fields (for detailed analysis)
 
 These complement the standard per-request metrics, giving you both micro (individual LLM calls) and
 macro (complete workflows) views of performance.

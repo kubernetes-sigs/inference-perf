@@ -125,6 +125,7 @@ class SessionGraphState:
     is_active: bool = False  # Is this session currently active?
     is_complete: bool = False  # Has this session finished all nodes?
     failed: bool = False  # Did this session fail?
+    cancelled_nodes: int = 0  # Number of nodes cancelled due to failure
 
 
 # ---------------------------------------------------------------------------
@@ -1220,6 +1221,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
         num_nodes = len(state.graph.nodes)
         num_nodes_completed = len(state.completed_nodes)
+        num_nodes_cancelled = state.cancelled_nodes if state.failed else 0
 
         return SessionLifecycleMetric(
             session_id=session_id,
@@ -1230,6 +1232,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             duration_sec=end_time - start_time,
             num_nodes=num_nodes,
             num_nodes_completed=num_nodes_completed,
+            num_nodes_cancelled=num_nodes_cancelled,
         )
 
     def activate_session(self, session_id: str) -> None:
@@ -1276,6 +1279,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
                     completed_state.is_complete = True
                     completed_state.failed = completion_data.get("failed", False)
+                    completed_state.cancelled_nodes = completion_data.get("cancelled_nodes", 0)
                     logger.debug(
                         f"Session {completed_session_id} marked complete from queue notification "
                         f"(failed={completed_state.failed})"

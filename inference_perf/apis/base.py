@@ -57,6 +57,7 @@ class SessionLifecycleMetric(BaseModel):
     duration_sec: float
     num_nodes: int
     num_nodes_completed: int
+    num_nodes_cancelled: Optional[int] = None
     success: Optional[bool] = None
     error: Optional[ErrorResponseInfo] = None
     total_input_tokens: Optional[int] = None
