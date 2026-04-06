@@ -46,6 +46,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inference_perf.datagen.otel_trace_replay_datagen import (
+    NodeFailedError,
     NodeOutputRegistry,
     OTelChatCompletionAPIData,
     OTelInferenceInfo,
@@ -169,6 +170,38 @@ class TestNodeOutputRegistry:
         retrieved = reg.get_messages_by_node_id("node_001")
         assert retrieved is not None
         assert retrieved == []
+
+    def test_record_failure_fast_path(self) -> None:
+        """require_async raises NodeFailedError immediately for an already-failed node."""
+        reg = NodeOutputRegistry()
+        reg.record_failure("node_001")
+        assert reg.is_node_failed("node_001")
+
+        with pytest.raises(NodeFailedError) as exc_info:
+            asyncio.run(reg.require_async("node_001"))
+        assert exc_info.value.node_id == "node_001"
+
+    def test_record_failure_wakes_waiter_with_error(self) -> None:
+        """record_failure wakes a coroutine blocked in require_async with NodeFailedError."""
+        reg = NodeOutputRegistry()
+
+        async def _run() -> None:
+            async def fail_producer() -> None:
+                await asyncio.sleep(0.05)
+                reg.record_failure("node_001")
+
+            asyncio.create_task(fail_producer())
+            await reg.require_async("node_001", timeout_sec=2.0)
+
+        with pytest.raises(NodeFailedError):
+            asyncio.run(_run())
+
+    def test_record_failure_idempotent(self) -> None:
+        """Calling record_failure multiple times for the same node is safe."""
+        reg = NodeOutputRegistry()
+        reg.record_failure("node_001")
+        reg.record_failure("node_001")  # should not raise
+        assert reg.is_node_failed("node_001")
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +368,9 @@ class TestOTelChatCompletionAPIData:
 
         # Should have set skip_request flag
         assert api_data.skip_request is True
-        # Should have recorded empty output
-        assert registry.get_output_by_node_id("session_1:node_1") == ""
+        # Registry should record failure (not empty output)
+        assert registry.is_node_failed("session_1:node_1")
+        assert registry.get_output_by_node_id("session_1:node_1") is None
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_waits_and_substitutes(self) -> None:
@@ -814,10 +848,11 @@ class TestOTelChatCompletionAPIDataErrorPaths:
         # Session should be marked as failed
         assert tracker.is_session_failed("session_1")
 
-        # Empty output should be registered
-        assert registry.get_output_by_node_id("session_1:node_0") == ""
+        # Registry should record failure for the node (not empty output)
+        assert registry.is_node_failed("session_1:node_0")
+        assert registry.get_output_by_node_id("session_1:node_0") is None
 
-        # Should return empty inference info (base InferenceInfo, not OTelInferenceInfo)
+        # Should return empty inference info
         assert isinstance(result, OTelInferenceInfo)
         assert result.output_text == ""
         assert result.input_tokens == 0
@@ -825,7 +860,7 @@ class TestOTelChatCompletionAPIDataErrorPaths:
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_post_wait_failure_check(self) -> None:
-        """Test post-wait failure check skips node if session failed during wait."""
+        """Test failure propagation: when predecessor fails, successor skips via NodeFailedError."""
         registry = NodeOutputRegistry()
         tracker = WorkerSessionTracker()
 
@@ -841,22 +876,107 @@ class TestOTelChatCompletionAPIDataErrorPaths:
             predecessor_node_ids=["session_1:node_0"],
         )
 
-        # Register predecessor output first
-        registry.record("session_1:node_0", "predecessor output", [])
+        # Simulate predecessor failure (no real output written, just failure signal)
+        registry.record_failure("session_1:node_0")
 
-        # Mark session as failed (simulating failure during wait)
-        tracker.mark_session_failed("session_1")
-
-        # Wait for predecessors - should detect failure and skip
+        # Wait for predecessors - should detect failure via NodeFailedError and skip
         await api_data.wait_for_predecessors_and_substitute()
 
         # Should have set skip_request flag
         assert api_data.skip_request is True
 
-        # Should have recorded empty output
-        assert registry.get_output_by_node_id("session_1:node_1") == ""
+        # Should have propagated failure in registry (not written empty output)
+        assert registry.is_node_failed("session_1:node_1")
+        assert registry.get_output_by_node_id("session_1:node_1") is None
 
-        # Node should be marked as completed
-        assert tracker.is_node_completed("session_1", "node_1")
+        # Node should NOT be marked as completed in tracker (skipped nodes don't count)
+        assert not tracker.is_node_completed("session_1", "node_1")
 
     # by the other tests in this suite.
+
+
+# ---------------------------------------------------------------------------
+# New failure propagation integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestFailurePropagation:
+    """Integration tests for failure propagation through a node chain."""
+
+    def _make_node(
+        self,
+        node_id: str,
+        registry: NodeOutputRegistry,
+        tracker: WorkerSessionTracker,
+        predecessor_node_ids: Optional[List[str]] = None,
+        total_nodes: int = 3,
+        completion_queue: Any = None,
+    ) -> OTelChatCompletionAPIData:
+        return OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Test")],
+            max_tokens=50,
+            node_id=node_id,
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=completion_queue,
+            total_nodes_in_session=total_nodes,
+            predecessor_node_ids=predecessor_node_ids or [],
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_propagates_through_chain(self) -> None:
+        """node_0 fails → node_1 skips via NodeFailedError → node_2 skips via NodeFailedError.
+
+        No empty strings are written to the registry. No record_node_completed calls.
+        """
+        registry = NodeOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        node_1 = self._make_node("session_1:node_1", registry, tracker, ["session_1:node_0"])
+        node_2 = self._make_node("session_1:node_2", registry, tracker, ["session_1:node_1"])
+
+        # Simulate node_0 failure
+        tracker.mark_session_failed("session_1")
+        registry.record_failure("session_1:node_0")
+
+        # node_1 processes — should skip
+        await node_1.wait_for_predecessors_and_substitute()
+        assert node_1.skip_request is True
+        assert registry.is_node_failed("session_1:node_1")
+        assert registry.get_output_by_node_id("session_1:node_1") is None
+
+        # node_2 processes — should also skip via node_1's failure
+        await node_2.wait_for_predecessors_and_substitute()
+        assert node_2.skip_request is True
+        assert registry.is_node_failed("session_1:node_2")
+        assert registry.get_output_by_node_id("session_1:node_2") is None
+
+        # tracker should have no completed nodes (no record_node_completed calls)
+        assert tracker.get_session_node_count("session_1") == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_count_in_failure_notification(self) -> None:
+        """process_failure on first node of 3-node session reports cancelled_nodes=2."""
+        registry = NodeOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        notifications: List[Any] = []
+        mock_queue = MagicMock()
+        mock_queue.put_nowait = lambda data: notifications.append(data)
+
+        node_0 = self._make_node("session_1:node_0", registry, tracker, total_nodes=3, completion_queue=mock_queue)
+
+        exception = ValueError("HTTP 500")
+        config = MagicMock()
+        config.streaming = False
+        tokenizer = MagicMock()
+        tokenizer.count_tokens.return_value = 0
+
+        await node_0.process_failure(None, config, tokenizer, exception)
+
+        assert len(notifications) == 1
+        data = notifications[0]
+        assert data["failed"] is True
+        assert data["session_id"] == "session_1"
+        # 3 total - 0 completed before failure - 1 (the failing node itself) = 2 cancelled
+        assert data["cancelled_nodes"] == 2

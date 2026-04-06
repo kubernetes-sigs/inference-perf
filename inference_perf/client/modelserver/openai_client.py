@@ -301,21 +301,20 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 lora_adapter=lora_adapter,
                             )
                         else:
-                            """
-                            Handle HTTP error responses (status != 200).
-                            
-                            For OTEL trace replay, we need to call process_failure() to:
-                            1. Mark the session as failed in shared state
-                            2. Register empty output via on_completion() to unblock dependent nodes
-                            3. Maintain dependency graph integrity when nodes fail
-                            
-                            This ensures that if request X fails and request Y depends on X's output,
-                            Y can still proceed (with empty input) rather than hanging indefinitely.
-                            
-                            Note: The original code only logged errors for non-200 responses without
-                            calling process_failure(). This special handling for OTelChatCompletionAPIData
-                            ensures proper failure propagation in trace replay scenarios.
-                            """
+                            # Handle HTTP error responses (status != 200).
+                            #
+                            # For OTel trace replay, process_failure() is called to:
+                            # 1. Mark the session as failed in WorkerSessionTracker
+                            # 2. Call registry.record_failure() to unblock dependent nodes via NodeFailedError
+                            # 3. Immediately notify the main process via session_completion_queue
+                            #
+                            # This ensures that if request X fails and request Y depends on X's output,
+                            # Y raises NodeFailedError and skips rather than hanging indefinitely.
+                            #
+                            # Note: The original code only logged errors for non-200 responses without
+                            # calling process_failure(). This special handling for OTelChatCompletionAPIData
+                            # ensures proper failure propagation in trace replay scenarios.
+
                             if isinstance(data, OTelChatCompletionAPIData) and response is not None:
                                 error = ErrorResponseInfo(
                                     error_msg=response_content,

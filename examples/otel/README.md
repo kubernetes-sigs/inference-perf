@@ -53,7 +53,9 @@ Three coordination mechanisms handle this:
 - **`NodeOutputRegistry`** — intra-worker only. Holds plain dicts (`node_id → output text`,
   `node_id → input messages`) and one `asyncio.Event` per node. When a node completes,
   `record()` writes the output and fires the event, immediately unblocking dependent coroutines
-  on the same worker. No IPC — session-to-worker affinity guarantees all nodes of a session
+  on the same worker. When a node fails, `record_failure()` fires the event without writing any
+  output; `require_async()` detects this and raises `NodeFailedError` so the waiting coroutine
+  can skip cleanly. No IPC — session-to-worker affinity guarantees all nodes of a session
   run on the same worker.
 
 - **`WorkerSessionTracker`** — per-worker session state tracking. Each worker independently
@@ -84,32 +86,49 @@ hang and the session completes gracefully:
 **Worker-level failure handling:**
 1. `process_failure()` is called on the failed node's `OTelChatCompletionAPIData`
 2. The worker marks the entire session as failed in `WorkerSessionTracker` (local to that worker)
-3. Empty output (`""`) is registered in `NodeOutputRegistry` via `on_completion()`
-4. Dependent nodes are unblocked and can proceed with empty input
+3. `registry.record_failure(node_id)` is called — this sets the node's `asyncio.Event` without
+   writing any output to `NodeOutputRegistry`, keeping the registry clean
+4. Dependent nodes unblock, receive a `NodeFailedError` from `require_async`, and skip without
+   making HTTP requests
 
 **Session-level failure propagation (within a worker):**
 - **Pre-wait check**: Before waiting for predecessors, each node checks if its session has failed
-- **Post-wait check**: After predecessors complete, each node checks again (a predecessor may have failed during the wait)
-- **Skip mechanism**: If either check detects failure, the node sets `skip_request = True`, registers empty output, and returns without making an HTTP request
-- **Completion tracking**: Failed nodes still count as "completed" for session lifecycle tracking
-- **Session-to-worker affinity**: All nodes of a session run on the same worker, so `WorkerSessionTracker` (local to each worker) is sufficient for intra-session failure propagation
+  in `WorkerSessionTracker`. If so, it sets `skip_request = True`, calls `record_failure` on
+  itself (to unblock its own successors), and returns immediately.
+- **Predecessor wait**: `asyncio.gather` awaits all predecessors via `require_async`. If any
+  predecessor was marked failed, `require_async` raises `NodeFailedError`. The node catches
+  this, sets `skip_request = True`, calls `record_failure` on itself, and returns — propagating
+  the failure hop-by-hop through the dependency graph.
+- **No empty outputs**: Cancelled nodes never write to `NodeOutputRegistry`. The registry only
+  contains real outputs from nodes that actually ran.
+- **No completion counting for skipped nodes**: Skipped nodes do not call `record_node_completed`.
+  Session completion is signalled entirely via the immediate failure notification in
+  `process_failure`.
+- **Session-to-worker affinity**: All nodes of a session run on the same worker, so
+  `WorkerSessionTracker` (local to each worker) is sufficient for intra-session failure detection.
 
 **Worker-to-main-process communication:**
-- The `session_completion_queue` includes a `"failed"` field in the completion notification
-- When the last node completes, `on_completion()` checks `worker_tracker.is_session_failed()` and includes this in the queue notification
-- The main process calls `_process_completion_queue()` which stores the failure status in `SessionGraphState.failed`
-- When ending OTEL session spans, the load generator checks `SessionGraphState.failed` to mark failed sessions with error messages
+- On the first failure in a session, `process_failure` immediately pushes a completion
+  notification to `session_completion_queue` with `"failed": True` and a `"cancelled_nodes"`
+  count (how many nodes will be skipped as a result of this failure). This does not wait for
+  skipped nodes to finish.
+- The main process calls `_process_completion_queue()` which sets `SessionGraphState.is_complete`
+  and `SessionGraphState.failed` for the session.
+- When ending OTEL session spans, the load generator checks `SessionGraphState.failed` to mark
+  failed sessions with error messages.
 
 Note: OTel trace replay always runs in multiprocess mode (requires `num_workers > 0`) because it uses `SessionGenerator`, which is not supported in single-process mode.
 
 **Session metrics:**
-- Session metrics include a `success` field (False for failed sessions) and an `error` field with the failure reason
-- The session completes normally from the load generator's perspective (all nodes processed), but metrics reflect the failure
+- Session metrics include a `success` field (False for failed sessions) and an `error` field with the failure reason.
+- The `cancelled_nodes` field in the completion notification records how many nodes were skipped
+  due to the failure (computed as `total_nodes − completed_before_failure − 1`).
 
 This design ensures:
 - No deadlocks: dependent nodes never wait indefinitely for failed predecessors
-- Clean shutdown: sessions complete even when nodes fail
-- Accurate metrics: failures are tracked at both node and session level
+- Clean registry: no phantom empty-string entries for cancelled nodes
+- Clean shutdown: sessions complete even when nodes fail, without waiting for all nodes to skip
+- Accurate metrics: failures are tracked at both node and session level, with cancelled counts
 - Accurate OTEL traces: failed sessions are marked with error messages in their spans
 - Resource efficiency: failed sessions don't consume unnecessary worker time
 

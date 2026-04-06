@@ -91,6 +91,19 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# NodeFailedError — raised by require_async when a predecessor node failed
+# ---------------------------------------------------------------------------
+
+
+class NodeFailedError(Exception):
+    """Raised by NodeOutputRegistry.require_async when the awaited node failed."""
+
+    def __init__(self, node_id: str) -> None:
+        super().__init__(f"Predecessor node {node_id!r} failed")
+        self.node_id = node_id
+
+
+# ---------------------------------------------------------------------------
 # SessionGraphState — tracks graph traversal state for one session
 # ---------------------------------------------------------------------------
 
@@ -271,6 +284,10 @@ class NodeOutputRegistry:
         # worker's single event loop; no lock needed.
         self._node_events: Dict[str, asyncio.Event] = {}
 
+        # Set of node_ids that failed. record_failure() adds here and sets the
+        # node's event so waiting coroutines wake and raise NodeFailedError.
+        self._failed_node_ids: Set[str] = set()
+
     def record(self, node_id: str, output_text: str, messages: List[Any]) -> None:
         """Register output for a completed node and wake any async waiters.
 
@@ -315,6 +332,22 @@ class NodeOutputRegistry:
         """
         return list(self._node_output_text.keys())
 
+    def record_failure(self, node_id: str) -> None:
+        """Mark a node as failed and wake any async waiters with a failure signal.
+
+        Idempotent: calling multiple times for the same node is safe.
+        Only sets the event — does not write to _node_output_text.
+        """
+        self._failed_node_ids.add(node_id)
+        if node_id not in self._node_events:
+            self._node_events[node_id] = asyncio.Event()
+        self._node_events[node_id].set()
+        logger.debug(f"Recorded failure for node {node_id}")
+
+    def is_node_failed(self, node_id: str) -> bool:
+        """Return True if this node has been marked as failed."""
+        return node_id in self._failed_node_ids
+
     async def require_async(self, node_id: str, timeout_sec: float = 3600.0) -> str:
         """Wait asynchronously for a node's output.
 
@@ -322,8 +355,13 @@ class NodeOutputRegistry:
         the calling coroutine until record() is called for this node_id, then resumes.
 
         Raises:
+            NodeFailedError: if the node failed (via record_failure)
             TimeoutError: if output not available within timeout_sec
         """
+        # Fast path: predecessor already failed.
+        if node_id in self._failed_node_ids:
+            raise NodeFailedError(node_id)
+
         # Fast path: predecessor already completed.
         output = self._node_output_text.get(node_id)
         if output is not None:
@@ -336,8 +374,10 @@ class NodeOutputRegistry:
             self._node_events[node_id] = asyncio.Event()
         event = self._node_events[node_id]
 
-        # Second fast-path check: no await has occurred since the first check,
+        # Second fast-path checks: no await has occurred since the first checks,
         # but be defensive in case this method's call site changes in the future.
+        if node_id in self._failed_node_ids:
+            raise NodeFailedError(node_id)
         output = self._node_output_text.get(node_id)
         if output is not None:
             return output
@@ -351,6 +391,10 @@ class NodeOutputRegistry:
                 f"NodeOutputRegistry: output for '{node_id}' not available after "
                 f"{timeout_sec:.1f}s. Check that the predecessor is not blocked or failed."
             ) from e
+
+        # Check if the event was fired due to failure.
+        if node_id in self._failed_node_ids:
+            raise NodeFailedError(node_id)
 
         # record() writes _node_output_text before calling event.set(). Both run on
         # the same single-threaded event loop, so the value is guaranteed to be present here.
@@ -421,6 +465,10 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         is awaited via asyncio.Event, so the coroutine suspends without consuming
         any OS threads. All predecessors are waited in parallel via asyncio.gather.
 
+        If any predecessor failed, NodeFailedError is raised by require_async, caught
+        here, and propagated by calling registry.record_failure(self.node_id) so that
+        this node's own successors also wake and skip without making HTTP requests.
+
         Requires all nodes of this session to run on the same worker, which is
         enforced by session-to-worker affinity in get_session_events().
         """
@@ -431,29 +479,21 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         if self.worker_tracker.is_session_failed(session_id):
             logger.info(f"Node {self.node_id} skipping - session {session_id} has failed (pre-wait check)")
             self.skip_request = True
-            self.registry.record(self.node_id, "", self.messages)
-            # Extract node_id from qualified node_id
-            node_id = self.node_id.split(":", 1)[1] if ":" in self.node_id else self.node_id
-            self.worker_tracker.record_node_completed(session_id, node_id, time.perf_counter())
+            self.registry.record_failure(self.node_id)
             return
 
         if self.predecessor_node_ids:
             logger.debug(f"Node {self.node_id} waiting for {len(self.predecessor_node_ids)} predecessor(s)")
-            # Wait for all predecessors in parallel before proceeding.
-            await asyncio.gather(
-                *[self.registry.require_async(node_id, timeout_sec=3600.0) for node_id in self.predecessor_node_ids]
-            )
-            logger.debug(f"Node {self.node_id} all predecessors done")
-
-            # Post-wait check: a predecessor may have failed while we were waiting.
-            if self.worker_tracker.is_session_failed(session_id):
-                logger.info(f"Node {self.node_id} skipping - session {session_id} has failed (post-wait check)")
+            try:
+                await asyncio.gather(
+                    *[self.registry.require_async(node_id, timeout_sec=3600.0) for node_id in self.predecessor_node_ids]
+                )
+            except NodeFailedError:
+                logger.info(f"Node {self.node_id} skipping - predecessor failed")
                 self.skip_request = True
-                self.registry.record(self.node_id, "", self.messages)
-                # Extract node_id from qualified node_id
-                node_id = self.node_id.split(":", 1)[1] if ":" in self.node_id else self.node_id
-                self.worker_tracker.record_node_completed(session_id, node_id, time.perf_counter())
+                self.registry.record_failure(self.node_id)
                 return
+            logger.debug(f"Node {self.node_id} all predecessors done")
 
         # Wait additional delay specified in wait_ms
         if self.wait_ms > 0:
@@ -671,38 +711,36 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         # Mark the entire session as failed to prevent other nodes from processing
         self.worker_tracker.mark_session_failed(session_id)
 
-        # Create empty inference info
-        empty_info = OTelInferenceInfo(
-            input_tokens=0,
-            output_tokens=0,
-            lora_adapter=lora_adapter,
-            output_text="",  # Empty output for failed requests
-        )
-
-        # Call on_completion to register empty output and unblock dependents
-        self.on_completion(empty_info)
+        # Signal failure to any successors waiting in require_async.
+        self.registry.record_failure(self.node_id)
 
         # Immediately notify main process of session failure (only once per session)
         # This ensures the main process doesn't wait for all nodes to complete
         if not was_already_failed and self.completion_queue is not None:
             completion_time = time.perf_counter()
+            completed_so_far = self.worker_tracker.get_session_node_count(session_id)
+            cancelled = self.total_nodes_in_session - completed_so_far - 1  # -1 for the failing node itself
             completion_data = {
                 "session_id": session_id,
                 "completion_time": completion_time,
                 "failed": True,
+                "cancelled_nodes": cancelled,
                 "node_completion_times": self.worker_tracker.get_session_completion_times(session_id),
             }
-            
+
             try:
                 logger.debug(f"Pushing immediate failure notification for session {session_id}")
                 self.completion_queue.put_nowait(completion_data)
-                logger.info(f"Session {session_id} failure notification sent to main process")
+                logger.info(f"Session {session_id} failure notification sent to main process (cancelled_nodes={cancelled})")
             except Exception as e:
                 logger.error(f"Failed to push session {session_id} failure notification to queue: {e}")
 
-        logger.info(f"Called on_completion() for failed node {self.node_id} to unblock dependent nodes")
-
-        return empty_info
+        return OTelInferenceInfo(
+            input_tokens=0,
+            output_tokens=0,
+            lora_adapter=lora_adapter,
+            output_text="",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1313,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
         # Check if session has failed in any worker process
         # In multiprocess mode, workers add failed sessions to shared_failed_sessions
-        shared_failed = getattr(self, 'shared_failed_sessions', None)
+        shared_failed = getattr(self, "shared_failed_sessions", None)
         if shared_failed is not None:
             is_failed = session_id in shared_failed
             if is_failed:
@@ -1341,8 +1379,8 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             max_tokens=max_tokens,
             node_id=event.node_id,
             registry=self.output_registry,
-            worker_tracker=getattr(self, 'worker_tracker', WorkerSessionTracker()),
-            completion_queue=getattr(self, 'session_completion_queue', None),
+            worker_tracker=getattr(self, "worker_tracker", WorkerSessionTracker()),
+            completion_queue=getattr(self, "session_completion_queue", None),
             total_nodes_in_session=total_nodes,
             # Pass dependency info for the worker to use during async waiting
             predecessor_node_ids=event.predecessor_node_ids,
