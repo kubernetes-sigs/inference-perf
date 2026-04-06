@@ -582,13 +582,9 @@ class LoadGenerator:
 
                         # End OTEL session span (using cached otel_instr)
                         if session_id in session_spans:
-                            # Check if session failed using shared_failed_sessions list
-                            session_failed = False
-                            if (
-                                hasattr(self.datagen, "shared_failed_sessions")
-                                and self.datagen.shared_failed_sessions is not None
-                            ):
-                                session_failed = session_id in self.datagen.shared_failed_sessions
+                            # Check if session failed from SessionGraphState
+                            session_state = self.datagen.session_graph_state.get(session_id)
+                            session_failed = session_state.failed if session_state else False
                             error_msg = "Session failed" if session_failed else None
                             otel_instr.end_session_span(session_spans[session_id], error_msg)
                             del session_spans[session_id]

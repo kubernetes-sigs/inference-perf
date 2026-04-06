@@ -111,6 +111,7 @@ class SessionGraphState:
     node_completion_times: Dict[str, float]  # node_id → completion timestamp
     is_active: bool = False  # Is this session currently active?
     is_complete: bool = False  # Has this session finished all nodes?
+    failed: bool = False  # Did this session fail?
 
 
 # ---------------------------------------------------------------------------
@@ -195,17 +196,13 @@ class WorkerSessionTracker:
         """
         return self._node_completions.get(session_id, {}).get(node_id)
 
-    def mark_session_failed(self, session_id: str, shared_failed_sessions: Any = None) -> None:
+    def mark_session_failed(self, session_id: str) -> None:
         """Mark a session as failed.
 
         Args:
             session_id: The session ID
-            shared_failed_sessions: Optional shared list for cross-process communication
         """
         self._failed_sessions.add(session_id)
-        # Also add to shared list if available (for cross-process visibility)
-        if shared_failed_sessions is not None and session_id not in shared_failed_sessions:
-            shared_failed_sessions.append(session_id)
 
     def is_session_failed(self, session_id: str) -> bool:
         """Check if a session has failed.
@@ -398,9 +395,6 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
     # Session completion notification
     completion_queue: Any  # mp.Queue for notifying main process
     total_nodes_in_session: int  # Total number of nodes in this session
-
-    # Shared failed sessions list for cross-process failure tracking
-    shared_failed_sessions: Any = None  # mp.Manager().list() or None
 
     # Dependency information for async waiting
     predecessor_node_ids: List[str] = field(default_factory=list)
@@ -671,9 +665,11 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         # Extract session_id from node_id (format: "session_id:node_xxx")
         session_id = self._extract_session_id()
 
+        # Check if session was already marked as failed (to avoid duplicate notifications)
+        was_already_failed = self.worker_tracker.is_session_failed(session_id)
+
         # Mark the entire session as failed to prevent other nodes from processing
-        # Pass shared_failed_sessions if available for cross-process visibility
-        self.worker_tracker.mark_session_failed(session_id, self.shared_failed_sessions)
+        self.worker_tracker.mark_session_failed(session_id)
 
         # Create empty inference info
         empty_info = OTelInferenceInfo(
@@ -685,6 +681,24 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
 
         # Call on_completion to register empty output and unblock dependents
         self.on_completion(empty_info)
+
+        # Immediately notify main process of session failure (only once per session)
+        # This ensures the main process doesn't wait for all nodes to complete
+        if not was_already_failed and self.completion_queue is not None:
+            completion_time = time.perf_counter()
+            completion_data = {
+                "session_id": session_id,
+                "completion_time": completion_time,
+                "failed": True,
+                "node_completion_times": self.worker_tracker.get_session_completion_times(session_id),
+            }
+            
+            try:
+                logger.debug(f"Pushing immediate failure notification for session {session_id}")
+                self.completion_queue.put_nowait(completion_data)
+                logger.info(f"Session {session_id} failure notification sent to main process")
+            except Exception as e:
+                logger.error(f"Failed to push session {session_id} failure notification to queue: {e}")
 
         logger.info(f"Called on_completion() for failed node {self.node_id} to unblock dependent nodes")
 
@@ -847,14 +861,11 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
         # Session completion queue: workers push (session_id, completion_data) when sessions complete.
         # Main process consumes from this queue to update state and close OTEL spans.
+        # The completion_data includes a "failed" field to indicate session failure.
         if mp_manager is not None:
             self.session_completion_queue: Any = mp_manager.Queue()  # Queue for (session_id, completion_data)
-            # Shared set for tracking failed sessions across all worker processes
-            # This allows the main process to detect when sessions have failed
-            self.shared_failed_sessions: Any = mp_manager.list()  # Using list as a shared set
         else:
             self.session_completion_queue = None
-            self.shared_failed_sessions = None
 
         # Load and process all OTel trace files
         self.sessions: List[OTelTraceSession] = []
@@ -1205,7 +1216,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         """Process all pending completion notifications from the queue.
 
         Internal helper that drains the completion queue and updates
-        session_graph_state for all completed sessions.
+        session_graph_state for all completed sessions, including their failure status.
         """
         if self.session_completion_queue is None:
             return
@@ -1226,7 +1237,11 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                             completed_state.node_completion_times[node_id] = completion_time
 
                     completed_state.is_complete = True
-                    logger.debug(f"Session {completed_session_id} marked complete from queue notification")
+                    completed_state.failed = completion_data.get("failed", False)
+                    logger.debug(
+                        f"Session {completed_session_id} marked complete from queue notification "
+                        f"(failed={completed_state.failed})"
+                    )
         except Exception:
             # Queue is empty, no more completions to process
             pass
@@ -1329,7 +1344,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             worker_tracker=getattr(self, 'worker_tracker', WorkerSessionTracker()),
             completion_queue=getattr(self, 'session_completion_queue', None),
             total_nodes_in_session=total_nodes,
-            shared_failed_sessions=getattr(self, 'shared_failed_sessions', None),
             # Pass dependency info for the worker to use during async waiting
             predecessor_node_ids=event.predecessor_node_ids,
             wait_ms=event.wait_ms,
