@@ -35,8 +35,8 @@ def escape_label(text: str) -> str:
 def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     """Convert ReplayGraph JSON to Graphviz DOT format."""
 
-    nodes = graph_data.get("nodes", {})
-    root_node_ids = set(graph_data.get("root_node_ids", []))
+    events = graph_data.get("events", {})
+    root_event_ids = set(graph_data.get("root_event_ids", []))
     source_file = graph_data.get("source_file", "")
 
     lines = []
@@ -47,7 +47,7 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     lines.append("")
 
     # Add title as a label
-    title = f"Replay Graph\\n{len(nodes)} nodes"
+    title = f"Replay Graph\\n{len(events)} events"
     if source_file:
         title += f"\\nSource: {source_file.split('/')[-1]}"
     lines.append('    labelloc="t";')
@@ -55,23 +55,23 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     lines.append("    fontsize=16;")
     lines.append("")
 
-    # Add nodes
-    for node_id, node_data in nodes.items():
-        call = node_data.get("call", {})
-        t_start = node_data.get("t_start_ms", 0)
-        t_end = node_data.get("t_end_ms", 0)
+    # Add events
+    for event_id, event_data in events.items():
+        call = event_data.get("call", {})
+        t_start = event_data.get("t_start_ms", 0)
+        t_end = event_data.get("t_end_ms", 0)
         duration = t_end - t_start
-        wait_ms = node_data.get("wait_ms", 0)
+        wait_ms = event_data.get("wait_ms", 0)
 
         # Build label
         input_tokens = call.get("total_input_tokens", 0)
         output_tokens = call.get("expected_output_tokens", 0)
         call_id = call.get("call_id", "")
 
-        # Use call_id as the primary identifier, with node_id as secondary
+        # Use call_id as the primary identifier, with event_id as secondary
         label_parts = [
             f"{call_id}",
-            f"({node_id})",
+            f"({event_id})",
             f"Start: {t_start:.0f}ms",
             f"i.token: {input_tokens} | o.token: {output_tokens}",
             f"Duration: {duration:.1f}ms",
@@ -112,13 +112,13 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
 
         label = "\\n".join(label_parts)
 
-        # Color based on node type
-        if node_id in root_node_ids:
+        # Color based on event type
+        if event_id in root_event_ids:
             fillcolor = "lightgreen"
         else:
             fillcolor = "lightblue"
 
-        lines.append(f'    "{node_id}" [label="{escape_label(label)}", fillcolor={fillcolor}];')
+        lines.append(f'    "{event_id}" [label="{escape_label(label)}", fillcolor={fillcolor}];')
 
     lines.append("")
 
@@ -145,10 +145,10 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
     lines.append("")
 
     # Add edges
-    for node_id, node_data in nodes.items():
-        predecessor_ids = node_data.get("predecessor_node_ids", [])
-        predecessor_dependency_types = node_data.get("predecessor_dependency_types", {})
-        wait_ms = node_data.get("wait_ms", 0)
+    for event_id, event_data in events.items():
+        predecessor_ids = event_data.get("predecessor_event_ids", [])
+        predecessor_dependency_types = event_data.get("predecessor_dependency_types", {})
+        wait_ms = event_data.get("wait_ms", 0)
 
         for pred_id in predecessor_ids:
             dep_type = predecessor_dependency_types.get(pred_id, "temporal")
@@ -178,7 +178,7 @@ def export_to_dot(graph_data: Dict[str, Any], output_file: str) -> None:
             if wait_ms > 0:
                 edge_label += f" +{wait_ms:.0f}ms"
 
-            lines.append(f'    "{pred_id}" -> "{node_id}" [{edge_style}, label="{edge_label}"];')
+            lines.append(f'    "{pred_id}" -> "{event_id}" [{edge_style}, label="{edge_label}"];')
 
     lines.append("}")
 

@@ -25,9 +25,9 @@ Each test prints a human-readable graph summary so you can see the full output w
 running under the debugger or with `pytest -s`.
 
 Key structural properties of the new graph format:
-  - Each GraphNode contains exactly ONE call (node.call, not node.calls)
-  - Predecessor relationships are explicit: node.predecessor_node_ids (list of node_ids)
-  - node.wait_ms = delay after last predecessor finishes before this node starts
+  - Each GraphEvent contains exactly ONE call (event.call, not event.calls)
+  - Predecessor relationships are explicit: event.predecessor_event_ids (list of event_ids)
+  - event.wait_ms = delay after last predecessor finishes before this event starts
   - InputSegments are at MESSAGE granularity (not character level):
       SHARED  = N leading messages identical to a predecessor's messages (KV cache hit)
       OUTPUT  = 1 assistant message whose content matches a predecessor's output
@@ -100,13 +100,13 @@ def make_span(
 #                        output: "The Eiffel Tower is 330 meters tall."
 #
 # Expected graph:
-#   node_000 (span_A) → [wait 1000ms] → node_001 (span_B) → [wait 1000ms] → node_002 (span_C)
-#   root_node_ids = ["node_000"]
+#   event_000 (span_A) → [wait 1000ms] → event_001 (span_B) → [wait 1000ms] → event_002 (span_C)
+#   root_event_ids = ["event_000"]
 #
 # Expected segments (message-level, no " assistant: " artifact):
 #   span_A: [UNIQUE(1msg)]
-#   span_B: [SHARED(1msg from node_000), OUTPUT(1msg from node_000), UNIQUE(1msg)]
-#   span_C: [SHARED(3msg from node_001), OUTPUT(1msg from node_001), UNIQUE(1msg)]
+#   span_B: [SHARED(1msg from event_000), OUTPUT(1msg from event_000), UNIQUE(1msg)]
+#   span_C: [SHARED(3msg from event_001), OUTPUT(1msg from event_001), UNIQUE(1msg)]
 
 OUTPUT_A = "The capital of France is Paris. It is a beautiful city full of history and culture."
 OUTPUT_B = "Paris has many landmarks: the Eiffel Tower, the Louvre Museum, and Notre-Dame Cathedral."
@@ -164,13 +164,13 @@ def test_sequential_chain() -> None:
         span_B  t=3s→5s    [user: Q, assistant: OUTPUT_A, user: "Tell me about Paris landmarks."]
         span_C  t=6s→8s    [user: Q, assistant: OUTPUT_A, user: Q2, assistant: OUTPUT_B, user: Q3]
 
-    EXPECTED GRAPH (one node per call, linear chain):
-        node_000 (span_A) --[wait 1000ms]--> node_001 (span_B) --[wait 1000ms]--> node_002 (span_C)
+    EXPECTED GRAPH (one event per call, linear chain):
+        event_000 (span_A) --[wait 1000ms]--> event_001 (span_B) --[wait 1000ms]--> event_002 (span_C)
 
     EXPECTED SEGMENTS (message-level, no role-label artifacts):
         span_A: UNIQUE(1msg)
-        span_B: SHARED(1msg ← node_000) + OUTPUT(1msg ← node_000) + UNIQUE(1msg)
-        span_C: SHARED(3msg ← node_001) + OUTPUT(1msg ← node_001) + UNIQUE(1msg)
+        span_B: SHARED(1msg ← event_000) + OUTPUT(1msg ← event_000) + UNIQUE(1msg)
+        span_C: SHARED(3msg ← event_001) + OUTPUT(1msg ← event_001) + UNIQUE(1msg)
     """
     spans = [SPAN_A, SPAN_B, SPAN_C]
     calls = build_raw_calls(spans)
@@ -190,64 +190,64 @@ def test_sequential_chain() -> None:
     print(summarize_graph(graph))
 
     # --- Structural assertions ---
-    assert len(graph.nodes) == 3, f"Expected 3 nodes, got {len(graph.nodes)}"
-    assert graph.root_node_ids == ["node_000_span_A"], f"Expected root=node_000, got {graph.root_node_ids}"
+    assert len(graph.events) == 3, f"Expected 3 events, got {len(graph.events)}"
+    assert graph.root_event_ids == ["event_000_span_A"], f"Expected root=event_000, got {graph.root_event_ids}"
 
-    node_000 = graph.nodes["node_000_span_A"]
-    node_001 = graph.nodes["node_001_span_B"]
-    node_002 = graph.nodes["node_002_span_C"]
+    event_000 = graph.events["event_000_span_A"]
+    event_001 = graph.events["event_001_span_B"]
+    event_002 = graph.events["event_002_span_C"]
 
-    # Each node has exactly 1 call (new structure: node.call, not node.calls)
-    assert node_000.call.call_id == "span_A"
-    assert node_001.call.call_id == "span_B"
-    assert node_002.call.call_id == "span_C"
+    # Each event has exactly 1 call (new structure: event.call, not event.calls)
+    assert event_000.call.call_id == "span_A"
+    assert event_001.call.call_id == "span_B"
+    assert event_002.call.call_id == "span_C"
 
-    # Predecessor relationships (new structure: predecessor_node_ids)
-    assert node_000.predecessor_node_ids == []
-    assert node_001.predecessor_node_ids == ["node_000_span_A"]
-    assert node_002.predecessor_node_ids == ["node_001_span_B"]
+    # Predecessor relationships (new structure: predecessor_event_ids)
+    assert event_000.predecessor_event_ids == []
+    assert event_001.predecessor_event_ids == ["event_000_span_A"]
+    assert event_002.predecessor_event_ids == ["event_001_span_B"]
 
     # Wait times
-    assert node_000.wait_ms == 0
-    assert node_001.wait_ms == 1000  # 3000ms start - 2000ms end
-    assert node_002.wait_ms == 1000  # 6000ms start - 5000ms end
+    assert event_000.wait_ms == 0
+    assert event_001.wait_ms == 1000  # 3000ms start - 2000ms end
+    assert event_002.wait_ms == 1000  # 6000ms start - 5000ms end
 
     # Token counts (from recorded values)
-    assert node_000.call.total_input_tokens == 10
-    assert node_000.call.expected_output_tokens == 20
-    assert node_001.call.total_input_tokens == 40
-    assert node_001.call.expected_output_tokens == 22
-    assert node_002.call.total_input_tokens == 75
-    assert node_002.call.expected_output_tokens == 18
+    assert event_000.call.total_input_tokens == 10
+    assert event_000.call.expected_output_tokens == 20
+    assert event_001.call.total_input_tokens == 40
+    assert event_001.call.expected_output_tokens == 22
+    assert event_002.call.total_input_tokens == 75
+    assert event_002.call.expected_output_tokens == 18
 
     # Segment types for span_A: should be all unique (no predecessors)
-    segs_A = node_000.call.input_segments
+    segs_A = event_000.call.input_segments
     assert all(s.type == "unique" for s in segs_A), f"span_A should be all unique, got {segs_A}"
 
     # Segment types for span_B: SHARED(1) + OUTPUT(1) + UNIQUE(1)
-    segs_B = node_001.call.input_segments
+    segs_B = event_001.call.input_segments
     seg_types_B = [s.type for s in segs_B]
-    print(f"\n  span_B segments: {[(s.type, s.message_count, s.token_count, s.source_node_id) for s in segs_B]}")
+    print(f"\n  span_B segments: {[(s.type, s.message_count, s.token_count, s.source_event_id) for s in segs_B]}")
     assert seg_types_B[0] == "shared", f"span_B first segment should be shared, got {seg_types_B}"
-    assert segs_B[0].source_node_id == "node_000_span_A"
+    assert segs_B[0].source_event_id == "event_000_span_A"
     assert segs_B[0].message_count == 1  # only "user: What is the capital of France?"
     assert "output" in seg_types_B, f"span_B should have an output segment, got {seg_types_B}"
     # No UNIQUE(" assistant: ") artifact — segments are whole messages
     output_seg_B = next(s for s in segs_B if s.type == "output")
     assert output_seg_B.message_count == 1  # exactly 1 assistant message
-    assert output_seg_B.source_node_id == "node_000_span_A"
+    assert output_seg_B.source_event_id == "event_000_span_A"
 
     # Segment types for span_C: SHARED(3) + OUTPUT(1) + UNIQUE(1)
-    segs_C = node_002.call.input_segments
+    segs_C = event_002.call.input_segments
     seg_types_C = [s.type for s in segs_C]
-    print(f"  span_C segments: {[(s.type, s.message_count, s.token_count, s.source_node_id) for s in segs_C]}")
+    print(f"  span_C segments: {[(s.type, s.message_count, s.token_count, s.source_event_id) for s in segs_C]}")
     assert seg_types_C[0] == "shared", f"span_C first segment should be shared, got {seg_types_C}"
-    assert segs_C[0].source_node_id == "node_001_span_B"
+    assert segs_C[0].source_event_id == "event_001_span_B"
     assert segs_C[0].message_count == 3  # user Q + assistant OUTPUT_A + user Q2
     assert "output" in seg_types_C, f"span_C should have an output segment, got {seg_types_C}"
     output_seg_C = next(s for s in segs_C if s.type == "output")
     assert output_seg_C.message_count == 1
-    assert output_seg_C.source_node_id == "node_001_span_B"
+    assert output_seg_C.source_event_id == "event_001_span_B"
 
     # Total message counts must add up
     total_msgs_B = sum(s.message_count for s in segs_B)
@@ -267,19 +267,19 @@ def test_sequential_chain() -> None:
 #   span_P1    [3s → 5s]   "Technical analysis of <doc>"
 #                           Does NOT contain ROOT's output as an assistant message
 #                           → no causal dep on ROOT via output injection
-#                           → timing fallback: predecessor = node_000
+#                           → timing fallback: predecessor = event_000
 #
 #   span_P2    [3.2s → 5.2s] "Business analysis of <doc>"
 #                           Does NOT contain ROOT's output as an assistant message
-#                           → timing fallback: predecessor = node_001 (immediately preceding)
+#                           → timing fallback: predecessor = event_001 (immediately preceding)
 #
 #   span_FINAL [6s → 8s]   Contains P1's output AND P2's output as assistant messages
 #                           → causal dep on both P1 and P2
 #
-# Expected graph (one node per call):
-#   node_000 (ROOT) → node_001 (P1) → node_003 (FINAL)
-#                   ↘ node_002 (P2) ↗
-#   node_003.predecessor_node_ids = ["node_001", "node_002"]
+# Expected graph (one event per call):
+#   event_000 (ROOT) → event_001 (P1) → event_003 (FINAL)
+#                    ↘ event_002 (P2) ↗
+#   event_003.predecessor_event_ids = ["event_001", "event_002"]
 
 SYSTEM_PROMPT = "You are a helpful document analysis assistant."
 DOCUMENT = "The quarterly revenue increased by 15% driven by cloud services growth."
@@ -360,17 +360,17 @@ def test_parallel_fan_out() -> None:
         span_P2    t=3.2s→5.2s [sys, user: "Business analysis"]   (no causal dep on ROOT)
         span_FINAL t=6s→8s     [sys, user, assistant:P1_out, assistant:P2_out]
 
-    EXPECTED GRAPH (one node per call):
-        node_000 (ROOT)
-        node_001 (P1)    predecessor_node_ids=["node_000"]  (timing fallback)
-        node_002 (P2)    predecessor_node_ids=["node_000"]  (timing fallback)
-        node_003 (FINAL) predecessor_node_ids=["node_001", "node_002"]  (causal: P1+P2 outputs)
+    EXPECTED GRAPH (one event per call):
+        event_000 (ROOT)
+        event_001 (P1)    predecessor_event_ids=["event_000"]  (timing fallback)
+        event_002 (P2)    predecessor_event_ids=["event_000"]  (timing fallback)
+        event_003 (FINAL) predecessor_event_ids=["event_001", "event_002"]  (causal: P1+P2 outputs)
 
     EXPECTED SEGMENTS for span_FINAL:
-        SHARED(1msg ← node_001 or node_002)  [sys]
-        UNIQUE(1msg)                         ["Combine these analyses into a unified summary."]
-        OUTPUT(1msg ← node_001)              [assistant: OUTPUT_P1]
-        OUTPUT(1msg ← node_002)              [assistant: OUTPUT_P2]
+        SHARED(1msg ← event_001 or event_002)  [sys]
+        UNIQUE(1msg)                            ["Combine these analyses into a unified summary."]
+        OUTPUT(1msg ← event_001)               [assistant: OUTPUT_P1]
+        OUTPUT(1msg ← event_002)               [assistant: OUTPUT_P2]
     """
     spans = [SPAN_ROOT, SPAN_P1, SPAN_P2, SPAN_FINAL]
     calls = build_raw_calls(spans)
@@ -389,40 +389,40 @@ def test_parallel_fan_out() -> None:
     print(summarize_graph(graph))
 
     # --- Structural assertions ---
-    assert len(graph.nodes) == 4, f"Expected 4 nodes, got {len(graph.nodes)}: {list(graph.nodes.keys())}"
-    assert graph.root_node_ids == ["node_000_span_ROOT"]
+    assert len(graph.events) == 4, f"Expected 4 events, got {len(graph.events)}: {list(graph.events.keys())}"
+    assert graph.root_event_ids == ["event_000_span_ROOT"]
 
-    node_000 = graph.nodes["node_000_span_ROOT"]
-    node_001 = graph.nodes["node_001_span_P1"]
-    node_002 = graph.nodes["node_002_span_P2"]
-    node_003 = graph.nodes["node_003_span_FINAL"]
+    event_000 = graph.events["event_000_span_ROOT"]
+    event_001 = graph.events["event_001_span_P1"]
+    event_002 = graph.events["event_002_span_P2"]
+    event_003 = graph.events["event_003_span_FINAL"]
 
-    # Each node has exactly 1 call
-    assert node_000.call.call_id == "span_ROOT"
-    assert node_001.call.call_id == "span_P1"
-    assert node_002.call.call_id == "span_P2"
-    assert node_003.call.call_id == "span_FINAL"
+    # Each event has exactly 1 call
+    assert event_000.call.call_id == "span_ROOT"
+    assert event_001.call.call_id == "span_P1"
+    assert event_002.call.call_id == "span_P2"
+    assert event_003.call.call_id == "span_FINAL"
 
     # FINAL depends on both P1 and P2 (causal: their outputs appear in FINAL's messages)
-    assert set(node_003.predecessor_node_ids) == {"node_001_span_P1", "node_002_span_P2"}, (
-        f"FINAL should depend on P1 and P2, got {node_003.predecessor_node_ids}"
+    assert set(event_003.predecessor_event_ids) == {"event_001_span_P1", "event_002_span_P2"}, (
+        f"FINAL should depend on P1 and P2, got {event_003.predecessor_event_ids}"
     )
 
     # ROOT has no predecessors
-    assert node_000.predecessor_node_ids == []
+    assert event_000.predecessor_event_ids == []
 
-    assert node_001.predecessor_node_ids == node_002.predecessor_node_ids, (
-        "node_001 and node_002 are run in parallel and have the same predecessor"
+    assert event_001.predecessor_event_ids == event_002.predecessor_event_ids, (
+        "event_001 and event_002 are run in parallel and have the same predecessor"
     )
 
     # span_FINAL should have OUTPUT segments from P1 and P2
-    segs_final = node_003.call.input_segments
+    segs_final = event_003.call.input_segments
     seg_types_final = [s.type for s in segs_final]
-    output_sources = {s.source_node_id for s in segs_final if s.type == "output"}
-    print(f"\n  span_FINAL segments: {[(s.type, s.message_count, s.source_node_id) for s in segs_final]}")
+    output_sources = {s.source_event_id for s in segs_final if s.type == "output"}
+    print(f"\n  span_FINAL segments: {[(s.type, s.message_count, s.source_event_id) for s in segs_final]}")
     assert "output" in seg_types_final, f"span_FINAL should have output segments, got {seg_types_final}"
-    assert "node_001_span_P1" in output_sources, f"span_FINAL should reference P1 output, got {output_sources}"
-    assert "node_002_span_P2" in output_sources, f"span_FINAL should reference P2 output, got {output_sources}"
+    assert "event_001_span_P1" in output_sources, f"span_FINAL should reference P1 output, got {output_sources}"
+    assert "event_002_span_P2" in output_sources, f"span_FINAL should reference P2 output, got {output_sources}"
 
     # Total message count for FINAL must be 4
     total_msgs_final = sum(s.message_count for s in segs_final)
@@ -536,13 +536,13 @@ def test_growing_prefix() -> None:
         span_T4  t=9s→11s   [sys, Q1, A1, Q2, A2, Q3, asst A3, user Q4]       (8 messages)
 
     EXPECTED GRAPH:
-        node_000 → node_001 → node_002 → node_003  (linear chain)
+        event_000 → event_001 → event_002 → event_003  (linear chain)
 
     EXPECTED SEGMENTS (message-level, no role-label artifacts):
         span_T1: UNIQUE(2msg)
-        span_T2: SHARED(2msg ← node_000) + OUTPUT(1msg ← node_000) + UNIQUE(1msg)
-        span_T3: SHARED(4msg ← node_001) + OUTPUT(1msg ← node_001) + UNIQUE(1msg)
-        span_T4: SHARED(6msg ← node_002) + OUTPUT(1msg ← node_002) + UNIQUE(1msg)
+        span_T2: SHARED(2msg ← event_000) + OUTPUT(1msg ← event_000) + UNIQUE(1msg)
+        span_T3: SHARED(4msg ← event_001) + OUTPUT(1msg ← event_001) + UNIQUE(1msg)
+        span_T4: SHARED(6msg ← event_002) + OUTPUT(1msg ← event_002) + UNIQUE(1msg)
 
     KEY PROPERTY: shared prefix message count grows monotonically: 2 < 4 < 6
     """
@@ -562,52 +562,52 @@ def test_growing_prefix() -> None:
     print(summarize_graph(graph))
 
     # --- Structural assertions ---
-    assert len(graph.nodes) == 4, f"Expected 4 nodes, got {len(graph.nodes)}"
-    assert graph.root_node_ids == ["node_000_span_T1"]
+    assert len(graph.events) == 4, f"Expected 4 events, got {len(graph.events)}"
+    assert graph.root_event_ids == ["event_000_span_T1"]
 
     # Linear chain
-    assert graph.nodes["node_000_span_T1"].predecessor_node_ids == []
-    assert graph.nodes["node_001_span_T2"].predecessor_node_ids == ["node_000_span_T1"]
-    assert graph.nodes["node_002_span_T3"].predecessor_node_ids == ["node_001_span_T2"]
-    assert graph.nodes["node_003_span_T4"].predecessor_node_ids == ["node_002_span_T3"]
+    assert graph.events["event_000_span_T1"].predecessor_event_ids == []
+    assert graph.events["event_001_span_T2"].predecessor_event_ids == ["event_000_span_T1"]
+    assert graph.events["event_002_span_T3"].predecessor_event_ids == ["event_001_span_T2"]
+    assert graph.events["event_003_span_T4"].predecessor_event_ids == ["event_002_span_T3"]
 
     # Wait times: each gap is 1000ms (3s-2s, 6s-5s, 9s-8s)
-    assert graph.nodes["node_000_span_T1"].wait_ms == 0
-    assert graph.nodes["node_001_span_T2"].wait_ms == 1000
-    assert graph.nodes["node_002_span_T3"].wait_ms == 1000
-    assert graph.nodes["node_003_span_T4"].wait_ms == 1000
+    assert graph.events["event_000_span_T1"].wait_ms == 0
+    assert graph.events["event_001_span_T2"].wait_ms == 1000
+    assert graph.events["event_002_span_T3"].wait_ms == 1000
+    assert graph.events["event_003_span_T4"].wait_ms == 1000
 
     # span_T1: all unique (no predecessors)
-    segs_T1 = graph.nodes["node_000_span_T1"].call.input_segments
+    segs_T1 = graph.events["event_000_span_T1"].call.input_segments
     assert all(s.type == "unique" for s in segs_T1)
     assert sum(s.message_count for s in segs_T1) == 2
 
     # span_T2: SHARED(2) + OUTPUT(1) + UNIQUE(1)
-    segs_T2 = graph.nodes["node_001_span_T2"].call.input_segments
+    segs_T2 = graph.events["event_001_span_T2"].call.input_segments
     assert segs_T2[0].type == "shared"
-    assert segs_T2[0].source_node_id == "node_000_span_T1"
+    assert segs_T2[0].source_event_id == "event_000_span_T1"
     shared_msgs_T2 = segs_T2[0].message_count
-    print(f"\n  span_T2 shared prefix: {shared_msgs_T2} messages (source: {segs_T2[0].source_node_id})")
+    print(f"\n  span_T2 shared prefix: {shared_msgs_T2} messages (source: {segs_T2[0].source_event_id})")
     print(f"  span_T2 segments: {[(s.type, s.message_count) for s in segs_T2]}")
     assert shared_msgs_T2 == 2, f"T2 should share 2 messages with T1, got {shared_msgs_T2}"
     assert sum(s.message_count for s in segs_T2) == 4
 
     # span_T3: SHARED(4) + OUTPUT(1) + UNIQUE(1)
-    segs_T3 = graph.nodes["node_002_span_T3"].call.input_segments
+    segs_T3 = graph.events["event_002_span_T3"].call.input_segments
     assert segs_T3[0].type == "shared"
-    assert segs_T3[0].source_node_id == "node_001_span_T2"
+    assert segs_T3[0].source_event_id == "event_001_span_T2"
     shared_msgs_T3 = segs_T3[0].message_count
-    print(f"  span_T3 shared prefix: {shared_msgs_T3} messages (source: {segs_T3[0].source_node_id})")
+    print(f"  span_T3 shared prefix: {shared_msgs_T3} messages (source: {segs_T3[0].source_event_id})")
     print(f"  span_T3 segments: {[(s.type, s.message_count) for s in segs_T3]}")
     assert shared_msgs_T3 == 4, f"T3 should share 4 messages with T2, got {shared_msgs_T3}"
     assert sum(s.message_count for s in segs_T3) == 6
 
     # span_T4: SHARED(6) + OUTPUT(1) + UNIQUE(1)
-    segs_T4 = graph.nodes["node_003_span_T4"].call.input_segments
+    segs_T4 = graph.events["event_003_span_T4"].call.input_segments
     assert segs_T4[0].type == "shared"
-    assert segs_T4[0].source_node_id == "node_002_span_T3"
+    assert segs_T4[0].source_event_id == "event_002_span_T3"
     shared_msgs_T4 = segs_T4[0].message_count
-    print(f"  span_T4 shared prefix: {shared_msgs_T4} messages (source: {segs_T4[0].source_node_id})")
+    print(f"  span_T4 shared prefix: {shared_msgs_T4} messages (source: {segs_T4[0].source_event_id})")
     print(f"  span_T4 segments: {[(s.type, s.message_count) for s in segs_T4]}")
     assert shared_msgs_T4 == 6, f"T4 should share 6 messages with T3, got {shared_msgs_T4}"
     assert sum(s.message_count for s in segs_T4) == 8
@@ -618,11 +618,11 @@ def test_growing_prefix() -> None:
     )
 
     # All turns T2-T4 have an output segment
-    for node_id, call_id in [
-        ("node_001_span_T2", "span_T2"),
-        ("node_002_span_T3", "span_T3"),
-        ("node_003_span_T4", "span_T4"),
+    for event_id, call_id in [
+        ("event_001_span_T2", "span_T2"),
+        ("event_002_span_T3", "span_T3"),
+        ("event_003_span_T4", "span_T4"),
     ]:
-        segs = graph.nodes[node_id].call.input_segments
+        segs = graph.events[event_id].call.input_segments
         seg_types = [s.type for s in segs]
         assert "output" in seg_types, f"{call_id} should have an output segment, got {seg_types}"

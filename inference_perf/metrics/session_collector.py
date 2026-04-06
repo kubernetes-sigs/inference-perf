@@ -87,4 +87,4 @@ class SessionMetricsCollector:
             sm.total_input_tokens = inp
             sm.total_output_tokens = out
             sm.error = error_by_session.get(sm.session_id)
-            sm.success = (sm.num_nodes_completed == sm.num_nodes) and (sm.error is None)
+            sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)

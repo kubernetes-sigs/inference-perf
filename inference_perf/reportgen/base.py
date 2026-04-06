@@ -587,9 +587,9 @@ class ReportGenerator:
         num_sessions = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)
         num_failed = sum(1 for m in metrics if m.success is False)
-        total_nodes = sum(m.num_nodes for m in metrics)
-        total_nodes_completed = sum(m.num_nodes_completed for m in metrics)
-        total_nodes_cancelled = sum(m.num_nodes_cancelled for m in metrics if m.num_nodes_cancelled is not None)
+        total_events = sum(m.num_events for m in metrics)
+        total_events_completed = sum(m.num_events_completed for m in metrics)
+        total_events_cancelled = sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None)
 
         sessions_per_second = 0.0
         if num_sessions > 0:
@@ -601,14 +601,14 @@ class ReportGenerator:
             "num_sessions": num_sessions,
             "num_sessions_succeeded": num_succeeded,
             "num_sessions_failed": num_failed,
-            "total_nodes": total_nodes,
-            "total_nodes_completed": total_nodes_completed,
-            "total_nodes_cancelled": total_nodes_cancelled,
+            "total_events": total_events,
+            "total_events_completed": total_events_completed,
+            "total_events_cancelled": total_events_cancelled,
             "sessions_per_second": sessions_per_second,
             "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
-            "num_nodes": summarize([float(m.num_nodes) for m in metrics], percentiles),
-            "num_nodes_cancelled": summarize(
-                [float(m.num_nodes_cancelled) for m in metrics if m.num_nodes_cancelled is not None], percentiles
+            "num_events": summarize([float(m.num_events) for m in metrics], percentiles),
+            "num_events_cancelled": summarize(
+                [float(m.num_events_cancelled) for m in metrics if m.num_events_cancelled is not None], percentiles
             ),
             "total_input_tokens": summarize(
                 [float(m.total_input_tokens) for m in metrics if m.total_input_tokens is not None], percentiles

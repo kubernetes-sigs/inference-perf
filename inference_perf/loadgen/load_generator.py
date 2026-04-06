@@ -189,7 +189,7 @@ class Worker(mp.Process):
                         # Check if request should be skipped (e.g., session failed in OTel replay)
                         if hasattr(request_data, "skip_request") and request_data.skip_request:
                             logger.debug(
-                                f"Skipping request - session failure detected: {getattr(request_data, 'node_id', 'unknown')}"
+                                f"Skipping request - session failure detected: {getattr(request_data, 'event_id', 'unknown')}"
                             )
                             return  # Exit this task, finally block will clean up
 
@@ -377,10 +377,10 @@ class LoadGenerator:
         When a session completes, the next pending session is started to fill the pool.
 
         Note on worker_max_concurrency: all events for a session are enqueued immediately
-        when the session starts, even if most nodes are waiting on predecessors. Each waiting
-        node holds a worker semaphore slot for the duration of its wait. Since waiting is done
+        when the session starts, even if most events are waiting on predecessors. Each waiting
+        event holds a worker semaphore slot for the duration of its wait. Since waiting is done
         via asyncio.Event (zero threads — just a suspended coroutine), the cost of a high value
-        is negligible. Rule of thumb: worker_max_concurrency >= concurrent_sessions * avg_nodes_per_session.
+        is negligible. Rule of thumb: worker_max_concurrency >= concurrent_sessions * avg_events_per_session.
         """
         logger.info("Stage %d - session-based run started", stage_id)
 
@@ -504,7 +504,7 @@ class LoadGenerator:
             if span is not None:
                 session_spans[session_id] = span
 
-            # Activate session in DataGen (marks root nodes as ready)
+            # Activate session in DataGen (marks root events as ready)
             self.datagen.activate_session(session_id)
 
             # Record dispatch time for session duration tracking

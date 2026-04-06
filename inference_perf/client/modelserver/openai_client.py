@@ -305,11 +305,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             #
                             # For OTel trace replay, process_failure() is called to:
                             # 1. Mark the session as failed in WorkerSessionTracker
-                            # 2. Call registry.record_failure() to unblock dependent nodes via NodeFailedError
+                            # 2. Call registry.record_failure() to unblock dependent events via EventFailedError
                             # 3. Immediately notify the main process via session_completion_queue
                             #
                             # This ensures that if request X fails and request Y depends on X's output,
-                            # Y raises NodeFailedError and skips rather than hanging indefinitely.
+                            # Y raises EventFailedError and skips rather than hanging indefinitely.
                             #
                             # Note: The original code only logged errors for non-200 responses without
                             # calling process_failure(). This special handling for OTelChatCompletionAPIData

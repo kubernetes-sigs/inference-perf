@@ -201,7 +201,7 @@ class SessionGenerator(BaseGenerator):
     def cleanup_session(self, session_id: str) -> None:
         """Clean up memory for a completed session.
 
-        Removes all node outputs, messages, and completion tracking data
+        Removes all event outputs, messages, and completion tracking data
         for the specified session to prevent memory leaks.
 
         Args:

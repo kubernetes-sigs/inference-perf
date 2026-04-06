@@ -17,21 +17,21 @@
 Convert OTel trace JSON to a replay graph JSON.
 
 This script extracts LLM call events from OpenTelemetry traces and converts them
-into a graph suitable for replay testing. Each node in the graph represents a single
+into a graph suitable for replay testing. Each event in the graph represents a single
 LLM call. Edges encode predecessor relationships and wait times (tool/agent processing
-time between nodes).
+time between events).
 
 Graph structure
 ---------------
-Each node contains:
-  - node_id: unique identifier
+Each event contains:
+  - event_id: unique identifier
   - call: a single LLM call
     The call contains:
       - call_id: original span_id
       - model: model name
       - messages: original message list (for replay)
       - input_segments: ordered list of segments describing the prompt at message granularity
-          Each segment: {type, message_count, token_count, source_node_id (if output/shared)}
+          Each segment: {type, message_count, token_count, source_event_id (if output/shared)}
             type = "shared"   — leading messages identical to a predecessor call's messages
                                 (KV cache hit opportunity)
             type = "output"   — an assistant message whose content is a predecessor call's output
@@ -40,8 +40,8 @@ Each node contains:
       - expected_output_tokens: how many tokens to generate
       - total_input_tokens: total prompt token count
       - temperature, max_tokens_recorded: original decoding params (informational)
-  - predecessor_node_ids: list of node_ids that must complete before this node starts
-  - wait_ms: delay (ms) after the last predecessor finishes before this node starts
+  - predecessor_event_ids: list of event_ids that must complete before this event starts
+  - wait_ms: delay (ms) after the last predecessor finishes before this event starts
 
 Token count estimation
 ----------------------
@@ -658,19 +658,19 @@ class InputSegment:
 
     message_count: how many messages this segment covers
     token_count: estimated or recorded token count for this segment
-    source_node_id: which predecessor node this segment comes from (shared/output only)
+    source_event_id: which predecessor event this segment comes from (shared/output only)
     """
 
     type: str  # "shared" | "output" | "unique"
     message_count: int
     token_count: int
-    source_node_id: Optional[str] = None
+    source_event_id: Optional[str] = None
 
 
 def decompose_input(
     call: RawCall,
     predecessors: List[RawCall],
-    predecessor_node_ids: List[str],
+    predecessor_event_ids: List[str],
 ) -> List[InputSegment]:
     """Decompose a call's message list into segments relative to its predecessors.
 
@@ -731,7 +731,7 @@ def decompose_input(
                 type="shared",
                 message_count=best_prefix_count,
                 token_count=msgs_to_tokens(shared_msgs),  # type: ignore[arg-type]
-                source_node_id=predecessor_node_ids[best_pred_idx],
+                source_event_id=predecessor_event_ids[best_pred_idx],
             )
         )
         cursor = best_prefix_count
@@ -789,7 +789,7 @@ def decompose_input(
                 type="output",
                 message_count=1,
                 token_count=out_tokens,
-                source_node_id=predecessor_node_ids[best_out_pred_idx],
+                source_event_id=predecessor_event_ids[best_out_pred_idx],
             )
         )
         cursor += 1
@@ -808,7 +808,7 @@ def decompose_input(
 
 @dataclass
 class GraphCall:
-    """An LLM call within a graph node, ready for replay."""
+    """An LLM call within a graph event, ready for replay."""
 
     call_id: str
     model: str
@@ -822,19 +822,19 @@ class GraphCall:
 
 
 @dataclass
-class GraphNode:
-    """A node in the replay graph. Contains exactly one LLM call.
+class GraphEvent:
+    """An event in the replay graph. Contains exactly one LLM call.
 
-    The replayer starts this node when ALL predecessor nodes have completed,
+    The replayer starts this event when ALL predecessor events have completed,
     then waits `wait_ms` before dispatching the call.
     """
 
-    node_id: str
+    event_id: str
     call: GraphCall
-    predecessor_node_ids: List[str]  # all nodes that must complete before this one starts
+    predecessor_event_ids: List[str]  # all events that must complete before this one starts
     predecessor_dependency_types: Dict[
         str, str
-    ]  # mapping of predecessor node_id to dependency type (for visualization and analysis)
+    ]  # mapping of predecessor event_id to dependency type (for visualization and analysis)
     wait_ms: int  # delay after last predecessor finishes (ms)
     # Timing info (informational, from original trace)
     t_start_ms: int
@@ -845,8 +845,8 @@ class GraphNode:
 class ReplayGraph:
     """The complete replay graph for one combined trace file."""
 
-    nodes: Dict[str, GraphNode]
-    root_node_ids: List[str]  # nodes with no predecessors (start immediately)
+    events: Dict[str, GraphEvent]
+    root_event_ids: List[str]  # events with no predecessors (start immediately)
     source_file: str
 
 
@@ -861,7 +861,7 @@ def build_graph(
 ) -> ReplayGraph:
     """Build a ReplayGraph from a list of raw calls.
 
-    Each RawCall becomes exactly one GraphNode. Predecessor relationships are
+    Each RawCall becomes exactly one GraphEvent. Predecessor relationships are
     inferred from causal dependencies (output→input message matching) with a
     fallback to the immediately preceding call for timing-only chains.
 
@@ -870,14 +870,14 @@ def build_graph(
     2. Apply transitive reduction: remove predecessors that are already ancestors
        of another predecessor (keep only direct edges).
     3. Decompose each call's messages into segments relative to all ancestor calls.
-    4. Build GraphNode objects with predecessor_node_ids and wait_ms.
+    4. Build GraphEvent objects with predecessor_event_ids and wait_ms.
     """
     if not calls:
-        return ReplayGraph(nodes={}, root_node_ids=[], source_file=source_file)
+        return ReplayGraph(events={}, root_event_ids=[], source_file=source_file)
 
     n = len(calls)
-    # Assign node IDs 1:1 with calls, incorporating span_id for traceability
-    node_ids = [f"node_{i:03d}_{calls[i].call_id}" for i in range(n)]
+    # Assign event IDs 1:1 with calls, incorporating span_id for traceability
+    event_ids = [f"event_{i:03d}_{calls[i].call_id}" for i in range(n)]
 
     # ---------------------------------------------------------------------------
     # Step 1: Find direct predecessors for each call
@@ -903,7 +903,7 @@ def build_graph(
 
     def is_valid_predecessor(predecessor_candidate: Any, curr_call: Any) -> bool:
         # checks if candidate can be a predecessor to curr_call. Make sure times are not overlapping
-        # since the nodes are sorted, we can assume the candidate doesn't start after curr_call
+        # since the events are sorted, we can assume the candidate doesn't start after curr_call
         if curr_call.t_start_ms < predecessor_candidate.t_end_ms:
             # curr starts before the candidate ends.
             return False
@@ -929,7 +929,7 @@ def build_graph(
             predecessor_indices[i].update(direct_preds)
 
         """
-        Add a temporal fallback predecessor (the closest non-overlapping node) if one exists.
+        Add a temporal fallback predecessor (the closest non-overlapping event) if one exists.
         This ensures we don't have long wait times when causal predecessors are distant.
         Causal detection (output matching) doesn't catch all dependencies, so we use
         temporal proximity as a conservative fallback to maintain realistic timing.
@@ -959,17 +959,17 @@ def build_graph(
         return list(visited)
 
     # ---------------------------------------------------------------------------
-    # Step 3: Build GraphNodes
+    # Step 3: Build GraphEvents
     # ---------------------------------------------------------------------------
-    nodes: Dict[str, GraphNode] = {}
-    for i, (nid, rc) in enumerate(zip(node_ids, calls, strict=False)):
+    events: Dict[str, GraphEvent] = {}
+    for i, (eid, rc) in enumerate(zip(event_ids, calls, strict=False)):
         # All ancestor calls (for segment decomposition — includes transitive predecessors)
         ancestor_idxs = all_ancestor_indices(i)
         ancestor_calls = [calls[j] for j in ancestor_idxs]
-        ancestor_node_ids = [node_ids[j] for j in ancestor_idxs]
+        ancestor_event_ids = [event_ids[j] for j in ancestor_idxs]
 
         # Decompose input into message-level segments
-        segments = decompose_input(rc, ancestor_calls, ancestor_node_ids)
+        segments = decompose_input(rc, ancestor_calls, ancestor_event_ids)
 
         # Validate that segment message counts sum to total messages
         total_segment_messages = sum(seg.message_count for seg in segments)
@@ -1011,21 +1011,21 @@ def build_graph(
             wait_ms = 0
 
         # Build predecessor dependency types mapping
-        predecessor_dependency_types = {node_ids[j]: dep_type.value for j, dep_type in pred_idxs.items()}
+        predecessor_dependency_types = {event_ids[j]: dep_type.value for j, dep_type in pred_idxs.items()}
 
-        nodes[nid] = GraphNode(
-            node_id=nid,
+        events[eid] = GraphEvent(
+            event_id=eid,
             call=graph_call,
-            predecessor_node_ids=list(predecessor_dependency_types.keys()),
+            predecessor_event_ids=list(predecessor_dependency_types.keys()),
             predecessor_dependency_types=predecessor_dependency_types,
             wait_ms=wait_ms,
             t_start_ms=rc.t_start_ms,
             t_end_ms=rc.t_end_ms,
         )
 
-    root_node_ids = [node_ids[i] for i in range(n) if not predecessor_indices[i]]
+    root_event_ids = [event_ids[i] for i in range(n) if not predecessor_indices[i]]
 
-    return ReplayGraph(nodes=nodes, root_node_ids=root_node_ids, source_file=source_file)
+    return ReplayGraph(events=events, root_event_ids=root_event_ids, source_file=source_file)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,8 +1039,8 @@ def segment_to_dict(seg: InputSegment) -> Dict[str, Any]:
         "message_count": seg.message_count,
         "token_count": seg.token_count,
     }
-    if seg.source_node_id is not None:
-        d["source_node_id"] = seg.source_node_id
+    if seg.source_event_id is not None:
+        d["source_event_id"] = seg.source_event_id
     return d
 
 
@@ -1058,24 +1058,24 @@ def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
     }
 
 
-def graph_node_to_dict(node: GraphNode) -> Dict[str, Any]:
+def graph_event_to_dict(event: GraphEvent) -> Dict[str, Any]:
     return {
-        "node_id": node.node_id,
-        "t_start_ms": node.t_start_ms,
-        "t_end_ms": node.t_end_ms,
-        "predecessor_node_ids": node.predecessor_node_ids,
-        "predecessor_dependency_types": node.predecessor_dependency_types,
-        "wait_ms": node.wait_ms,
-        "call": graph_call_to_dict(node.call),
+        "event_id": event.event_id,
+        "t_start_ms": event.t_start_ms,
+        "t_end_ms": event.t_end_ms,
+        "predecessor_event_ids": event.predecessor_event_ids,
+        "predecessor_dependency_types": event.predecessor_dependency_types,
+        "wait_ms": event.wait_ms,
+        "call": graph_call_to_dict(event.call),
     }
 
 
 def graph_to_dict(graph: ReplayGraph) -> Dict[str, Any]:
     return {
         "source_file": graph.source_file,
-        "root_node_ids": graph.root_node_ids,
-        "node_count": len(graph.nodes),
-        "nodes": {nid: graph_node_to_dict(node) for nid, node in graph.nodes.items()},
+        "root_event_ids": graph.root_event_ids,
+        "event_count": len(graph.events),
+        "events": {eid: graph_event_to_dict(event) for eid, event in graph.events.items()},
     }
 
 
@@ -1102,30 +1102,30 @@ def _segment_label(seg: InputSegment, messages: List[Dict[str, str]]) -> str:
     """One-line label for an input segment."""
     type_labels = {"shared": "SHARED", "output": "OUTPUT", "unique": "UNIQUE"}
     label = type_labels.get(seg.type, seg.type.upper())
-    src = f" <- {seg.source_node_id}" if seg.source_node_id else ""
+    src = f" <- {seg.source_event_id}" if seg.source_event_id else ""
     msg_str = "\n\t\t\t".join(f"{x['role']} : {_shorten_string(x['content'])}" for x in messages)
     return f"{label}({seg.message_count}msg/{seg.token_count}t{src})\n\t\t\t{msg_str}"
 
 
 def _topo_order(graph: ReplayGraph) -> List[str]:
-    """Return node IDs in topological order (BFS from roots)."""
-    # Build successor map from predecessor_node_ids
-    successors: Dict[str, List[str]] = {nid: [] for nid in graph.nodes}
-    for nid, node in graph.nodes.items():
-        for pred_id in node.predecessor_node_ids:
+    """Return event IDs in topological order (BFS from roots)."""
+    # Build successor map from predecessor_event_ids
+    successors: Dict[str, List[str]] = {eid: [] for eid in graph.events}
+    for eid, event in graph.events.items():
+        for pred_id in event.predecessor_event_ids:
             if pred_id in successors:
-                successors[pred_id].append(nid)
+                successors[pred_id].append(eid)
 
     visited: Set[str] = set()
-    queue = list(graph.root_node_ids)
+    queue = list(graph.root_event_ids)
     order: List[str] = []
     while queue:
-        nid = queue.pop(0)
-        if nid in visited:
+        eid = queue.pop(0)
+        if eid in visited:
             continue
-        visited.add(nid)
-        order.append(nid)
-        for succ_id in successors.get(nid, []):
+        visited.add(eid)
+        order.append(eid)
+        for succ_id in successors.get(eid, []):
             queue.append(succ_id)
     return order
 
@@ -1148,9 +1148,9 @@ def print_graph(graph: ReplayGraph) -> None:
     source_name = graph.source_file.split("/")[-1] if graph.source_file else ""
 
     title = (
-        f"REPLAY GRAPH   {len(graph.nodes)} nodes   source: {source_name}"
+        f"REPLAY GRAPH   {len(graph.events)} events   source: {source_name}"
         if source_name
-        else f"REPLAY GRAPH   {len(graph.nodes)} nodes"
+        else f"REPLAY GRAPH   {len(graph.events)} events"
     )
     print()
     print(f"  {title}")
@@ -1161,11 +1161,11 @@ def print_graph(graph: ReplayGraph) -> None:
     print("           UNIQUE = messages unique to this call")
     print()
 
-    for nid in order:
-        node = graph.nodes[nid]
-        is_root = nid in graph.root_node_ids
-        duration_ms = node.t_end_ms - node.t_start_ms
-        gc = node.call
+    for eid in order:
+        event = graph.events[eid]
+        is_root = eid in graph.root_event_ids
+        duration_ms = event.t_end_ms - event.t_start_ms
+        gc = event.call
 
         tags = []
         if is_root:
@@ -1173,16 +1173,16 @@ def print_graph(graph: ReplayGraph) -> None:
         tag_str = "   " + " | ".join(tags) if tags else ""
 
         print(
-            f"  ╔══ NODE {nid}"
-            f"   t={_fmt_ms(node.t_start_ms)} -> {_fmt_ms(node.t_end_ms)}"
+            f"  ╔══ EVENT {eid}"
+            f"   t={_fmt_ms(event.t_start_ms)} -> {_fmt_ms(event.t_end_ms)}"
             f"  (duration {_fmt_ms(duration_ms)})"
             f"{tag_str}"
         )
         print("  ║")
 
-        if node.predecessor_node_ids:
-            preds_str = ", ".join(node.predecessor_node_ids)
-            print(f"  ║   waits for: [{preds_str}]  then +{_fmt_ms(node.wait_ms)}")
+        if event.predecessor_event_ids:
+            preds_str = ", ".join(event.predecessor_event_ids)
+            print(f"  ║   waits for: [{preds_str}]  then +{_fmt_ms(event.wait_ms)}")
         else:
             print("  ║   (no predecessors — starts immediately)")
         print("  ║")
@@ -1202,14 +1202,16 @@ def print_graph(graph: ReplayGraph) -> None:
 
 
 def summarize_graph(graph: ReplayGraph) -> str:
-    """Return a compact one-line-per-node summary string (for logging/testing)."""
+    """Return a compact one-line-per-event summary string (for logging/testing)."""
     lines = []
-    for nid in _topo_order(graph):
-        node = graph.nodes[nid]
-        gc = node.call
-        preds = f"after [{', '.join(node.predecessor_node_ids)}] +{node.wait_ms}ms" if node.predecessor_node_ids else "ROOT"
+    for eid in _topo_order(graph):
+        event = graph.events[eid]
+        gc = event.call
+        preds = (
+            f"after [{', '.join(event.predecessor_event_ids)}] +{event.wait_ms}ms" if event.predecessor_event_ids else "ROOT"
+        )
         seg_str = " ".join(_segment_label(s, m) for s, m in map_input_seq_to_messages(gc))
-        lines.append(f"[{nid}] {preds}  t={node.t_start_ms}-{node.t_end_ms}ms")
+        lines.append(f"[{eid}] {preds}  t={event.t_start_ms}-{event.t_end_ms}ms")
         lines.append(f"    {gc.call_id}: [{seg_str}] -> O({gc.expected_output_tokens}t)")
     return "\n".join(lines)
 
@@ -1270,7 +1272,7 @@ def main() -> None:
         json.dumps(graph_to_dict(graph), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    print(f"Wrote replay graph ({len(graph.nodes)} nodes, {len(calls)} calls) to {args.output}")
+    print(f"Wrote replay graph ({len(graph.events)} events, {len(calls)} calls) to {args.output}")
 
     if args.summary:
         print_graph(graph)

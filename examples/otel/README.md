@@ -24,21 +24,21 @@ OTel trace replay enables you to:
 Each OTel trace file contains a flat list of spans. The replayer converts them into a directed
 acyclic graph (DAG):
 
-1. **Extract LLM spans** — spans with `gen_ai.input.messages` (or a `chat *` name) become nodes.
+1. **Extract LLM spans** — spans with `gen_ai.input.messages` (or a `chat *` name) become session events.
 2. **Infer dependencies** — two types of edges are added:
    - **Causal edges**: when a span's input contains an `assistant` message whose content exactly matches a predecessor's output
    - **Temporal edges**: to the closest non-overlapping earlier span (timing fallback)
    
-   The temporal fallback is necessary because output matching doesn't always detect all dependencies. If node X ends before node Y begins, X is considered a predecessor even if Y doesn't use X's entire output.
+   The temporal fallback is necessary because output matching doesn't always detect all dependencies. If event X ends before event Y begins, X is considered a predecessor even if Y doesn't use X's entire output.
 3. **Transitive reduction** — redundant edges are pruned so only direct predecessors remain.
-4. **Segment decomposition** — each node's input is split into message-level segments:
+4. **Segment decomposition** — each event's input is split into message-level segments:
    - `shared` — leading messages identical to a predecessor (KV-cache hit opportunity)
    - `output` — an assistant message whose content is a predecessor's output (substituted at replay time with the actual generated text)
    - `unique` — messages unique to this call
 5. **`wait_ms`** — the gap between when the last predecessor finished and when this call started
    is recorded, reproducing the original inter-call delays.
 
-Root nodes (no predecessors) start immediately. All others wait for their predecessors and
+Root events (no predecessors) start immediately. All others wait for their predecessors and
 then observe `wait_ms` before dispatching.
 
 ### 2. Output-aware replay
@@ -50,20 +50,20 @@ behaviour rather than replaying stale recorded text.
 
 Three coordination mechanisms handle this:
 
-- **`NodeOutputRegistry`** — intra-worker only. Holds plain dicts (`node_id → output text`,
-  `node_id → input messages`) and one `asyncio.Event` per node. When a node completes,
-  `record()` writes the output and fires the event, immediately unblocking dependent coroutines
-  on the same worker. When a node fails, `record_failure()` fires the event without writing any
-  output; `require_async()` detects this and raises `NodeFailedError` so the waiting coroutine
-  can skip cleanly. No IPC — session-to-worker affinity guarantees all nodes of a session
+- **`EventOutputRegistry`** — intra-worker only. Holds plain dicts (`event_id → output text`,
+  `event_id → input messages`) and one `asyncio.Event` per session event. When an event completes,
+  `record()` writes the output and fires the signal, immediately unblocking dependent coroutines
+  on the same worker. When an event fails, `record_failure()` fires the signal without writing any
+  output; `require_async()` detects this and raises `EventFailedError` so the waiting coroutine
+  can skip cleanly. No IPC — session-to-worker affinity guarantees all events of a session
   run on the same worker.
 
 - **`WorkerSessionTracker`** — per-worker session state tracking. Each worker independently
-  tracks which nodes have completed and which sessions have failed within its assigned sessions.
+  tracks which events have completed and which sessions have failed within its assigned sessions.
   No cross-process communication needed due to session-to-worker affinity.
 
-- **`session_completion_queue`** — event-driven worker→main communication. When the last node
-  of a session completes, the worker pushes a completion notification (with node completion
+- **`session_completion_queue`** — event-driven worker→main communication. When the last event
+  of a session completes, the worker pushes a completion notification (with event completion
   times and failure status) to an `mp.Queue`. The main process consumes from this queue in
   `check_session_completed()` instead of polling shared state. The completion notification
   includes a `"failed"` field indicating whether the session failed.
@@ -75,43 +75,43 @@ Each `OTelChatCompletionAPIData` holds references to `registry`, `worker_tracker
 before and after waiting, then substitutes output segments with actual predecessor text. After
 the response returns, `on_completion()` writes to `registry` (unblocking dependents) and
 `worker_tracker` (recording completion), and pushes to `completion_queue` if this was the last
-node in the session. The completion notification includes the failure status from
+event in the session. The completion notification includes the failure status from
 `worker_tracker`.
 
 ### Failure handling
 
-When a node fails (network error, timeout, HTTP error), the system ensures dependent nodes don't
+When an event fails (network error, timeout, HTTP error), the system ensures dependent events don't
 hang and the session completes gracefully:
 
 **Worker-level failure handling:**
-1. `process_failure()` is called on the failed node's `OTelChatCompletionAPIData`
+1. `process_failure()` is called on the failed event's `OTelChatCompletionAPIData`
 2. The worker marks the entire session as failed in `WorkerSessionTracker` (local to that worker)
-3. `registry.record_failure(node_id)` is called — this sets the node's `asyncio.Event` without
-   writing any output to `NodeOutputRegistry`, keeping the registry clean
-4. Dependent nodes unblock, receive a `NodeFailedError` from `require_async`, and skip without
+3. `registry.record_failure(event_id)` is called — this sets the event's `asyncio.Event` without
+   writing any output to `EventOutputRegistry`, keeping the registry clean
+4. Dependent events unblock, receive an `EventFailedError` from `require_async`, and skip without
    making HTTP requests
 
 **Session-level failure propagation (within a worker):**
-- **Pre-wait check**: Before waiting for predecessors, each node checks if its session has failed
+- **Pre-wait check**: Before waiting for predecessors, each event checks if its session has failed
   in `WorkerSessionTracker`. If so, it sets `skip_request = True`, calls `record_failure` on
   itself (to unblock its own successors), and returns immediately.
 - **Predecessor wait**: `asyncio.gather` awaits all predecessors via `require_async`. If any
-  predecessor was marked failed, `require_async` raises `NodeFailedError`. The node catches
+  predecessor was marked failed, `require_async` raises `EventFailedError`. The event catches
   this, sets `skip_request = True`, calls `record_failure` on itself, and returns — propagating
   the failure hop-by-hop through the dependency graph.
-- **No empty outputs**: Cancelled nodes never write to `NodeOutputRegistry`. The registry only
-  contains real outputs from nodes that actually ran.
-- **No completion counting for skipped nodes**: Skipped nodes do not call `record_node_completed`.
+- **No empty outputs**: Cancelled events never write to `EventOutputRegistry`. The registry only
+  contains real outputs from events that actually ran.
+- **No completion counting for skipped events**: Skipped events do not call `record_event_completed`.
   Session completion is signalled entirely via the immediate failure notification in
   `process_failure`.
-- **Session-to-worker affinity**: All nodes of a session run on the same worker, so
+- **Session-to-worker affinity**: All events of a session run on the same worker, so
   `WorkerSessionTracker` (local to each worker) is sufficient for intra-session failure detection.
 
 **Worker-to-main-process communication:**
 - On the first failure in a session, `process_failure` immediately pushes a completion
-  notification to `session_completion_queue` with `"failed": True` and a `"cancelled_nodes"`
-  count (how many nodes will be skipped as a result of this failure). This does not wait for
-  skipped nodes to finish.
+  notification to `session_completion_queue` with `"failed": True` and a `"cancelled_events"`
+  count (how many events will be skipped as a result of this failure). This does not wait for
+  skipped events to finish.
 - The main process calls `_process_completion_queue()` which sets `SessionGraphState.is_complete`
   and `SessionGraphState.failed` for the session.
 - When ending OTEL session spans, the load generator checks `SessionGraphState.failed` to mark
@@ -121,14 +121,14 @@ Note: OTel trace replay always runs in multiprocess mode (requires `num_workers 
 
 **Session metrics:**
 - Session metrics include a `success` field (False for failed sessions) and an `error` field with the failure reason.
-- The `cancelled_nodes` field in the completion notification records how many nodes were skipped
-  due to the failure (computed as `total_nodes − completed_before_failure − 1`).
+- The `cancelled_events` field in the completion notification records how many events were skipped
+  due to the failure (computed as `total_events − completed_before_failure − 1`).
 
 This design ensures:
-- No deadlocks: dependent nodes never wait indefinitely for failed predecessors
-- Clean registry: no phantom empty-string entries for cancelled nodes
-- Clean shutdown: sessions complete even when nodes fail, without waiting for all nodes to skip
-- Accurate metrics: failures are tracked at both node and session level, with cancelled counts
+- No deadlocks: dependent events never wait indefinitely for failed predecessors
+- Clean registry: no phantom empty-string entries for cancelled events
+- Clean shutdown: sessions complete even when events fail, without waiting for all events to skip
+- Accurate metrics: failures are tracked at both event and session level, with cancelled counts
 - Accurate OTEL traces: failed sessions are marked with error messages in their spans
 - Resource efficiency: failed sessions don't consume unnecessary worker time
 
@@ -187,11 +187,11 @@ load:
 ```
 
 > **Note on `worker_max_concurrency`:** all events for a session are enqueued to the worker
-> immediately when the session starts, even if most nodes are waiting on predecessors. Each
-> waiting node holds a worker semaphore slot for the duration of its wait. Since waiting is
+> immediately when the session starts, even if most events are waiting on predecessors. Each
+> waiting event holds a worker semaphore slot for the duration of its wait. Since waiting is
 > done via `asyncio.Event` (zero threads — just a suspended coroutine), the cost of a high
 > value is negligible. A safe rule of thumb:
-> `worker_max_concurrency ≥ concurrent_sessions × avg_nodes_per_session`.
+> `worker_max_concurrency ≥ concurrent_sessions × avg_events_per_session`.
 
 `data.type: otel_trace_replay` **requires** `load.type: trace_session_replay` — a validator
 enforces this at startup.
@@ -251,20 +251,20 @@ API:
 | `DataGenerator.get_data()` equivalent | `SessionGenerator` session API |
 |---|---|
 | iterate to get next request | 1. `get_session_count()` — returns total number of sessions available<br>2. `get_session_info(idx)` — returns metadata for a specific session |
-| (implicit, iterator is ready immediately) | 3. `activate_session(session_id)` — marks root nodes as ready to dispatch |
+| (implicit, iterator is ready immediately) | 3. `activate_session(session_id)` — marks root events as ready to dispatch |
 | `next(generator)` → one `InferenceAPIData` | 4. `get_session_events(idx)` — returns all `LazyLoadInferenceAPIData` items for the session at once |
 | (caller assumes request is ready) | 5. `get_session_event_indices(idx)` — returns event indices for a session (helper for `get_session_events`) |
-| (caller counts finished requests) | 6. `check_session_completed(session_id)` — returns `True` when every node in the graph has finished |
+| (caller counts finished requests) | 6. `check_session_completed(session_id)` — returns `True` when every event in the graph has finished |
 
 Additional session lifecycle methods: `build_session_metric()`, `record_session_metric()`,
 `get_session_metrics()`, `cleanup_session()`.
 
 Note: Each `LazyLoadInferenceAPIData` item suspends in `wait_for_predecessors_and_substitute()`
-via `asyncio.Event` until predecessors have written their outputs to the `NodeOutputRegistry`.
+via `asyncio.Event` until predecessors have written their outputs to the `EventOutputRegistry`.
 
 This design means all requests for a session are enqueued immediately (so the worker pool can
 handle parallelism within the graph), but each request only *executes* once its predecessors
-have completed — signalled via `NodeOutputRegistry` on the same worker.
+have completed — signalled via `EventOutputRegistry` on the same worker.
 
 ## Load generator: `run_stage` vs `run_session_stage`
 
@@ -291,7 +291,7 @@ and how far each has progressed through its graph. Instead it runs a session poo
 
 The key insight is that *session* concurrency (how many traces are in flight) is controlled
 here in the load generator, while *request* concurrency within a session is controlled by the
-dependency graph itself — root nodes run immediately, dependent nodes wait. The worker pool
+dependency graph itself — root events run immediately, dependent events wait. The worker pool
 size (`num_workers` × `worker_max_concurrency`) sets the ceiling on how many LLM calls can be
 in flight across all sessions simultaneously.
 
@@ -310,10 +310,10 @@ Each session (one trace file) produces a metric with:
 | `stage_id` | Stage that ran this session |
 | `file_path` | Source trace file |
 | `start_time`, `end_time`, `duration_sec` | Wall-clock timing for the entire session |
-| `num_nodes` | Total LLM calls in the session graph |
-| `num_nodes_completed` | Calls that actually executed and returned a response |
-| `num_nodes_cancelled` | Calls skipped because a predecessor failed |
-| `success` | `True` if all nodes completed without error |
+| `num_events` | Total LLM calls in the session graph |
+| `num_events_completed` | Calls that actually executed and returned a response |
+| `num_events_cancelled` | Calls skipped because a predecessor failed |
+| `success` | `True` if all events completed without error |
 | `error` | First error encountered, if any |
 | `total_input_tokens`, `total_output_tokens` | Aggregated across all calls in the session |
 
@@ -323,9 +323,9 @@ After a run, three session report files are generated:
 
 - **`summary_session_lifecycle_metrics.json`** — aggregate statistics across all sessions, including:
   - `num_sessions`, `num_sessions_succeeded`, `num_sessions_failed`
-  - `total_nodes`, `total_nodes_completed`, `total_nodes_cancelled` — cross-session node totals
-  - `num_nodes_cancelled` — per-session distribution (mean, p50, p90, p99)
-  - `session_duration_sec`, `num_nodes`, `total_input_tokens`, `total_output_tokens` distributions
+  - `total_events`, `total_events_completed`, `total_events_cancelled` — cross-session event totals
+  - `num_events_cancelled` — per-session distribution (mean, p50, p90, p99)
+  - `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens` distributions
 - **`stage_N_session_lifecycle_metrics.json`** — same statistics grouped by stage
 - **`per_session_lifecycle_metrics.json`** — one entry per session with all fields (for detailed analysis)
 
@@ -385,14 +385,14 @@ OTel trace replay cannot use the `DataGenerator` model because:
 |--------|---------|
 | `get_session_count()` | Total sessions in the corpus |
 | `get_session_info(index)` | Metadata (session_id, file_path, num_events) |
-| `activate_session(session_id)` | Marks root nodes as ready to dispatch |
+| `activate_session(session_id)` | Marks root events as ready to dispatch |
 | `get_session_events(index)` | Returns all events for a session |
-| `check_session_completed(session_id)` | Returns `True` when all nodes finished |
+| `check_session_completed(session_id)` | Returns `True` when all events finished |
 | `build_session_metric(...)` | Constructs a `SessionLifecycleMetric` |
 | `cleanup_session(session_id)` | Releases per-session state |
 
 All requests for a session are enqueued immediately (for parallelism), but each request only
-*executes* once its predecessors complete — signalled via `NodeOutputRegistry` on the same worker.
+*executes* once its predecessors complete — signalled via `EventOutputRegistry` on the same worker.
 
 ### Backwards Compatibility
 

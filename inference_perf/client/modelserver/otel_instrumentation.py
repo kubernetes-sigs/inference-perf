@@ -359,7 +359,7 @@ class OTelInstrumentation:
 
         Args:
             session_id: Unique identifier for the session
-            session_info: Optional metadata about the session (num_nodes, file_path, etc.)
+            session_info: Optional metadata about the session (num_graph_events, file_path, etc.)
             parent_context: Optional serialized parent context for linking spans
 
         Returns:
@@ -388,8 +388,8 @@ class OTelInstrumentation:
 
         # Set session attributes
         if session_info:
-            if "num_nodes" in session_info:
-                span.set_attribute("session.num_nodes", session_info["num_nodes"])
+            if "num_graph_events" in session_info:
+                span.set_attribute("session.num_events", session_info["num_graph_events"])
             if "file_path" in session_info:
                 span.set_attribute("session.file_path", session_info["file_path"])
 

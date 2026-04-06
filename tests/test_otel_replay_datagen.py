@@ -18,13 +18,13 @@
 Tests for OTelTraceReplayDataGenerator output-aware replay.
 
 Tests the OTEL trace replay architecture:
-- NodeOutputRegistry: intra-worker output coordination via asyncio.Event
+- EventOutputRegistry: intra-worker output coordination via asyncio.Event
 - WorkerSessionTracker: per-worker session state tracking
 - OTelChatCompletionAPIData: output substitution and completion notification
 - Session completion via mp.Queue (event-driven, not polling)
 
 Key architectural principles tested:
-1. Session-to-worker affinity: all nodes of a session run on same worker
+1. Session-to-worker affinity: all events of a session run on same worker
 2. Zero-thread waiting: asyncio.Event suspension, no OS threads
 3. Event-driven completion: queue notifications, not polling
 4. Nested dict structure: efficient O(1) lookups without string operations
@@ -46,8 +46,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inference_perf.datagen.otel_trace_replay_datagen import (
-    NodeFailedError,
-    NodeOutputRegistry,
+    EventFailedError,
+    EventOutputRegistry,
     OTelChatCompletionAPIData,
     OTelInferenceInfo,
     OTelTraceReplayDataGenerator,
@@ -95,67 +95,67 @@ def make_mock_api_config_streaming(streaming: bool = False) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# NodeOutputRegistry tests
+# EventOutputRegistry tests
 # ---------------------------------------------------------------------------
 
 
-class TestNodeOutputRegistry:
+class TestEventOutputRegistry:
     """Test intra-worker output coordination via asyncio.Event."""
 
     def test_record_and_get(self) -> None:
         """Basic record/retrieve functionality."""
-        reg = NodeOutputRegistry()
-        reg.record("node_001", "Hello world", [])
-        assert reg.get_output_by_node_id("node_001") == "Hello world"
+        reg = EventOutputRegistry()
+        reg.record("event_001", "Hello world", [])
+        assert reg.get_output_by_event_id("event_001") == "Hello world"
 
     def test_get_missing_returns_none(self) -> None:
-        """Missing nodes return None."""
-        reg = NodeOutputRegistry()
-        assert reg.get_output_by_node_id("nonexistent") is None
+        """Missing events return None."""
+        reg = EventOutputRegistry()
+        assert reg.get_output_by_event_id("nonexistent") is None
 
     def test_require_async_already_registered(self) -> None:
         """Fast path: output already present before require_async is called."""
-        reg = NodeOutputRegistry()
-        reg.record("node_001", "Some output", [])
-        result = asyncio.run(reg.require_async("node_001"))
+        reg = EventOutputRegistry()
+        reg.record("event_001", "Some output", [])
+        result = asyncio.run(reg.require_async("event_001"))
         assert result == "Some output"
 
     def test_require_async_waits_for_record(self) -> None:
         """require_async suspends via asyncio.Event until record() is called."""
-        reg = NodeOutputRegistry()
+        reg = EventOutputRegistry()
 
         async def _run() -> str:
             async def producer() -> None:
                 await asyncio.sleep(0.05)
-                reg.record("node_001", "delayed output", [])
+                reg.record("event_001", "delayed output", [])
 
             asyncio.create_task(producer())
-            return await reg.require_async("node_001", timeout_sec=2.0)
+            return await reg.require_async("event_001", timeout_sec=2.0)
 
         result = asyncio.run(_run())
         assert result == "delayed output"
 
     def test_require_async_timeout(self) -> None:
         """require_async raises TimeoutError when output never arrives."""
-        reg = NodeOutputRegistry()
+        reg = EventOutputRegistry()
         with pytest.raises(TimeoutError):
-            asyncio.run(reg.require_async("node_001", timeout_sec=0.1))
+            asyncio.run(reg.require_async("event_001", timeout_sec=0.1))
 
     def test_double_record_raises_error(self) -> None:
-        """Recording the same node twice should raise ValueError."""
-        reg = NodeOutputRegistry()
-        reg.record("node_001", "first output", [])
+        """Recording the same event twice should raise ValueError."""
+        reg = EventOutputRegistry()
+        reg.record("event_001", "first output", [])
 
-        # Attempting to record the same node again should raise ValueError
-        with pytest.raises(ValueError, match="Node node_001 has already been recorded"):
-            reg.record("node_001", "second output", [])
+        # Attempting to record the same event again should raise ValueError
+        with pytest.raises(ValueError, match="Event event_001 has already been recorded"):
+            reg.record("event_001", "second output", [])
 
-    def test_get_messages_by_node_id(self) -> None:
-        """get_messages_by_node_id returns input messages."""
-        reg = NodeOutputRegistry()
+    def test_get_messages_by_event_id(self) -> None:
+        """get_messages_by_event_id returns input messages."""
+        reg = EventOutputRegistry()
         messages = [ChatMessage(role="user", content="hello")]
-        reg.record("node_001", "output", messages)
-        retrieved = reg.get_messages_by_node_id("node_001")
+        reg.record("event_001", "output", messages)
+        retrieved = reg.get_messages_by_event_id("event_001")
         assert retrieved is not None
         assert len(retrieved) == 1
         assert retrieved[0].role == "user"
@@ -163,45 +163,45 @@ class TestNodeOutputRegistry:
 
     def test_record_with_empty_messages(self) -> None:
         """Recording with empty messages list should still store the messages (as empty list)."""
-        reg = NodeOutputRegistry()
-        reg.record("node_001", "output", [])
+        reg = EventOutputRegistry()
+        reg.record("event_001", "output", [])
 
         # Should return empty list, not None
-        retrieved = reg.get_messages_by_node_id("node_001")
+        retrieved = reg.get_messages_by_event_id("event_001")
         assert retrieved is not None
         assert retrieved == []
 
     def test_record_failure_fast_path(self) -> None:
-        """require_async raises NodeFailedError immediately for an already-failed node."""
-        reg = NodeOutputRegistry()
-        reg.record_failure("node_001")
-        assert reg.is_node_failed("node_001")
+        """require_async raises EventFailedError immediately for an already-failed event."""
+        reg = EventOutputRegistry()
+        reg.record_failure("event_001")
+        assert reg.is_event_failed("event_001")
 
-        with pytest.raises(NodeFailedError) as exc_info:
-            asyncio.run(reg.require_async("node_001"))
-        assert exc_info.value.node_id == "node_001"
+        with pytest.raises(EventFailedError) as exc_info:
+            asyncio.run(reg.require_async("event_001"))
+        assert exc_info.value.event_id == "event_001"
 
     def test_record_failure_wakes_waiter_with_error(self) -> None:
-        """record_failure wakes a coroutine blocked in require_async with NodeFailedError."""
-        reg = NodeOutputRegistry()
+        """record_failure wakes a coroutine blocked in require_async with EventFailedError."""
+        reg = EventOutputRegistry()
 
         async def _run() -> None:
             async def fail_producer() -> None:
                 await asyncio.sleep(0.05)
-                reg.record_failure("node_001")
+                reg.record_failure("event_001")
 
             asyncio.create_task(fail_producer())
-            await reg.require_async("node_001", timeout_sec=2.0)
+            await reg.require_async("event_001", timeout_sec=2.0)
 
-        with pytest.raises(NodeFailedError):
+        with pytest.raises(EventFailedError):
             asyncio.run(_run())
 
     def test_record_failure_idempotent(self) -> None:
-        """Calling record_failure multiple times for the same node is safe."""
-        reg = NodeOutputRegistry()
-        reg.record_failure("node_001")
-        reg.record_failure("node_001")  # should not raise
-        assert reg.is_node_failed("node_001")
+        """Calling record_failure multiple times for the same event is safe."""
+        reg = EventOutputRegistry()
+        reg.record_failure("event_001")
+        reg.record_failure("event_001")  # should not raise
+        assert reg.is_event_failed("event_001")
 
 
 # ---------------------------------------------------------------------------
@@ -212,19 +212,19 @@ class TestNodeOutputRegistry:
 class TestWorkerSessionTracker:
     """Test per-worker session state tracking with nested dict structure."""
 
-    def test_record_and_check_node_completion(self) -> None:
-        """Basic node completion tracking."""
+    def test_record_and_check_event_completion(self) -> None:
+        """Basic event completion tracking."""
         tracker = WorkerSessionTracker()
-        tracker.record_node_completed("session_1", "node_0", 1.0)
-        assert tracker.is_node_completed("session_1", "node_0")
-        assert not tracker.is_node_completed("session_1", "node_1")
+        tracker.record_event_completed("session_1", "event_0", 1.0)
+        assert tracker.is_event_completed("session_1", "event_0")
+        assert not tracker.is_event_completed("session_1", "event_1")
 
-    def test_get_node_completion_time(self) -> None:
-        """Retrieve completion time for a node."""
+    def test_get_event_completion_time(self) -> None:
+        """Retrieve completion time for an event."""
         tracker = WorkerSessionTracker()
-        tracker.record_node_completed("session_1", "node_0", 123.456)
-        assert tracker.get_node_completion_time("session_1", "node_0") == 123.456
-        assert tracker.get_node_completion_time("session_1", "node_1") is None
+        tracker.record_event_completed("session_1", "event_0", 123.456)
+        assert tracker.get_event_completion_time("session_1", "event_0") == 123.456
+        assert tracker.get_event_completion_time("session_1", "event_1") is None
 
     def test_mark_and_check_session_failed(self) -> None:
         """Session failure tracking."""
@@ -233,23 +233,23 @@ class TestWorkerSessionTracker:
         tracker.mark_session_failed("session_1")
         assert tracker.is_session_failed("session_1")
 
-    def test_get_session_node_count(self) -> None:
-        """Count completed nodes per session."""
+    def test_get_session_event_count(self) -> None:
+        """Count completed events per session."""
         tracker = WorkerSessionTracker()
-        tracker.record_node_completed("session_1", "node_0", 1.0)
-        tracker.record_node_completed("session_1", "node_1", 2.0)
-        tracker.record_node_completed("session_2", "node_0", 3.0)
-        assert tracker.get_session_node_count("session_1") == 2
-        assert tracker.get_session_node_count("session_2") == 1
-        assert tracker.get_session_node_count("session_3") == 0
+        tracker.record_event_completed("session_1", "event_0", 1.0)
+        tracker.record_event_completed("session_1", "event_1", 2.0)
+        tracker.record_event_completed("session_2", "event_0", 3.0)
+        assert tracker.get_session_event_count("session_1") == 2
+        assert tracker.get_session_event_count("session_2") == 1
+        assert tracker.get_session_event_count("session_3") == 0
 
     def test_get_session_completion_times(self) -> None:
         """Retrieve all completion times for a session."""
         tracker = WorkerSessionTracker()
-        tracker.record_node_completed("session_1", "node_0", 1.0)
-        tracker.record_node_completed("session_1", "node_1", 2.0)
+        tracker.record_event_completed("session_1", "event_0", 1.0)
+        tracker.record_event_completed("session_1", "event_1", 2.0)
         times = tracker.get_session_completion_times("session_1")
-        assert times == {"node_0": 1.0, "node_1": 2.0}
+        assert times == {"event_0": 1.0, "event_1": 2.0}
 
 
 # ---------------------------------------------------------------------------
@@ -262,30 +262,30 @@ class TestOTelChatCompletionAPIData:
 
     def _make_api_data(
         self,
-        node_id: str,
-        registry: NodeOutputRegistry,
+        event_id: str,
+        registry: EventOutputRegistry,
         worker_tracker: WorkerSessionTracker,
         completion_queue: Optional[mp.Queue[Any]] = None,
-        total_nodes: int = 1,
-        predecessor_node_ids: Optional[List[str]] = None,
+        total_events: int = 1,
+        predecessor_event_ids: Optional[List[str]] = None,
     ) -> OTelChatCompletionAPIData:
         return OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Hello")],
             max_tokens=50,
-            node_id=node_id,
+            event_id=event_id,
             registry=registry,
             worker_tracker=worker_tracker,
             completion_queue=completion_queue,
-            total_nodes_in_session=total_nodes,
-            predecessor_node_ids=predecessor_node_ids or [],
+            total_events_in_session=total_events,
+            predecessor_event_ids=predecessor_event_ids or [],
         )
 
     @pytest.mark.asyncio
     async def test_non_streaming_captures_output(self) -> None:
         """process_response captures output and registers it."""
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
-        api_data = self._make_api_data("session_1:node_0", registry, tracker)
+        api_data = self._make_api_data("session_1:event_0", registry, tracker)
         response = make_mock_response("Paris is the capital of France.")
         config = make_mock_api_config_streaming(streaming=False)
         tokenizer = make_mock_tokenizer()
@@ -293,17 +293,17 @@ class TestOTelChatCompletionAPIData:
         info = await api_data.process_response(response, config, tokenizer)
 
         # Output should be registered
-        assert registry.get_output_by_node_id("session_1:node_0") == "Paris is the capital of France."
+        assert registry.get_output_by_event_id("session_1:event_0") == "Paris is the capital of France."
         # Returns OTelInferenceInfo
         assert isinstance(info, OTelInferenceInfo)
         assert info.output_text == "Paris is the capital of France."
 
     @pytest.mark.asyncio
     async def test_on_completion_records_in_tracker(self) -> None:
-        """on_completion records node completion in WorkerSessionTracker."""
-        registry = NodeOutputRegistry()
+        """on_completion records event completion in WorkerSessionTracker."""
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
-        api_data = self._make_api_data("session_1:node_0", registry, tracker, total_nodes=2)
+        api_data = self._make_api_data("session_1:event_0", registry, tracker, total_events=2)
 
         info = OTelInferenceInfo(
             output_text="test output",
@@ -313,14 +313,14 @@ class TestOTelChatCompletionAPIData:
 
         api_data.on_completion(info)
 
-        # Should be recorded in tracker with unqualified node_id
-        assert tracker.is_node_completed("session_1", "node_0")
-        assert tracker.get_node_completion_time("session_1", "node_0") is not None
+        # Should be recorded in tracker with unqualified event_id
+        assert tracker.is_event_completed("session_1", "event_0")
+        assert tracker.get_event_completion_time("session_1", "event_0") is not None
 
     @pytest.mark.asyncio
     async def test_on_completion_pushes_to_queue_when_session_complete(self) -> None:
-        """on_completion pushes to queue when last node completes."""
-        registry = NodeOutputRegistry()
+        """on_completion pushes to queue when last event completes."""
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
         # Use a mock queue that captures put_nowait calls
@@ -328,17 +328,17 @@ class TestOTelChatCompletionAPIData:
         mock_queue = MagicMock()
         mock_queue.put_nowait = lambda data: completion_notifications.append(data)
 
-        # Session has 2 nodes total
-        # First complete node_0
-        api_data_0 = self._make_api_data("session_1:node_0", registry, tracker, mock_queue, total_nodes=2)
+        # Session has 2 events total
+        # First complete event_0
+        api_data_0 = self._make_api_data("session_1:event_0", registry, tracker, mock_queue, total_events=2)
         info_0 = OTelInferenceInfo(output_text="first", input_tokens=5, output_tokens=3)
         api_data_0.on_completion(info_0)
 
-        # No notification yet (only 1 of 2 nodes complete)
+        # No notification yet (only 1 of 2 events complete)
         assert len(completion_notifications) == 0
 
-        # Now complete node_1 (the last node)
-        api_data_1 = self._make_api_data("session_1:node_1", registry, tracker, mock_queue, total_nodes=2)
+        # Now complete event_1 (the last event)
+        api_data_1 = self._make_api_data("session_1:event_1", registry, tracker, mock_queue, total_events=2)
         info_1 = OTelInferenceInfo(output_text="done", input_tokens=5, output_tokens=3)
         api_data_1.on_completion(info_1)
 
@@ -347,21 +347,21 @@ class TestOTelChatCompletionAPIData:
         completion_data = completion_notifications[0]
         assert completion_data["session_id"] == "session_1"
         assert completion_data["failed"] is False
-        assert "node_completion_times" in completion_data
-        assert len(completion_data["node_completion_times"]) == 2
+        assert "event_completion_times" in completion_data
+        assert len(completion_data["event_completion_times"]) == 2
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_skips_on_session_failure(self) -> None:
         """wait_for_predecessors_and_substitute skips if session already failed."""
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
         tracker.mark_session_failed("session_1")
 
         api_data = self._make_api_data(
-            "session_1:node_1",
+            "session_1:event_1",
             registry,
             tracker,
-            predecessor_node_ids=["session_1:node_0"],
+            predecessor_event_ids=["session_1:event_0"],
         )
 
         await api_data.wait_for_predecessors_and_substitute()
@@ -369,37 +369,37 @@ class TestOTelChatCompletionAPIData:
         # Should have set skip_request flag
         assert api_data.skip_request is True
         # Registry should record failure (not empty output)
-        assert registry.is_node_failed("session_1:node_1")
-        assert registry.get_output_by_node_id("session_1:node_1") is None
+        assert registry.is_event_failed("session_1:event_1")
+        assert registry.get_output_by_event_id("session_1:event_1") is None
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_waits_and_substitutes(self) -> None:
         """wait_for_predecessors_and_substitute waits for predecessors and substitutes output."""
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
         # Set up predecessor output
-        registry.record("session_1:node_0", "Predecessor output", [])
+        registry.record("session_1:event_0", "Predecessor output", [])
 
-        # Create node with output segment
+        # Create event with output segment
         messages = [
             {"role": "user", "content": "Question"},
             {"role": "assistant", "content": "RECORDED"},
         ]
         segments = [
             InputSegment(type="unique", message_count=1, token_count=5),
-            InputSegment(type="output", message_count=1, token_count=10, source_node_id="session_1:node_0"),
+            InputSegment(type="output", message_count=1, token_count=10, source_event_id="session_1:event_0"),
         ]
 
         api_data = OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Question"), ChatMessage(role="assistant", content="RECORDED")],
             max_tokens=50,
-            node_id="session_1:node_1",
+            event_id="session_1:event_1",
             registry=registry,
             worker_tracker=tracker,
             completion_queue=None,
-            total_nodes_in_session=2,
-            predecessor_node_ids=["session_1:node_0"],
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
             input_segments=segments,
             original_messages=messages,
         )
@@ -428,16 +428,16 @@ class TestOTelTraceReplayDataGenerator:
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
-        mock_graph.nodes = {"node_0": MagicMock(), "node_1": MagicMock()}
+        mock_graph.events = {"event_0": MagicMock(), "event_1": MagicMock()}
 
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
                 graph=mock_graph,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes=set(),
-                node_completion_times={},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events=set(),
+                event_completion_times={},
                 is_active=True,
                 is_complete=False,
             )
@@ -456,7 +456,7 @@ class TestOTelTraceReplayDataGenerator:
                     "session_id": "session_1",
                     "completion_time": 123.456,
                     "failed": False,
-                    "node_completion_times": {"node_0": 100.0, "node_1": 120.0},
+                    "event_completion_times": {"event_0": 100.0, "event_1": 120.0},
                 }
             else:
                 raise Exception("Queue empty")
@@ -470,10 +470,10 @@ class TestOTelTraceReplayDataGenerator:
         # Session should be marked complete
         state = gen.session_graph_state["session_1"]
         assert state.is_complete is True
-        assert "node_0" in state.completed_nodes
-        assert "node_1" in state.completed_nodes
-        assert state.node_completion_times["node_0"] == 100.0
-        assert state.node_completion_times["node_1"] == 120.0
+        assert "event_0" in state.completed_events
+        assert "event_1" in state.completed_events
+        assert state.event_completion_times["event_0"] == 100.0
+        assert state.event_completion_times["event_1"] == 120.0
 
     def test_check_session_completed_processes_queue_first(self) -> None:
         """check_session_completed processes queue before checking status."""
@@ -483,16 +483,16 @@ class TestOTelTraceReplayDataGenerator:
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
-        mock_graph.nodes = {"node_0": MagicMock()}
+        mock_graph.events = {"event_0": MagicMock()}
 
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
                 graph=mock_graph,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes=set(),
-                node_completion_times={},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events=set(),
+                event_completion_times={},
                 is_active=True,
                 is_complete=False,  # Not yet complete
             )
@@ -508,7 +508,7 @@ class TestOTelTraceReplayDataGenerator:
                     "session_id": "session_1",
                     "completion_time": 123.456,
                     "failed": False,
-                    "node_completion_times": {"node_0": 100.0},
+                    "event_completion_times": {"event_0": 100.0},
                 }
             else:
                 raise Exception("Queue empty")
@@ -533,16 +533,16 @@ class TestOTelTraceReplayDataGenerator:
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
-        mock_graph.nodes = {"node_0": MagicMock(), "node_1": MagicMock()}
+        mock_graph.events = {"event_0": MagicMock(), "event_1": MagicMock()}
 
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
                 graph=mock_graph,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes={"node_0"},  # Only 1 of 2 nodes complete
-                node_completion_times={"node_0": 100.0},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events={"event_0"},  # Only 1 of 2 events complete
+                event_completion_times={"event_0": 100.0},
                 is_active=True,
                 is_complete=False,
             )
@@ -559,34 +559,34 @@ class TestOTelTraceReplayDataGenerator:
         # Should return False
         assert result is False
 
-    def test_activate_session_marks_root_nodes_ready(self) -> None:
-        """activate_session marks root nodes (no predecessors) as ready."""
+    def test_activate_session_marks_root_events_ready(self) -> None:
+        """activate_session marks root events (no predecessors) as ready."""
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up session with graph
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
-        # Create mock graph with root and non-root nodes
-        root_node = MagicMock()
-        root_node.predecessor_node_ids = []
+        # Create mock graph with root and non-root events
+        root_event = MagicMock()
+        root_event.predecessor_event_ids = []
 
-        child_node = MagicMock()
-        child_node.predecessor_node_ids = ["node_0"]
+        child_event = MagicMock()
+        child_event.predecessor_event_ids = ["event_0"]
 
         mock_graph = MagicMock()
-        mock_graph.nodes = {
-            "node_0": root_node,
-            "node_1": child_node,
+        mock_graph.events = {
+            "event_0": root_event,
+            "event_1": child_event,
         }
 
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
                 graph=mock_graph,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes=set(),
-                node_completion_times={},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events=set(),
+                event_completion_times={},
                 is_active=False,
                 is_complete=False,
             )
@@ -597,11 +597,11 @@ class TestOTelTraceReplayDataGenerator:
         # Activate session
         gen.activate_session("session_1")
 
-        # Root node should be ready
+        # Root event should be ready
         state = gen.session_graph_state["session_1"]
         assert state.is_active is True
-        assert "node_0" in state.ready_nodes
-        assert "node_1" not in state.ready_nodes  # Child node not ready yet
+        assert "event_0" in state.ready_events
+        assert "event_1" not in state.ready_events  # Child event not ready yet
 
     def test_multiple_sessions_complete_independently(self) -> None:
         """Multiple sessions can complete independently via queue."""
@@ -611,28 +611,28 @@ class TestOTelTraceReplayDataGenerator:
         from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph_1 = MagicMock()
-        mock_graph_1.nodes = {"node_0": MagicMock()}
+        mock_graph_1.events = {"event_0": MagicMock()}
         mock_graph_2 = MagicMock()
-        mock_graph_2.nodes = {"node_0": MagicMock()}
+        mock_graph_2.events = {"event_0": MagicMock()}
 
         gen.session_graph_state = {
             "session_1": SessionGraphState(
                 session_id="session_1",
                 graph=mock_graph_1,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes=set(),
-                node_completion_times={},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events=set(),
+                event_completion_times={},
                 is_active=True,
                 is_complete=False,
             ),
             "session_2": SessionGraphState(
                 session_id="session_2",
                 graph=mock_graph_2,
-                ready_nodes=set(),
-                dispatched_nodes=set(),
-                completed_nodes=set(),
-                node_completion_times={},
+                ready_events=set(),
+                dispatched_events=set(),
+                completed_events=set(),
+                event_completion_times={},
                 is_active=True,
                 is_complete=False,
             ),
@@ -644,13 +644,13 @@ class TestOTelTraceReplayDataGenerator:
                 "session_id": "session_1",
                 "completion_time": 100.0,
                 "failed": False,
-                "node_completion_times": {"node_0": 100.0},
+                "event_completion_times": {"event_0": 100.0},
             },
             {
                 "session_id": "session_2",
                 "completion_time": 200.0,
                 "failed": False,
-                "node_completion_times": {"node_0": 200.0},
+                "event_completion_times": {"event_0": 200.0},
             },
         ]
 
@@ -699,24 +699,24 @@ class TestEndToEndSimpleChain:
         graph = build_graph(calls)
         return graph, calls
 
-    def test_graph_has_three_nodes(self, graph_and_calls: Any) -> None:
-        """Verify simple_chain.json produces 3-node graph."""
+    def test_graph_has_three_events(self, graph_and_calls: Any) -> None:
+        """Verify simple_chain.json produces 3-event graph."""
         graph, _ = graph_and_calls
-        assert len(graph.nodes) == 3
+        assert len(graph.events) == 3
 
-    def test_node_001_has_output_segment(self, graph_and_calls: Any) -> None:
-        """Second node should have output segment from first node."""
+    def test_event_001_has_output_segment(self, graph_and_calls: Any) -> None:
+        """Second event should have output segment from first event."""
         graph, _ = graph_and_calls
-        node_ids = sorted(graph.nodes.keys())
-        assert len(node_ids) >= 2, f"Expected at least 2 nodes, got {len(node_ids)}"
-        node_001 = graph.nodes[node_ids[1]]
-        seg_types = [s.type for s in node_001.call.input_segments]
-        assert "output" in seg_types, f"Expected output segment in {node_ids[1]}, got: {seg_types}"
+        event_ids = sorted(graph.events.keys())
+        assert len(event_ids) >= 2, f"Expected at least 2 events, got {len(event_ids)}"
+        event_001 = graph.events[event_ids[1]]
+        seg_types = [s.type for s in event_001.call.input_segments]
+        assert "output" in seg_types, f"Expected output segment in {event_ids[1]}, got: {seg_types}"
 
     def test_output_substitution_end_to_end(self, graph_and_calls: Any) -> None:
         """
-        Simulate: node_000 completes with DIFFERENT output than recorded.
-        Verify: node_001's messages use the new output after substitution.
+        Simulate: event_000 completes with DIFFERENT output than recorded.
+        Verify: event_001's messages use the new output after substitution.
         """
         graph, calls = graph_and_calls
 
@@ -725,21 +725,23 @@ class TestEndToEndSimpleChain:
         from dataclasses import replace as dc_replace
 
         events = []
-        for node in graph.nodes.values():
-            gc = node.call
-            qualified_node_id = f"{session_id}:{node.node_id}"
-            qualified_predecessor_ids = [f"{session_id}:{pid}" for pid in node.predecessor_node_ids]
+        for event in graph.events.values():
+            gc = event.call
+            qualified_event_id = f"{session_id}:{event.event_id}"
+            qualified_predecessor_ids = [f"{session_id}:{pid}" for pid in event.predecessor_event_ids]
             qualified_segments = [
-                dc_replace(seg, source_node_id=f"{session_id}:{seg.source_node_id}") if seg.source_node_id is not None else seg
+                dc_replace(seg, source_event_id=f"{session_id}:{seg.source_event_id}")
+                if seg.source_event_id is not None
+                else seg
                 for seg in gc.input_segments
             ]
             events.append(
                 OTelTraceReplayEvent(
                     call_id=gc.call_id,
-                    node_id=qualified_node_id,
+                    event_id=qualified_event_id,
                     file_index=0,
-                    t_start_ms=node.t_start_ms,
-                    t_end_ms=node.t_end_ms,
+                    t_start_ms=event.t_start_ms,
+                    t_end_ms=event.t_end_ms,
                     model=gc.model,
                     messages=gc.messages,
                     expected_output=gc.expected_output,
@@ -747,14 +749,14 @@ class TestEndToEndSimpleChain:
                     expected_output_tokens=gc.expected_output_tokens,
                     temperature=gc.temperature,
                     max_tokens_recorded=gc.max_tokens_recorded,
-                    predecessor_node_ids=qualified_predecessor_ids,
-                    wait_ms=node.wait_ms,
+                    predecessor_event_ids=qualified_predecessor_ids,
+                    wait_ms=event.wait_ms,
                 )
             )
         events.sort(key=lambda e: e.t_start_ms)
 
         # Set up registry, tracker, queue
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
         queue: mp.Queue[Any] = mp.Queue()
         gen = object.__new__(OTelTraceReplayDataGenerator)
@@ -767,33 +769,33 @@ class TestEndToEndSimpleChain:
 
         from inference_perf.apis import LazyLoadInferenceAPIData
 
-        # Get node IDs
-        node_ids = sorted(graph.nodes.keys())
-        first_node_id = node_ids[0]
-        second_node_id = node_ids[1]
+        # Get event IDs
+        event_ids = sorted(graph.events.keys())
+        first_event_id = event_ids[0]
+        second_event_id = event_ids[1]
 
-        qualified_first_node_id = f"{session_id}:{first_node_id}"
-        qualified_second_node_id = f"{session_id}:{second_node_id}"
+        qualified_first_event_id = f"{session_id}:{first_event_id}"
+        qualified_second_event_id = f"{session_id}:{second_event_id}"
 
-        # Load first node
-        event_000 = next(e for e in events if e.node_id == qualified_first_node_id)
+        # Load first event
+        event_000 = next(e for e in events if e.event_id == qualified_first_event_id)
         idx_000 = events.index(event_000)
         result_000 = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx_000))
         assert isinstance(result_000, OTelChatCompletionAPIData)
 
-        # Simulate first node completing with DIFFERENT output
+        # Simulate first event completing with DIFFERENT output
         actual_output_000 = "ACTUAL REPLAY OUTPUT: France's capital is Paris, city of lights!"
-        # Provide the input messages that the first node had (from the trace)
-        first_node_messages = result_000.original_messages
-        registry.record(qualified_first_node_id, actual_output_000, first_node_messages)
+        # Provide the input messages that the first event had (from the trace)
+        first_event_messages = result_000.original_messages
+        registry.record(qualified_first_event_id, actual_output_000, first_event_messages)
 
-        # Load second node
-        event_001 = next(e for e in events if e.node_id == qualified_second_node_id)
+        # Load second event
+        event_001 = next(e for e in events if e.event_id == qualified_second_event_id)
         idx_001 = events.index(event_001)
 
         # Verify it has output segment
         output_segs = [s for s in event_001.input_segments if s.type == "output"]
-        assert len(output_segs) >= 1, f"{second_node_id} should have at least one output segment"
+        assert len(output_segs) >= 1, f"{second_event_id} should have at least one output segment"
 
         result_001 = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx_001))
         assert isinstance(result_001, OTelChatCompletionAPIData)
@@ -809,7 +811,7 @@ class TestEndToEndSimpleChain:
         )
 
     # Note: Timeout test removed because it takes 3600s to complete.
-    # The timeout behavior is tested in TestNodeOutputRegistry.test_require_async_timeout
+    # The timeout behavior is tested in TestEventOutputRegistry.test_require_async_timeout
     # which uses a short 0.1s timeout. The architectural correctness (asyncio.Event-based
     # waiting, session-to-worker affinity, output substitution) is thoroughly tested
 
@@ -825,18 +827,18 @@ class TestOTelChatCompletionAPIDataErrorPaths:
     @pytest.mark.asyncio
     async def test_process_failure_marks_session_failed(self) -> None:
         """process_failure marks session as failed and registers empty output."""
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
         api_data = OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
-            node_id="session_1:node_0",
+            event_id="session_1:event_0",
             registry=registry,
             worker_tracker=tracker,
             completion_queue=None,
-            total_nodes_in_session=1,
-            predecessor_node_ids=[],
+            total_events_in_session=1,
+            predecessor_event_ids=[],
         )
 
         # Simulate a failure
@@ -848,9 +850,9 @@ class TestOTelChatCompletionAPIDataErrorPaths:
         # Session should be marked as failed
         assert tracker.is_session_failed("session_1")
 
-        # Registry should record failure for the node (not empty output)
-        assert registry.is_node_failed("session_1:node_0")
-        assert registry.get_output_by_node_id("session_1:node_0") is None
+        # Registry should record failure for the event (not empty output)
+        assert registry.is_event_failed("session_1:event_0")
+        assert registry.get_output_by_event_id("session_1:event_0") is None
 
         # Should return empty inference info
         assert isinstance(result, OTelInferenceInfo)
@@ -860,37 +862,37 @@ class TestOTelChatCompletionAPIDataErrorPaths:
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_post_wait_failure_check(self) -> None:
-        """Test failure propagation: when predecessor fails, successor skips via NodeFailedError."""
-        registry = NodeOutputRegistry()
+        """Test failure propagation: when predecessor fails, successor skips via EventFailedError."""
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
-        # Create node with predecessor
+        # Create event with predecessor
         api_data = OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
-            node_id="session_1:node_1",
+            event_id="session_1:event_1",
             registry=registry,
             worker_tracker=tracker,
             completion_queue=None,
-            total_nodes_in_session=2,
-            predecessor_node_ids=["session_1:node_0"],
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
         )
 
         # Simulate predecessor failure (no real output written, just failure signal)
-        registry.record_failure("session_1:node_0")
+        registry.record_failure("session_1:event_0")
 
-        # Wait for predecessors - should detect failure via NodeFailedError and skip
+        # Wait for predecessors - should detect failure via EventFailedError and skip
         await api_data.wait_for_predecessors_and_substitute()
 
         # Should have set skip_request flag
         assert api_data.skip_request is True
 
         # Should have propagated failure in registry (not written empty output)
-        assert registry.is_node_failed("session_1:node_1")
-        assert registry.get_output_by_node_id("session_1:node_1") is None
+        assert registry.is_event_failed("session_1:event_1")
+        assert registry.get_output_by_event_id("session_1:event_1") is None
 
-        # Node should NOT be marked as completed in tracker (skipped nodes don't count)
-        assert not tracker.is_node_completed("session_1", "node_1")
+        # Event should NOT be marked as completed in tracker (skipped events don't count)
+        assert not tracker.is_event_completed("session_1", "event_1")
 
     # by the other tests in this suite.
 
@@ -901,70 +903,70 @@ class TestOTelChatCompletionAPIDataErrorPaths:
 
 
 class TestFailurePropagation:
-    """Integration tests for failure propagation through a node chain."""
+    """Integration tests for failure propagation through an event chain."""
 
     def _make_node(
         self,
-        node_id: str,
-        registry: NodeOutputRegistry,
+        event_id: str,
+        registry: EventOutputRegistry,
         tracker: WorkerSessionTracker,
-        predecessor_node_ids: Optional[List[str]] = None,
-        total_nodes: int = 3,
+        predecessor_event_ids: Optional[List[str]] = None,
+        total_events: int = 3,
         completion_queue: Any = None,
     ) -> OTelChatCompletionAPIData:
         return OTelChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
-            node_id=node_id,
+            event_id=event_id,
             registry=registry,
             worker_tracker=tracker,
             completion_queue=completion_queue,
-            total_nodes_in_session=total_nodes,
-            predecessor_node_ids=predecessor_node_ids or [],
+            total_events_in_session=total_events,
+            predecessor_event_ids=predecessor_event_ids or [],
         )
 
     @pytest.mark.asyncio
     async def test_failure_propagates_through_chain(self) -> None:
-        """node_0 fails → node_1 skips via NodeFailedError → node_2 skips via NodeFailedError.
+        """event_0 fails → event_1 skips via EventFailedError → event_2 skips via EventFailedError.
 
-        No empty strings are written to the registry. No record_node_completed calls.
+        No empty strings are written to the registry. No record_event_completed calls.
         """
-        registry = NodeOutputRegistry()
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
-        node_1 = self._make_node("session_1:node_1", registry, tracker, ["session_1:node_0"])
-        node_2 = self._make_node("session_1:node_2", registry, tracker, ["session_1:node_1"])
+        event_1 = self._make_node("session_1:event_1", registry, tracker, ["session_1:event_0"])
+        event_2 = self._make_node("session_1:event_2", registry, tracker, ["session_1:event_1"])
 
-        # Simulate node_0 failure
+        # Simulate event_0 failure
         tracker.mark_session_failed("session_1")
-        registry.record_failure("session_1:node_0")
+        registry.record_failure("session_1:event_0")
 
-        # node_1 processes — should skip
-        await node_1.wait_for_predecessors_and_substitute()
-        assert node_1.skip_request is True
-        assert registry.is_node_failed("session_1:node_1")
-        assert registry.get_output_by_node_id("session_1:node_1") is None
+        # event_1 processes — should skip
+        await event_1.wait_for_predecessors_and_substitute()
+        assert event_1.skip_request is True
+        assert registry.is_event_failed("session_1:event_1")
+        assert registry.get_output_by_event_id("session_1:event_1") is None
 
-        # node_2 processes — should also skip via node_1's failure
-        await node_2.wait_for_predecessors_and_substitute()
-        assert node_2.skip_request is True
-        assert registry.is_node_failed("session_1:node_2")
-        assert registry.get_output_by_node_id("session_1:node_2") is None
+        # event_2 processes — should also skip via event_1's failure
+        await event_2.wait_for_predecessors_and_substitute()
+        assert event_2.skip_request is True
+        assert registry.is_event_failed("session_1:event_2")
+        assert registry.get_output_by_event_id("session_1:event_2") is None
 
-        # tracker should have no completed nodes (no record_node_completed calls)
-        assert tracker.get_session_node_count("session_1") == 0
+        # tracker should have no completed events (no record_event_completed calls)
+        assert tracker.get_session_event_count("session_1") == 0
 
     @pytest.mark.asyncio
     async def test_cancelled_count_in_failure_notification(self) -> None:
-        """process_failure on first node of 3-node session reports cancelled_nodes=2."""
-        registry = NodeOutputRegistry()
+        """process_failure on first event of 3-event session reports cancelled_events=2."""
+        registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
         notifications: List[Any] = []
         mock_queue = MagicMock()
         mock_queue.put_nowait = lambda data: notifications.append(data)
 
-        node_0 = self._make_node("session_1:node_0", registry, tracker, total_nodes=3, completion_queue=mock_queue)
+        event_0 = self._make_node("session_1:event_0", registry, tracker, total_events=3, completion_queue=mock_queue)
 
         exception = ValueError("HTTP 500")
         config = MagicMock()
@@ -972,11 +974,11 @@ class TestFailurePropagation:
         tokenizer = MagicMock()
         tokenizer.count_tokens.return_value = 0
 
-        await node_0.process_failure(None, config, tokenizer, exception)
+        await event_0.process_failure(None, config, tokenizer, exception)
 
         assert len(notifications) == 1
         data = notifications[0]
         assert data["failed"] is True
         assert data["session_id"] == "session_1"
-        # 3 total - 0 completed before failure - 1 (the failing node itself) = 2 cancelled
-        assert data["cancelled_nodes"] == 2
+        # 3 total - 0 completed before failure - 1 (the failing event itself) = 2 cancelled
+        assert data["cancelled_events"] == 2
