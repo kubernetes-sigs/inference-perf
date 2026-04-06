@@ -1,0 +1,28 @@
+[
+  {
+    "id": "1",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "Hello!"
+      },
+      {
+        "from": "gpt",
+        "value": "Hi! How can I help you?"
+      }
+    ]
+  },
+  {
+    "id": "2",
+    "conversations": [
+      {
+        "from": "human",
+        "value": "What is 2+2?"
+      },
+      {
+        "from": "gpt",
+        "value": "2+2 is 4."
+      }
+    ]
+  }
+]
