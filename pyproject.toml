@@ -141,6 +141,7 @@ include = ["inference_perf*", "deploy*"]
 
 [tool.mypy]
 disable_error_code = ["attr-defined"]
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = [

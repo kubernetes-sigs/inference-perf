@@ -69,17 +69,9 @@ def test_read_config_timestamp_substitution() -> None:
     # Create a minimalistic config with {timestamp} in the storage path
     config_content = {
         "storage": {
-            "local_storage": {
-                "path": "reports-{timestamp}"
-            },
-            "google_cloud_storage": {
-                "bucket_name": "my-bucket",
-                "path": "gcs-reports-{timestamp}"
-            },
-            "simple_storage_service": {
-                "bucket_name": "my-bucket",
-                "path": "s3-reports-{timestamp}"
-            }
+            "local_storage": {"path": "reports-{timestamp}"},
+            "google_cloud_storage": {"bucket_name": "my-bucket", "path": "gcs-reports-{timestamp}"},
+            "simple_storage_service": {"bucket_name": "my-bucket", "path": "s3-reports-{timestamp}"},
         }
     }
 
@@ -93,11 +85,11 @@ def test_read_config_timestamp_substitution() -> None:
         assert config.storage is not None
         assert "{timestamp}" not in config.storage.local_storage.path
         assert config.storage.local_storage.path.startswith("reports-")
-        
+
         assert config.storage.google_cloud_storage is not None
         assert "{timestamp}" not in config.storage.google_cloud_storage.path
         assert config.storage.google_cloud_storage.path.startswith("gcs-reports-")
-        
+
         assert config.storage.simple_storage_service is not None
         assert "{timestamp}" not in config.storage.simple_storage_service.path
         assert config.storage.simple_storage_service.path.startswith("s3-reports-")
@@ -158,13 +150,14 @@ def test_response_format_to_api_format() -> None:
 
 def test_standard_load_stage_validation() -> None:
     import pytest
+
     # valid
     StandardLoadStage(rate=10, duration=60)
-    
+
     # invalid num_requests
     with pytest.raises(ValueError, match="num_requests should not be set"):
         StandardLoadStage(rate=10, duration=60, num_requests=100)
-        
+
     # invalid concurrency_level
     with pytest.raises(ValueError, match="concurrency_level should not be set"):
         StandardLoadStage(rate=10, duration=60, concurrency_level=5)
@@ -180,29 +173,29 @@ def test_concurrent_load_stage() -> None:
 def test_load_config_validation() -> None:
     import pytest
     from inference_perf.config import SweepConfig, StageGenType
-    
+
     # Sweep with CONCURRENT
     with pytest.raises(ValueError, match="Cannot have sweep config with CONCURRENT"):
         LoadConfig(
             type=LoadType.CONCURRENT,
             sweep=SweepConfig(type=StageGenType.GEOM),
-            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)]
+            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)],
         )
-        
+
     # CONCURRENT with non-ConcurrentLoadStage
     with pytest.raises(ValueError, match="CONCURRENT load type requires ConcurrentLoadStage"):
         LoadConfig(
             type=LoadType.CONCURRENT,
-            stages=[StandardLoadStage(rate=10, duration=60)] # type: ignore
+            stages=[StandardLoadStage(rate=10, duration=60)],
         )
-        
+
     # CONSTANT with non-StandardLoadStage
     with pytest.raises(ValueError, match="CONSTANT load type requires StandardLoadStage"):
         LoadConfig(
             type=LoadType.CONSTANT,
-            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)] # type: ignore
+            stages=[ConcurrentLoadStage(num_requests=10, concurrency_level=1)],
         )
-        
+
     # MultiLoRA traffic split not adding up to 1.0
     with pytest.raises(ValueError, match="MultiLoRA traffic split.*does not add up to 1.0"):
         LoadConfig(
@@ -215,11 +208,11 @@ def test_load_config_validation() -> None:
 
 def test_prometheus_client_config_validation() -> None:
     import pytest
-    
+
     # Both set
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(url="http://localhost:9090", google_managed=True)
-        
+
     # Neither set
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(google_managed=False)

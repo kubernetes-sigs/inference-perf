@@ -362,7 +362,6 @@ def read_config(config_file: str) -> Config:
     default_cfg = Config().model_dump(mode="json")
     merged_cfg = deep_merge(default_cfg, cfg)
 
-    
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
