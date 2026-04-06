@@ -269,7 +269,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # Determine operation name based on API type
         operation_name = "chat.completions" if self.client.api_config.type == APIType.Chat else "completions"
 
-        start = time.perf_counter()
+        start_perf = time.perf_counter()
+        start_wall = time.time()
         response: Optional[aiohttp.ClientResponse] = None
         response_info = None
         error = None
@@ -357,7 +358,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 logger.error("Unexpected error during request processing:", exc_info=True)
                 error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
 
-            end_time = time.perf_counter()
+            end_perf = time.perf_counter()
+            end_time_wall = start_wall + (end_perf - start_perf)
 
             # Record OTEL metrics
             self._record_otel_metrics(
@@ -367,8 +369,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 response_info=response_info,
                 response_content=response_content,
                 error=error,
-                start_time=start,
-                end_time=end_time,
+                start_time=start_perf,
+                end_time=end_perf,
             )
 
         if caught_exception is not None and not response_info:
@@ -380,6 +382,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 lora_adapter=lora_adapter,
             )
 
+        # Translate token times if available to wall-clock scale
+        if response_info and response_info.output_token_times:
+            response_info.output_token_times = [
+                start_wall + (t - start_perf) for t in response_info.output_token_times
+            ]
+
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
@@ -387,8 +395,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             response_data=response_content,
             info=response_info if response_info else InferenceInfo(),
             error=error,
-            start_time=start,
-            end_time=end_time,
+            start_time=start_wall,
+            end_time=end_time_wall,
             scheduled_time=scheduled_time,
         )
 

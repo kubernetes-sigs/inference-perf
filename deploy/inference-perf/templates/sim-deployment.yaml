@@ -1,0 +1,41 @@
+{{- if .Values.sim.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inference-perf.fullname" . }}-sim
+  labels:
+    {{- include "inference-perf.labels" . | nindent 4 }}
+    app: sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "inference-perf.selectorLabels" . | nindent 6 }}
+      app: sim
+  template:
+    metadata:
+      labels:
+        {{- include "inference-perf.selectorLabels" . | nindent 8 }}
+        app: sim
+    spec:
+      containers:
+      - name: sim
+        image: "{{ .Values.sim.image.repository }}:{{ .Values.sim.image.tag }}"
+        args: ["--model", "{{ .Values.sim.modelName }}", "--port", "8000"]
+        ports:
+        - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "inference-perf.fullname" . }}-sim
+  labels:
+    {{- include "inference-perf.labels" . | nindent 4 }}
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    {{- include "inference-perf.selectorLabels" . | nindent 4 }}
+    app: sim
+{{- end }}

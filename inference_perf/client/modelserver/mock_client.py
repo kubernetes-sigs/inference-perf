@@ -40,7 +40,8 @@ class MockModelServerClient(ModelServerClient):
     async def process_request(
         self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
     ) -> None:
-        start = time.perf_counter()
+        start_perf = time.perf_counter()
+        start_wall = time.time()
         logger.debug("Processing mock request for stage %d", stage_id)
         effective_model_name = lora_adapter if lora_adapter else "mock_model"
         try:
@@ -63,8 +64,8 @@ class MockModelServerClient(ModelServerClient):
                         request_data=str(await data.to_payload(effective_model_name, 3, False, False)),
                         info=info,
                         error=None,
-                        start_time=start,
-                        end_time=time.perf_counter(),
+                        start_time=start_wall,
+                        end_time=start_wall + (time.perf_counter() - start_perf),
                         scheduled_time=scheduled_time,
                     )
                 )
@@ -73,7 +74,7 @@ class MockModelServerClient(ModelServerClient):
             self.metrics_collector.record_metric(
                 RequestLifecycleMetric(
                     stage_id=stage_id,
-                    request_data=str(data.to_payload(effective_model_name, 3, False, False)),
+                    request_data=str(await data.to_payload(effective_model_name, 3, False, False)),
                     info=InferenceInfo(
                         input_tokens=0,
                         output_tokens=0,
@@ -83,8 +84,8 @@ class MockModelServerClient(ModelServerClient):
                         error_msg=str(e),
                         error_type=type(e).__name__,
                     ),
-                    start_time=start,
-                    end_time=time.perf_counter(),
+                    start_time=start_wall,
+                    end_time=start_wall + (time.perf_counter() - start_perf),
                     scheduled_time=scheduled_time,
                 )
             )
