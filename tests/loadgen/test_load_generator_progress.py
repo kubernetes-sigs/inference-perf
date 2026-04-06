@@ -11,9 +11,9 @@ class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
         self.mock_datagen = MagicMock(spec=DataGenerator)
         # Prepare a mock data generator that yields InferenceAPIData
         mock_data = MagicMock(spec=InferenceAPIData)
-        mock_data.prefered_worker_id = -1
+        mock_data.preferred_worker_id = -1
         self.mock_datagen.get_data.return_value = [mock_data]
-        self.mock_datagen.is_prefered_worker_requested.return_value = False
+        self.mock_datagen.is_preferred_worker_requested.return_value = False
 
         self.load_config = LoadConfig(
             type=LoadType.CONSTANT,

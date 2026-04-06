@@ -44,7 +44,7 @@ class BaseGenerator(ABC):
         """Return list of supported API types (Chat, Completion, etc.)."""
         raise NotImplementedError
 
-    def is_prefered_worker_requested(self) -> bool:
+    def is_preferred_worker_requested(self) -> bool:
         """Whether this generator requests preferred worker routing.
 
         Returns False by default. Override to enable worker affinity.
@@ -208,6 +208,7 @@ class SessionGenerator(BaseGenerator):
             session_id: The session ID to clean up
         """
         raise NotImplementedError
+
     # notify load gen whether request has preferred worker
     def is_preferred_worker_requested(self) -> bool:
         return False

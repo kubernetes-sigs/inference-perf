@@ -501,7 +501,7 @@ class LoadGenerator:
             dispatched_count = 0
             for lazy_data in events:
                 lora_adapter = self._get_lora_adapter()
-                worker_id = lazy_data.prefered_worker_id
+                worker_id = lazy_data.preferred_worker_id
                 if worker_id >= 0:
                     worker_id = worker_id % active_workers
 

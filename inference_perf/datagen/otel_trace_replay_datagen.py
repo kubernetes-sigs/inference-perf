@@ -1125,7 +1125,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         """Return supported API types."""
         return [APIType.Chat]
 
-    def is_prefered_worker_requested(self) -> bool:
+    def is_preferred_worker_requested(self) -> bool:
         """Always True: all nodes of a session must run on the same worker for dependency waiting to work."""
         return True
 
@@ -1187,7 +1187,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         session = self.sessions[session_index]
         event_indices = self.get_session_event_indices(session_index)
         session_worker_id = abs(hash(session.session_id)) % self.num_workers
-        return [LazyLoadInferenceAPIData(data_index=idx, prefered_worker_id=session_worker_id) for idx in event_indices]
+        return [LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=session_worker_id) for idx in event_indices]
 
     def build_session_metric(
         self,
@@ -1394,7 +1394,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             expected_output_content=event.expected_output,
             otel_context=data.otel_context,
             session_id=data.session_id,
-            prefered_worker_id=data.prefered_worker_id,
+            preferred_worker_id=data.preferred_worker_id,
         )
 
         return actual_data
