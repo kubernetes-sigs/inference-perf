@@ -14,6 +14,7 @@
 from pathlib import Path
 from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStatus
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+from inference_perf.utils.shared_prefix_trace_reader import SharedPrefixTraceReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, LazyLoadDataMixin
@@ -48,7 +49,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union
+from typing import Any, List, Tuple, Optional, NamedTuple, Union
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -260,7 +261,9 @@ class LoadGenerator:
                 raise ValueError("Trace file is required for trace replay load generator")
 
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
-                self.trace_reader = AzurePublicDatasetReader()
+                self.trace_reader: Any = AzurePublicDatasetReader()
+            elif self.trace.format == TraceFormat.SHARED_PREFIX:
+                self.trace_reader = SharedPrefixTraceReader()
             else:
                 raise ValueError(f"Unsupported trace format: {self.trace.format}")
         self.lora_adapters: Optional[List[str]] = None

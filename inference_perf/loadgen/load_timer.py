@@ -13,10 +13,10 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import Generator, Optional, Tuple, Any
 import numpy as np
-from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
+from inference_perf.utils.trace_reader import NewTraceReader, LegacyTraceReader, NewTraceEntry
 
 
 class LoadTimer(ABC):
@@ -98,11 +98,21 @@ class PoissonLoadTimer(LoadTimer):
 
 
 class TraceReplayLoadTimer(LoadTimer):
-    def __init__(self, trace_reader: TraceReader, trace_file: Path) -> None:
+    def __init__(self, trace_reader: NewTraceReader[NewTraceEntry] | LegacyTraceReader, trace_file: Path) -> None:
         self._trace_reader = trace_reader
         self._trace_file = trace_file
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
         start_time = time.monotonic() if initial is None else initial
-        for timestamp, _, _ in self._trace_reader.load_traces(self._trace_file):
-            yield start_time + timestamp
+        if hasattr(self._trace_reader, "load_entries"):
+            # SharedPrefixTraceReader logic
+            # Cast to Any to avoid "Item "LegacyTraceReader" of "NewTraceReader[Any] | LegacyTraceReader" has no attribute "load_entries""
+            reader: Any = self._trace_reader
+            for entry in reader.load_entries(self._trace_file):
+                yield start_time + entry.timestamp
+        else:
+            # AzurePublicDatasetReader logic
+            if isinstance(self._trace_reader, LegacyTraceReader):
+                reader_legacy = self._trace_reader
+                for timestamp, _, _ in reader_legacy.load_traces(self._trace_file):
+                    yield start_time + timestamp

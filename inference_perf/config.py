@@ -70,6 +70,7 @@ class APIConfig(BaseModel):
 
 class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
+    SHARED_PREFIX = "SharedPrefix"
 
 
 class TraceConfig(BaseModel):

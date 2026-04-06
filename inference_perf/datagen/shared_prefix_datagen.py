@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Dict, Tuple
+from pathlib import Path
 from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.shared_prefix_trace_reader import SharedPrefixTraceReader
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -36,7 +38,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Initialize vocab_size
         hf_tokenizer = self.tokenizer.get_tokenizer()
         if hasattr(hf_tokenizer, "vocab_size") and hf_tokenizer.vocab_size is not None:
-            self.vocab_size: int = hf_tokenizer.vocab_size
+            self.vocab_size: int = int(hf_tokenizer.vocab_size)
         elif hasattr(hf_tokenizer, "get_vocab") and callable(hf_tokenizer.get_vocab):
             self.vocab_size = len(hf_tokenizer.get_vocab())
         else:
@@ -50,47 +52,102 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.vocab_size <= 0:
             raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
 
-        if self.shared_prefix is None:
-            raise ValueError("Shared Prefix config is required for SharedPrefixDataGenerator")
-
-        self.num_groups: int = self.shared_prefix.num_groups
-        self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
-        self.system_prompt_len: int = self.shared_prefix.system_prompt_len
-        self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
-
-        # Use distribution configs, or fall back to question_len/output_len with std_dev=0
-        q_len = self.shared_prefix.question_len
-        o_len = self.shared_prefix.output_len
-        question_dist = self.shared_prefix.question_distribution or Distribution(min=q_len, max=q_len, mean=q_len, std_dev=0)
-        output_dist = self.shared_prefix.output_distribution or Distribution(min=o_len, max=o_len, mean=o_len, std_dev=0)
-
-        # Generate separate distributions for each group
-        self.question_len_list_per_group: List[List[int]] = []
-        self.output_len_list_per_group: List[List[int]] = []
-
-        for _ in range(self.num_groups):
-            question_lens = generate_distribution(
-                question_dist.min,
-                question_dist.max,
-                question_dist.mean,
-                question_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
-            self.question_len_list_per_group.append(question_lens.tolist())
-
-            output_lens = generate_distribution(
-                output_dist.min,
-                output_dist.max,
-                output_dist.mean,
-                output_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
-            self.output_len_list_per_group.append(output_lens.tolist())
-
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
         self.flat_output_lens: List[int] = []
-        self._generate_prompts()
+
+        if self.trace is not None:
+            if self.trace.format != TraceFormat.SHARED_PREFIX:
+                raise ValueError(f"Unsupported trace format for SharedPrefixDataGenerator: {self.trace.format}")
+
+            reader = SharedPrefixTraceReader()
+            traces = reader.load_entries(Path(self.trace.file))
+
+            hf_tokenizer = self.tokenizer.get_tokenizer()
+
+            # Cache for shared prefixes: (shared_prefix_id, length) -> prefix_text
+            # Using both shared_prefix_id and length in key to avoid collisions if id is reused for different lengths
+            prefix_cache: Dict[Tuple[int, int], str] = {}
+
+            for t in traces:
+                # Generate or retrieve shared prefix
+                shared_prefix_text = ""
+
+                # Check for cached prefix if shared_prefix_id is provided
+                if t.shared_prefix_id is not None:
+                    cache_key = (t.shared_prefix_id, t.shared_prefix_length)
+                    if cache_key in prefix_cache:
+                        shared_prefix_text = prefix_cache[cache_key]
+                    else:
+                        token_ids = self._generate_random_token_ids(t.shared_prefix_length)
+                        shared_prefix_text = hf_tokenizer.decode(token_ids, skip_special_tokens=True)
+                        prefix_cache[cache_key] = shared_prefix_text
+                else:
+                    # No group ID, generate unique prefix
+                    token_ids = self._generate_random_token_ids(t.shared_prefix_length)
+                    shared_prefix_text = hf_tokenizer.decode(token_ids, skip_special_tokens=True)
+
+                # Generate tail input
+                tail_token_ids = self._generate_random_token_ids(t.tail_input_length)
+                tail_text = hf_tokenizer.decode(tail_token_ids, skip_special_tokens=True)
+
+                # For single turn, concat prefix and tail
+                # TODO: make sure space is needed? usually yes between prefix and input
+                prompt = shared_prefix_text + " " + tail_text
+                self.prompts.append(prompt)
+
+                # Use output length directly from trace
+                self.flat_output_lens.append(t.output_length)
+
+            # Trace replay mode: we don't shuffle, we follow the trace order
+            # We also assume single-turn for now as per plan
+            self.enable_multi_turn_chat = False
+            self.num_groups = 1  # Default
+
+        else:
+            if self.shared_prefix is None:
+                raise ValueError("Shared Prefix config is required for SharedPrefixDataGenerator when no trace is provided")
+
+            self.num_groups = self.shared_prefix.num_groups
+            self.num_prompts_per_group = self.shared_prefix.num_prompts_per_group
+            self.system_prompt_len = self.shared_prefix.system_prompt_len
+            self.enable_multi_turn_chat = self.shared_prefix.enable_multi_turn_chat
+
+            # Use distribution configs, or fall back to question_len/output_len with std_dev=0
+            q_len = self.shared_prefix.question_len
+            o_len = self.shared_prefix.output_len
+            question_dist = self.shared_prefix.question_distribution or Distribution(
+                min=q_len, max=q_len, mean=q_len, std_dev=0
+            )
+            output_dist = self.shared_prefix.output_distribution or Distribution(min=o_len, max=o_len, mean=o_len, std_dev=0)
+
+            # Generate separate distributions for each group
+            self.question_len_list_per_group = []
+            self.output_len_list_per_group = []
+
+            for _ in range(self.num_groups):
+                question_lens = generate_distribution(
+                    question_dist.min,
+                    question_dist.max,
+                    question_dist.mean,
+                    question_dist.std_dev,
+                    self.shared_prefix.num_prompts_per_group,
+                )
+                self.question_len_list_per_group.append(question_lens.tolist())
+
+                output_lens = generate_distribution(
+                    output_dist.min,
+                    output_dist.max,
+                    output_dist.mean,
+                    output_dist.std_dev,
+                    self.shared_prefix.num_prompts_per_group,
+                )
+                self.output_len_list_per_group.append(output_lens.tolist())
+
+            self._generate_prompts()
+
+    def get_request_count(self) -> int:
+        return len(self.prompts)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
