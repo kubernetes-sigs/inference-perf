@@ -40,6 +40,7 @@ if sys.version_info < (3, 10):
 
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.config import LoadConfig, LoadType
+from inference_perf.datagen import DataGenerator
 
 
 class MockWorker:
@@ -50,7 +51,7 @@ class MockWorker:
 
 class TestLoadGeneratorConcurrency(unittest.TestCase):
     def setUp(self) -> None:
-        self.mock_datagen = MagicMock()
+        self.mock_datagen = MagicMock(spec=DataGenerator)
         self.load_config = LoadConfig(type=LoadType.CONCURRENT, num_workers=4, worker_max_concurrency=100)
         # Mocking get_circuit_breaker since LoadGenerator init calls it
         with unittest.mock.patch("inference_perf.loadgen.load_generator.get_circuit_breaker"):

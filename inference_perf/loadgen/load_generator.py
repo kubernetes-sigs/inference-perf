@@ -729,7 +729,10 @@ class LoadGenerator:
         stage_status = StageStatus.RUNNING
 
         time_generator = timer.start_timer(start_time)
-        data_generator = self.datagen.get_data()
+        if isinstance(self.datagen, DataGenerator):
+            data_generator = self.datagen.get_data()
+        else:
+            raise TypeError("run_stage requires DataGenerator, use run_session_stage for SessionGenerator")
         active_workers = self.num_workers
         if concurrency_level:
             # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.
