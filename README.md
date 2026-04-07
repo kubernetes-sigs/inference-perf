@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![GitHub Release](https://img.shields.io/github/v/release/kubernetes-sigs/inference-perf.svg?label=Release)](https://github.com/kuberentes-sigs/inferece-perf/releases/latest)
+[![GitHub Release](https://img.shields.io/github/v/release/kubernetes-sigs/inference-perf.svg?label=Release)](https://github.com/kubernetes-sigs/inference-perf/releases/latest)
 [![PyPI Release](https://img.shields.io/pypi/v/inference-perf.svg?label=PyPI%20Release)](https://pypi.python.org/pypi/inference-perf)
 [![Container Image](https://img.shields.io/badge/Container-latest-blue)](https://quay.io/inference-perf/inference-perf)
 [![Tests](https://img.shields.io/github/actions/workflow/status/kubernetes-sigs/inference-perf/unit_test.yml?branch=main&label=Tests)](https://github.com/kubernetes-sigs/inference-perf/actions/workflows/unit_test.yml)

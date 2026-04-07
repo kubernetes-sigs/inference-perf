@@ -101,7 +101,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def is_shared_prefix_supported(self) -> bool:
         return True
 
-    def is_prefered_worker_requested(self) -> bool:
+    def is_preferred_worker_requested(self) -> bool:
         return True if self.enable_multi_turn_chat else False
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
@@ -126,8 +126,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         i = 0
         while True:
-            prefered_worker_id = i % self.num_groups if self.enable_multi_turn_chat else -1
-            yield LazyLoadInferenceAPIData(data_index=i, prefered_worker_id=prefered_worker_id)
+            preferred_worker_id = i % self.num_groups if self.enable_multi_turn_chat else -1
+            yield LazyLoadInferenceAPIData(data_index=i, preferred_worker_id=preferred_worker_id)
             i += 1
 
     def _generate_random_token_ids(self, length: int) -> List[int]:

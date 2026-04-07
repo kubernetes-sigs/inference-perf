@@ -28,6 +28,10 @@ jobs:
         run: |
           pdm sync -d
           pdm install -G analysis
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+      - name: Generate Protobuf
+        run: pdm run buf generate
       - name: Run Unit Tests
         run: |
-          pdm run test
+          PYTHONPATH=api/generated/python pdm run test

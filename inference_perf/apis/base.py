@@ -48,8 +48,8 @@ class RequestLifecycleMetric(BaseModel):
 
 
 class InferenceAPIData(BaseModel):
-    # loadgen should assign this request to prefered worker if possible
-    prefered_worker_id: int = -1  # no prefered worker by default
+    # loadgen should assign this request to preferred worker if possible
+    preferred_worker_id: int = -1  # no preferred worker by default
 
     @abstractmethod
     def get_api_type(self) -> APIType:

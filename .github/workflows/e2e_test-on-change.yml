@@ -22,13 +22,20 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+
       - name: Install dependencies
         run: |
           nix develop -c pdm sync -d
 
+      - name: Generate Protobuf
+        run: |
+          nix develop -c pdm run buf generate
+
       - name: Run end-to-end tests
         run: |
-          nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
+          PYTHONPATH=api/generated/python nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
 
       - name: Upload test_e2e.out
         uses: actions/upload-artifact@v4

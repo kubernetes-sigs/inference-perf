@@ -32,6 +32,8 @@ jobs:
       - name: Install dependencies
         run: |
           pdm sync -d
+      - name: Generate Protobuf
+        run: pdm run buf generate
       - name: Do Linting and Type Checks
         run: |
-          pdm run validate
+          PYTHONPATH=api/generated/python pdm run validate

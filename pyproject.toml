@@ -43,6 +43,7 @@ dev = [
     "protobuf>=6.33.6",
     "betterproto[compiler]>=1.2.5",
     "protobuf-to-pydantic",
+    "mypy-protobuf>=5.0.0",
 ]
 
 [dependency-groups]
@@ -151,6 +152,7 @@ include = ["inference_perf*", "deploy*", "api*"]
 
 [tool.mypy]
 disable_error_code = ["attr-defined"]
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = [

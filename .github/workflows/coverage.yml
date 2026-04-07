@@ -30,5 +30,10 @@ jobs:
         run: |
           pdm sync -d
           pdm install -G analysis
+      - name: Setup Buf
+        uses: bufbuild/buf-setup-action@v1
+      - name: Generate Protobuf
+        run: pdm run buf generate
       - name: Run Validation
-        run: pdm run check:cov
+        run: |
+          PYTHONPATH=api/generated/python pdm run check:cov

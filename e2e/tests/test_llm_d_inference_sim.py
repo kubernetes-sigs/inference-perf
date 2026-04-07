@@ -25,15 +25,16 @@ automatically be skipped.
 [1]: https://github.com/llm-d/llm-d-inference-sim
 """
 
+import os
 import pytest
 
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
 from utils.testdata import extract_tarball
 
-
 TEST_MODEL_NAME = "google/gemma-3-270m"
 TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
+TEST_SHAREGPT_PATH = os.path.abspath("e2e/testdata/sharegpt.json")
 
 
 @pytest.mark.asyncio
@@ -46,6 +47,13 @@ TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
                 "type": "mock",
             },
             id="data_mock",
+        ),
+        pytest.param(
+            {
+                "type": "shareGPT",
+                "path": TEST_SHAREGPT_PATH,
+            },
+            id="data_sharegpt",
         ),
         pytest.param(
             {

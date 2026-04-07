@@ -288,9 +288,12 @@ def main_cli() -> None:
                     elif isinstance(stage, ConcurrentLoadStage):
                         max_requests = max(max_requests, stage.num_requests)
                 total_count = max_requests + 1
-                if config.data.input_distribution.total_count == 0:
+                if config.data.input_distribution.total_count == 0 or config.data.input_distribution.total_count < total_count:
                     config.data.input_distribution.total_count = total_count
-                if config.data.output_distribution.total_count == 0:
+                if (
+                    config.data.output_distribution.total_count == 0
+                    or config.data.output_distribution.total_count < total_count
+                ):
                     config.data.output_distribution.total_count = total_count
 
         if config.data.type == DataGenType.SHARED_PREFIX and config.data.shared_prefix is None:
@@ -326,7 +329,10 @@ def main_cli() -> None:
     start_time = time.time()
 
     # Run Perf Test
-    perfrunner.run()
+    try:
+        perfrunner.run()
+    except KeyboardInterrupt:
+        pass
 
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
