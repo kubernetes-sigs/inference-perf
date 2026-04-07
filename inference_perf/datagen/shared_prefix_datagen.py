@@ -18,7 +18,7 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DistributionConfig, DistributionType
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import sample_from_distribution
 from .base import DataGenerator, LazyLoadDataMixin
@@ -28,30 +28,18 @@ from .base import DataGenerator, LazyLoadDataMixin
 # This can be used to benchmark prefix caching cases.
 class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     @staticmethod
-    def _resolve_param(
-        param: Union[int, DistributionConfig],
+    def _resolve_distribution(
+        param: Union[int, Distribution],
         legacy_dist: Optional[Distribution] = None,
-    ) -> DistributionConfig:
-        """Convert a Union[int, DistributionConfig] + optional legacy Distribution into a DistributionConfig."""
-        if isinstance(param, DistributionConfig):
+    ) -> Distribution:
+        """Resolve a Union[int, Distribution] + optional legacy Distribution into a Distribution."""
+        if isinstance(param, Distribution):
             return param
         # param is an int
         if legacy_dist is not None:
-            return DistributionConfig(
-                distribution=DistributionType.NORMAL,
-                mean=legacy_dist.mean,
-                min=legacy_dist.min,
-                max=legacy_dist.max,
-                std_dev=legacy_dist.std_dev,
-            )
+            return legacy_dist
         # Fixed value: min=max=mean, std_dev=0
-        return DistributionConfig(
-            distribution=DistributionType.NORMAL,
-            mean=float(param),
-            min=param,
-            max=param,
-            std_dev=0.0,
-        )
+        return Distribution(mean=float(param), min=param, max=param, std_dev=0.0)
 
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
@@ -86,11 +74,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Deterministic seeded RNG
         self.rng: np.random.Generator = np.random.default_rng(self.shared_prefix.seed)
 
-        # Resolve all parameters to DistributionConfig
-        system_prompt_dist = self._resolve_param(self.shared_prefix.system_prompt_len)
-        question_dist = self._resolve_param(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
-        output_dist = self._resolve_param(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
-        tool_calls_dist = self._resolve_param(self.shared_prefix.num_tool_calls_per_turn)
+        # Resolve all parameters to Distribution
+        system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
+        question_dist = self._resolve_distribution(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
+        output_dist = self._resolve_distribution(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
 
         # Generate per-group system prompt lengths
         self.system_prompt_lens_per_group: List[int] = sample_from_distribution(
@@ -100,7 +87,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
-        self.tool_calls_per_group: List[List[int]] = []
 
         for _ in range(self.num_groups):
             question_lens = sample_from_distribution(question_dist, self.num_prompts_per_group, self.rng)
@@ -109,13 +95,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             output_lens = sample_from_distribution(output_dist, self.num_prompts_per_group, self.rng)
             self.output_len_list_per_group.append(output_lens.tolist())
 
-            tool_calls = sample_from_distribution(tool_calls_dist, self.num_prompts_per_group, self.rng)
-            self.tool_calls_per_group.append(tool_calls.tolist())
-
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
         self.flat_output_lens: List[int] = []
-        self.flat_tool_calls: List[int] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
@@ -204,18 +186,14 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
                 self.prompts.append(question_text)
 
-        # Flatten output lengths and tool calls to match prompts ordering
+        # Flatten output lengths to match prompts ordering
         self.flat_output_lens = [
             self.output_len_list_per_group[g][p] for g in range(self.num_groups) for p in range(self.num_prompts_per_group)
-        ]
-        self.flat_tool_calls = [
-            self.tool_calls_per_group[g][p] for g in range(self.num_groups) for p in range(self.num_prompts_per_group)
         ]
 
         # Shuffle using seeded RNG for reproducibility
         indices = self.rng.permutation(len(self.prompts))
         self.prompts = [self.prompts[i] for i in indices]
         self.flat_output_lens = [self.flat_output_lens[i] for i in indices]
-        self.flat_tool_calls = [self.flat_tool_calls[i] for i in indices]
         if self.enable_multi_turn_chat:
             self.user_sessions = [self.user_sessions[i] for i in indices]

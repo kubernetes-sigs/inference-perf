@@ -20,7 +20,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 if TYPE_CHECKING:
-    from inference_perf.config import DistributionConfig
+    from inference_perf.config import Distribution
 
 
 def generate_distribution(min: int, max: int, mean: float, std_dev: float, total_count: int) -> NDArray[np.int_]:
@@ -82,14 +82,18 @@ def _sample_skew_normal(rng: np.random.Generator, mean: float, std_dev: float, s
 
 
 def sample_from_distribution(
-    config: "DistributionConfig",
+    config: "Distribution",
     count: int,
     rng: Optional[np.random.Generator] = None,
 ) -> NDArray[np.int_]:
-    """Sample integer values from a configurable distribution.
+    """Sample integer values from a Distribution config.
+
+    Dispatches on config.type to support normal, skew_normal, lognormal,
+    uniform, and poisson distributions. Falls back to normal when type is
+    not specified (backward compatible).
 
     Args:
-        config: A DistributionConfig specifying the distribution type and parameters.
+        config: A Distribution specifying the distribution type and parameters.
         count: Number of samples to generate.
         rng: Optional numpy Generator for deterministic seeding. If None, creates a default one.
 
@@ -106,13 +110,13 @@ def sample_from_distribution(
     if rng is None:
         rng = np.random.default_rng()
 
-    if config.distribution == DistributionType.NORMAL:
+    if config.type == DistributionType.NORMAL:
         samples = rng.normal(loc=config.mean, scale=config.std_dev, size=count)
 
-    elif config.distribution == DistributionType.SKEW_NORMAL:
+    elif config.type == DistributionType.SKEW_NORMAL:
         samples = _sample_skew_normal(rng, config.mean, config.std_dev, config.skew, count)
 
-    elif config.distribution == DistributionType.LOGNORMAL:
+    elif config.type == DistributionType.LOGNORMAL:
         # Moment-match: convert desired mean/std_dev to underlying normal mu/sigma.
         if config.mean <= 0:
             raise ValueError("Lognormal distribution requires mean > 0.")
@@ -127,15 +131,15 @@ def sample_from_distribution(
             sigma = sqrt(sigma_sq)
             samples = rng.lognormal(mean=mu, sigma=sigma, size=count)
 
-    elif config.distribution == DistributionType.UNIFORM:
+    elif config.type == DistributionType.UNIFORM:
         samples = rng.uniform(low=config.min, high=config.max + 1, size=count)
 
-    elif config.distribution == DistributionType.POISSON:
+    elif config.type == DistributionType.POISSON:
         lam = config.mean if config.mean > 0 else 1.0
         samples = rng.poisson(lam=lam, size=count).astype(np.float64)
 
     else:
-        raise ValueError(f"Unsupported distribution type: {config.distribution}")
+        raise ValueError(f"Unsupported distribution type: {config.type}")
 
     # Clip to bounds and round to integers
     clipped = np.clip(samples, config.min, config.max)

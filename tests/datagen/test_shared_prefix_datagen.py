@@ -19,7 +19,6 @@ from inference_perf.config import (
     DataConfig,
     DataGenType,
     Distribution,
-    DistributionConfig,
     DistributionType,
     SharedPrefix,
 )
@@ -50,18 +49,17 @@ class TestDeterministicSeeding:
         gen2 = _make_generator(SharedPrefix(num_groups=3, num_prompts_per_group=5, question_len=50, output_len=50, seed=42))
         assert gen1.prompts == gen2.prompts
         assert gen1.flat_output_lens == gen2.flat_output_lens
-        assert gen1.flat_tool_calls == gen2.flat_tool_calls
 
     def test_different_seeds_produce_different_output(self) -> None:
         # Use distributions so lengths vary and differences are observable
-        dist = DistributionConfig(distribution=DistributionType.NORMAL, mean=100.0, min=10, max=500, std_dev=50.0)
+        dist = Distribution(type=DistributionType.NORMAL, mean=100.0, min=10, max=500, std_dev=50.0)
         gen1 = _make_generator(SharedPrefix(num_groups=3, num_prompts_per_group=5, question_len=dist, output_len=50, seed=42))
         gen2 = _make_generator(SharedPrefix(num_groups=3, num_prompts_per_group=5, question_len=dist, output_len=50, seed=99))
         assert gen1.question_len_list_per_group != gen2.question_len_list_per_group
 
     def test_no_seed_is_nondeterministic(self) -> None:
         # Use distributions so lengths vary between unseeded generators
-        dist = DistributionConfig(distribution=DistributionType.NORMAL, mean=100.0, min=10, max=500, std_dev=50.0)
+        dist = Distribution(type=DistributionType.NORMAL, mean=100.0, min=10, max=500, std_dev=50.0)
         gen1 = _make_generator(SharedPrefix(num_groups=3, num_prompts_per_group=10, question_len=dist, output_len=50))
         gen2 = _make_generator(SharedPrefix(num_groups=3, num_prompts_per_group=10, question_len=dist, output_len=50))
         assert gen1.question_len_list_per_group != gen2.question_len_list_per_group
@@ -72,15 +70,10 @@ class TestFixedLengths:
         gen = _make_generator(SharedPrefix(num_groups=2, num_prompts_per_group=5, output_len=42, seed=1))
         assert all(v == 42 for v in gen.flat_output_lens)
 
-    def test_all_tool_calls_zero_by_default(self) -> None:
-        gen = _make_generator(SharedPrefix(num_groups=2, num_prompts_per_group=5, seed=1))
-        assert all(v == 0 for v in gen.flat_tool_calls)
-
     def test_prompt_count_matches_groups_times_prompts(self) -> None:
         gen = _make_generator(SharedPrefix(num_groups=4, num_prompts_per_group=7, seed=1))
         assert len(gen.prompts) == 4 * 7
         assert len(gen.flat_output_lens) == 4 * 7
-        assert len(gen.flat_tool_calls) == 4 * 7
 
 
 class TestDistributionLengths:
@@ -88,7 +81,7 @@ class TestDistributionLengths:
         sp = SharedPrefix(
             num_groups=2,
             num_prompts_per_group=50,
-            question_len=DistributionConfig(distribution=DistributionType.NORMAL, mean=200.0, min=50, max=500, std_dev=50.0),
+            question_len=Distribution(type=DistributionType.NORMAL, mean=200.0, min=50, max=500, std_dev=50.0),
             output_len=50,
             seed=42,
         )
@@ -102,7 +95,7 @@ class TestDistributionLengths:
             num_groups=2,
             num_prompts_per_group=50,
             question_len=50,
-            output_len=DistributionConfig(distribution=DistributionType.LOGNORMAL, mean=150.0, min=1, max=4096, std_dev=60.0),
+            output_len=Distribution(type=DistributionType.LOGNORMAL, mean=150.0, min=1, max=4096, std_dev=60.0),
             seed=42,
         )
         gen = _make_generator(sp)
@@ -112,24 +105,12 @@ class TestDistributionLengths:
         sp = SharedPrefix(
             num_groups=5,
             num_prompts_per_group=3,
-            system_prompt_len=DistributionConfig(distribution=DistributionType.UNIFORM, mean=100.0, min=50, max=200),
+            system_prompt_len=Distribution(type=DistributionType.UNIFORM, mean=100.0, min=50, max=200),
             seed=42,
         )
         gen = _make_generator(sp)
         # With uniform distribution over [50, 200], 5 groups should have varying lengths
         assert len(set(gen.system_prompt_lens_per_group)) > 1
-
-    def test_tool_calls_per_turn_distribution(self) -> None:
-        sp = SharedPrefix(
-            num_groups=2,
-            num_prompts_per_group=50,
-            num_tool_calls_per_turn=DistributionConfig(distribution=DistributionType.POISSON, mean=4.2, min=0, max=50),
-            seed=42,
-        )
-        gen = _make_generator(sp)
-        assert all(0 <= v <= 50 for v in gen.flat_tool_calls)
-        # Should have some variation (not all the same)
-        assert len(set(gen.flat_tool_calls)) > 1
 
 
 class TestLegacyCompatibility:

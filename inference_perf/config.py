@@ -90,15 +90,6 @@ class DataGenType(Enum):
     OTelTraceReplay = "otel_trace_replay"
 
 
-# Represents the distribution for input prompts and output generations.
-class Distribution(BaseModel):
-    min: int = 10
-    max: int = 1024
-    mean: float = 512
-    std_dev: float = 200
-    total_count: Optional[int] = None
-
-
 class DistributionType(str, Enum):
     NORMAL = "normal"
     SKEW_NORMAL = "skew_normal"
@@ -107,23 +98,20 @@ class DistributionType(str, Enum):
     POISSON = "poisson"
 
 
-class DistributionConfig(BaseModel):
-    """Configurable distribution for sampling numeric parameters.
-
-    Supports multiple distribution types with min/max clamping.
-    Specify either std_dev or variance (not both); variance is converted to std_dev internally.
-    """
-
-    distribution: DistributionType = DistributionType.NORMAL
-    mean: float
-    min: int = 0
-    max: int = 4096
-    std_dev: float = 0.0
+# Represents the distribution for input prompts and output generations.
+class Distribution(BaseModel):
+    min: int = 10
+    max: int = 1024
+    mean: float = 512
+    std_dev: float = 200
+    total_count: Optional[int] = None
+    # New fields for configurable distribution types (default to normal for backward compat)
+    type: DistributionType = DistributionType.NORMAL
     variance: Optional[float] = None
     skew: float = 0.0  # Only used for skew_normal
 
     @model_validator(mode="after")
-    def validate_distribution_config(self) -> "DistributionConfig":
+    def validate_distribution(self) -> "Distribution":
         if self.variance is not None and self.std_dev > 0:
             raise ValueError("Specify either 'std_dev' or 'variance', not both.")
         if self.variance is not None:
@@ -153,10 +141,9 @@ class SharedPrefix(BaseModel):
         serialization_alias="num_users_per_system_prompt",
     )
 
-    system_prompt_len: Union[int, DistributionConfig] = 100
-    question_len: Union[int, DistributionConfig] = 50
-    output_len: Union[int, DistributionConfig] = 50
-    num_tool_calls_per_turn: Union[int, DistributionConfig] = 0
+    system_prompt_len: Union[int, Distribution] = 100
+    question_len: Union[int, Distribution] = 50
+    output_len: Union[int, Distribution] = 50
     seed: Optional[int] = None
 
     # Legacy distribution fields — kept for backward compatibility.
@@ -168,13 +155,15 @@ class SharedPrefix(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
-        if isinstance(self.question_len, DistributionConfig) and self.question_distribution is not None:
+        if isinstance(self.question_len, Distribution) and self.question_distribution is not None:
             raise ValueError(
-                "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'. Use one or the other."
+                "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'."
+                " Use one or the other."
             )
-        if isinstance(self.output_len, DistributionConfig) and self.output_distribution is not None:
+        if isinstance(self.output_len, Distribution) and self.output_distribution is not None:
             raise ValueError(
-                "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'. Use one or the other."
+                "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'."
+                " Use one or the other."
             )
         return self
 

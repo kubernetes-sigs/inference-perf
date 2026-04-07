@@ -326,45 +326,9 @@ def test_shared_prefix_seed_field() -> None:
     assert config.data.shared_prefix.seed == 42
 
 
-def test_shared_prefix_num_tool_calls_per_turn_int() -> None:
-    config = Config.model_validate(
-        {
-            "data": {
-                "type": DataGenType.SharedPrefix,
-                "shared_prefix": {"num_tool_calls_per_turn": 3},
-            }
-        }
-    )
-    sp = config.data.shared_prefix
-    assert sp is not None
-    assert sp.num_tool_calls_per_turn == 3
-
-
-def test_shared_prefix_num_tool_calls_per_turn_dist() -> None:
-    config = Config.model_validate(
-        {
-            "data": {
-                "type": DataGenType.SharedPrefix,
-                "shared_prefix": {
-                    "num_tool_calls_per_turn": {
-                        "type": "poisson",
-                        "mean": 4.2,
-                        "min": 0,
-                        "max": 50,
-                    },
-                },
-            }
-        }
-    )
-    sp = config.data.shared_prefix
-    assert sp is not None
-    assert isinstance(sp.num_tool_calls_per_turn, Distribution)
-    assert sp.num_tool_calls_per_turn.type == DistributionType.POISSON
-
-
 def test_distribution_variance_conversion() -> None:
-    dc = Distribution(type=DistributionType.NORMAL, mean=100.0, variance=6400.0, std_dev=0.0)
-    assert abs(dc.std_dev - 80.0) < 1e-6
+    d = Distribution(type=DistributionType.NORMAL, mean=100.0, variance=6400.0, std_dev=0.0)
+    assert abs(d.std_dev - 80.0) < 1e-6
 
 
 def test_distribution_both_variance_and_std_dev_error() -> None:

@@ -23,14 +23,14 @@ data:
     num_users_per_system_prompt: 10
     system_prompt_len: 100                # Fixed length (backward compatible)
     question_len:                         # Inline distribution syntax
-      distribution: skew_normal
+      type: skew_normal
       mean: 200
       std_dev: 80
       skew: 2.5
       min: 10
       max: 2000
     output_len:
-      distribution: lognormal
+      type: lognormal
       mean: 150
       std_dev: 60
       min: 1
