@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:e0f69cac6177bc0cd4be7cc3116b444f1209c4339bfc77ddc63956b9e9f1ab72"
+content_hash = "sha256:b633d78f4d4b50c5fedecd47b08ecc3c9d26590c3f93d8c501562ce660aafeb4"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -2087,6 +2087,21 @@ files = [
 ]
 
 [[package]]
+name = "mypy-protobuf"
+version = "5.0.0"
+requires_python = ">=3.8"
+summary = "Generate mypy stub files from protobuf specs"
+groups = ["dev"]
+dependencies = [
+    "protobuf>=4.25.3",
+    "types-protobuf>=4.24",
+]
+files = [
+    {file = "mypy_protobuf-5.0.0-py3-none-any.whl", hash = "sha256:3a7dd753ef3e3b8783a824eb51f07983f62812f9ec066e4fbb1b22d6c5dc36d0"},
+    {file = "mypy_protobuf-5.0.0.tar.gz", hash = "sha256:6fdd1cfdbb4419c713291d800a332d4bba6510dbd1341ed95e0bcc82fcadb6b5"},
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.6.0"
 requires_python = ">=3.5"
@@ -3428,6 +3443,17 @@ groups = ["types"]
 files = [
     {file = "types_jmespath-1.1.0.20260124-py3-none-any.whl", hash = "sha256:ec387666d446b15624215aa9cbd2867ffd885b6c74246d357c65e830c7a138b3"},
     {file = "types_jmespath-1.1.0.20260124.tar.gz", hash = "sha256:29d86868e72c0820914577077b27d167dcab08b1fc92157a29d537ff7153fdfe"},
+]
+
+[[package]]
+name = "types-protobuf"
+version = "7.34.1.20260403"
+requires_python = ">=3.10"
+summary = "Typing stubs for protobuf"
+groups = ["dev"]
+files = [
+    {file = "types_protobuf-7.34.1.20260403-py3-none-any.whl", hash = "sha256:16d9bbca52ab0f306279958878567df2520f3f5579059419b0ce149a0ad1e332"},
+    {file = "types_protobuf-7.34.1.20260403.tar.gz", hash = "sha256:8d7881867888e667eb9563c08a916fccdc12bdb5f9f34c31d217cce876e36765"},
 ]
 
 [[package]]

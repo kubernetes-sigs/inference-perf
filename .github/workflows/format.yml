@@ -29,9 +29,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Set up Buf
         uses: bufbuild/buf-setup-action@v1
+      - name: Configure PDM to use local venv
+        run: pdm config venv.in_project true
       - name: Install dependencies
         run: |
           pdm sync -d
+          pdm install -G dev
+      - name: Add .venv/bin to PATH
+        run: echo "$PWD/.venv/bin" >> $GITHUB_PATH
+      - name: Generate Protobuf
+        run: buf generate
       - name: Do Linting and Type Checks
         run: |
-          pdm run validate
+          PYTHONPATH=api/generated/python pdm run validate

@@ -42,7 +42,7 @@ bibliography: paper.bib
 
 # Summary
 
-Inference Perf is a generative AI (GenAI) inference performance benchmarking tool aimed at benchmarking and analyzing the performance of inference deployments. It is designed to be model-server agnostic, allowing for apples-to-apples comparisons across different model servers and serving stacks. As part of the inference benchmarking and metrics standardization effort in the Kubernetes `wg-serving` [@wg-serving], it seeks to standardize tooling and metrics for measuring inference performance across the Kubernetes and model server communities.
+Inference Perf is a generative AI (GenAI) inference performance benchmarking tool aimed at benchmarking and analyzing the performance of inference deployments. It is designed to be model-server agnostic, allowing for apples-to-apples comparisons across different model servers and serving stacks. It was created as a part of the inference benchmarking and metrics standardization effort in the Kubernetes `wg-serving` [@wg-serving] working group, and seeks to standardize tooling and metrics for measuring inference performance across the Kubernetes and model server communities.
 
 # Statement of need
 
@@ -50,15 +50,17 @@ With the rapid adoption of Large Language Models (LLMs) and GenAI, there is a gr
 
 # State of the field
 
-There are two kinds of performance benchmarking tools for GenAI inference that are commonly used:
+There are two kinds of performance benchmarking tools for GenAI inference that are commonly used to measure inference performance of a model serving stack:
 1. Web-based benchmarks like [@k6] and [@locust]
-2. Model server benchmarks like [@vllm-benchmark], [@tgi-benchmark] and [@genai-perf]
+2. Model server benchmarks like [@vllm-benchmark], [@tgi-benchmark], [@sglang-benchmark] and [@genai-perf]
 
 Web-based benchmarks are generic web server benchmarking tools which offer battle-tested way to reliably generate traffic against specific HTTP endpoints. While these can be used to benchmark LLMs and GenAI workloads, they lack the standardized set of metrics that we want to measure with inference often at token level. To measure these token level metrics, streaming request support, tokenizer support and other features specific to the GenAI workload that is being tested are needed. While some of these tools allow extensions, it is restrictive in general and is not ideal for GenAI benchmarking.
 
 Model server benchmarks are geared towards developers of the model server to repeatedly measure performance improvements that are being made to that model server. While these work well for benchmarking GenAI inference, they are very specific to the model servers and don't work well for production workloads where different traffic patterns that simulate real world workloads are needed. Especially to validate autoscaling, load balancing and intelligent routing which are staple features of these production systems.
 
-The main contribution of `infernce-perf` is to provide a standardized model-server agnostic tool that is designed to benchmark production-scale GenAI workloads for various real-world use cases.
+There are also other tools like [@ml-perf] which focus on competitive hardware accelerator performance measurements by providing a standard load generation tool and leaderboard for comparing inference performance across different accelerator chips. However, they are not designed to benchmark production scale workloads under various traffic patterns and use cases.
+
+The main contribution of `inference-perf` is to provide a standardized model-server agnostic tool that is designed to benchmark production-scale GenAI workloads for various real-world use cases.
 
 # Software Design
 
@@ -66,7 +68,7 @@ The main contribution of `infernce-perf` is to provide a standardized model-serv
 
 - **DataGenerator**: Aligns prompt and generation lengths with user input, supporting fixed or variable length tests for use cases like chat completion and summarization including both real world and synthetic datasets.  
 - **Load Generator**: Generates traffic patterns such as fixed RPS, bursts, or Poisson distributions. It supports multi-process generation for high concurrency which is a critical requirement for benchmarking production-scale systems.  
-- **Client**: Abstractions for different model servers and protocols (HTTP, gRPC, streaming), ensuring the tool can be extended to support new model servers and protocols. Furthermore, the tool provides native support for the industry-standard OpenAI API, enabling it to benchmark any compatible model server without necessitating modifications.  
+- **Client**: Abstractions for different model servers, ensuring the tool can be extended to support new model servers and protocols. Furthermore, the tool provides native support for the industry-standard OpenAI API, enabling it to benchmark any compatible model server using their chat and completion endpoints without necessitating modifications.
 - **Metrics / Data Collector**: Measures key performance indicators including Time To First Token (TTFT), Time Per Output Token (TPOT), Inter-Token Latency (ITL) and various throughput metrics. It also supports exporting metrics to Prometheus which can be used to visualize metrics using tools like Grafana.  
 - **Report Generator**: Produces detailed JSON reports with all the metrics collected during benchmarking.  
 - **Analyzer**: Analyzes the collected metrics and provides insights into the performance of the model server by generating various charts and graphs.
@@ -85,7 +87,7 @@ The main contribution of `infernce-perf` is to provide a standardized model-serv
 
 ## Standardized Metrics
 
-`inference-perf` defines the key metrics required to measure inference performance and aims to standardize these metrics and their definitions. The set of metrics measured by `inference-perf` as listed below, provides a comprehensive view of the performance of the inference server in terms of throughput, latency and price-performance. Detailed definitions of the below metrics can be found in [@inference-perf-metrics].
+`inference-perf` defines the key metrics required to measure inference performance and aims to standardize these metrics and their definitions. The set of metrics measured by `inference-perf` as listed below, provides a comprehensive view of the performance of the inference server in terms of throughput and latency. Detailed definitions of the below metrics can be found in [@inference-perf-metrics].
 
 ### Throughput
 
@@ -102,11 +104,13 @@ The main contribution of `infernce-perf` is to provide a standardized model-serv
 
 ### Price-Performance
 
+Price-performance metrics below are not directly reported by inference-perf but can be computed from the metrics reported by the tool using the cost of the underlying hardware. Inference-perf metrics definition [@inference-perf-metrics] provides the formula to compute these additional metrics.
+
 - Price per million output tokens  
 - Price per million input tokens  
 - Throughput per dollar
 
-The above metrics can also be plotted into charts using the analyze command in the tool at various request rates (QPS) to understand how the latency and throughput scales with the load as shown in the below charts.
+The above metrics can also be plotted into charts using the analyze command in the tool at various request rates (QPS) to understand how the latency and throughput scales with the load as shown in the below charts. 
 
 ![Throughput vs QPS](assets/throughput_vs_qps.png)
 
