@@ -913,10 +913,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         # Session state tracking (LoadGen controls which sessions are active)
         self.session_graph_state: Dict[str, SessionGraphState] = {}
 
-        # Event index mappings
-        self.event_to_session: Dict[int, str] = {}  # event_idx → session_id
-        self.event_to_event_id: Dict[int, str] = {}  # event_idx → event_id
-
         if not self.sessions:
             raise ValueError("No valid OTel trace files found")
 
@@ -1078,8 +1074,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                     for seg in gc.input_segments
                 ]
 
-                event_idx = len(self.all_events)
-
                 self.all_events.append(
                     OTelTraceReplayEvent(
                         call_id=gc.call_id,
@@ -1098,10 +1092,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                         wait_ms=event.wait_ms,
                     )
                 )
-
-                # Build index mappings
-                self.event_to_session[event_idx] = session.session_id
-                self.event_to_event_id[event_idx] = event.event_id
 
         # NO SORTING - events accessed by index via mappings
 
@@ -1398,22 +1388,6 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         )
 
         return actual_data
-
-    def _find_event_index(self, session_id: str, event_id: str) -> int:
-        """Find the event index for a given session and event_id.
-
-        Uses the event_to_session and event_to_event_id mappings for O(n) lookup.
-        Could be optimized with a reverse index if needed.
-        """
-        qualified_event_id = f"{session_id}:{event_id}"
-
-        for idx, event in enumerate(self.all_events):
-            if event.event_id == qualified_event_id:
-                return idx
-
-        raise ValueError(
-            f"Event not found: session={session_id}, event={event_id}. This indicates a bug in the graph traversal logic."
-        )
 
     def cleanup_session(self, session_id: str) -> None:
         """Clean up memory for a completed session.

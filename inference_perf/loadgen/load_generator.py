@@ -13,6 +13,7 @@
 # limitations under the License.
 from pathlib import Path
 from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStatus
+from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
@@ -90,7 +91,7 @@ class Worker(mp.Process):
         id: int,
         client: ModelServerClient,
         request_queue: mp.Queue,  # type: ignore[type-arg]
-        datagen: Union[DataGenerator, SessionGenerator],
+        datagen: BaseGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
         cancel_signal: SyncEvent,
@@ -265,7 +266,7 @@ class Worker(mp.Process):
 class LoadGenerator:
     def __init__(
         self,
-        datagen: Union[DataGenerator, SessionGenerator],
+        datagen: BaseGenerator,
         load_config: LoadConfig,
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
     ) -> None:
@@ -463,7 +464,7 @@ class LoadGenerator:
             for i in range(stage_start_cursor, stage_start_cursor + effective_num_sessions)
         )
 
-        logger.info(f"Total of {total_expected_requests} requests across {effective_num_sessions} sessions")
+        logger.info(f"Total of {total_expected_requests} requests (events) across {effective_num_sessions} sessions")
 
         def should_start_next_session() -> bool:
             """Check if we should start the next session."""

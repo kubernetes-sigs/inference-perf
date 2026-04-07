@@ -15,8 +15,9 @@ import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
-from typing import List, Optional, Union
+from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
+from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
@@ -30,8 +31,6 @@ from inference_perf.config import (
     read_config,
 )
 from inference_perf.datagen import (
-    DataGenerator,
-    SessionGenerator,
     MockDataGenerator,
     HFShareGPTDataGenerator,
     SyntheticDataGenerator,
@@ -265,8 +264,7 @@ def main_cli() -> None:
     if config.data and config.data.type == DataGenType.OTelTraceReplay and config.load.num_workers > 0:
         mp_manager = mp.Manager()
 
-    # Define DataGenerator or SessionGenerator
-    datagen: Union[DataGenerator, SessionGenerator]
+    datagen: BaseGenerator
     if config.data:
         # Common checks for generators that require a tokenizer / distribution
         if config.data.type in set(
