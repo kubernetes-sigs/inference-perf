@@ -162,6 +162,7 @@ def main_cli() -> None:
     # 3. Apply CLI overrides
     if cli_overrides:
         from inference_perf.config import deep_merge
+
         config_dict = config.model_dump(mode="json")
         merged_dict = deep_merge(config_dict, cli_overrides)
         config = Config(**merged_dict)

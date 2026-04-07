@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 def autofill_config(url: str, base_config: Optional[Config] = None) -> Config:
     """Generate or patch a Config object for a given URL by auto-detecting the server type and environment."""
     detected_type = detect_server_type(url)
+    if not detected_type:
+        logger.warning("Skipping autoconfiguration for %s because server type could not be detected.", url)
+        return base_config or Config()
+
     detected_api_type = detect_api_type(url)
     detected_model_name = detect_model_name(url)
     env = detect_environment()
@@ -78,7 +82,7 @@ def autofill_config(url: str, base_config: Optional[Config] = None) -> Config:
     return Config(**merged)
 
 
-def detect_server_type(url: str) -> ModelServerType:
+def detect_server_type(url: str) -> Optional[ModelServerType]:
     """Detect the type of model server by probing endpoints.
 
     Heuristics:
@@ -122,7 +126,8 @@ def detect_server_type(url: str) -> ModelServerType:
     except Exception as e:
         logger.debug("/generate probe failed: %s", e)
 
-    return ModelServerType.VLLM
+    logger.warning("Could not auto-detect model server type for %s", url)
+    return None
 
 
 def detect_api_type(url: str) -> APIType:
@@ -156,6 +161,10 @@ def detect_model_name(url: str) -> Optional[str]:
             data = response.json()
             models = data.get("data", [])
             if models:
+                if len(models) > 1:
+                    logger.warning(
+                        "Multiple models found at /v1/models. Auto-selecting the first one: %s", models[0].get("id")
+                    )
                 model_name = models[0].get("id")
                 if isinstance(model_name, str):
                     logger.info("Auto-detected model name: %s", model_name)

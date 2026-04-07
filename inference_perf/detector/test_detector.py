@@ -83,12 +83,12 @@ def test_detect_tgi_via_generate() -> None:
         assert detect_server_type("http://dummy") == ModelServerType.TGI
 
 
-def test_detect_fallback_to_vllm() -> None:
+def test_detect_fallback_to_none() -> None:
     with patch("requests.get") as mock_get:
         # All probes raise exception
         mock_get.side_effect = Exception("Connection error")
 
-        assert detect_server_type("http://dummy") == ModelServerType.VLLM
+        assert detect_server_type("http://dummy") is None
 
 
 def test_detect_environment_gke() -> None:
@@ -172,7 +172,9 @@ def test_autofill_config_with_base_config() -> None:
         assert patched.server is not None  # For mypy
         assert patched.server.type == ModelServerType.TGI
         assert patched.server.base_url == "http://new-server"
-        assert patched.load.stages[0].rate == 5.0  # Preserved!
+        stage = patched.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.rate == 5.0  # Preserved!
 
 
 def test_detect_api_type_chat() -> None:
