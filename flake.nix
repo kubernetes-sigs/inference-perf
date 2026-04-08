@@ -62,7 +62,7 @@
               shellHook = ''
                 python -m venv .venv
                 source .venv/bin/activate
-                pdm sync -d --no-self
+                pdm sync -d
               '';
             };
 
