@@ -1,3 +1,4 @@
+default_stages: [pre-push]
 repos:
 - repo: https://github.com/pdm-project/pdm
   rev: 2.22.3
@@ -30,3 +31,9 @@ repos:
       language: system
       types: [python]
       require_serial: true
+    - id: check-ancestor-main
+      name: check branch is based on origin/main
+      entry: >
+        bash -c "git fetch origin main && git merge-base --is-ancestor origin/main HEAD || (echo 'Error: Your branch is not based on the latest origin/main. Please rebase or merge origin/main.' && exit 1)"
+      language: system
+      pass_filenames: false

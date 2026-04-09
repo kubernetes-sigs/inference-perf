@@ -82,7 +82,7 @@ type-check = "mypy --strict ./inference_perf ./tests"
 "update:cli-flags" = "python scripts/sync_cli_flags_doc.py"
 check = {composite = ["format", "lint"]}
 validate = {composite = ["format", "lint", "type-check", "check:cli-flags"]}
-setup = {shell = "pdm install && pre-commit install"}
+setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push"}
 
 "test" = "pytest tests"
 "test:picked" = "pytest --picked"

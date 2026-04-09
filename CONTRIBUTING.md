@@ -20,6 +20,7 @@ To contribute to this project, please adhere to the following procedure:
   - `pdm check`: Fast check (formatting and linting).
   - `pdm run validate`: Full check (formatting, linting, and strict type checking).
 - Conduct **full test execution and code coverage analysis** using `pdm test` and `pdm check:cov`.
+- **Branch Up-to-Date Requirement**: Your branch must be based on the latest `origin/main` before you can push. A pre-push hook enforces this by running `git fetch origin main` automatically. If it fails, you will need to rebase or merge `origin/main`.
 - **Submit the Pull Request** utilizing the provided template.
 
 ### Resources
