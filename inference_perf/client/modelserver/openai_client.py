@@ -290,17 +290,27 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                     response = resp
                     try:
-                        # Read response body once to avoid double-read issue
-                        response_content = await response.text()
-
-                        if response.status == 200:
+                        if self.client.api_config.streaming and response.status == 200:
                             response_info = await data.process_response(
                                 response=response,
                                 config=self.client.api_config,
                                 tokenizer=self.client.tokenizer,
                                 lora_adapter=lora_adapter,
                             )
+                            response_content = response_info.extra_info.get("raw_response", "") if response_info else ""
                         else:
+                            # Read response body once to avoid double-read issue
+                            response_content = await response.text()
+
+                            if response.status == 200:
+                                response_info = await data.process_response(
+                                    response=response,
+                                    config=self.client.api_config,
+                                    tokenizer=self.client.tokenizer,
+                                    lora_adapter=lora_adapter,
+                                )
+
+                        if response.status != 200:
                             # Handle HTTP error responses (status != 200).
                             #
                             # For OTel trace replay, process_failure() is called to:

@@ -636,7 +636,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
 
         if config.streaming:
             # Use shared streaming parser with chat-specific content extraction
-            output_text, output_token_times = await parse_sse_stream(
+            output_text, output_token_times, raw_content = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
 
@@ -649,6 +649,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
                 output_token_times=output_token_times,
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
+                extra_info={"raw_response": raw_content},
             )
         else:
             data = await response.json()
