@@ -1,14 +1,18 @@
 # Conversation replay benchmark using synthetic OTel traces.
-# Requires inference-perf with otel_trace_replay support (PR #372).
 #
-# Prerequisites:
-#   1. Generate traces: python generate_synthetic_traces.py --config synthetic_trace_config.yaml
-#   2. Deploy model endpoint
-#   3. Run benchmark (fill in __ENDPOINT__ and __MODEL__):
+# Traces are generated automatically at container startup when
+# SYNTHETIC_TRACE_CONFIG env var is set. No manual generation step needed.
+#
+# Usage:
+#   1. Deploy model endpoint
+#   2. Fill placeholders and run:
 #      ml bench run --bench-config bench-conversation-replay.yaml \
 #          --run-mode job --cluster gke-byoc --namespace six-bench \
-#          --image <inference-perf-with-pr372> \
+#          --image <inference-perf-image> \
 #          --team sidekick --owner <you>
+#
+#   The SYNTHETIC_TRACE_CONFIG env var is set by the entrypoint to
+#   auto-generate traces from examples/otel/configs/synthetic/synthetic_trace_config.yaml.
 
 data:
   type: otel_trace_replay
@@ -22,7 +26,6 @@ data:
 load:
   type: trace_session_replay
   stages:
-    # Concurrency sweep: find the saturation point
     - concurrent_sessions: 10
       num_sessions: 100
     - concurrent_sessions: 25
@@ -32,7 +35,7 @@ load:
     - concurrent_sessions: 100
       num_sessions: 100
     - concurrent_sessions: 200
-      num_sessions: 200
+      num_sessions: 100
   num_workers: 8
   worker_max_concurrency: 400
 

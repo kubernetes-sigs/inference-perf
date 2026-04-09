@@ -27,10 +27,13 @@ COPY --from=builder /workspace/.venv /workspace/.venv
 # Copy application code
 COPY config.yml ./
 COPY inference_perf ./inference_perf
+COPY tools ./tools
 
 # Set PYTHONPATH and PATH to use virtual environment
 ENV PYTHONPATH=/workspace
 ENV PATH="/workspace/.venv/bin:$PATH"
 
-# Run inference-perf using the virtual environment's Python
+# Entrypoint generates synthetic traces if SYNTHETIC_TRACE_CONFIG is set,
+# then execs the CMD (inference-perf or whatever the K8s job overrides).
+ENTRYPOINT ["/workspace/tools/entrypoint.sh"]
 CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]

@@ -1,0 +1,48 @@
+# Synthetic trace generation config for Sidekick suggested-actions workload.
+#
+# Generates OTel JSON traces matching production conversation distributions.
+# Output feeds into inference-perf's otel_trace_replay benchmark pipeline.
+#
+# Usage:
+#   python generate_synthetic_traces.py --config synthetic_trace_config.yaml
+#   python generate_synthetic_traces.py --config synthetic_trace_config.yaml --stats
+
+seed: 42
+num_conversations: 500
+output_dir: ./synthetic_traces
+model_name: qwen3-14b
+
+# System prompt: two-part structure matching production
+# Part 1: shared fixed prefix (identical across all conversations → prefix cache hit)
+shared_system_prompt_len: 6000
+# Part 2: dynamic per-conversation suffix (shop context, user profile)
+dynamic_system_prompt_len:
+  type: normal
+  min: 500
+  max: 4000
+  mean: 2000
+  std_dev: 500
+
+# Turns per conversation — heavily right-skewed
+# Most conversations are short (3-5 turns), some go very long (up to 50)
+turns_per_conversation:
+  type: lognormal
+  min: 3
+  max: 50
+  mean: 4
+  std_dev: 3
+
+# Per-turn token distributions
+input_tokens_per_turn:
+  type: normal
+  min: 500
+  max: 3000
+  mean: 1400
+  std_dev: 400
+
+output_tokens_per_turn:
+  type: normal
+  min: 100
+  max: 1000
+  mean: 526
+  std_dev: 150
