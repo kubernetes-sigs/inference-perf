@@ -12,32 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
+from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
 from inference_perf.apis.streaming_parser import parse_sse_stream
+import pytest
+
 
 @pytest.mark.asyncio
-async def test_parse_sse_stream():
+async def test_parse_sse_stream() -> None:
     mock_response = Mock()
     mock_content = Mock()
     mock_response.content = mock_content
-    
+
     chunks = [
-        b"data: {\"choices\": [{\"delta\": {\"content\": \"Hello\"}}]}\n\n",
-        b"data: {\"choices\": [{\"delta\": {\"content\": \" world\"}}]}\n\n",
-        b"data: [DONE]\n\n"
+        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": " world"}}]}\n\n',
+        b"data: [DONE]\n\n",
     ]
-    
-    async def mock_iter_any():
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
         for chunk in chunks:
             yield chunk
-            
+
     mock_content.iter_any = mock_iter_any
-    
-    extract_content = lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
-    
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
     output_text, output_token_times, raw_content = await parse_sse_stream(mock_response, extract_content)
-    
+
     assert output_text == "Hello world"
     assert len(output_token_times) == 3
     assert "Hello" in raw_content

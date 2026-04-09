@@ -88,5 +88,4 @@ async def parse_sse_stream(
                 continue
             break
 
-    return output_text, output_token_times, raw_content.decode('utf-8', errors='ignore')
-
+    return output_text, output_token_times, raw_content.decode("utf-8", errors="ignore")
