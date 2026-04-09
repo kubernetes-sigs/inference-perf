@@ -33,7 +33,9 @@ COPY tools ./tools
 ENV PYTHONPATH=/workspace
 ENV PATH="/workspace/.venv/bin:$PATH"
 
-# Entrypoint generates synthetic traces if SYNTHETIC_TRACE_CONFIG is set,
-# then execs the CMD (inference-perf or whatever the K8s job overrides).
-ENTRYPOINT ["/workspace/tools/entrypoint.sh"]
+# Generate synthetic traces at build time (deterministic — same seed = same files).
+# These are baked into the image so no runtime generation is needed.
+# To regenerate with different distributions, edit tools/default_trace_config.yaml and rebuild.
+RUN python tools/generate_synthetic_traces.py --config tools/default_trace_config.yaml
+
 CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]
