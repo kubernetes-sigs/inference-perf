@@ -122,11 +122,47 @@ class SharedPrefix(BaseModel):
     enable_multi_turn_chat: bool = False
 
 
+class SyntheticTraceDistribution(BaseModel):
+    """Distribution parameters for synthetic trace generation."""
+
+    type: str = Field("normal", description="Distribution type: normal, lognormal, uniform, fixed")
+    min: int = Field(10, description="Minimum value")
+    max: int = Field(1024, description="Maximum value")
+    mean: float = Field(512, description="Target mean")
+    std_dev: float = Field(200, description="Standard deviation")
+
+
+class SyntheticTraceConfig(BaseModel):
+    """Configuration for inline synthetic trace generation.
+
+    When provided in OTelTraceReplayConfig.generate_synthetic, traces are
+    generated at init time into a temp directory — no trace_directory or
+    trace_files needed.
+    """
+
+    seed: int = Field(42, description="Random seed for deterministic generation")
+    num_conversations: int = Field(500, gt=0, description="Number of conversations to generate")
+    shared_system_prompt_len: int = Field(6000, ge=0, description="Shared system prompt prefix length (tokens)")
+    dynamic_system_prompt_len: Optional[SyntheticTraceDistribution] = Field(
+        None, description="Per-conversation dynamic suffix length distribution"
+    )
+    turns_per_conversation: Optional[SyntheticTraceDistribution] = Field(
+        None, description="Turns per conversation distribution"
+    )
+    input_tokens_per_turn: Optional[SyntheticTraceDistribution] = Field(None, description="Input tokens per turn distribution")
+    output_tokens_per_turn: Optional[SyntheticTraceDistribution] = Field(
+        None, description="Output tokens per turn distribution"
+    )
+
+
 class OTelTraceReplayConfig(BaseModel):
     """Configuration for OTel trace replay data generator."""
 
     trace_directory: Optional[str] = Field(None, description="Directory containing OTel JSON trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific OTel JSON trace files")
+    generate_synthetic: Optional[SyntheticTraceConfig] = Field(
+        None, description="Generate synthetic traces inline from distribution config"
+    )
 
     # Model configuration
     use_static_model: bool = Field(False, description="Use a single static model for all requests")
@@ -142,18 +178,19 @@ class OTelTraceReplayConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_static_model(self) -> "OTelTraceReplayConfig":
-        # Validate that exactly one of trace_directory or trace_files is provided
+        # Validate that exactly one source is provided
         sources_provided = sum(
             [
                 self.trace_directory is not None,
                 self.trace_files is not None,
+                self.generate_synthetic is not None,
             ]
         )
 
         if sources_provided == 0:
-            raise ValueError("Either trace_directory or trace_files must be provided")
+            raise ValueError("One of trace_directory, trace_files, or generate_synthetic must be provided")
         if sources_provided > 1:
-            raise ValueError("Cannot specify both trace_directory and trace_files; choose one")
+            raise ValueError("Specify only one of trace_directory, trace_files, or generate_synthetic")
 
         # Validate static model configuration
         if self.use_static_model and not self.static_model_name:

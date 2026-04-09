@@ -27,15 +27,9 @@ COPY --from=builder /workspace/.venv /workspace/.venv
 # Copy application code
 COPY config.yml ./
 COPY inference_perf ./inference_perf
-COPY tools ./tools
 
 # Set PYTHONPATH and PATH to use virtual environment
 ENV PYTHONPATH=/workspace
 ENV PATH="/workspace/.venv/bin:$PATH"
-
-# Generate synthetic traces at build time (deterministic — same seed = same files).
-# These are baked into the image so no runtime generation is needed.
-# To regenerate with different distributions, edit tools/default_trace_config.yaml and rebuild.
-RUN python tools/generate_synthetic_traces.py --config tools/default_trace_config.yaml
 
 CMD ["python", "inference_perf/main.py", "--config_file", "config.yml"]

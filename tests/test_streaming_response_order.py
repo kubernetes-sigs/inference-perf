@@ -4,8 +4,8 @@ Verifies that process_response() is called before the response body is consumed,
 so the SSE streaming parser can iterate response.content.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,7 +27,7 @@ class FakeStreamingResponse:
     def _make_content(self) -> MagicMock:
         content = MagicMock()
 
-        async def iter_any() -> AsyncMock:
+        async def iter_any() -> AsyncIterator[bytes]:
             self._iter_called = True
             if self._text_called:
                 # Stream already consumed by text()
@@ -63,7 +63,7 @@ async def test_streaming_parser_receives_content() -> None:
         max_tokens=100,
     )
 
-    info = await data.process_response(response, config, tokenizer)
+    info = await data.process_response(response, config, tokenizer)  # type: ignore[arg-type]
 
     assert info.output_tokens > 0, "Output tokens should be > 0 when streaming content is present"
     assert response._iter_called, "Streaming iterator should have been called"
@@ -76,9 +76,7 @@ async def test_non_streaming_reads_body() -> None:
 
     response = MagicMock()
     response.status = 200
-    response.json = AsyncMock(
-        return_value={"choices": [{"message": {"content": "Hello world"}}]}
-    )
+    response.json = AsyncMock(return_value={"choices": [{"message": {"content": "Hello world"}}]})
 
     tokenizer = MagicMock()
     tokenizer.count_tokens = MagicMock(return_value=2)

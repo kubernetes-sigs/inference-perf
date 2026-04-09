@@ -13,7 +13,7 @@ import yaml
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
-from generate_synthetic_traces import (
+from generate_synthetic_traces import (  # type: ignore[import-not-found]
     ConversationBlueprint,
     DistributionConfig,
     TurnBlueprint,
@@ -208,7 +208,7 @@ class TestEndToEnd:
 
             generate_traces(config_path)
 
-            trace_dir = Path(config["output_dir"])
+            trace_dir = Path(str(config["output_dir"]))
             assert trace_dir.exists()
             files = list(trace_dir.glob("*.json"))
             assert len(files) == 5
@@ -286,6 +286,4 @@ class TestEndToEnd:
             prefix_check_len = int(min_len * 0.5)  # conservative: check first 50%
             reference = system_prompts[0][:prefix_check_len]
             for i, sp in enumerate(system_prompts):
-                assert sp[:prefix_check_len] == reference, (
-                    f"Conversation {i} does not share the expected system prompt prefix"
-                )
+                assert sp[:prefix_check_len] == reference, f"Conversation {i} does not share the expected system prompt prefix"

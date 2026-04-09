@@ -862,8 +862,21 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         self.base_seed = base_seed if base_seed is not None else 42
 
         # Determine trace files to load
-        if self.otel_config.trace_directory:
-            self.trace_dir: Optional[Path] = Path(self.otel_config.trace_directory)
+        if self.otel_config.generate_synthetic:
+            # Generate synthetic traces inline into a temp directory
+            import tempfile
+
+            from inference_perf.datagen.synthetic_trace_generator import generate_traces_to_dir
+
+            self.trace_dir: Optional[Path] = Path(tempfile.mkdtemp(prefix="synthetic_traces_"))
+            model_name = self.otel_config.static_model_name or "synthetic-model"
+            generate_traces_to_dir(self.otel_config.generate_synthetic, self.trace_dir, model_name=model_name)
+            self.trace_files_list = sorted(self.trace_dir.glob("*.json"))
+            if not self.trace_files_list:
+                raise ValueError("Synthetic trace generation produced no files")
+
+        elif self.otel_config.trace_directory:
+            self.trace_dir = Path(self.otel_config.trace_directory)
 
             if not self.trace_dir.exists():
                 raise ValueError(f"Trace directory does not exist: {self.trace_dir}")

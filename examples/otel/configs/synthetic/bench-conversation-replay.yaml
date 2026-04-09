@@ -1,20 +1,58 @@
-# Conversation replay benchmark using synthetic OTel traces.
+# Unified conversation replay benchmark with inline synthetic trace generation.
 #
-# Traces are pre-generated at Docker build time from tools/default_trace_config.yaml.
-# No manual generation step needed — just fill in the placeholders and run.
+# Single config — generates synthetic conversations and runs the benchmark.
+# No manual trace generation step needed.
 #
 # Usage:
-#   1. Generate traces (if not using the Docker image with baked-in traces):
-#      python tools/generate_synthetic_traces.py \
-#        --config examples/otel/configs/synthetic/synthetic_trace_config.yaml
-#
-#   2. Fill placeholders and run:
-#      inference-perf --config_file bench-conversation-replay.yaml
+#   inference-perf --config_file bench-conversation-replay.yaml
+
+server:
+  type: vllm
+  model_name: __MODEL__
+  base_url: __ENDPOINT__
+  api_key: __API_KEY__
+
+api:
+  type: chat
+  streaming: true
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-14B
 
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    trace_directory: ./synthetic_traces/
+    # Inline synthetic generation — traces created at startup from these distributions.
+    generate_synthetic:
+      seed: 42
+      num_conversations: 500
+      # Two-part system prompt: shared prefix (prefix-cache friendly) + dynamic suffix
+      shared_system_prompt_len: 6000
+      dynamic_system_prompt_len:
+        type: normal
+        min: 500
+        max: 4000
+        mean: 2000
+        std_dev: 500
+      # Right-skewed turn count (most conversations short, some very long)
+      turns_per_conversation:
+        type: lognormal
+        min: 3
+        max: 50
+        mean: 4
+        std_dev: 3
+      input_tokens_per_turn:
+        type: normal
+        min: 500
+        max: 3000
+        mean: 1400
+        std_dev: 400
+      output_tokens_per_turn:
+        type: normal
+        min: 100
+        max: 1000
+        mean: 526
+        std_dev: 150
     use_static_model: true
     static_model_name: __MODEL__
     default_max_tokens: 1000
@@ -35,19 +73,6 @@ load:
       num_sessions: 100
   num_workers: 8
   worker_max_concurrency: 400
-
-api:
-  type: chat
-  streaming: true
-
-server:
-  type: vllm
-  model_name: __MODEL__
-  base_url: __ENDPOINT__
-  api_key: __API_KEY__
-
-tokenizer:
-  pretrained_model_name_or_path: Qwen/Qwen3-14B
 
 report:
   request_lifecycle:

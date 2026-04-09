@@ -12,12 +12,10 @@ Usage:
 
 import argparse
 import json
-import os
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 import yaml
@@ -26,6 +24,7 @@ import yaml
 # ---------------------------------------------------------------------------
 # Distribution sampling
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class DistributionConfig:
@@ -74,6 +73,7 @@ def parse_distribution(d) -> DistributionConfig:
 # Conversation blueprint
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TurnBlueprint:
     input_tokens: int
@@ -90,6 +90,7 @@ class ConversationBlueprint:
 # ---------------------------------------------------------------------------
 # Random text generation
 # ---------------------------------------------------------------------------
+
 
 def generate_random_text(rng: np.random.RandomState, num_tokens: int, vocab_size: int = 30000) -> str:
     """Generate random text that approximates a target token count.
@@ -112,6 +113,7 @@ def generate_random_text(rng: np.random.RandomState, num_tokens: int, vocab_size
 # OTel trace generation
 # ---------------------------------------------------------------------------
 
+
 def generate_otel_trace(
     blueprint: ConversationBlueprint,
     rng: np.random.RandomState,
@@ -128,7 +130,6 @@ def generate_otel_trace(
     messages_so_far = [{"role": "system", "content": blueprint.system_prompt}]
     base_time = datetime(2026, 1, 1, 0, 0, 0)
     current_time = base_time
-    prev_span_id = None
 
     for turn_idx, turn in enumerate(blueprint.turns):
         span_id = f"turn_{turn_idx}"
@@ -193,6 +194,7 @@ def generate_otel_trace(
 # Main generator
 # ---------------------------------------------------------------------------
 
+
 def generate_traces(config_path: str, stats_only: bool = False) -> None:
     with open(config_path) as f:
         raw_config = yaml.safe_load(f)
@@ -242,18 +244,22 @@ def generate_traces(config_path: str, stats_only: bool = False) -> None:
         system_prompt = shared_prefix_text + "\n\n" + dynamic_suffix_text
 
         turns = []
-        for t in range(n_turns):
-            turns.append(TurnBlueprint(
-                input_tokens=int(all_input_tokens[turn_cursor]),
-                output_tokens=int(all_output_tokens[turn_cursor]),
-            ))
+        for _t in range(n_turns):
+            turns.append(
+                TurnBlueprint(
+                    input_tokens=int(all_input_tokens[turn_cursor]),
+                    output_tokens=int(all_output_tokens[turn_cursor]),
+                )
+            )
             turn_cursor += 1
 
-        blueprints.append(ConversationBlueprint(
-            conversation_id=f"conv_{i:04d}",
-            system_prompt=system_prompt,
-            turns=turns,
-        ))
+        blueprints.append(
+            ConversationBlueprint(
+                conversation_id=f"conv_{i:04d}",
+                system_prompt=system_prompt,
+                turns=turns,
+            )
+        )
 
     # Print stats
     turn_counts_list = [len(bp.turns) for bp in blueprints]
@@ -261,16 +267,22 @@ def generate_traces(config_path: str, stats_only: bool = False) -> None:
     print(f"  Seed: {seed}")
     print(f"  Shared system prompt: {shared_system_prompt_len} tokens")
     print(f"  Dynamic suffix: mean={np.mean(dynamic_lens):.0f}, min={np.min(dynamic_lens)}, max={np.max(dynamic_lens)}")
-    print(f"  Turns/convo: mean={np.mean(turn_counts_list):.1f}, min={np.min(turn_counts_list)}, max={np.max(turn_counts_list)}, median={np.median(turn_counts_list):.0f}")
+    print(
+        f"  Turns/convo: mean={np.mean(turn_counts_list):.1f}, min={np.min(turn_counts_list)}, max={np.max(turn_counts_list)}, median={np.median(turn_counts_list):.0f}"
+    )
     print(f"  Total turns: {total_turns}")
-    print(f"  Input tokens/turn: mean={np.mean(all_input_tokens):.0f}, min={np.min(all_input_tokens)}, max={np.max(all_input_tokens)}")
-    print(f"  Output tokens/turn: mean={np.mean(all_output_tokens):.0f}, min={np.min(all_output_tokens)}, max={np.max(all_output_tokens)}")
+    print(
+        f"  Input tokens/turn: mean={np.mean(all_input_tokens):.0f}, min={np.min(all_input_tokens)}, max={np.max(all_input_tokens)}"
+    )
+    print(
+        f"  Output tokens/turn: mean={np.mean(all_output_tokens):.0f}, min={np.min(all_output_tokens)}, max={np.max(all_output_tokens)}"
+    )
 
     if stats_only:
         # Print histogram of turn counts
         print("\n  Turn count distribution:")
         hist, edges = np.histogram(turn_counts_list, bins=min(20, max(turn_counts_list) - min(turn_counts_list) + 1))
-        for count, edge in zip(hist, edges):
+        for count, edge in zip(hist, edges, strict=False):
             if count > 0:
                 bar = "█" * min(count, 60)
                 print(f"    {int(edge):>3}: {bar} ({count})")
@@ -287,9 +299,10 @@ def generate_traces(config_path: str, stats_only: bool = False) -> None:
     print(f"\n  Written {num_conversations} trace files to {output_dir}/")
 
     # Verify shared prefix consistency
-    first_system = blueprints[0].system_prompt[:100]
     all_match = all(bp.system_prompt.startswith(shared_prefix_text) for bp in blueprints)
-    print(f"  Shared prefix verified: {'YES' if all_match else 'NO'} (all {num_conversations} traces share identical {shared_system_prompt_len}-token prefix)")
+    print(
+        f"  Shared prefix verified: {'YES' if all_match else 'NO'} (all {num_conversations} traces share identical {shared_system_prompt_len}-token prefix)"
+    )
 
 
 if __name__ == "__main__":
