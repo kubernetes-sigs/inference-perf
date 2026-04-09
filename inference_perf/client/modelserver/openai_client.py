@@ -290,10 +290,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                     response = resp
                     try:
-                        # Read response body once to avoid double-read issue
-                        response_content = await response.text()
-
                         if response.status == 200:
+                            # Process response before reading the body so streaming
+                            # parsers (SSE) can iterate response.content. Reading
+                            # response.text() first would consume the stream.
                             response_info = await data.process_response(
                                 response=response,
                                 config=self.client.api_config,
@@ -301,6 +301,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 lora_adapter=lora_adapter,
                             )
                         else:
+                            # Read body for error responses (not streamed)
+                            response_content = await response.text()
+
                             # Handle HTTP error responses (status != 200).
                             #
                             # For OTel trace replay, process_failure() is called to:
