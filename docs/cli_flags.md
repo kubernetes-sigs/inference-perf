@@ -13,7 +13,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations) | Matches data.type in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
 | `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
@@ -43,7 +43,15 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.shared_prefix.enable_multi_turn_chat` | boolean | Matches data.shared_prefix.enable_multi_turn_chat in config |
 | `--data.trace.file` | str | Matches data.trace.file in config |
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
-| `--load.type` | Enum (constant, poisson, trace_replay, concurrent) | Matches load.type in config |
+| `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
+| `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
+| `--data.otel_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
+| `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
+| `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
+| `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.otel_trace_replay.include_errors` | boolean | Include spans with error status |
+| `--data.otel_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |
 | `--load.sweep.type` | Enum (geometric, linear) | Matches load.sweep.type in config |
@@ -74,6 +82,9 @@ These command line flags are automatically generated from the internal `Config` 
 | `--report.request_lifecycle.percentiles` | JSON | Matches report.request_lifecycle.percentiles in config |
 | `--report.prometheus.summary` | boolean | Matches report.prometheus.summary in config |
 | `--report.prometheus.per_stage` | boolean | Matches report.prometheus.per_stage in config |
+| `--report.session_lifecycle.summary` | boolean | Matches report.session_lifecycle.summary in config |
+| `--report.session_lifecycle.per_stage` | boolean | Matches report.session_lifecycle.per_stage in config |
+| `--report.session_lifecycle.per_session` | boolean | Matches report.session_lifecycle.per_session in config |
 | `--storage.local_storage.path` | str | Matches storage.local_storage.path in config |
 | `--storage.local_storage.report_file_prefix` | str | Matches storage.local_storage.report_file_prefix in config |
 | `--storage.google_cloud_storage.path` | str | Matches storage.google_cloud_storage.path in config |
