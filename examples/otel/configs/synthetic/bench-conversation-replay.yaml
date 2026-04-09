@@ -1,0 +1,56 @@
+# Conversation replay benchmark using synthetic OTel traces.
+# Requires inference-perf with otel_trace_replay support (PR #372).
+#
+# Prerequisites:
+#   1. Generate traces: python generate_synthetic_traces.py --config synthetic_trace_config.yaml
+#   2. Deploy model endpoint
+#   3. Run benchmark (fill in __ENDPOINT__ and __MODEL__):
+#      ml bench run --bench-config bench-conversation-replay.yaml \
+#          --run-mode job --cluster gke-byoc --namespace six-bench \
+#          --image <inference-perf-with-pr372> \
+#          --team sidekick --owner <you>
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_directory: ./synthetic_traces/
+    use_static_model: true
+    static_model_name: __MODEL__
+    default_max_tokens: 1000
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+  stages:
+    # Concurrency sweep: find the saturation point
+    - concurrent_sessions: 10
+      num_sessions: 100
+    - concurrent_sessions: 25
+      num_sessions: 100
+    - concurrent_sessions: 50
+      num_sessions: 100
+    - concurrent_sessions: 100
+      num_sessions: 100
+    - concurrent_sessions: 200
+      num_sessions: 200
+  num_workers: 8
+  worker_max_concurrency: 400
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: __MODEL__
+  base_url: __ENDPOINT__
+  api_key: __API_KEY__
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-14B
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false
