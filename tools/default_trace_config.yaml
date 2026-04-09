@@ -15,7 +15,7 @@ model_name: qwen3-14b
 # System prompt: two-part structure matching production
 # Part 1: shared fixed prefix (identical across all conversations → prefix cache hit)
 shared_system_prompt_len: 6000
-# Part 2: dynamic per-conversation suffix (shop context, user profile)
+# Part 2: dynamic per-conversation suffix (e.g. user context, session state)
 dynamic_system_prompt_len:
   type: normal
   min: 500

@@ -1,18 +1,15 @@
 # Conversation replay benchmark using synthetic OTel traces.
 #
-# Traces are generated automatically at container startup when
-# SYNTHETIC_TRACE_CONFIG env var is set. No manual generation step needed.
+# Traces are pre-generated at Docker build time from tools/default_trace_config.yaml.
+# No manual generation step needed — just fill in the placeholders and run.
 #
 # Usage:
-#   1. Deploy model endpoint
-#   2. Fill placeholders and run:
-#      ml bench run --bench-config bench-conversation-replay.yaml \
-#          --run-mode job --cluster gke-byoc --namespace six-bench \
-#          --image <inference-perf-image> \
-#          --team sidekick --owner <you>
+#   1. Generate traces (if not using the Docker image with baked-in traces):
+#      python tools/generate_synthetic_traces.py \
+#        --config examples/otel/configs/synthetic/synthetic_trace_config.yaml
 #
-#   The SYNTHETIC_TRACE_CONFIG env var is set by the entrypoint to
-#   auto-generate traces from examples/otel/configs/synthetic/synthetic_trace_config.yaml.
+#   2. Fill placeholders and run:
+#      inference-perf --config_file bench-conversation-replay.yaml
 
 data:
   type: otel_trace_replay
