@@ -13,7 +13,7 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.expressions import sample_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 from typing import Generator, List, Optional
 from inference_perf.config import APIConfig, APIType, DataConfig
@@ -26,23 +26,6 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.input_distribution is None or self.output_distribution is None or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
 
-        if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
-            raise ValueError("IODistribution requires total_count to be set")
-
-        self.input_lengths = generate_distribution(
-            self.input_distribution.min,
-            self.input_distribution.max,
-            self.input_distribution.mean,
-            self.input_distribution.std_dev,
-            self.input_distribution.total_count,
-        )
-        self.output_lengths = generate_distribution(
-            self.output_distribution.min,
-            self.output_distribution.max,
-            self.output_distribution.mean,
-            self.output_distribution.std_dev,
-            self.output_distribution.total_count,
-        )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self.token_ids = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
 
@@ -56,15 +39,19 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         return False
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
-        n = data.data_index
 
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
 
+        assert self.input_distribution is not None
+        input_len = int(sample_distribution(self.input_distribution))
+        assert self.output_distribution is not None
+        output_len = int(sample_distribution(self.output_distribution))
+
         if self.api_config.type == APIType.Completion:
             return CompletionAPIData(
-                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[: self.input_lengths[n]]),
-                max_tokens=self.output_lengths[n],
+                prompt=self.tokenizer.get_tokenizer().decode(self.token_ids[:input_len]),
+                max_tokens=output_len,
             )
         else:
             raise Exception("Unsupported API type")

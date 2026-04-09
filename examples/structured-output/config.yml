@@ -31,16 +31,8 @@ tokenizer:
 
 data:
   type: synthetic
-  input_distribution:
-    min: 10
-    max: 100
-    mean: 50
-    std_dev: 10
-  output_distribution:
-    min: 10
-    max: 100
-    mean: 50
-    std_dev: 10
+  input_distribution: "Min(100, Max(10, Normal(50, 10)))"
+  output_distribution: "Min(100, Max(10, Normal(50, 10)))"
 
 report:
   request_lifecycle:

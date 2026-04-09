@@ -17,6 +17,7 @@ dependencies = [
     "aiofiles>=25.1.0",
     "tiktoken>=0.12.0",
     "rich>=13.0.0",
+    "sympy>=1.12",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -156,8 +157,13 @@ module = [
     "matplotlib.*",
     "boto3.*",
     "opentelemetry.*",
+    "google.auth.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "inference_perf.client.metricsclient.prometheus_client.google_managed_prometheus_client"
+disallow_untyped_calls = false
 
 [tool.coverage.run]
 source = ["inference_perf"]

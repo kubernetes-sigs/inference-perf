@@ -16,7 +16,7 @@ from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStat
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .load_timer import LoadTimer, ExpressionLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.client.modelserver import ModelServerClient
@@ -340,15 +340,28 @@ class LoadGenerator:
             return str(np.random.choice(self.lora_adapters, p=self.lora_weights))
         return None
 
-    def get_timer(self, rate: float, duration: float) -> LoadTimer:
+    def get_timer(self, interval: Union[float, str], duration: float) -> LoadTimer:
         if self.load_type == LoadType.POISSON:
-            return PoissonLoadTimer(rate=rate, duration=duration)
+            return ExpressionLoadTimer(interval=interval, duration=duration)
         elif self.load_type == LoadType.TRACE_REPLAY:
             if self.trace is None:
                 raise ValueError("Trace configuration is required for trace replay load generator")
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
-        return ConstantLoadTimer(rate=rate, duration=duration)
+        return ExpressionLoadTimer(interval=interval, duration=duration)
+
+    def _get_interval_expr(self, stage: Union[StandardLoadStage, ConcurrentLoadStage]) -> Union[float, str]:
+        if isinstance(stage, StandardLoadStage) and stage.interval is not None:
+            return stage.interval
+
+        rate = getattr(stage, "rate", None)
+        if rate is None:
+            raise ValueError("Stage must have either rate or interval specified")
+
+        if self.load_type == LoadType.POISSON:
+            return f"Exponential({rate})"
+        else:
+            return 1.0 / rate if isinstance(rate, (int, float)) else f"1/({rate})"
 
     async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
         while True:
@@ -696,7 +709,7 @@ class LoadGenerator:
     async def run_stage(
         self,
         stage_id: int,
-        rate: float,
+        interval: Union[float, str],
         duration: int,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
@@ -704,8 +717,9 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
-        concurrency_level: Optional[int] = None,
+        concurrency_level: Optional[Union[int, str]] = None,
         progress_ctx: Optional[Progress] = None,
+        num_requests: Optional[int] = None,
     ) -> None:
         logger.debug("Stage %d - run started", stage_id)
 
@@ -715,17 +729,22 @@ class LoadGenerator:
         request_phase.set()
         with finished_requests_counter.get_lock():
             finished_requests_counter.value = 0
-        timer = self.get_timer(rate, duration)
+        timer = self.get_timer(interval, duration)
 
         # Allow generation a second to begin populating the queue so the workers
         # don't miss the initial scheuled request times
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
+        if num_requests is not None:
+            pass
+        elif isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
             num_requests = self.datagen.get_request_count()
+        elif isinstance(interval, (int, float)):
+            num_requests = int(duration / interval)
         else:
-            num_requests = int(rate * duration)
+            logger.warning("Could not determine num_requests from string interval, using fallback 1000")
+            num_requests = 1000
 
         stage_status = StageStatus.RUNNING
 
@@ -737,7 +756,18 @@ class LoadGenerator:
         active_workers = self.num_workers
         if concurrency_level:
             # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.
-            active_workers = min(self.num_workers, concurrency_level)
+            if isinstance(concurrency_level, str):
+                from inference_perf.utils.expressions import evaluate_rate
+
+                try:
+                    # Evaluate at t=0 for initial active workers count
+                    initial_conc = evaluate_rate(concurrency_level, 0)
+                    active_workers = min(self.num_workers, max(1, int(initial_conc)))
+                except Exception as e:
+                    logger.error(f"Failed to evaluate initial concurrency: {e}")
+                    active_workers = self.num_workers
+            else:
+                active_workers = min(self.num_workers, concurrency_level)
 
         for _ in range(num_requests):
             request_data = next(data_generator)
@@ -772,6 +802,17 @@ class LoadGenerator:
                 logger.error("A worker process died unexpectedly!")
                 timed_out = True  # Trigger cleanup
                 break
+
+            if isinstance(concurrency_level, str):
+                t = time.perf_counter() - start_time
+                from inference_perf.utils.expressions import evaluate_rate
+
+                try:
+                    curr_conc = evaluate_rate(concurrency_level, t)
+                    self._set_worker_concurrency(max(1, int(curr_conc)))
+                except Exception as e:
+                    logger.error(f"Failed to evaluate concurrency expression: {e}")
+
             await sleep(1)
             if progress_ctx and stage_task:
                 progress_ctx.update(stage_task, completed=finished_requests_counter.value)
@@ -796,13 +837,35 @@ class LoadGenerator:
         request_phase.clear()
         request_queue.join()
 
+        rate_val = 0.0
+        if isinstance(interval, (int, float)):
+            rate_val = 1.0 / interval if interval > 0 else 0.0
+        else:
+            from inference_perf.utils.expressions import evaluate_rate
+
+            try:
+                rate_val = evaluate_rate(interval, 0)
+            except Exception:
+                rate_val = 0.0
+
+        curr_concurrency = None
+        if isinstance(concurrency_level, int):
+            curr_concurrency = concurrency_level
+        elif isinstance(concurrency_level, str):
+            try:
+                from inference_perf.utils.expressions import evaluate_rate
+
+                curr_concurrency = int(evaluate_rate(concurrency_level, 0))
+            except Exception:
+                curr_concurrency = None
+
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
-            rate=rate,
+            rate=rate_val,
             start_time=start_time_epoch,
             end_time=time.time(),
             status=stage_status,
-            concurrency_level=concurrency_level,
+            concurrency_level=curr_concurrency,
         )
         logger.debug(
             "Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id
@@ -841,12 +904,12 @@ class LoadGenerator:
 
         stage_id = -1
         duration = 5
-        rate = self.sweep_config.num_requests / duration
         timeout = self.sweep_config.timeout
         start_time = time.perf_counter()
+        interval = duration / self.sweep_config.num_requests
         await self.run_stage(
             stage_id,
-            rate,
+            interval,
             duration,
             request_queue,
             active_requests_counter,
@@ -854,6 +917,7 @@ class LoadGenerator:
             request_phase,
             timeout=timeout,
             cancel_signal=cancel_signal,
+            num_requests=self.sweep_config.num_requests,
         )
 
         aggregator_task.cancel()
@@ -981,46 +1045,46 @@ class LoadGenerator:
                         cancel_signal,
                         progress_ctx=progress,
                     )
-                # Update worker concurrency for concurrent load type
-                elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
-                    logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
-                    self._set_worker_concurrency(stage.concurrency_level)
+                    continue  # Skip the rest of the loop body for this stage
 
-                    # Use the dynamically set rate/duration from main.py
-                    rate = getattr(stage, "rate", stage.num_requests)
+                # For other load types, prepare arguments for run_stage
+                assert isinstance(stage, (StandardLoadStage, ConcurrentLoadStage)), "Unexpected stage type"
+                interval = self._get_interval_expr(stage)
+
+                if self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
+                    logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
+                    if isinstance(stage.concurrency_level, str):
+                        from inference_perf.utils.expressions import evaluate_rate
+
+                        curr_conc = evaluate_rate(stage.concurrency_level, 0)
+                        self._set_worker_concurrency(max(1, int(curr_conc)))
+                    else:
+                        self._set_worker_concurrency(stage.concurrency_level)
                     duration = getattr(stage, "duration", 1)
                     concurrency_level = stage.concurrency_level
-                    await self.run_stage(
-                        stage_id,
-                        rate,
-                        duration,
-                        request_queue,
-                        active_requests_counter,
-                        finished_requests_counter,
-                        request_phase,
-                        cancel_signal,
-                        concurrency_level=concurrency_level,
-                        progress_ctx=progress,
-                    )
+                    num_requests = stage.num_requests
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
-                    rate = stage.rate
                     duration = stage.duration
                     concurrency_level = None
-                    await self.run_stage(
-                        stage_id,
-                        rate,
-                        duration,
-                        request_queue,
-                        active_requests_counter,
-                        finished_requests_counter,
-                        request_phase,
-                        cancel_signal,
-                        concurrency_level=concurrency_level,
-                        progress_ctx=progress,
-                    )
+                    num_requests = None
+                    if isinstance(interval, (int, float)):
+                        num_requests = int(duration / interval)
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
 
+                await self.run_stage(
+                    stage_id,
+                    interval,
+                    duration,
+                    request_queue,
+                    active_requests_counter,
+                    finished_requests_counter,
+                    request_phase,
+                    cancel_signal,
+                    concurrency_level=concurrency_level,
+                    progress_ctx=progress,
+                    num_requests=num_requests,
+                )
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
                     break
@@ -1051,14 +1115,20 @@ class LoadGenerator:
                 if not isinstance(stage, StandardLoadStage):
                     raise TypeError(f"Non-multiprocessing run() only supports StandardLoadStage, got {type(stage)}")
 
-                timer = self.get_timer(stage.rate, stage.duration)
+                interval = self._get_interval_expr(stage)
+                timer = self.get_timer(interval, stage.duration)
                 start_time_epoch = time.time()
                 start_time = time.perf_counter()
                 end_time = start_time + stage.duration
                 stage_status = StageStatus.RUNNING
                 logger.info("Stage %d - run started", stage_id)
 
-                num_requests = int(stage.rate * stage.duration)
+                num_requests = None
+                if getattr(stage, "interval", None) is not None and isinstance(stage.interval, (int, float)):
+                    num_requests = int(stage.duration / stage.interval)
+                elif getattr(stage, "rate", None) is not None and isinstance(stage.rate, (int, float)):
+                    num_requests = int(stage.rate * stage.duration)
+
                 stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
 
                 if not isinstance(self.datagen, DataGenerator):

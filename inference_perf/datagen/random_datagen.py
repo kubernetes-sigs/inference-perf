@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.expressions import sample_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 from typing import Generator, List, Optional
 from inference_perf.config import APIType, APIConfig, DataConfig, TraceFormat
@@ -41,23 +41,6 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             if self.input_distribution is None or self.output_distribution is None:
                 raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
 
-            if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
-                raise ValueError("IODistribution requires total_count to be set")
-
-            self.input_lengths = generate_distribution(
-                self.input_distribution.min,
-                self.input_distribution.max,
-                self.input_distribution.mean,
-                self.input_distribution.std_dev,
-                self.input_distribution.total_count,
-            )
-            self.output_lengths = generate_distribution(
-                self.output_distribution.min,
-                self.output_distribution.max,
-                self.output_distribution.mean,
-                self.output_distribution.std_dev,
-                self.output_distribution.total_count,
-            )
         else:
             # let's read the trace file and get the input and output lengths
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
@@ -113,10 +96,19 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
+        if self.trace is not None:
+            input_len = self.input_lengths[n]
+            output_len = self.output_lengths[n]
+        else:
+            assert self.input_distribution is not None
+            input_len = int(sample_distribution(self.input_distribution))
+            assert self.output_distribution is not None
+            output_len = int(sample_distribution(self.output_distribution))
+
         if self.api_config.type == APIType.Completion:
-            tokens = np.random.randint(0, self.vocab_size, size=self.input_lengths[n], dtype=np.int64)
+            tokens = np.random.randint(0, self.vocab_size, size=input_len, dtype=np.int64)
             prompt_text = self.tokenizer.get_tokenizer().decode(tokens.tolist())
-            return CompletionAPIData(prompt=prompt_text, max_tokens=self.output_lengths[n])
+            return CompletionAPIData(prompt=prompt_text, max_tokens=output_len)
         else:
             raise Exception("Unsupported API type")
 

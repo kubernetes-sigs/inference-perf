@@ -26,7 +26,6 @@ from inference_perf.config import (
     MetricsClientType,
     ModelServerType,
     ReportConfig,
-    StandardLoadStage,
     ConcurrentLoadStage,
     read_config,
 )
@@ -294,25 +293,6 @@ def main_cli() -> None:
                     raise Exception(
                         f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
                     )
-
-                # Calculate total count based on stage type
-                max_requests = 0
-                for stage in config.load.stages:
-                    if isinstance(stage, StandardLoadStage):
-                        max_requests = max(max_requests, int(stage.rate * stage.duration))
-                    elif isinstance(stage, ConcurrentLoadStage):
-                        max_requests = max(max_requests, stage.num_requests)
-                total_count = max_requests + 1
-                if (
-                    config.data.input_distribution.total_count is None
-                    or config.data.input_distribution.total_count < total_count
-                ):
-                    config.data.input_distribution.total_count = total_count
-                if (
-                    config.data.output_distribution.total_count is None
-                    or config.data.output_distribution.total_count < total_count
-                ):
-                    config.data.output_distribution.total_count = total_count
 
         if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")

@@ -29,6 +29,7 @@ from inference_perf.config import (
 )
 import os
 import tempfile
+from pydantic import ValidationError
 import yaml
 
 
@@ -168,6 +169,27 @@ def test_concurrent_load_stage() -> None:
     stage = ConcurrentLoadStage(num_requests=100, concurrency_level=10)
     assert stage.num_requests == 100
     assert stage.concurrency_level == 10
+
+    stage2 = ConcurrentLoadStage(num_requests=100, concurrency_level="10 + t")
+    assert stage2.concurrency_level == "10 + t"
+
+
+def test_deterministic_expression_validation() -> None:
+    import pytest
+
+    # Valid int
+    ConcurrentLoadStage(num_requests=100, concurrency_level=10)
+
+    # Valid expression
+    ConcurrentLoadStage(num_requests=100, concurrency_level="10 + t/60")
+
+    # Invalid expression (syntax or unauthorized symbol)
+    with pytest.raises(ValidationError, match="is not authorized in this context"):
+        ConcurrentLoadStage(num_requests=100, concurrency_level="invalid_expr")
+
+    # Invalid expression (random variable)
+    with pytest.raises(ValidationError, match="Deterministic expression cannot contain random variables"):
+        ConcurrentLoadStage(num_requests=100, concurrency_level="Normal(10, 2)")
 
 
 def test_load_config_validation() -> None:

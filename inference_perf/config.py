@@ -16,10 +16,10 @@ from datetime import datetime
 from enum import Enum
 from os import cpu_count
 import time
-from typing import Any, List, Optional, Union, Dict
+from typing import Annotated, Any, Dict, List, Optional, Set, Union
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import AliasChoices, BeforeValidator, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from inference_perf.circuit_breaker import CircuitBreakerConfig
 
@@ -98,6 +98,34 @@ class Distribution(BaseModel):
     total_count: Optional[int] = None
 
 
+def make_expression_validator(allowed_symbols: Set[str], allow_random: bool) -> BeforeValidator:
+    def validator(v: str) -> str:
+        if not isinstance(v, str):
+            return v
+
+        from inference_perf.utils.expressions import parse_expr, has_random_variables
+
+        try:
+            expr = parse_expr(v)
+        except Exception as e:
+            raise ValueError(f"Invalid math expression: {e}") from e
+
+        if not allow_random and has_random_variables(v):
+            raise ValueError(f"Deterministic expression cannot contain random variables: {v}")
+
+        for sym in expr.free_symbols:
+            if sym.name not in allowed_symbols:
+                raise ValueError(f"Symbol '{sym.name}' is not authorized in this context. Allowed: {allowed_symbols}")
+
+        return v
+
+    return BeforeValidator(validator)
+
+
+LengthExpression = Annotated[str, make_expression_validator(allowed_symbols=set(), allow_random=True)]
+DeterministicTimeExpression = Annotated[str, make_expression_validator(allowed_symbols={"t"}, allow_random=False)]
+
+
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
 class SharedPrefix(BaseModel):
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
@@ -117,9 +145,17 @@ class SharedPrefix(BaseModel):
     system_prompt_len: int = 100
     question_len: int = 50
     output_len: int = 50
-    question_distribution: Optional[Distribution] = None
-    output_distribution: Optional[Distribution] = None
+    question_distribution: Optional[Union[Distribution, LengthExpression]] = None
+    output_distribution: Optional[Union[Distribution, LengthExpression]] = None
     enable_multi_turn_chat: bool = False
+
+    @model_validator(mode="after")
+    def convert_distributions_to_strings(self) -> "SharedPrefix":
+        if isinstance(self.question_distribution, Distribution):
+            self.question_distribution = f"Min(Max(Normal({self.question_distribution.mean}, {self.question_distribution.std_dev}), {self.question_distribution.min}), {self.question_distribution.max})"
+        if isinstance(self.output_distribution, Distribution):
+            self.output_distribution = f"Min(Max(Normal({self.output_distribution.mean}, {self.output_distribution.std_dev}), {self.output_distribution.min}), {self.output_distribution.max})"
+        return self
 
 
 class OTelTraceReplayConfig(BaseModel):
@@ -170,8 +206,8 @@ class DataConfig(BaseModel):
     path: Optional[str] = None  # path to the downloaded shareGPT dataset
 
     # Distributions are only supported for synthetic/random dataset at this moment
-    input_distribution: Optional[Distribution] = None
-    output_distribution: Optional[Distribution] = None
+    input_distribution: Optional[Union[Distribution, LengthExpression]] = None
+    output_distribution: Optional[Union[Distribution, LengthExpression]] = None
     shared_prefix: Optional[SharedPrefix] = None
 
     # Trace file is only supported for random dataset at this moment
@@ -179,6 +215,14 @@ class DataConfig(BaseModel):
 
     # OTel trace replay configuration
     otel_trace_replay: Optional[OTelTraceReplayConfig] = None
+
+    @model_validator(mode="after")
+    def convert_distributions_to_strings(self) -> "DataConfig":
+        if isinstance(self.input_distribution, Distribution):
+            self.input_distribution = f"Min(Max(Normal({self.input_distribution.mean}, {self.input_distribution.std_dev}), {self.input_distribution.min}), {self.input_distribution.max})"
+        if isinstance(self.output_distribution, Distribution):
+            self.output_distribution = f"Min(Max(Normal({self.output_distribution.mean}, {self.output_distribution.std_dev}), {self.output_distribution.min}), {self.output_distribution.max})"
+        return self
 
 
 class ModelServerType(Enum):
@@ -210,7 +254,12 @@ class LoadStage(BaseModel):
 class StandardLoadStage(LoadStage):
     """Load stage for CONSTANT and POISSON load types."""
 
-    rate: float = Field(..., gt=0, description="Request rate (QPS)")
+    rate: Optional[Union[float, DeterministicTimeExpression]] = Field(
+        default=None, description="Request rate (QPS) or expression"
+    )
+    interval: Optional[Union[float, DeterministicTimeExpression]] = Field(
+        default=None, description="Time between requests or expression"
+    )
     duration: int = Field(..., gt=0, description="Duration in seconds")
 
     # These fields should not be set for standard load types
@@ -219,10 +268,19 @@ class StandardLoadStage(LoadStage):
 
     @model_validator(mode="after")
     def validate_standard_fields(self) -> "StandardLoadStage":
+        if self.rate is None and self.interval is None:
+            raise ValueError("Either 'rate' or 'interval' must be specified.")
+        if self.rate is not None and self.interval is not None:
+            raise ValueError("Cannot specify both 'rate' and 'interval'.")
+
         if self.num_requests is not None:
             raise ValueError("num_requests should not be set for CONSTANT/POISSON load types")
         if self.concurrency_level is not None:
             raise ValueError("concurrency_level should not be set for CONSTANT/POISSON load types")
+        if isinstance(self.rate, (int, float)) and self.rate <= 0:
+            raise ValueError("rate must be greater than 0")
+        if isinstance(self.interval, (int, float)) and self.interval <= 0:
+            raise ValueError("interval must be greater than 0")
         return self
 
 
@@ -230,7 +288,7 @@ class ConcurrentLoadStage(LoadStage):
     """Load stage for CONCURRENT load type."""
 
     num_requests: int = Field(..., gt=0, description="Number of requests to send")
-    concurrency_level: int = Field(..., gt=0, description="Concurrency level")
+    concurrency_level: Union[int, DeterministicTimeExpression] = Field(..., description="Concurrency level")
 
     # These fields are set at runtime for load generation but should not be configured
     rate: Optional[float] = Field(None, description="Set at runtime for load generation")
@@ -238,8 +296,8 @@ class ConcurrentLoadStage(LoadStage):
 
     @model_validator(mode="after")
     def validate_concurrent_fields(self) -> "ConcurrentLoadStage":
-        # Allow rate and duration to be set at runtime, but they should start as None
-        # No validation needed here since they're set dynamically
+        if isinstance(self.concurrency_level, int) and self.concurrency_level <= 0:
+            raise ValueError("concurrency_level must be greater than 0")
         return self
 
 

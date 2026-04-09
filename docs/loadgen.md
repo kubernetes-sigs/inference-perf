@@ -128,6 +128,19 @@ load:
 - `rate` and `duration` are not allowed and will cause validation errors
 - `sweep` configuration is incompatible with concurrent load type
 
+
+### Dynamic and Expression-Based Load
+
+You can use mathematical expressions to define time-varying concurrency levels, rates, and statistical distributions for request intervals and data sizes.
+
+This enables advanced benchmarking scenarios such as:
+-   **Ramping Load**: Linearly increasing concurrency to find severe saturation points.
+-   **Cyclical Load**: Simulating daily or hourly traffic waves.
+-   **Load Spikes**: Testing system resilience against sudden bursts of traffic.
+-   **Randomized Workloads**: Using statistical distributions for realistic request arrivals and token lengths.
+
+For detailed documentation and examples on how to use expressions and distributions, see the [Expressions and Distributions Guide](expressions.md).
+
 ### Run with specific concurrency instead of QPS (Legacy approach)
 
 **Note: This approach is deprecated. Use the `concurrent` load type instead for better concurrency control.**

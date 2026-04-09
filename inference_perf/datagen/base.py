@@ -13,7 +13,7 @@
 # limitations under the License.
 from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix, TraceConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, SharedPrefix, TraceConfig
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List, Dict, Any
 
@@ -55,8 +55,8 @@ class BaseGenerator(ABC):
 class DataGenerator(BaseGenerator):
     """Request-based data generation for standard load types (CONSTANT, POISSON, CONCURRENT, TRACE_REPLAY)."""
 
-    input_distribution: Optional[Distribution]
-    output_distribution: Optional[Distribution]
+    input_distribution: Optional[str]
+    output_distribution: Optional[str]
     shared_prefix: Optional[SharedPrefix]
     trace: Optional[TraceConfig]
 
@@ -79,7 +79,9 @@ class DataGenerator(BaseGenerator):
         if config.shared_prefix is not None and not self.is_shared_prefix_supported():
             raise Exception("Shared prefix not supported for this data generator")
 
+        assert config.input_distribution is None or isinstance(config.input_distribution, str)
         self.input_distribution = config.input_distribution
+        assert config.output_distribution is None or isinstance(config.output_distribution, str)
         self.output_distribution = config.output_distribution
         self.shared_prefix = config.shared_prefix
         self.trace = config.trace

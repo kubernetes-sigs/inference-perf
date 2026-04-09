@@ -13,7 +13,8 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import Generator, Optional, Tuple, Union
+from inference_perf.utils.expressions import sample_distribution
 import numpy as np
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
@@ -33,68 +34,34 @@ class LoadTimer(ABC):
         raise NotImplementedError
 
 
-class ConstantLoadTimer(LoadTimer):
+class ExpressionLoadTimer(LoadTimer):
     """
-    A load generator that generates requests at a constant rate.
-    Introduces a small amount of random noise in timing.
-    """
-
-    def __init__(self, rate: float, duration: float) -> None:
-        self._rate = rate
-        self._duration = duration
-        # TODO: Make random state a global seed
-        self._rand = np.random.default_rng()
-
-    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        num_requests = int(self._rate * self._duration)
-        if num_requests == 0:
-            return
-
-        # Generate random intervals
-        intervals = self._rand.exponential(1 / self._rate, num_requests)
-
-        # Normalize intervals to sum to the duration
-        total_interval_time = np.sum(intervals)
-        scale_factor = self._duration / total_interval_time
-        normalized_intervals = intervals * scale_factor
-
-        # Yield request times
-        next_time = time.monotonic() if initial is None else initial
-        for interval in normalized_intervals:
-            next_time += interval
-            yield next_time
-
-
-class PoissonLoadTimer(LoadTimer):
-    """
-    A load generator that generates requests based on a Poisson distribution.
+    A load generator that generates requests based on an expression for interval.
     """
 
-    def __init__(self, rate: float, duration: float) -> None:
-        self._rate = rate
+    def __init__(self, interval: Union[float, str], duration: float) -> None:
+        self._interval = interval
         self._duration = duration
         self._rand = np.random.default_rng()
 
     def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
-        # Set start time
-        next_time = time.perf_counter() if initial is None else initial
+        start_time = time.perf_counter() if initial is None else initial
+        next_time = start_time
 
-        # Given a rate, yield a time to wait before the next request
         while True:
-            # How many requests in the next second
-            req_count = self._rand.poisson(self._rate)
+            t = next_time - start_time
 
-            # If no requests, wait for 1 second
-            if req_count < 1:
-                next_time += 1.0
-                continue
+            # Direct sampling of the interval!
+            interval_val = sample_distribution(self._interval, t=t)
 
-            # Schedule the requests over the next second
-            timer = ConstantLoadTimer(req_count, 1.0)
-            time_generator = timer.start_timer(next_time)
-            for _ in range(req_count):
-                next_time = next(time_generator)
-                yield next_time
+            if interval_val <= 0:
+                # Avoid infinite loops or negative intervals
+                interval_val = 1.0
+
+            next_time += interval_val
+            if next_time - start_time > self._duration:
+                break
+            yield next_time
 
 
 class TraceReplayLoadTimer(LoadTimer):

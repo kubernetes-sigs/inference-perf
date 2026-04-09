@@ -13,13 +13,12 @@
 # limitations under the License.
 import random
 from typing import Generator, List, Optional
-from inference_perf.utils.distribution import generate_distribution
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
+from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -61,31 +60,26 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Use distribution configs, or fall back to question_len/output_len with std_dev=0
         q_len = self.shared_prefix.question_len
         o_len = self.shared_prefix.output_len
-        question_dist = self.shared_prefix.question_distribution or Distribution(min=q_len, max=q_len, mean=q_len, std_dev=0)
-        output_dist = self.shared_prefix.output_distribution or Distribution(min=o_len, max=o_len, mean=o_len, std_dev=0)
+        question_dist = self.shared_prefix.question_distribution or str(q_len)
+        output_dist = self.shared_prefix.output_distribution or str(o_len)
+
+        from inference_perf.utils.expressions import evaluate_distribution
+        from sympy.stats import sample  # type: ignore[import-untyped]
 
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
 
         for _ in range(self.num_groups):
-            question_lens = generate_distribution(
-                question_dist.min,
-                question_dist.max,
-                question_dist.mean,
-                question_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
-            self.question_len_list_per_group.append(question_lens.tolist())
+            assert isinstance(question_dist, str)
+            parsed_q_dist = evaluate_distribution(question_dist)
+            question_lens = [int(sample(parsed_q_dist, library="numpy")) for _ in range(self.num_prompts_per_group)]
+            self.question_len_list_per_group.append(question_lens)
 
-            output_lens = generate_distribution(
-                output_dist.min,
-                output_dist.max,
-                output_dist.mean,
-                output_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
-            self.output_len_list_per_group.append(output_lens.tolist())
+            assert isinstance(output_dist, str)
+            parsed_o_dist = evaluate_distribution(output_dist)
+            output_lens = [int(sample(parsed_o_dist, library="numpy")) for _ in range(self.num_prompts_per_group)]
+            self.output_len_list_per_group.append(output_lens)
 
         self.prompts: List[str] = []
         self.user_sessions: List[LocalUserSession] = []
