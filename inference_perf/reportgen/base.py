@@ -27,7 +27,7 @@ from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParame
 from inference_perf.client.metricsclient.base import ModelServerMetrics
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
 from inference_perf.client.requestdatacollector import RequestDataCollector
-from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig, SessionLifecycleReportConfig
+from inference_perf.config import Config, PrometheusMetricsReportConfig, ReportConfig, SessionLifecycleReportConfig, GoodputConfig
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
@@ -175,6 +175,72 @@ def calculate_slo_metrics(
     return slo_metrics
 
 
+def calculate_goodput_metrics(
+    metrics: List[RequestLifecycleMetric],
+    goodput_config: Optional[GoodputConfig],
+    ttft_values: List[Optional[float]],
+    tpot_values: List[Optional[float]],
+    ntpot_values: List[float],
+    request_latency_values: List[float],
+    itl_values: List[Optional[float]],
+) -> Optional[dict[str, Any]]:
+    if not goodput_config or not goodput_config.constraints:
+        return None
+
+    total = len(metrics)
+    if total == 0:
+        return None
+
+    total_benchmark_time = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
+    
+    good_requests_count = 0
+    good_output_tokens = 0
+
+    for i, m in enumerate(metrics):
+        is_good = True
+        for metric_name, slo_value in goodput_config.constraints.items():
+            if metric_name == "ttft":
+                val = ttft_values[i]
+                if val is None or val > slo_value:
+                    is_good = False
+                    break
+            elif metric_name == "tpot":
+                val = tpot_values[i]
+                if val is None or val > slo_value:
+                    is_good = False
+                    break
+            elif metric_name == "itl":
+                val = itl_values[i]
+                if val is None or val > slo_value:
+                    is_good = False
+                    break
+            elif metric_name == "ntpot":
+                val = ntpot_values[i]
+                if val > slo_value:
+                    is_good = False
+                    break
+            elif metric_name == "request_latency":
+                val = request_latency_values[i]
+                if val > slo_value:
+                    is_good = False
+                    break
+        
+        if is_good:
+            good_requests_count += 1
+            if m.info.output_tokens is not None:
+                good_output_tokens += m.info.output_tokens
+
+    goodput_pct = (good_requests_count / total * 100) if total > 0 else 0.0
+    request_goodput_rate = good_requests_count / total_benchmark_time if total_benchmark_time > 0 else 0.0
+    token_goodput_rate = good_output_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+
+    return {
+        "goodput_pct": goodput_pct,
+        "request_goodput_rate": request_goodput_rate,
+        "token_goodput_rate": token_goodput_rate,
+        "good_requests": good_requests_count,
+        "total_requests": total,
+    }
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
         load_summary={},  # model server doesn't report failed requests
@@ -340,6 +406,7 @@ def summarize_requests(
     percentiles: List[float],
     stage_rate: Optional[float] = None,
     stage_concurrency: Optional[int] = None,
+    goodput_config: Optional[GoodputConfig] = None,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
@@ -374,9 +441,13 @@ def summarize_requests(
     ntpot_values: List[float] = []
     tpot_values: List[Optional[float]] = []  # Optional: None if not streamable
     ttft_values: List[Optional[float]] = []  # Optional: None if not streamable
+    request_latency_values: List[float] = []
+    itl_values: List[Optional[float]] = []
     inter_token_latencies: List[float] = []
 
     for m in all_successful:
+        request_latency_values.append(m.end_time - m.start_time)
+
         # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
         if m.info.output_tokens and m.info.output_tokens > 0:
             ntpot_values.append((m.end_time - m.start_time) / m.info.output_tokens)
@@ -398,15 +469,28 @@ def summarize_requests(
             tpot_values.append(tpot)
 
             # Add inter-token deltas
+            request_itl = []
             for t1, t2 in zip(m.info.output_token_times, m.info.output_token_times[1:], strict=False):
                 inter_token_latencies.append(t2 - t1)
+                request_itl.append(t2 - t1)
+            
+            if request_itl:
+                itl_values.append(sum(request_itl) / len(request_itl))
+            else:
+                itl_values.append(None)
         else:
             # Not streamable, so TTFT and TPOT are undefined
             ttft_values.append(None)
             tpot_values.append(None)
+            itl_values.append(None)
 
     # --- Pass pre-calculated lists to SLO Calculator ---
     slo_metrics = calculate_slo_metrics(all_successful, ttft_values, tpot_values)
+    
+    # --- Calculate Goodput Metrics ---
+    goodput_metrics = calculate_goodput_metrics(
+        all_successful, goodput_config, ttft_values, tpot_values, ntpot_values, request_latency_values, itl_values
+    )
 
     # --- Filter lists for summarization (remove Nones) ---
     valid_tpot = [v for v in tpot_values if v is not None]
@@ -415,9 +499,7 @@ def summarize_requests(
     successes_dict = {
         "count": len(all_successful),
         "latency": {
-            "request_latency": summarize(
-                [(successful.end_time - successful.start_time) for successful in all_successful], percentiles
-            ),
+            "request_latency": summarize(request_latency_values, percentiles),
             "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
             "time_per_output_token": summarize(valid_tpot, percentiles),
             "time_to_first_token": summarize(valid_ttft, percentiles),
@@ -444,6 +526,9 @@ def summarize_requests(
     }
     if slo_metrics:
         successes_dict["slo_metrics"] = slo_metrics
+    if goodput_metrics:
+        successes_dict["goodput_metrics"] = goodput_metrics
+        
     return ResponsesSummary(
         load_summary=load_summary,
         successes=successes_dict,
@@ -501,7 +586,7 @@ class ReportGenerator:
             if len(request_metrics) != 0:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
-                    contents=summarize_requests(request_metrics, percentiles).model_dump(),
+                    contents=summarize_requests(request_metrics, percentiles, goodput_config=report_config.goodput).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
 
@@ -516,12 +601,12 @@ class ReportGenerator:
                 if concurrency_level is not None:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, percentiles, stage_rate, concurrency_level).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate, concurrency_level, goodput_config=report_config.goodput).model_dump(),
                     )
                 else:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
-                        contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                        contents=summarize_requests(metrics, percentiles, stage_rate, goodput_config=report_config.goodput).model_dump(),
                     )
                 lifecycle_reports.append(report_file)
 
@@ -549,7 +634,7 @@ class ReportGenerator:
                     adapter_buckets[metric.info.lora_adapter].append(metric)
             for adapter, metrics in adapter_buckets.items():
                 report_file = ReportFile(
-                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles).model_dump()
+                    name=f"adapter_{adapter}_lifecycle_metrics", contents=summarize_requests(metrics, percentiles, goodput_config=report_config.goodput).model_dump()
                 )
                 lifecycle_reports.append(report_file)
 
@@ -563,7 +648,7 @@ class ReportGenerator:
                 stage_rate = runtime_parameters.stages[stage_id].rate
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
-                    contents=summarize_requests(metrics, percentiles, stage_rate).model_dump(),
+                    contents=summarize_requests(metrics, percentiles, stage_rate, goodput_config=report_config.goodput).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
 

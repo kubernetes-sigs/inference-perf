@@ -463,10 +463,16 @@ class SessionLifecycleReportConfig(BaseModel):
     per_session: Optional[bool] = False
 
 
+class GoodputConfig(BaseModel):
+    constraints: Dict[str, float] = {}
+    percentile: Optional[str] = None
+
+
 class ReportConfig(BaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
     session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
+    goodput: Optional[GoodputConfig] = None
 
 
 class PrometheusClientConfig(BaseModel):

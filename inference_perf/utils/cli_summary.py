@@ -44,6 +44,8 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     # Sort stages by ID
     sorted_stages = sorted(stage_reports.keys())
 
+    has_goodput = any("goodput_metrics" in r.get("successes", {}) for r in stage_reports.values())
+
     console = Console()
     table = Table(
         title="[bold magenta]Inference Performance Summary[/bold magenta]", show_header=True, header_style="bold cyan"
@@ -69,6 +71,9 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     table.add_column("In Tokens/s", justify="right")
     table.add_column("Out Tokens/s", justify="right")
     table.add_column("Tot Tokens/s", justify="right")
+
+    if has_goodput:
+        table.add_column("Goodput %", justify="right")
 
     for stage_id in sorted_stages:
         contents = stage_reports[stage_id]
@@ -121,7 +126,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         out_tokens = throughput.get("output_tokens_per_sec", 0.0)
         tot_tokens = throughput.get("total_tokens_per_sec", 0.0)
 
-        table.add_row(
+        row = [
             str(stage_id),
             f"{req_rate:0.1f}",
             f"{ach_rate:0.1f}",
@@ -136,7 +141,16 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             f"{in_tokens:0.1f}",
             f"{out_tokens:0.1f}",
             f"{tot_tokens:0.1f}",
-        )
+        ]
+        if has_goodput:
+            goodput_str = "-"
+            goodput_metrics = successes.get("goodput_metrics")
+            if goodput_metrics:
+                goodput_pct = goodput_metrics.get("goodput_pct", 0.0)
+                goodput_str = f"{goodput_pct:0.1f}%"
+            row.append(goodput_str)
+        
+        table.add_row(*row)
 
     console.print(table)
 
