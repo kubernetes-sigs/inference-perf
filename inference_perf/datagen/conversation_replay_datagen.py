@@ -1,0 +1,257 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Conversation replay data generator for agentic workload benchmarking.
+
+Generates synthetic multi-turn conversations in-memory from configurable
+distributions (normal, lognormal, uniform, fixed). Uses the existing
+LocalUserSession / UserSessionCompletionAPIData / CONCURRENT load type
+infrastructure — no file I/O, no DAG parsing.
+
+Designed for benchmarking agentic tool-calling workloads where N
+conversations run concurrently as fast as possible with production-calibrated
+distributions.
+"""
+
+import logging
+from dataclasses import dataclass, field
+from typing import Generator, List, Optional
+
+import numpy as np
+
+from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    ConversationReplayConfig,
+    ConversationReplayDistribution,
+    DataConfig,
+)
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.distribution import generate_distribution
+
+from .base import DataGenerator, LazyLoadDataMixin
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConversationBlueprint:
+    """Pre-computed plan for a single conversation."""
+
+    conversation_id: int
+    num_turns: int
+    system_prompt: str
+    turn_prompts: List[str] = field(default_factory=list)
+    turn_output_lens: List[int] = field(default_factory=list)
+
+
+class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
+    """Generates synthetic multi-turn conversations from distribution configs.
+
+    Each conversation has:
+    - A two-part system prompt (shared prefix + dynamic per-conversation suffix)
+    - N turns with independently sampled input/output token lengths
+    - Sequential turn enforcement via LocalUserSession
+
+    Conversations are dispatched round-robin across workers using
+    preferred_worker_id for affinity. When all turns of a conversation are
+    exhausted, the session resets and replays from the beginning (recycling).
+    """
+
+    def __init__(
+        self,
+        api_config: APIConfig,
+        config: DataConfig,
+        tokenizer: Optional[CustomTokenizer],
+    ) -> None:
+        super().__init__(api_config, config, tokenizer)
+
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for ConversationReplayDataGenerator.")
+
+        cr_config = config.conversation_replay
+        if cr_config is None:
+            raise ValueError("conversation_replay config is required.")
+        self.cr_config: ConversationReplayConfig = cr_config
+
+        # Tokenizer vocab size for random token generation
+        hf_tokenizer = self.tokenizer.get_tokenizer()
+        if hasattr(hf_tokenizer, "vocab_size") and hf_tokenizer.vocab_size is not None:
+            self.vocab_size: int = hf_tokenizer.vocab_size
+        elif hasattr(hf_tokenizer, "get_vocab") and callable(hf_tokenizer.get_vocab):
+            self.vocab_size = len(hf_tokenizer.get_vocab())
+        else:
+            try:
+                self.vocab_size = len(hf_tokenizer)
+            except TypeError as e:
+                raise ValueError("Cannot determine tokenizer vocabulary size.") from e
+        if self.vocab_size <= 0:
+            raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
+
+        # Seeded RNG for deterministic generation
+        self.rng = np.random.default_rng(self.cr_config.seed)
+
+        # Build conversation blueprints
+        self.blueprints: List[ConversationBlueprint] = []
+        self.user_sessions: List[LocalUserSession] = []
+        self._build_conversations()
+
+        logger.info(
+            "ConversationReplayDataGenerator: %d conversations, %d total turns",
+            len(self.blueprints),
+            sum(bp.num_turns for bp in self.blueprints),
+        )
+
+    # -- BaseGenerator interface ------------------------------------------
+
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Completion]
+
+    def is_io_distribution_supported(self) -> bool:
+        return True
+
+    def is_shared_prefix_supported(self) -> bool:
+        return False
+
+    def is_preferred_worker_requested(self) -> bool:
+        return True
+
+    # -- LazyLoadDataMixin interface --------------------------------------
+
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
+        conv_idx = data.data_index % len(self.blueprints)
+        bp = self.blueprints[conv_idx]
+        round_num = data.data_index // len(self.blueprints)
+        turn_idx = round_num % bp.num_turns
+
+        return UserSessionCompletionAPIData(
+            prompt=bp.turn_prompts[turn_idx],
+            max_tokens=bp.turn_output_lens[turn_idx],
+            user_session=self.user_sessions[conv_idx],
+            target_round=round_num,
+        )
+
+    # -- DataGenerator interface ------------------------------------------
+
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        if not self.blueprints:
+            return
+
+        i = 0
+        while True:
+            conv_idx = i % len(self.blueprints)
+            yield LazyLoadInferenceAPIData(
+                data_index=i,
+                preferred_worker_id=conv_idx,
+            )
+            i += 1
+
+    # -- Internal ---------------------------------------------------------
+
+    def _sample_distribution(self, dist: ConversationReplayDistribution, count: int) -> List[int]:
+        """Sample ``count`` values from a ConversationReplayDistribution."""
+        arr = generate_distribution(
+            min=dist.min,
+            max=dist.max,
+            mean=dist.mean,
+            std_dev=dist.std_dev,
+            total_count=count,
+            dist_type=dist.type,
+            rng=self.rng,
+        )
+        return [int(v) for v in arr]
+
+    def _generate_random_token_text(self, num_tokens: int) -> str:
+        """Generate random text that is approximately ``num_tokens`` long."""
+        if num_tokens <= 0:
+            return ""
+        assert self.tokenizer is not None
+        hf_tokenizer = self.tokenizer.get_tokenizer()
+        token_ids = self.rng.integers(0, self.vocab_size, size=num_tokens).tolist()
+        return str(hf_tokenizer.decode(token_ids, skip_special_tokens=True))
+
+    def _build_conversations(self) -> None:
+        """Pre-generate all conversation blueprints deterministically."""
+        cfg = self.cr_config
+        n = cfg.num_conversations
+
+        # Sample per-conversation parameters
+        if cfg.turns_per_conversation is not None:
+            turn_counts = self._sample_distribution(cfg.turns_per_conversation, n)
+        else:
+            turn_counts = [10] * n  # default fallback
+
+        if cfg.dynamic_system_prompt_len is not None:
+            dynamic_lens = self._sample_distribution(cfg.dynamic_system_prompt_len, n)
+        else:
+            dynamic_lens = [0] * n
+
+        # Generate shared system prompt once
+        shared_prompt_text = self._generate_random_token_text(cfg.shared_system_prompt_len)
+
+        total_turns = sum(turn_counts)
+        logger.info(
+            "Building %d conversations (%d total turns, shared prompt %d tokens)",
+            n,
+            total_turns,
+            cfg.shared_system_prompt_len,
+        )
+
+        # Sample all turn-level parameters at once for efficiency
+        if cfg.input_tokens_per_turn is not None:
+            all_input_lens = self._sample_distribution(cfg.input_tokens_per_turn, total_turns)
+        else:
+            all_input_lens = [512] * total_turns
+
+        if cfg.output_tokens_per_turn is not None:
+            all_output_lens = self._sample_distribution(cfg.output_tokens_per_turn, total_turns)
+        else:
+            all_output_lens = [256] * total_turns
+
+        # Build each conversation
+        turn_offset = 0
+        for conv_id in range(n):
+            num_turns = turn_counts[conv_id]
+
+            # Two-part system prompt: shared prefix + dynamic suffix
+            dynamic_text = self._generate_random_token_text(dynamic_lens[conv_id])
+            system_prompt = shared_prompt_text + " " + dynamic_text if dynamic_text else shared_prompt_text
+
+            # Generate turn prompts via batch decode
+            turn_input_lens = all_input_lens[turn_offset : turn_offset + num_turns]
+            turn_output_lens_list = all_output_lens[turn_offset : turn_offset + num_turns]
+            turn_offset += num_turns
+
+            # Batch generate token IDs then decode
+            turn_prompts: List[str] = []
+            for tlen in turn_input_lens:
+                turn_prompts.append(self._generate_random_token_text(tlen))
+
+            bp = ConversationBlueprint(
+                conversation_id=conv_id,
+                num_turns=num_turns,
+                system_prompt=system_prompt,
+                turn_prompts=turn_prompts,
+                turn_output_lens=turn_output_lens_list,
+            )
+            self.blueprints.append(bp)
+
+            # Create a LocalUserSession with the system prompt as initial context
+            self.user_sessions.append(
+                LocalUserSession(
+                    user_session_id=f"conv_{conv_id}",
+                    context=system_prompt,
+                )
+            )

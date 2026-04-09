@@ -87,6 +87,7 @@ class DataGenType(Enum):
     InfinityInstruct = "infinity_instruct"
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
+    ConversationReplay = "conversation_replay"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -120,6 +121,42 @@ class SharedPrefix(BaseModel):
     question_distribution: Optional[Distribution] = None
     output_distribution: Optional[Distribution] = None
     enable_multi_turn_chat: bool = False
+
+
+class ConversationReplayDistribution(BaseModel):
+    """Distribution config for conversation replay parameters."""
+
+    type: str = "normal"  # normal, lognormal, uniform, fixed
+    min: int = 10
+    max: int = 1024
+    mean: float = 512
+    std_dev: float = 200
+
+
+class ConversationReplayConfig(BaseModel):
+    """Configuration for conversation replay data generator.
+
+    Generates synthetic multi-turn conversations in-memory from configurable
+    distributions. Each conversation has a two-part system prompt (shared prefix
+    + dynamic per-conversation suffix) and a sequence of user/assistant turns
+    with independently sampled input/output token lengths.
+    """
+
+    seed: int = Field(42, description="Random seed for deterministic generation")
+    num_conversations: int = Field(200, gt=0, description="Number of conversation blueprints to generate")
+    shared_system_prompt_len: int = Field(8359, ge=0, description="Fixed shared system prompt length in tokens")
+    dynamic_system_prompt_len: Optional[ConversationReplayDistribution] = Field(
+        None, description="Per-conversation dynamic system prompt length distribution"
+    )
+    turns_per_conversation: Optional[ConversationReplayDistribution] = Field(
+        None, description="Number of turns per conversation distribution"
+    )
+    input_tokens_per_turn: Optional[ConversationReplayDistribution] = Field(
+        None, description="Input tokens per turn distribution"
+    )
+    output_tokens_per_turn: Optional[ConversationReplayDistribution] = Field(
+        None, description="Output tokens per turn distribution"
+    )
 
 
 class OTelTraceReplayConfig(BaseModel):
@@ -179,6 +216,9 @@ class DataConfig(BaseModel):
 
     # OTel trace replay configuration
     otel_trace_replay: Optional[OTelTraceReplayConfig] = None
+
+    # Conversation replay configuration
+    conversation_replay: Optional[ConversationReplayConfig] = None
 
 
 class ModelServerType(Enum):

@@ -4,8 +4,7 @@ Verifies that process_response() is called before the response body is consumed,
 so the SSE streaming parser can iterate response.content.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -76,9 +75,7 @@ async def test_non_streaming_reads_body() -> None:
 
     response = MagicMock()
     response.status = 200
-    response.json = AsyncMock(
-        return_value={"choices": [{"message": {"content": "Hello world"}}]}
-    )
+    response.json = AsyncMock(return_value={"choices": [{"message": {"content": "Hello world"}}]})
 
     tokenizer = MagicMock()
     tokenizer.count_tokens = MagicMock(return_value=2)
