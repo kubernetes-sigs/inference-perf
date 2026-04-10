@@ -13,19 +13,32 @@
 # limitations under the License.
 """Conversation replay data generator for agentic workload benchmarking.
 
-Generates synthetic multi-turn conversations in-memory from configurable
-distributions (normal, lognormal, uniform, fixed). Uses the existing
-LocalUserSession / UserSessionCompletionAPIData / CONCURRENT load type
-infrastructure — no file I/O, no DAG parsing.
+Closed-loop continuous replenishment model
+------------------------------------------
+Each slot (preferred_worker_id) maps to one concurrent conversation. When a
+conversation completes all its turns, the slot immediately resets to a fresh
+LocalUserSession and starts a new conversation from turn 0. This models
+steady-state production traffic where a new conversation begins as soon as
+the previous one ends.
 
-Designed for benchmarking agentic tool-calling workloads where N
-conversations run concurrently as fast as possible with production-calibrated
-distributions.
+At steady state, the C active conversations are uniformly distributed across
+turn 0..N, so the mean KV-cache context across all active slots matches the
+production mean (~83K tokens for Sidekick suggested-actions workloads).
+
+Usage
+-----
+Set ``num_conversations = C`` (the concurrency level) so each slot owns
+exactly one conversation. Set ``num_requests = C × turns × num_rounds`` to
+run ``num_rounds`` complete conversations per slot. The first round is
+warmup; report throughput from round 2 onward.
+
+Run each concurrency level as a separate benchmark (fresh state, not stages
+of one run) to avoid context accumulating across concurrency levels.
 """
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Generator, List, Optional
+from typing import Generator, List, Optional
 
 import numpy as np
 
@@ -44,28 +57,6 @@ from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 
 logger = logging.getLogger(__name__)
-
-
-class _ConversationReplayAPIData(UserSessionCompletionAPIData):
-    """UserSessionCompletionAPIData that disables stop token IDs.
-
-    Random synthetic prompts cause Qwen3 (and similar chat models) to emit
-    the chat stop token (e.g. ``<|im_end|>``) long before ``max_tokens`` is
-    reached, severely under-counting output tokens vs production.
-
-    Passing ``stop_token_ids: []`` to vLLM overrides any model-registered
-    stop tokens so that generation runs to ``max_tokens``, which — combined
-    with ``ignore_eos: True`` — produces output lengths matching the sampled
-    ``output_tokens_per_turn`` distribution.
-    """
-
-    async def to_payload(
-        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
-    ) -> dict[str, Any]:
-        payload = await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
-        # Override stop token IDs so random prompts don't trigger early termination
-        payload["stop_token_ids"] = []
-        return payload
 
 
 @dataclass
@@ -157,8 +148,20 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         bp = self.blueprints[conv_idx]
         round_num = data.data_index // len(self.blueprints)
         turn_idx = round_num % bp.num_turns
+        convo_num = round_num // bp.num_turns  # which conversation this slot is on
 
-        return _ConversationReplayAPIData(
+        # Closed-loop replenishment: when a conversation finishes all its turns,
+        # reset the session so the slot immediately starts a fresh conversation.
+        # This happens in the worker process (after fork), so each worker safely
+        # manages its own copy of the session for its assigned slots.
+        if turn_idx == 0 and round_num > 0:
+            self.user_sessions[conv_idx] = LocalUserSession(
+                user_session_id=f"slot_{conv_idx}_convo_{convo_num}",
+                context=bp.system_prompt,
+            )
+            logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
+
+        return UserSessionCompletionAPIData(
             prompt=bp.turn_prompts[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
             user_session=self.user_sessions[conv_idx],
