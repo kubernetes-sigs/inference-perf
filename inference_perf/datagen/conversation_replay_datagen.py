@@ -25,7 +25,7 @@ distributions.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Generator, List, Optional
+from typing import Any, Generator, List, Optional
 
 import numpy as np
 
@@ -44,6 +44,28 @@ from inference_perf.utils.distribution import generate_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 
 logger = logging.getLogger(__name__)
+
+
+class _ConversationReplayAPIData(UserSessionCompletionAPIData):
+    """UserSessionCompletionAPIData that disables stop token IDs.
+
+    Random synthetic prompts cause Qwen3 (and similar chat models) to emit
+    the chat stop token (e.g. ``<|im_end|>``) long before ``max_tokens`` is
+    reached, severely under-counting output tokens vs production.
+
+    Passing ``stop_token_ids: []`` to vLLM overrides any model-registered
+    stop tokens so that generation runs to ``max_tokens``, which — combined
+    with ``ignore_eos: True`` — produces output lengths matching the sampled
+    ``output_tokens_per_turn`` distribution.
+    """
+
+    async def to_payload(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> dict[str, Any]:
+        payload = await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
+        # Override stop token IDs so random prompts don't trigger early termination
+        payload["stop_token_ids"] = []
+        return payload
 
 
 @dataclass
@@ -136,7 +158,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         round_num = data.data_index // len(self.blueprints)
         turn_idx = round_num % bp.num_turns
 
-        return UserSessionCompletionAPIData(
+        return _ConversationReplayAPIData(
             prompt=bp.turn_prompts[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
             user_session=self.user_sessions[conv_idx],
