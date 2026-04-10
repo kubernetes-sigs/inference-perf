@@ -160,16 +160,17 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 context=bp.system_prompt,
             )
             logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
-        elif len(self.user_sessions[conv_idx].contexts) > 900_000:
-            # Safety reset: context is approaching max_model_len (225K tokens ≈ 900K
-            # chars) due to outlier turns with very large inputs or outputs. Reset to
-            # fresh context mid-conversation rather than letting vLLM reject the request.
+        elif len(self.user_sessions[conv_idx].contexts) > 2_700_000:
+            # Safety reset: context is approaching max_model_len.
+            # Random Qwen3 tokens decode to ~12 chars/token on average, so
+            # 225K tokens ≈ 2.7M chars. Reset to fresh context rather than
+            # letting vLLM reject the request due to exceeding max_model_len.
             self.user_sessions[conv_idx] = LocalUserSession(
                 user_session_id=f"slot_{conv_idx}_convo_{convo_num}_reset",
                 context=bp.system_prompt,
             )
             turn_idx = 0
-            logger.warning("Slot %d: safety context reset at turn %d", conv_idx, turn_idx)
+            logger.warning("Slot %d: safety context reset (context >2.7M chars)", conv_idx)
 
         return UserSessionCompletionAPIData(
             prompt=bp.turn_prompts[turn_idx],
