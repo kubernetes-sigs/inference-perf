@@ -47,12 +47,14 @@ def test_calculate_goodput_metrics_ttft_constraint() -> None:
     metric1.start_time = 0.0
     metric1.end_time = 2.0
     metric1.info = Mock()
+    metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
 
     metric2 = Mock(spec=RequestLifecycleMetric)
     metric2.start_time = 2.0
     metric2.end_time = 4.0
     metric2.info = Mock()
+    metric2.info.input_tokens = 0
     metric2.info.output_tokens = 20
 
     metrics = [metric1, metric2]
@@ -102,12 +104,14 @@ def test_calculate_goodput_metrics_multiple_constraints() -> None:
     metric1.start_time = 0.0
     metric1.end_time = 2.0
     metric1.info = Mock()
+    metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
 
     metric2 = Mock(spec=RequestLifecycleMetric)
     metric2.start_time = 2.0
     metric2.end_time = 4.0
     metric2.info = Mock()
+    metric2.info.input_tokens = 0
     metric2.info.output_tokens = 20
 
     metrics = [metric1, metric2]
@@ -129,6 +133,7 @@ def test_calculate_goodput_metrics_itl_constraint() -> None:
     metric1.start_time = 0.0
     metric1.end_time = 2.0
     metric1.info = Mock()
+    metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
 
     metrics = [metric1]
@@ -148,6 +153,7 @@ def test_calculate_goodput_metrics_ntpot_constraint() -> None:
     metric1.start_time = 0.0
     metric1.end_time = 2.0
     metric1.info = Mock()
+    metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
 
     metrics = [metric1]
@@ -167,6 +173,7 @@ def test_calculate_goodput_metrics_request_latency_constraint() -> None:
     metric1.start_time = 0.0
     metric1.end_time = 0.5
     metric1.info = Mock()
+    metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
 
     metrics = [metric1]

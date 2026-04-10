@@ -345,7 +345,6 @@ def test_goodput_config_parsing() -> None:
                     "ttft": 0.5,
                     "tpot": 0.1,
                 },
-                "percentile": "p90",
             }
         }
     }
@@ -358,7 +357,6 @@ def test_goodput_config_parsing() -> None:
         assert config.report.goodput is not None
         assert config.report.goodput.constraints["ttft"] == 0.5
         assert config.report.goodput.constraints["tpot"] == 0.1
-        assert config.report.goodput.percentile == "p90"
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
