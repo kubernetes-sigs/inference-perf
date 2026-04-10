@@ -223,7 +223,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
                 goodput_pct = goodput_metrics.get("goodput_pct", 0.0)
                 req_goodput = goodput_metrics.get("request_goodput", 0.0)
                 tok_goodput = goodput_metrics.get("token_goodput", 0.0)
-                
+
                 goodput_str = f"{goodput_pct:0.1f}%"
                 req_goodput_str = f"{req_goodput:0.1f}"
                 tok_goodput_str = f"{tok_goodput:0.1f}"

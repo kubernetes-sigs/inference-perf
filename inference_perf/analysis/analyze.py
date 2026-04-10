@@ -241,7 +241,7 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                     if goodput_pct is not None:
                         if not concurrency:
                             qps_vs_goodput_pct.append((qps, goodput_pct))
-                    
+
                     req_goodput_rate = goodput_metrics.get("request_goodput")
                     if req_goodput_rate is None:
                         req_goodput_rate = goodput_metrics.get("request_goodput_rate")
@@ -515,7 +515,7 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                 report_names,
                 "Latency vs Request Rate",
                 analysis_path / "latency_vs_qps.png",
-                )
+            )
 
         # --- Generate QPS Throughput Plot ---
         setof_throughput_charts_to_generate = [charts_to_generate[3] for charts_to_generate in chartset.values()]
@@ -540,7 +540,9 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
             )
 
         # --- Generate QPS Goodput Plot (Unified) ---
-        setof_goodput_charts_to_generate = [charts_to_generate[5] for charts_to_generate in chartset.values() if len(charts_to_generate) > 5]
+        setof_goodput_charts_to_generate = [
+            charts_to_generate[5] for charts_to_generate in chartset.values() if len(charts_to_generate) > 5
+        ]
         if len(setof_goodput_charts_to_generate) > 0:
             _generate_multi_plot(
                 setof_goodput_charts_to_generate,

@@ -98,6 +98,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--report.session_lifecycle.summary` | boolean | Matches report.session_lifecycle.summary in config |
 | `--report.session_lifecycle.per_stage` | boolean | Matches report.session_lifecycle.per_stage in config |
 | `--report.session_lifecycle.per_session` | boolean | Matches report.session_lifecycle.per_session in config |
+| `--report.goodput.constraints` | JSON | Matches report.goodput.constraints in config |
 | `--storage.local_storage.path` | str | Matches storage.local_storage.path in config |
 | `--storage.local_storage.report_file_prefix` | str | Matches storage.local_storage.report_file_prefix in config |
 | `--storage.google_cloud_storage.path` | str | Matches storage.google_cloud_storage.path in config |
