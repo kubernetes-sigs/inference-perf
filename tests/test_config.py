@@ -221,6 +221,7 @@ def test_prometheus_client_config_validation() -> None:
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(google_managed=False)
 
+
 def test_shared_prefix_inline_distribution() -> None:
     config = Config.model_validate(
         {

@@ -25,6 +25,7 @@ from inference_perf.reportgen.base import ResponsesSummary
 @pytest.fixture
 def mock_report_data() -> ResponsesSummary:
     return ResponsesSummary(
+        benchmark_time_seconds=31.42,
         load_summary={
             "count": 60,
             "schedule_delay": {
