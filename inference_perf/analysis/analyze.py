@@ -242,7 +242,9 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                         if not concurrency:
                             qps_vs_goodput_pct.append((qps, goodput_pct))
                     
-                    req_goodput_rate = goodput_metrics.get("request_goodput_rate")
+                    req_goodput_rate = goodput_metrics.get("request_goodput")
+                    if req_goodput_rate is None:
+                        req_goodput_rate = goodput_metrics.get("request_goodput_rate")
                     if req_goodput_rate is not None:
                         if not concurrency:
                             qps_vs_request_goodput_rate.append((qps, req_goodput_rate))

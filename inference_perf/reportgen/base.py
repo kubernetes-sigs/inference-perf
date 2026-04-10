@@ -194,7 +194,7 @@ def calculate_goodput_metrics(
     total_benchmark_time = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
     
     good_requests_count = 0
-    good_output_tokens = 0
+    good_total_tokens = 0
 
     for i, m in enumerate(metrics):
         is_good = True
@@ -227,17 +227,18 @@ def calculate_goodput_metrics(
         
         if is_good:
             good_requests_count += 1
-            if m.info.output_tokens is not None:
-                good_output_tokens += m.info.output_tokens
+            in_tokens = m.info.input_tokens if m.info.input_tokens is not None else 0
+            out_tokens = m.info.output_tokens if m.info.output_tokens is not None else 0
+            good_total_tokens += (in_tokens + out_tokens)
 
     goodput_pct = (good_requests_count / total * 100) if total > 0 else 0.0
-    request_goodput_rate = good_requests_count / total_benchmark_time if total_benchmark_time > 0 else 0.0
-    token_goodput_rate = good_output_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
+    request_goodput = good_requests_count / total_benchmark_time if total_benchmark_time > 0 else 0.0
+    token_goodput = good_total_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
 
     return {
         "goodput_pct": goodput_pct,
-        "request_goodput_rate": request_goodput_rate,
-        "token_goodput_rate": token_goodput_rate,
+        "request_goodput": request_goodput,
+        "token_goodput": token_goodput,
         "good_requests": good_requests_count,
         "total_requests": total,
     }

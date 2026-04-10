@@ -174,84 +174,19 @@ OpenAI completion and chat completion APIs are supported. It can be pointed to a
 
 ### Metrics
 
-Different latency and throughput metrics to analyze the performance of different LLM workloads are reported. A snippet from an example report is below. For a definition of the metrics, please refer to [metrics.md](./docs/metrics.md).
-```
-"latency": {
-    "request_latency": {
-        "mean": 3.31325431142327,
-        "min": 1.62129471905064,
-        "p10": 1.67609986825846,
-        "median": 2.11507539497688,
-        "p90": 5.94717199734878,
-        "max": 6.30658466403838
-    },
-    "normalized_time_per_output_token": {
-        "mean": 0.104340420636009,
-        "min": 0.0506654599703325,
-        "p10": 0.0523781208830769,
-        "median": 0.0670631669655753,
-        "p90": 0.189047570470012,
-        "max": 0.20343821496898
-    },
-    "time_per_output_token": {
-        "mean": 0.0836929455635872,
-        "min": 0.0517028436646797,
-        "p10": 0.0530815053513894,
-        "median": 0.0611870964678625,
-        "p90": 0.152292036800645,
-        "max": 0.17837208439984
-    },
-    "time_to_first_token": {
-        "mean": 0.800974442732916,
-        "min": 0.0625283779809251,
-        "p10": 0.072068731742911,
-        "median": 0.203539535985328,
-        "p90": 2.26959549135063,
-        "max": 4.46773961000145
-    },
-    "inter_token_latency": {
-        "mean": 0.0836929455635872,
-        "min": 0.000007129972800612,
-        "p10": 0.0534287681337446,
-        "median": 0.0591336835059337,
-        "p90": 0.084046097996179,
-        "max": 0.614475268055685
-    }
-},
-"throughput": {
-    "input_tokens_per_sec": 643.576644186323,
-    "output_tokens_per_sec": 32.544923821416,
-    "total_tokens_per_sec": 676.121568007739,
-    "requests_per_sec": 1.0238155253639
-},
-"prompt_len": {
-    "mean": 628.606060606061,
-    "min": 4,
-    "p10": 11.4,
-    "median": 364,
-    "p90": 2427.6,
-    "max": 3836
-},
-"output_len": {
-    "mean": 31.7878787878788,
-    "min": 30,
-    "p10": 31,
-    "median": 32,
-    "p90": 32,
-    "max": 32
-}
-```
+Different latency and throughput metrics to analyze the performance of different LLM workloads are reported. For a definition of the metrics, please refer to [metrics.md](./docs/metrics.md).
+
+When you run `inference-perf`, it displays a summary table in the CLI:
+
+![Metrics Summary](./docs/images/metrics-summary.png)
 
 ### Reports
 
-Reports are generated in JSON format.
-- Per stage reports for individual request rates.
-- Summary reports for the overall run.
-- Request logs / traces for further analysis.
+`inference-perf` generates detailed reports in JSON format. For a detailed description of the generated reports and how to read them, please refer to [reports.md](./docs/reports.md).
 
-Model server metrics reports from Prometheus collected during the run is also produced.
-- Model server specific metrics like queue size, batch size, latency metrics, etc.
-- Supports querying metrics from OSS Prometheus and Google Managed Prometheus.
+### Goodput
+
+`inference-perf` supports measuring Goodput, which counts requests that meet specific SLA/SLO constraints. For details on how to configure and measure goodput, please refer to [goodput.md](./docs/goodput.md).
 
 ## Analysis
 
