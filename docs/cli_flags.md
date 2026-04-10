@@ -20,26 +20,39 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.input_distribution.mean` | float | Matches data.input_distribution.mean in config |
 | `--data.input_distribution.std_dev` | float | Matches data.input_distribution.std_dev in config |
 | `--data.input_distribution.total_count` | int | Matches data.input_distribution.total_count in config |
+| `--data.input_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson) | Matches data.input_distribution.type in config |
+| `--data.input_distribution.variance` | float | Matches data.input_distribution.variance in config |
+| `--data.input_distribution.skew` | float | Matches data.input_distribution.skew in config |
 | `--data.output_distribution.min` | int | Matches data.output_distribution.min in config |
 | `--data.output_distribution.max` | int | Matches data.output_distribution.max in config |
 | `--data.output_distribution.mean` | float | Matches data.output_distribution.mean in config |
 | `--data.output_distribution.std_dev` | float | Matches data.output_distribution.std_dev in config |
 | `--data.output_distribution.total_count` | int | Matches data.output_distribution.total_count in config |
+| `--data.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson) | Matches data.output_distribution.type in config |
+| `--data.output_distribution.variance` | float | Matches data.output_distribution.variance in config |
+| `--data.output_distribution.skew` | float | Matches data.output_distribution.skew in config |
 | `--data.shared_prefix.num_groups` | int | Matches data.shared_prefix.num_groups in config |
 | `--data.shared_prefix.num_prompts_per_group` | int | Matches data.shared_prefix.num_prompts_per_group in config |
-| `--data.shared_prefix.system_prompt_len` | int | Matches data.shared_prefix.system_prompt_len in config |
-| `--data.shared_prefix.question_len` | int | Matches data.shared_prefix.question_len in config |
-| `--data.shared_prefix.output_len` | int | Matches data.shared_prefix.output_len in config |
+| `--data.shared_prefix.system_prompt_len` | string | Matches data.shared_prefix.system_prompt_len in config |
+| `--data.shared_prefix.question_len` | string | Matches data.shared_prefix.question_len in config |
+| `--data.shared_prefix.output_len` | string | Matches data.shared_prefix.output_len in config |
+| `--data.shared_prefix.seed` | int | Matches data.shared_prefix.seed in config |
 | `--data.shared_prefix.question_distribution.min` | int | Matches data.shared_prefix.question_distribution.min in config |
 | `--data.shared_prefix.question_distribution.max` | int | Matches data.shared_prefix.question_distribution.max in config |
 | `--data.shared_prefix.question_distribution.mean` | float | Matches data.shared_prefix.question_distribution.mean in config |
 | `--data.shared_prefix.question_distribution.std_dev` | float | Matches data.shared_prefix.question_distribution.std_dev in config |
 | `--data.shared_prefix.question_distribution.total_count` | int | Matches data.shared_prefix.question_distribution.total_count in config |
+| `--data.shared_prefix.question_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson) | Matches data.shared_prefix.question_distribution.type in config |
+| `--data.shared_prefix.question_distribution.variance` | float | Matches data.shared_prefix.question_distribution.variance in config |
+| `--data.shared_prefix.question_distribution.skew` | float | Matches data.shared_prefix.question_distribution.skew in config |
 | `--data.shared_prefix.output_distribution.min` | int | Matches data.shared_prefix.output_distribution.min in config |
 | `--data.shared_prefix.output_distribution.max` | int | Matches data.shared_prefix.output_distribution.max in config |
 | `--data.shared_prefix.output_distribution.mean` | float | Matches data.shared_prefix.output_distribution.mean in config |
 | `--data.shared_prefix.output_distribution.std_dev` | float | Matches data.shared_prefix.output_distribution.std_dev in config |
 | `--data.shared_prefix.output_distribution.total_count` | int | Matches data.shared_prefix.output_distribution.total_count in config |
+| `--data.shared_prefix.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson) | Matches data.shared_prefix.output_distribution.type in config |
+| `--data.shared_prefix.output_distribution.variance` | float | Matches data.shared_prefix.output_distribution.variance in config |
+| `--data.shared_prefix.output_distribution.skew` | float | Matches data.shared_prefix.output_distribution.skew in config |
 | `--data.shared_prefix.enable_multi_turn_chat` | boolean | Matches data.shared_prefix.enable_multi_turn_chat in config |
 | `--data.trace.file` | str | Matches data.trace.file in config |
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
