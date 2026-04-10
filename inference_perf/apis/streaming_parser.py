@@ -44,9 +44,9 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, output_token_times, raw_content, response_chunks) where:
+        Tuple of (output_text, chunk_times, raw_content, response_chunks) where:
         - output_text: The concatenated text content from all chunks
-        - output_token_times: List of timestamps when each message was received
+        - chunk_times: List of timestamps when each message was received
         - raw_content: The raw string content of the stream
         - response_chunks: List of raw JSON strings from data: lines (for token interpolation)
 
@@ -58,7 +58,7 @@ async def parse_sse_stream(
         )
     """
     output_text = ""
-    output_token_times: List[float] = []
+    chunk_times: List[float] = []
     buffer = b""
     raw_content = b""
     response_chunks: List[str] = []
@@ -68,7 +68,7 @@ async def parse_sse_stream(
         buffer += chunk
         while b"\n\n" in buffer:
             message, buffer = buffer.split(b"\n\n", 1)
-            output_token_times.append(time.perf_counter())
+            chunk_times.append(time.perf_counter())
             for line in message.split(sep=b"\n"):
                 if line.startswith(b"data:"):
                     data_str = line.removeprefix(b"data: ").strip()
@@ -85,4 +85,4 @@ async def parse_sse_stream(
                 continue
             break
 
-    return output_text, output_token_times, raw_content.decode("utf-8", errors="ignore"), response_chunks
+    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks

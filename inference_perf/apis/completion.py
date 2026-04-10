@@ -13,8 +13,7 @@
 # limitations under the License.
 
 
-import time
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryInferenceResponseInfo, StreamedInferenceResponseInfo
@@ -53,7 +52,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, output_token_times, raw_content, response_chunks = await parse_sse_stream(
+            output_text, message_times, raw_content, response_chunks = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
 
@@ -63,9 +62,9 @@ class CompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 response_info=StreamedInferenceResponseInfo(
                     response_chunks=response_chunks,
-                    chunk_times=output_token_times,
+                    chunk_times=message_times,
                     output_tokens=output_len,
-                    output_token_times=output_token_times,
+                    output_token_times=message_times,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},

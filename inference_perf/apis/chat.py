@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
 from pydantic import BaseModel
@@ -56,7 +55,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with chat-specific content extraction
-            output_text, output_token_times, raw_content, response_chunks = await parse_sse_stream(
+            output_text, message_times, raw_content, response_chunks = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
 
@@ -67,9 +66,9 @@ class ChatCompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 response_info=StreamedInferenceResponseInfo(
                     response_chunks=response_chunks,
-                    chunk_times=output_token_times,
+                    chunk_times=message_times,
                     output_tokens=output_len,
-                    output_token_times=output_token_times,
+                    output_token_times=message_times,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},

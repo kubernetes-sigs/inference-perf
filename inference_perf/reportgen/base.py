@@ -101,7 +101,6 @@ def calculate_goodput_metrics(
     for i, m in enumerate(metrics):
         is_good = True
 
-<<<<<<< HEAD
         effective_ttft_slo = (
             m.ttft_slo_sec
             if m.ttft_slo_sec is not None
@@ -111,49 +110,6 @@ def calculate_goodput_metrics(
             m.tpot_slo_sec
             if m.tpot_slo_sec is not None
             else (goodput_config.constraints.get("tpot") if goodput_config else None)
-=======
-        # Goodput Calculation Logic
-        ttft_ok = (ttft_met is True) if has_ttft_slo else True
-        tpot_ok = (tpot_met is True) if has_tpot_slo else True
-
-        if ttft_ok and tpot_ok:
-            if m.info.input_tokens is not None and m.info.response_info and m.info.response_info.output_tokens is not None:
-                goodput_token_counts.append(m.info.input_tokens + m.info.response_info.output_tokens)
-
-    total_goodput_tokens = sum(goodput_token_counts)
-    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
-
-    # TTFT SLO metrics
-    if has_ttft_slo:
-        ttft_met_count = sum(1 for res in ttft_results if res is True)
-        ttft_failed_count = sum(1 for res in ttft_results if res is False)
-
-        slo_metrics["ttft_slo"] = {
-            "attainment_pct": (ttft_met_count / total * 100) if total > 0 else 0,
-            "requests_met": ttft_met_count,
-            "requests_failed": ttft_failed_count,
-            "total_requests": total,
-            "slo": ttft_slo_limit,
-        }
-
-    # TPOT SLO metrics
-    if has_tpot_slo:
-        tpot_met_count = sum(1 for res in tpot_results if res is True)
-        tpot_failed_count = sum(1 for res in tpot_results if res is False)
-
-        slo_metrics["tpot_slo"] = {
-            "attainment_pct": (tpot_met_count / total * 100) if total > 0 else 0,
-            "requests_met": tpot_met_count,
-            "requests_failed": tpot_failed_count,
-            "total_requests": total,
-            "slo": tpot_slo_limit,
-        }
-
-    # Combined SLO (both must be met)
-    if has_ttft_slo and has_tpot_slo:
-        combined_met = sum(
-            1 for t_res, p_res in zip(ttft_results, tpot_results, strict=True) if t_res is True and p_res is True
->>>>>>> 4fbc041 (TPOT, ITL from repsonse tokens, not chunks)
         )
 
         effective_itl_slo = goodput_config.constraints.get("itl") if goodput_config else None
@@ -432,7 +388,7 @@ def summarize_requests(
 
     mismatched_requests = 0
     for m in all_successful:
-<        request_latency_values.append(m.end_time - m.start_time)
+        request_latency_values.append(m.end_time - m.start_time)
 
         # Process raw chunks if present and tokenizer is available
         if (
@@ -460,21 +416,12 @@ def summarize_requests(
                 except json.JSONDecodeError:
                     continue
 
-            prev_time = None
             for text, chunk_time in parsed_chunks:
                 tokens_in_chunk = tokenizer.count_tokens(text)
                 if tokens_in_chunk > 0:
-                    if prev_time is None:
-                        # First chunk: all tokens get chunk_time
-                        for _ in range(tokens_in_chunk):
-                            output_token_times.append(chunk_time)
-                    else:
-                        # Subsequent chunks: interpolate between prev_time and chunk_time
-                        delta_time = chunk_time - prev_time
-                        for i in range(1, tokens_in_chunk + 1):
-                            token_time = prev_time + i * (delta_time / tokens_in_chunk)
-                            output_token_times.append(token_time)
-                    prev_time = chunk_time
+                    # All tokens in a chunk get the timestamp when the chunk was received
+                    for _ in range(tokens_in_chunk):
+                        output_token_times.append(chunk_time)
                     accumulated_tokens += tokens_in_chunk
 
             m.info.response_info.output_token_times = output_token_times
@@ -655,7 +602,12 @@ class ReportGenerator:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
                         contents=summarize_requests(
-                            metrics, percentiles, stage_rate, concurrency_level, goodput_config=report_config.goodput, tokenizer=tokenizer
+                            metrics,
+                            percentiles,
+                            stage_rate,
+                            concurrency_level,
+                            goodput_config=report_config.goodput,
+                            tokenizer=tokenizer,
                         ).model_dump(),
                     )
                 else:

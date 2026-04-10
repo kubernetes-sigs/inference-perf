@@ -104,3 +104,24 @@ def test_summarize_requests_token_mismatch() -> None:
     assert result is not None
     successes = result.successes
     assert successes["token_count_mismatches"] == 1
+
+
+def test_summarize_requests_multiple_tokens_same_timestamp() -> None:
+    from unittest.mock import Mock
+
+    mock_tokenizer = Mock()
+    mock_tokenizer.count_tokens.side_effect = lambda text: 3 if "hello" in text else 0
+
+    info = InferenceInfo(
+        input_tokens=5,
+        response_info=StreamedInferenceResponseInfo(response_chunks=['{"choices": [{"text": "hello"}]}'], chunk_times=[1.0]),
+    )
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="test_request", info=info, error=None
+    )
+
+    summarize_requests([metric], [50], tokenizer=mock_tokenizer)
+
+    assert isinstance(metric.info.response_info, StreamedInferenceResponseInfo)
+    assert metric.info.response_info.output_token_times == [1.0, 1.0, 1.0]

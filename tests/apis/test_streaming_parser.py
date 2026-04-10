@@ -39,10 +39,10 @@ async def test_parse_sse_stream() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, output_token_times, raw_content, response_chunks = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "Hello world"
-    assert len(output_token_times) == 3
+    assert len(chunk_times) == 3
     assert "Hello" in raw_content
     assert "world" in raw_content
     assert "[DONE]" in raw_content
