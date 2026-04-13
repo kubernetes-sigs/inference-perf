@@ -160,12 +160,12 @@ def calculate_goodput_metrics(
             out_tokens = m.info.output_tokens if m.info.output_tokens is not None else 0
             good_total_tokens += in_tokens + out_tokens
 
-    goodput_pct = (good_requests_count / total * 100) if total > 0 else 0.0
+    goodput_percentage = (good_requests_count / total * 100) if total > 0 else 0.0
     request_goodput = good_requests_count / total_benchmark_time if total_benchmark_time > 0 else 0.0
     token_goodput = good_total_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
 
     result = {
-        "goodput_pct": goodput_pct,
+        "goodput_percentage": goodput_percentage,
         "request_goodput": request_goodput,
         "token_goodput": token_goodput,
         "good_requests": good_requests_count,
@@ -174,7 +174,7 @@ def calculate_goodput_metrics(
 
     for k in total_applicable_counts:
         if total_applicable_counts[k] > 0:
-            result[f"{k}_attainment_pct"] = attainment_counts[k] / total_applicable_counts[k] * 100
+            result[f"{k}_attainment_percentage"] = attainment_counts[k] / total_applicable_counts[k] * 100
 
     return result
 

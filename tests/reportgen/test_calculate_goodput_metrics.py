@@ -71,7 +71,7 @@ def test_calculate_goodput_metrics_ttft_constraint() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None, None], [0.1, 0.1], [2.0, 2.0], [None, None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 50.0
+    assert result["goodput_percentage"] == 50.0
     assert result["good_requests"] == 1
     assert result["total_requests"] == 2
     # Total benchmark time = 4.0 - 0.0 = 4.0
@@ -99,7 +99,7 @@ def test_calculate_goodput_metrics_total_tokens() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 100.0
+    assert result["goodput_percentage"] == 100.0
     assert result["good_requests"] == 1
     # Total tokens = 5 + 10 = 15
     # Total benchmark time = 2.0 - 0.0 = 2.0
@@ -135,7 +135,7 @@ def test_calculate_goodput_metrics_multiple_constraints() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, tpot_values, [0.1, 0.1], [2.0, 2.0], [None, None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 50.0
+    assert result["goodput_percentage"] == 50.0
     assert result["good_requests"] == 1
 
 
@@ -158,7 +158,7 @@ def test_calculate_goodput_metrics_itl_constraint() -> None:
     result = calculate_goodput_metrics(metrics, config, [None], [None], [0.1], [2.0], itl_values)  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 100.0
+    assert result["goodput_percentage"] == 100.0
 
 
 def test_calculate_goodput_metrics_ntpot_constraint() -> None:
@@ -180,7 +180,7 @@ def test_calculate_goodput_metrics_ntpot_constraint() -> None:
     result = calculate_goodput_metrics(metrics, config, [None], [None], ntpot_values, [2.0], [None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 100.0
+    assert result["goodput_percentage"] == 100.0
 
 
 def test_calculate_goodput_metrics_request_latency_constraint() -> None:
@@ -202,7 +202,7 @@ def test_calculate_goodput_metrics_request_latency_constraint() -> None:
     result = calculate_goodput_metrics(metrics, config, [None], [None], [0.1], request_latency_values, [None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 100.0
+    assert result["goodput_percentage"] == 100.0
 
 
 def test_calculate_goodput_metrics_per_request_override() -> None:
@@ -224,14 +224,14 @@ def test_calculate_goodput_metrics_per_request_override() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 0.0
+    assert result["goodput_percentage"] == 0.0
     assert result["good_requests"] == 0
 
     # Now test that it meets if it is within per-request SLO
     ttft_values = [0.1]
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
     assert result is not None
-    assert result["goodput_pct"] == 100.0
+    assert result["goodput_percentage"] == 100.0
     assert result["good_requests"] == 1
 
 
@@ -264,8 +264,8 @@ def test_calculate_goodput_metrics_individual_attainment() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, tpot_values, [0.1, 0.1], [2.0, 2.0], [None, None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["ttft_attainment_pct"] == 50.0
-    assert result["tpot_attainment_pct"] == 100.0
+    assert result["ttft_attainment_percentage"] == 50.0
+    assert result["tpot_attainment_percentage"] == 100.0
 
 
 def test_calculate_goodput_metrics_ttft_none_fails() -> None:
@@ -287,5 +287,5 @@ def test_calculate_goodput_metrics_ttft_none_fails() -> None:
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
 
     assert result is not None
-    assert result["goodput_pct"] == 0.0
+    assert result["goodput_percentage"] == 0.0
     assert result["good_requests"] == 0

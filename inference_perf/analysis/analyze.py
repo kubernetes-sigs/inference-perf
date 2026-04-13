@@ -158,7 +158,7 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
         qps_vs_itps: List[Tuple[float, float]] = []
         qps_vs_otps: List[Tuple[float, float]] = []
         qps_vs_ttps: List[Tuple[float, float]] = []
-        qps_vs_goodput_pct: List[Tuple[float, float]] = []
+        qps_vs_goodput_percentage: List[Tuple[float, float]] = []
         qps_vs_request_goodput_rate: List[Tuple[float, float]] = []
         # Throughput vs Latency data
         ttft_vs_otps: List[Tuple[float, float]] = []
@@ -237,10 +237,10 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                 # Extract goodput metrics if they exist
                 goodput_metrics = success_data.get("goodput_metrics", {})
                 if goodput_metrics:
-                    goodput_pct = goodput_metrics.get("goodput_pct")
-                    if goodput_pct is not None:
+                    goodput_percentage = goodput_metrics.get("goodput_percentage")
+                    if goodput_percentage is not None:
                         if not concurrency:
-                            qps_vs_goodput_pct.append((qps, goodput_pct))
+                            qps_vs_goodput_percentage.append((qps, goodput_percentage))
 
                     req_goodput_rate = goodput_metrics.get("request_goodput")
                     if req_goodput_rate is None:
@@ -405,12 +405,12 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
 
         # --- Generate QPS Goodput Plot ---
         goodput_charts_to_generate = []
-        if qps_vs_goodput_pct:
+        if qps_vs_goodput_percentage:
             goodput_charts_to_generate.append(
                 {
                     "title": "Goodput % vs. QPS",
                     "ylabel": "Goodput (%)",
-                    "data": sorted(qps_vs_goodput_pct, key=operator.itemgetter(0)),
+                    "data": sorted(qps_vs_goodput_percentage, key=operator.itemgetter(0)),
                 }
             )
         if qps_vs_request_goodput_rate:

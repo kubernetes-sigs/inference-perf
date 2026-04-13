@@ -220,11 +220,11 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             tok_goodput_str = "-"
             goodput_metrics = successes.get("goodput_metrics")
             if goodput_metrics:
-                goodput_pct = goodput_metrics.get("goodput_pct", 0.0)
+                goodput_percentage = goodput_metrics.get("goodput_percentage", 0.0)
                 req_goodput = goodput_metrics.get("request_goodput", 0.0)
                 tok_goodput = goodput_metrics.get("token_goodput", 0.0)
 
-                goodput_str = f"{goodput_pct:0.1f}%"
+                goodput_str = f"{goodput_percentage:0.1f}%"
                 req_goodput_str = f"{req_goodput:0.1f}"
                 tok_goodput_str = f"{tok_goodput:0.1f}"
             summary_row.extend([goodput_str, req_goodput_str, tok_goodput_str])
