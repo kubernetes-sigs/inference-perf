@@ -42,9 +42,9 @@
     "distribution_type": "log_normal"
   },
   "multi_turn": true,
+  "input_sequence_type_token_ratio": 0.08,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
-    "prefill_decode_ratio": 150.0,
-    "input_sequence_vocabulary_richness": 0.08
+    "prefill_decode_ratio": 150.0
   }
 }
