@@ -27,6 +27,8 @@ def test_calculate_goodput_metrics_empty_metrics() -> None:
 def test_calculate_goodput_metrics_no_config() -> None:
     """Test with no goodput config returns None."""
     metric = Mock(spec=RequestLifecycleMetric)
+    metric.ttft_slo_sec = None
+    metric.tpot_slo_sec = None
     result = calculate_goodput_metrics([metric], None, [0.3], [None], [0.1], [1.0], [None])
     assert result is None
 
@@ -35,6 +37,8 @@ def test_calculate_goodput_metrics_no_constraints() -> None:
     """Test with empty constraints returns None."""
     config = GoodputConfig(constraints={})
     metric = Mock(spec=RequestLifecycleMetric)
+    metric.ttft_slo_sec = None
+    metric.tpot_slo_sec = None
     result = calculate_goodput_metrics([metric], config, [0.3], [None], [0.1], [1.0], [None])
     assert result is None
 
@@ -49,6 +53,8 @@ def test_calculate_goodput_metrics_ttft_constraint() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metric2 = Mock(spec=RequestLifecycleMetric)
     metric2.start_time = 2.0
@@ -56,6 +62,8 @@ def test_calculate_goodput_metrics_ttft_constraint() -> None:
     metric2.info = Mock()
     metric2.info.input_tokens = 0
     metric2.info.output_tokens = 20
+    metric2.ttft_slo_sec = None
+    metric2.tpot_slo_sec = None
 
     metrics = [metric1, metric2]
     ttft_values: list[float | None] = [0.3, 0.6]  # metric1 meets, metric2 fails
@@ -82,6 +90,8 @@ def test_calculate_goodput_metrics_total_tokens() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 5
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metrics = [metric1]
     ttft_values: list[float | None] = [0.3]  # Meets constraint
@@ -106,6 +116,8 @@ def test_calculate_goodput_metrics_multiple_constraints() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metric2 = Mock(spec=RequestLifecycleMetric)
     metric2.start_time = 2.0
@@ -113,6 +125,8 @@ def test_calculate_goodput_metrics_multiple_constraints() -> None:
     metric2.info = Mock()
     metric2.info.input_tokens = 0
     metric2.info.output_tokens = 20
+    metric2.ttft_slo_sec = None
+    metric2.tpot_slo_sec = None
 
     metrics = [metric1, metric2]
     ttft_values: list[float | None] = [0.3, 0.3]  # Both meet TTFT
@@ -135,6 +149,8 @@ def test_calculate_goodput_metrics_itl_constraint() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metrics = [metric1]
     itl_values: list[float | None] = [0.04]  # Meets ITL
@@ -155,6 +171,8 @@ def test_calculate_goodput_metrics_ntpot_constraint() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metrics = [metric1]
     ntpot_values: list[float | None] = [0.05]  # Meets NTPOT
@@ -175,6 +193,8 @@ def test_calculate_goodput_metrics_request_latency_constraint() -> None:
     metric1.info = Mock()
     metric1.info.input_tokens = 0
     metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
 
     metrics = [metric1]
     request_latency_values: list[float | None] = [0.5]  # Meets latency
@@ -183,3 +203,92 @@ def test_calculate_goodput_metrics_request_latency_constraint() -> None:
 
     assert result is not None
     assert result["goodput_pct"] == 100.0
+
+
+def test_calculate_goodput_metrics_per_request_override() -> None:
+    """Test that per-request SLOs override global constraints."""
+    config = GoodputConfig(constraints={"ttft": 0.5})
+
+    metric1 = Mock(spec=RequestLifecycleMetric)
+    metric1.start_time = 0.0
+    metric1.end_time = 2.0
+    metric1.info = Mock()
+    metric1.info.input_tokens = 0
+    metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = 0.2  # Stricter than global 0.5
+    metric1.tpot_slo_sec = None
+
+    metrics = [metric1]
+    ttft_values: list[float | None] = [0.3]  # Fails stricter per-request SLO, would meet global
+
+    result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["goodput_pct"] == 0.0
+    assert result["good_requests"] == 0
+    
+    # Now test that it meets if it is within per-request SLO
+    ttft_values = [0.1]
+    result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
+    assert result is not None
+    assert result["goodput_pct"] == 100.0
+    assert result["good_requests"] == 1
+
+
+def test_calculate_goodput_metrics_individual_attainment() -> None:
+    """Test that individual attainment percentages are calculated."""
+    config = GoodputConfig(constraints={"ttft": 0.5, "tpot": 0.1})
+
+    metric1 = Mock(spec=RequestLifecycleMetric)
+    metric1.start_time = 0.0
+    metric1.end_time = 2.0
+    metric1.info = Mock()
+    metric1.info.input_tokens = 0
+    metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
+
+    metric2 = Mock(spec=RequestLifecycleMetric)
+    metric2.start_time = 2.0
+    metric2.end_time = 4.0
+    metric2.info = Mock()
+    metric2.info.input_tokens = 0
+    metric2.info.output_tokens = 20
+    metric2.ttft_slo_sec = None
+    metric2.tpot_slo_sec = None
+
+    metrics = [metric1, metric2]
+    ttft_values: list[float | None] = [0.3, 0.6]  # metric1 meets, metric2 fails TTFT
+    tpot_values: list[float | None] = [0.08, 0.05]  # Both meet TPOT
+
+    result = calculate_goodput_metrics(metrics, config, ttft_values, tpot_values, [0.1, 0.1], [2.0, 2.0], [None, None])  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["ttft_attainment_pct"] == 50.0
+    assert result["tpot_attainment_pct"] == 100.0
+
+
+def test_calculate_goodput_metrics_ttft_none_fails() -> None:
+    """Test that if TTFT is None, it fails the constraint."""
+    config = GoodputConfig(constraints={"ttft": 0.5})
+
+    metric1 = Mock(spec=RequestLifecycleMetric)
+    metric1.start_time = 0.0
+    metric1.end_time = 2.0
+    metric1.info = Mock()
+    metric1.info.input_tokens = 0
+    metric1.info.output_tokens = 10
+    metric1.ttft_slo_sec = None
+    metric1.tpot_slo_sec = None
+
+
+    metrics = [metric1]
+    ttft_values: list[float | None] = [None]  # Value is None
+
+    result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["goodput_pct"] == 0.0
+    assert result["good_requests"] == 0
+
+

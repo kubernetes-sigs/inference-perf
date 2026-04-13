@@ -68,119 +68,6 @@ class ResponsesSummary(BaseModel):
     failures: dict[str, Any]
 
 
-def calculate_slo_metrics(
-    metrics: List[RequestLifecycleMetric], ttft_values: List[Optional[float]], tpot_values: List[Optional[float]]
-) -> Optional[dict[str, Any]]:
-    """
-    Calculate SLO attainment statistics from request metrics and pre-calculated latencies.
-
-    Args:
-        metrics: List of successful RequestLifecycleMetric objects.
-        ttft_values: List of calculated TTFT values corresponding to metrics (same index). None if not streamable.
-        tpot_values: List of calculated TPOT values corresponding to metrics (same index). None if not streamable.
-
-    Returns None if no SLO thresholds were set, otherwise returns dict with SLO metrics.
-    """
-    if not metrics:
-        return None
-
-    # Check if any metrics have SLO fields populated
-    has_ttft_slo = any(m.ttft_slo_sec is not None for m in metrics)
-    has_tpot_slo = any(m.tpot_slo_sec is not None for m in metrics)
-
-    ttft_slo_limit = max([m.ttft_slo_sec for m in metrics if m.ttft_slo_sec is not None], default=None)
-    tpot_slo_limit = max([m.tpot_slo_sec for m in metrics if m.tpot_slo_sec is not None], default=None)
-
-    if not has_ttft_slo and not has_tpot_slo:
-        return None  # No SLO tracking enabled
-
-    slo_metrics: dict[str, Any] = {}
-    total = len(metrics)
-
-    total_benchmark_time = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
-    goodput_token_counts = []
-
-    ttft_results = []
-    tpot_results = []
-
-    # Iterate through metrics and their corresponding calculated values.
-    # Using zip(..., strict=True) ensures that all sequences have the same length
-    # and prevents misalignment or IndexError if they do not.
-    for m, ttft, tpot in zip(metrics, ttft_values, tpot_values, strict=True):
-        # Check TTFT SLO (Only if streamable / ttft exists)
-        ttft_met = None
-        if m.ttft_slo_sec is not None:
-            if ttft is not None:
-                ttft_met = ttft <= m.ttft_slo_sec
-            else:
-                ttft_met = True  # If TTFT SLO is set but we don't have a TTFT value (non-streamable), we can choose to consider it as met or not. Here we consider it met to avoid penalizing non-streamable requests.
-        ttft_results.append(ttft_met)
-
-        # Check TPOT SLO (Only if streamable / tpot exists)
-        tpot_met = None
-        if m.tpot_slo_sec is not None:
-            if tpot is not None:
-                tpot_met = tpot <= m.tpot_slo_sec
-            else:
-                tpot_met = True  # Similar logic as TTFT for non-streamable requests
-        tpot_results.append(tpot_met)
-
-        # Goodput Calculation Logic
-        ttft_ok = (ttft_met is True) if has_ttft_slo else True
-        tpot_ok = (tpot_met is True) if has_tpot_slo else True
-
-        if ttft_ok and tpot_ok:
-            if m.info.input_tokens is not None and m.info.output_tokens is not None:
-                goodput_token_counts.append(m.info.input_tokens + m.info.output_tokens)
-
-    total_goodput_tokens = sum(goodput_token_counts)
-    goodput_rate = total_goodput_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
-
-    # TTFT SLO metrics
-    if has_ttft_slo:
-        ttft_met_count = sum(1 for res in ttft_results if res is True)
-        ttft_failed_count = sum(1 for res in ttft_results if res is False)
-
-        slo_metrics["ttft_slo"] = {
-            "attainment_pct": (ttft_met_count / total * 100) if total > 0 else 0,
-            "requests_met": ttft_met_count,
-            "requests_failed": ttft_failed_count,
-            "total_requests": total,
-            "slo": ttft_slo_limit,
-        }
-
-    # TPOT SLO metrics
-    if has_tpot_slo:
-        tpot_met_count = sum(1 for res in tpot_results if res is True)
-        tpot_failed_count = sum(1 for res in tpot_results if res is False)
-
-        slo_metrics["tpot_slo"] = {
-            "attainment_pct": (tpot_met_count / total * 100) if total > 0 else 0,
-            "requests_met": tpot_met_count,
-            "requests_failed": tpot_failed_count,
-            "total_requests": total,
-            "slo": tpot_slo_limit,
-        }
-
-    # Combined SLO (both must be met)
-    if has_ttft_slo and has_tpot_slo:
-        combined_met = sum(
-            1 for t_res, p_res in zip(ttft_results, tpot_results, strict=True) if t_res is True and p_res is True
-        )
-
-        slo_metrics["combined_slo"] = {
-            "attainment_pct": (combined_met / total * 100) if total > 0 else 0,
-            "requests_met": combined_met,
-            "requests_failed": total - combined_met,
-            "total_requests": total,
-            "ttft_slo": ttft_slo_limit,
-            "tpot_slo": tpot_slo_limit,
-            "goodput_rate": goodput_rate,
-        }
-
-    return slo_metrics
-
-
 def calculate_goodput_metrics(
     metrics: List[RequestLifecycleMetric],
     goodput_config: Optional[GoodputConfig],
@@ -190,9 +77,13 @@ def calculate_goodput_metrics(
     request_latency_values: List[float],
     itl_values: List[Optional[float]],
 ) -> Optional[dict[str, Any]]:
-    if not goodput_config or not goodput_config.constraints:
+    has_constraints = False
+    if goodput_config and goodput_config.constraints:
+        has_constraints = True
+    
+    if not has_constraints and not any(m.ttft_slo_sec is not None or m.tpot_slo_sec is not None for m in metrics):
         return None
-
+        
     total = len(metrics)
     if total == 0:
         return None
@@ -201,35 +92,59 @@ def calculate_goodput_metrics(
 
     good_requests_count = 0
     good_total_tokens = 0
+    
+    attainment_counts = defaultdict(int)
+    total_applicable_counts = defaultdict(int)
 
     for i, m in enumerate(metrics):
         is_good = True
-        for metric_name, slo_value in goodput_config.constraints.items():
-            if metric_name == "ttft":
-                val = ttft_values[i]
-                if val is None or val > slo_value:
-                    is_good = False
-                    break
-            elif metric_name == "tpot":
-                val = tpot_values[i]
-                if val is None or val > slo_value:
-                    is_good = False
-                    break
-            elif metric_name == "itl":
-                val = itl_values[i]
-                if val is None or val > slo_value:
-                    is_good = False
-                    break
-            elif metric_name == "ntpot":
-                val = ntpot_values[i]
-                if val > slo_value:
-                    is_good = False
-                    break
-            elif metric_name == "request_latency":
-                val = request_latency_values[i]
-                if val > slo_value:
-                    is_good = False
-                    break
+        
+        effective_ttft_slo = m.ttft_slo_sec if m.ttft_slo_sec is not None else (goodput_config.constraints.get("ttft") if goodput_config else None)
+        effective_tpot_slo = m.tpot_slo_sec if m.tpot_slo_sec is not None else (goodput_config.constraints.get("tpot") if goodput_config else None)
+        
+        effective_itl_slo = goodput_config.constraints.get("itl") if goodput_config else None
+        effective_ntpot_slo = goodput_config.constraints.get("ntpot") if goodput_config else None
+        effective_latency_slo = goodput_config.constraints.get("request_latency") if goodput_config else None
+
+        if effective_ttft_slo is not None:
+            total_applicable_counts["ttft"] += 1
+            val = ttft_values[i]
+            if val is not None and val <= effective_ttft_slo:
+                attainment_counts["ttft"] += 1
+            else:
+                is_good = False
+
+        if effective_tpot_slo is not None:
+            total_applicable_counts["tpot"] += 1
+            val = tpot_values[i]
+            if val is not None and val <= effective_tpot_slo:
+                attainment_counts["tpot"] += 1
+            else:
+                is_good = False
+                
+        if effective_itl_slo is not None:
+            total_applicable_counts["itl"] += 1
+            val = itl_values[i]
+            if val is not None and val <= effective_itl_slo:
+                attainment_counts["itl"] += 1
+            else:
+                is_good = False
+                
+        if effective_ntpot_slo is not None:
+            total_applicable_counts["ntpot"] += 1
+            val = ntpot_values[i]
+            if val is not None and val <= effective_ntpot_slo:
+                attainment_counts["ntpot"] += 1
+            else:
+                is_good = False
+                
+        if effective_latency_slo is not None:
+            total_applicable_counts["request_latency"] += 1
+            val = request_latency_values[i]
+            if val is not None and val <= effective_latency_slo:
+                attainment_counts["request_latency"] += 1
+            else:
+                is_good = False
 
         if is_good:
             good_requests_count += 1
@@ -241,13 +156,20 @@ def calculate_goodput_metrics(
     request_goodput = good_requests_count / total_benchmark_time if total_benchmark_time > 0 else 0.0
     token_goodput = good_total_tokens / total_benchmark_time if total_benchmark_time > 0 else 0.0
 
-    return {
+    result = {
         "goodput_pct": goodput_pct,
         "request_goodput": request_goodput,
         "token_goodput": token_goodput,
         "good_requests": good_requests_count,
         "total_requests": total,
     }
+    
+    for k in total_applicable_counts:
+        if total_applicable_counts[k] > 0:
+            result[f"{k}_attainment_pct"] = (attainment_counts[k] / total_applicable_counts[k] * 100)
+
+    return result
+
 
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
@@ -493,9 +415,6 @@ def summarize_requests(
             tpot_values.append(None)
             itl_values.append(None)
 
-    # --- Pass pre-calculated lists to SLO Calculator ---
-    slo_metrics = calculate_slo_metrics(all_successful, ttft_values, tpot_values)
-
     # --- Calculate Goodput Metrics ---
     goodput_metrics = calculate_goodput_metrics(
         all_successful, goodput_config, ttft_values, tpot_values, ntpot_values, request_latency_values, itl_values
@@ -533,8 +452,6 @@ def summarize_requests(
             [float(v) for success in all_successful if (v := success.info.output_tokens) is not None], percentiles
         ),
     }
-    if slo_metrics:
-        successes_dict["slo_metrics"] = slo_metrics
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
 

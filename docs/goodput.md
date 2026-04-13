@@ -18,7 +18,11 @@ In `inference-perf`, a request is considered "good" if it completes successfully
 
 ## Specifying Goodput Constraints
 
-You can specify goodput constraints in your configuration file under the `goodput` section. Supported constraints include:
+You can specify goodput constraints in two ways:
+
+### 1. Globally via Configuration File
+
+You can set global constraints in your configuration file under the `report.goodput.constraints` section. Supported constraints include:
 
 - `ttft`: Time to first token (in seconds).
 - `tpot`: Time per output token (in seconds).
@@ -29,13 +33,39 @@ You can specify goodput constraints in your configuration file under the `goodpu
 Example configuration:
 
 ```yaml
-goodput:
-  constraints:
-    ttft: 0.2
-    tpot: 0.02
+report:
+  goodput:
+    constraints:
+      ttft: 0.2
+      tpot: 0.02
 ```
 
 The above configuration means that a request is considered "good" if its time to first token is less than or equal to 0.2 seconds AND its time per output token is less than or equal to 0.02 seconds. Based on this, `inference-perf` will report goodput metrics in the CLI summary and in the generated JSON reports. You can use them to inform of things like what's the optimal operating point to meet your SLOs, or to understand how different model server configurations perform under high load.
+
+### 2. Per-Request via Headers
+
+You can also specify SLOs on a per-request basis using HTTP headers if your model server supports them or if you want to simulate dynamic SLOs. To use this, you need to configure the header names in the `api` section:
+
+```yaml
+api:
+  slo_unit: "ms" # Options: s, ms, us. Defaults to ms.
+  slo_ttft_header: "x-slo-ttft-ms"
+  slo_tpot_header: "x-slo-tpot-ms"
+  headers:
+    x-slo-ttft-ms: "200"
+    x-slo-tpot-ms: "20"
+```
+
+If these headers are present in the request (or set globally in `api.headers`), `inference-perf` will extract them and use them as the constraints for that specific request.
+
+### How They Interact
+
+- If a request has a per-request SLO specified via headers, it will **override** the corresponding global constraint from the `goodput` config for that specific request.
+- If no per-request SLO is specified for a metric, it falls back to the global constraint defined in `report.goodput.constraints`.
+- If a constraint is defined in neither place, it is not checked.
+
+A request is considered "good" if it completes successfully AND meets ALL applicable constraints (either per-request overrides or global defaults).
+
 
 ## Analyzing Goodput
 
