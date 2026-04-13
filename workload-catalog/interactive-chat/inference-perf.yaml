@@ -1,0 +1,45 @@
+load:
+  type: concurrent
+  stages:
+  - num_requests: 600
+    concurrency_level: 10
+  - num_requests: 1200
+    concurrency_level: 20
+  - num_requests: 1800
+    concurrency_level: 30
+  - num_requests: 2400
+    concurrency_level: 40
+  - num_requests: 3000
+    concurrency_level: 50
+  num_workers: 1
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: google/gemma-3-1b-it
+  base_url: http://localhost:8000
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 10
+    num_prompts_per_group: 4
+    enable_multi_turn_chat: true
+    system_prompt_len:
+      min: 1000
+      max: 1000
+      mean: 1000.0
+      std_dev: 0.0
+      type: normal
+    question_len:
+      min: 10
+      max: 1000
+      mean: 50.0
+      std_dev: 40.0
+      type: lognormal
+    output_len:
+      min: 10
+      max: 1000
+      mean: 300.0
+      std_dev: 150.0
+      type: normal
