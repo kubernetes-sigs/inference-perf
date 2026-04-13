@@ -157,6 +157,19 @@ class ConversationReplayConfig(BaseModel):
     output_tokens_per_turn: Optional[ConversationReplayDistribution] = Field(
         None, description="Output tokens per turn distribution"
     )
+    tool_call_latency_sec: Optional[ConversationReplayDistribution] = Field(
+        None,
+        description=(
+            "Per-turn tool execution latency distribution in seconds. "
+            "When set, each turn sleeps for the sampled duration after model "
+            "inference completes and before the next turn begins, simulating "
+            "tool call round-trips. The sleep holds the session lock so the "
+            "GPU is free to serve other concurrent conversations — correctly "
+            "modelling offline agentic workloads. Omit for pure GPU throughput "
+            "measurement. Values are in seconds; min/max are whole seconds, "
+            "mean/std_dev may be fractional."
+        ),
+    )
 
 
 class OTelTraceReplayConfig(BaseModel):

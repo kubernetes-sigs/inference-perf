@@ -36,13 +36,16 @@ Run each concurrency level as a separate benchmark (fresh state, not stages
 of one run) to avoid context accumulating across concurrency levels.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
+from aiohttp import ClientResponse
+from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
+from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
@@ -59,6 +62,62 @@ from .base import DataGenerator, LazyLoadDataMixin
 logger = logging.getLogger(__name__)
 
 
+class _ConversationReplayAPIData(UserSessionCompletionAPIData):
+    """UserSessionCompletionAPIData with tool call latency simulation.
+
+    After the model generates a response, sleeps for ``tool_call_latency_sec``
+    seconds *before* releasing the session lock. This correctly serialises:
+
+        model inference → sleep(tool_call_latency) → next model inference
+
+    while allowing the GPU to serve other concurrent conversations during the
+    sleep (the asyncio event loop is not blocked; other slots' requests run).
+
+    If ``tool_call_latency_sec == 0`` the behaviour is identical to the
+    parent class.
+    """
+
+    tool_call_latency_sec: float = 0.0
+
+    async def process_response(
+        self,
+        response: ClientResponse,
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        lora_adapter: Optional[str] = None,
+    ) -> InferenceInfo:
+        # Run the base completion response handler (sets self.model_response,
+        # records timing metrics) WITHOUT yet releasing the session lock.
+        # We call CompletionAPIData directly to skip UserSessionCompletionAPIData's
+        # update_context call so we can inject the sleep in between.
+        inference_info = await CompletionAPIData.process_response(self, response, config, tokenizer, lora_adapter)
+        self.update_inference_info(inference_info)
+
+        # Simulate tool execution latency while holding the session lock.
+        # The next turn of this conversation cannot start until the sleep
+        # completes; other conversations' turns run freely during the wait.
+        if self.tool_call_latency_sec > 0:
+            await asyncio.sleep(self.tool_call_latency_sec)
+
+        # Release the session lock by updating context (allows next turn).
+        self.user_session.update_context(self.prompt + " " + self.model_response)
+        return inference_info
+
+    async def process_failure(
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
+    ) -> Optional[InferenceInfo]:
+        # On failure, release the lock without sleeping (no tool was called).
+        inference_info = InferenceInfo()
+        self.update_inference_info(inference_info)
+        self.user_session.update_context(self._session_context)
+        return inference_info
+
+
 @dataclass
 class ConversationBlueprint:
     """Pre-computed plan for a single conversation."""
@@ -68,6 +127,7 @@ class ConversationBlueprint:
     system_prompt: str
     turn_prompts: List[str] = field(default_factory=list)
     turn_output_lens: List[int] = field(default_factory=list)
+    turn_tool_call_latencies: List[float] = field(default_factory=list)
 
 
 class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
@@ -172,11 +232,13 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             turn_idx = 0
             logger.warning("Slot %d: safety context reset (context >2.7M chars)", conv_idx)
 
-        return UserSessionCompletionAPIData(
+        latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
+        return _ConversationReplayAPIData(
             prompt=bp.turn_prompts[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
             user_session=self.user_sessions[conv_idx],
             target_round=round_num,
+            tool_call_latency_sec=latency,
         )
 
     # -- DataGenerator interface ------------------------------------------
@@ -256,6 +318,15 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         else:
             all_output_lens = [256] * total_turns
 
+        if cfg.tool_call_latency_sec is not None:
+            # Sample latencies as floats (seconds); re-use the same distribution
+            # machinery but convert from the integer output to float seconds.
+            all_tool_latencies: List[float] = [
+                float(v) for v in self._sample_distribution(cfg.tool_call_latency_sec, total_turns)
+            ]
+        else:
+            all_tool_latencies = []
+
         # Build each conversation
         turn_offset = 0
         for conv_id in range(n):
@@ -268,6 +339,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             # Generate turn prompts via batch decode
             turn_input_lens = all_input_lens[turn_offset : turn_offset + num_turns]
             turn_output_lens_list = all_output_lens[turn_offset : turn_offset + num_turns]
+            turn_tool_latencies = all_tool_latencies[turn_offset : turn_offset + num_turns] if all_tool_latencies else []
             turn_offset += num_turns
 
             # Batch generate token IDs then decode
@@ -281,6 +353,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 system_prompt=system_prompt,
                 turn_prompts=turn_prompts,
                 turn_output_lens=turn_output_lens_list,
+                turn_tool_call_latencies=turn_tool_latencies,
             )
             self.blueprints.append(bp)
 

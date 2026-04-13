@@ -27,9 +27,9 @@ from inference_perf.config import (
 )
 from inference_perf.datagen.conversation_replay_datagen import (
     ConversationReplayDataGenerator,
+    _ConversationReplayAPIData,
 )
 from inference_perf.apis.base import LazyLoadInferenceAPIData
-from inference_perf.apis.user_session import UserSessionCompletionAPIData
 from inference_perf.utils.distribution import generate_distribution
 
 
@@ -122,7 +122,7 @@ class TestConversationReplayDataGenerator:
         lazy = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
         result = gen.load_lazy_data(lazy)
 
-        assert isinstance(result, UserSessionCompletionAPIData)
+        assert isinstance(result, _ConversationReplayAPIData)
         assert result.user_session == gen.user_sessions[0]
         assert result.target_round == 0
 
@@ -136,7 +136,7 @@ class TestConversationReplayDataGenerator:
         # data_index=6 -> conv 0, round 3, turn 0 (recycled)
         lazy = LazyLoadInferenceAPIData(data_index=6, preferred_worker_id=0)
         result = gen.load_lazy_data(lazy)
-        assert isinstance(result, UserSessionCompletionAPIData)
+        assert isinstance(result, _ConversationReplayAPIData)
         assert result.target_round == 3  # 6 // 2 = 3
 
     def test_requires_tokenizer(self) -> None:
@@ -160,6 +160,69 @@ class TestConversationReplayDataGenerator:
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
         ids = [s.user_session_id for s in gen.user_sessions]
         assert ids == ["conv_0", "conv_1", "conv_2"]
+
+    def test_load_lazy_data_returns_conversation_replay_api_data(self) -> None:
+        api_config, data_config = _make_config(num_conversations=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        lazy = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        result = gen.load_lazy_data(lazy)
+        assert isinstance(result, _ConversationReplayAPIData)
+
+    def test_tool_call_latency_not_set_gives_zero(self) -> None:
+        """Without tool_call_latency_sec, all latencies are 0."""
+        api_config, data_config = _make_config(num_conversations=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        lazy = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        result = gen.load_lazy_data(lazy)
+        assert isinstance(result, _ConversationReplayAPIData)
+        assert result.tool_call_latency_sec == 0.0
+
+    def test_tool_call_latency_fixed_distribution(self) -> None:
+        """Fixed tool call latency is sampled and stored per turn."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=2,
+            shared_system_prompt_len=50,
+            turns_per_conversation=ConversationReplayDistribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
+            input_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            output_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            tool_call_latency_sec=ConversationReplayDistribution(type="fixed", min=5, max=5, mean=5, std_dev=0),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        # All turns should have latency == 5.0
+        for bp in gen.blueprints:
+            assert len(bp.turn_tool_call_latencies) == bp.num_turns
+            assert all(lat == 5.0 for lat in bp.turn_tool_call_latencies)
+
+        lazy = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        result = gen.load_lazy_data(lazy)
+        assert isinstance(result, _ConversationReplayAPIData)
+        assert result.tool_call_latency_sec == 5.0
+
+    def test_tool_call_latency_lognormal_distribution(self) -> None:
+        """Lognormal tool call latencies vary across turns."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=3,
+            shared_system_prompt_len=50,
+            turns_per_conversation=ConversationReplayDistribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            input_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            output_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            tool_call_latency_sec=ConversationReplayDistribution(type="lognormal", min=1, max=30, mean=8, std_dev=6),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        for bp in gen.blueprints:
+            assert len(bp.turn_tool_call_latencies) == bp.num_turns
+            # Should have variation (lognormal, not fixed)
+            assert not all(lat == bp.turn_tool_call_latencies[0] for lat in bp.turn_tool_call_latencies)
+            # All within bounds
+            assert all(1 <= lat <= 30 for lat in bp.turn_tool_call_latencies)
 
 
 class TestDistributionExtensions:
