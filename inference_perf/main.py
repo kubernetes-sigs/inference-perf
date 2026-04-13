@@ -264,10 +264,10 @@ def main_cli() -> None:
     if len(config.load.stages) == 0 and config.load.sweep is None:
         raise Exception("Load stages must be configured, or sweep must be configured")
 
-    # Create multiprocessing manager for OTel trace replay if needed
-    # Must be created before workers are forked
+    # Create multiprocessing manager for session replay datagens if needed.
+    # Must be created before workers are forked.
     mp_manager = None
-    if config.data and config.data.type == DataGenType.OTelTraceReplay and config.load.num_workers > 0:
+    if config.data and config.data.type in (DataGenType.OTelTraceReplay,) and config.load.num_workers > 0:
         mp_manager = mp.Manager()
 
     datagen: BaseGenerator
@@ -352,9 +352,9 @@ def main_cli() -> None:
     else:
         raise Exception("data config missing")
 
-    # Create session metrics collector only for agentic workflows (OTel trace replay)
+    # Create session metrics collector only for session-replay workflows
     session_metrics_collector = None
-    if config.data and config.data.type == DataGenType.OTelTraceReplay:
+    if config.data and config.data.type in (DataGenType.OTelTraceReplay,):
         session_metrics_collector = SessionMetricsCollector()
 
     # Define LoadGenerator with session metrics collector

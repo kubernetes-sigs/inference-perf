@@ -20,7 +20,7 @@ Tests for OTelTraceReplayDataGenerator output-aware replay.
 Tests the OTEL trace replay architecture:
 - EventOutputRegistry: intra-worker output coordination via asyncio.Event
 - WorkerSessionTracker: per-worker session state tracking
-- OTelChatCompletionAPIData: output substitution and completion notification
+- SessionChatCompletionAPIData: output substitution and completion notification
 - Session completion via mp.Queue (event-driven, not polling)
 
 Key architectural principles tested:
@@ -45,20 +45,21 @@ import pytest
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from inference_perf.datagen.otel_trace_replay_datagen import (
+from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay_graph_session_datagen import (
     EventFailedError,
     EventOutputRegistry,
-    OTelChatCompletionAPIData,
-    OTelInferenceInfo,
-    OTelTraceReplayDataGenerator,
-    OTelTraceReplayEvent,
+    ReplaySessionEvent,
+    ReplaySessionState,
+    SessionChatCompletionAPIData,
+    SessionInferenceInfo,
     WorkerSessionTracker,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
-    InputSegment,
     build_graph,
     build_raw_calls,
 )
+from inference_perf.datagen.replay_graph_types import InputSegment
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.config import APIConfig, APIType
 
@@ -130,7 +131,7 @@ class TestEventOutputRegistry:
                 reg.record("event_001", "delayed output", [])
 
             asyncio.create_task(producer())
-            return await reg.require_async("event_001", timeout_sec=2.0)
+            return str(await reg.require_async("event_001", timeout_sec=2.0))
 
         result = asyncio.run(_run())
         assert result == "delayed output"
@@ -253,11 +254,11 @@ class TestWorkerSessionTracker:
 
 
 # ---------------------------------------------------------------------------
-# OTelChatCompletionAPIData tests
+# SessionChatCompletionAPIData tests
 # ---------------------------------------------------------------------------
 
 
-class TestOTelChatCompletionAPIData:
+class TestSessionChatCompletionAPIData:
     """Test output capture, substitution, and completion notification."""
 
     def _make_api_data(
@@ -268,8 +269,8 @@ class TestOTelChatCompletionAPIData:
         completion_queue: Optional[mp.Queue[Any]] = None,
         total_events: int = 1,
         predecessor_event_ids: Optional[List[str]] = None,
-    ) -> OTelChatCompletionAPIData:
-        return OTelChatCompletionAPIData(
+    ) -> SessionChatCompletionAPIData:
+        return SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Hello")],
             max_tokens=50,
             event_id=event_id,
@@ -294,8 +295,8 @@ class TestOTelChatCompletionAPIData:
 
         # Output should be registered
         assert registry.get_output_by_event_id("session_1:event_0") == "Paris is the capital of France."
-        # Returns OTelInferenceInfo
-        assert isinstance(info, OTelInferenceInfo)
+        # Returns SessionInferenceInfo
+        assert isinstance(info, SessionInferenceInfo)
         assert info.output_text == "Paris is the capital of France."
 
     @pytest.mark.asyncio
@@ -305,7 +306,7 @@ class TestOTelChatCompletionAPIData:
         tracker = WorkerSessionTracker()
         api_data = self._make_api_data("session_1:event_0", registry, tracker, total_events=2)
 
-        info = OTelInferenceInfo(
+        info = SessionInferenceInfo(
             output_text="test output",
             input_tokens=10,
             output_tokens=5,
@@ -331,7 +332,7 @@ class TestOTelChatCompletionAPIData:
         # Session has 2 events total
         # First complete event_0
         api_data_0 = self._make_api_data("session_1:event_0", registry, tracker, mock_queue, total_events=2)
-        info_0 = OTelInferenceInfo(output_text="first", input_tokens=5, output_tokens=3)
+        info_0 = SessionInferenceInfo(output_text="first", input_tokens=5, output_tokens=3)
         api_data_0.on_completion(info_0)
 
         # No notification yet (only 1 of 2 events complete)
@@ -339,7 +340,7 @@ class TestOTelChatCompletionAPIData:
 
         # Now complete event_1 (the last event)
         api_data_1 = self._make_api_data("session_1:event_1", registry, tracker, mock_queue, total_events=2)
-        info_1 = OTelInferenceInfo(output_text="done", input_tokens=5, output_tokens=3)
+        info_1 = SessionInferenceInfo(output_text="done", input_tokens=5, output_tokens=3)
         api_data_1.on_completion(info_1)
 
         # Should now have completion notification
@@ -391,7 +392,7 @@ class TestOTelChatCompletionAPIData:
             InputSegment(type="output", message_count=1, token_count=10, source_event_id="session_1:event_0"),
         ]
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Question"), ChatMessage(role="assistant", content="RECORDED")],
             max_tokens=50,
             event_id="session_1:event_1",
@@ -425,13 +426,12 @@ class TestOTelTraceReplayDataGenerator:
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up session state
-        from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
         mock_graph.events = {"event_0": MagicMock(), "event_1": MagicMock()}
 
         gen.session_graph_state = {
-            "session_1": SessionGraphState(
+            "session_1": ReplaySessionState(
                 session_id="session_1",
                 graph=mock_graph,
                 ready_events=set(),
@@ -480,13 +480,12 @@ class TestOTelTraceReplayDataGenerator:
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up session state
-        from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
         mock_graph.events = {"event_0": MagicMock()}
 
         gen.session_graph_state = {
-            "session_1": SessionGraphState(
+            "session_1": ReplaySessionState(
                 session_id="session_1",
                 graph=mock_graph,
                 ready_events=set(),
@@ -530,13 +529,12 @@ class TestOTelTraceReplayDataGenerator:
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up incomplete session state
-        from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph = MagicMock()
         mock_graph.events = {"event_0": MagicMock(), "event_1": MagicMock()}
 
         gen.session_graph_state = {
-            "session_1": SessionGraphState(
+            "session_1": ReplaySessionState(
                 session_id="session_1",
                 graph=mock_graph,
                 ready_events=set(),
@@ -564,7 +562,6 @@ class TestOTelTraceReplayDataGenerator:
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up session with graph
-        from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         # Create mock graph with root and non-root events
         root_event = MagicMock()
@@ -580,7 +577,7 @@ class TestOTelTraceReplayDataGenerator:
         }
 
         gen.session_graph_state = {
-            "session_1": SessionGraphState(
+            "session_1": ReplaySessionState(
                 session_id="session_1",
                 graph=mock_graph,
                 ready_events=set(),
@@ -608,7 +605,6 @@ class TestOTelTraceReplayDataGenerator:
         gen = object.__new__(OTelTraceReplayDataGenerator)
 
         # Set up two sessions
-        from inference_perf.datagen.otel_trace_replay_datagen import SessionGraphState
 
         mock_graph_1 = MagicMock()
         mock_graph_1.events = {"event_0": MagicMock()}
@@ -616,7 +612,7 @@ class TestOTelTraceReplayDataGenerator:
         mock_graph_2.events = {"event_0": MagicMock()}
 
         gen.session_graph_state = {
-            "session_1": SessionGraphState(
+            "session_1": ReplaySessionState(
                 session_id="session_1",
                 graph=mock_graph_1,
                 ready_events=set(),
@@ -626,7 +622,7 @@ class TestOTelTraceReplayDataGenerator:
                 is_active=True,
                 is_complete=False,
             ),
-            "session_2": SessionGraphState(
+            "session_2": ReplaySessionState(
                 session_id="session_2",
                 graph=mock_graph_2,
                 ready_events=set(),
@@ -736,10 +732,10 @@ class TestEndToEndSimpleChain:
                 for seg in gc.input_segments
             ]
             events.append(
-                OTelTraceReplayEvent(
+                ReplaySessionEvent(
                     call_id=gc.call_id,
                     event_id=qualified_event_id,
-                    file_index=0,
+                    session_index=0,
                     t_start_ms=event.t_start_ms,
                     t_end_ms=event.t_end_ms,
                     model=gc.model,
@@ -781,7 +777,7 @@ class TestEndToEndSimpleChain:
         event_000 = next(e for e in events if e.event_id == qualified_first_event_id)
         idx_000 = events.index(event_000)
         result_000 = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx_000))
-        assert isinstance(result_000, OTelChatCompletionAPIData)
+        assert isinstance(result_000, SessionChatCompletionAPIData)
 
         # Simulate first event completing with DIFFERENT output
         actual_output_000 = "ACTUAL REPLAY OUTPUT: France's capital is Paris, city of lights!"
@@ -798,7 +794,7 @@ class TestEndToEndSimpleChain:
         assert len(output_segs) >= 1, f"{second_event_id} should have at least one output segment"
 
         result_001 = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx_001))
-        assert isinstance(result_001, OTelChatCompletionAPIData)
+        assert isinstance(result_001, SessionChatCompletionAPIData)
 
         # Wait for predecessors and substitute
         asyncio.run(result_001.wait_for_predecessors_and_substitute())
@@ -821,8 +817,8 @@ class TestEndToEndSimpleChain:
 # ---------------------------------------------------------------------------
 
 
-class TestOTelChatCompletionAPIDataErrorPaths:
-    """Test error handling paths in OTelChatCompletionAPIData."""
+class TestSessionChatCompletionAPIDataErrorPaths:
+    """Test error handling paths in SessionChatCompletionAPIData."""
 
     @pytest.mark.asyncio
     async def test_process_failure_marks_session_failed(self) -> None:
@@ -830,7 +826,7 @@ class TestOTelChatCompletionAPIDataErrorPaths:
         registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
             event_id="session_1:event_0",
@@ -855,7 +851,7 @@ class TestOTelChatCompletionAPIDataErrorPaths:
         assert registry.get_output_by_event_id("session_1:event_0") is None
 
         # Should return empty inference info
-        assert isinstance(result, OTelInferenceInfo)
+        assert isinstance(result, SessionInferenceInfo)
         assert result.output_text == ""
         assert result.input_tokens == 0
         assert result.output_tokens == 0
@@ -867,7 +863,7 @@ class TestOTelChatCompletionAPIDataErrorPaths:
         tracker = WorkerSessionTracker()
 
         # Create event with predecessor
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
             event_id="session_1:event_1",
@@ -913,8 +909,8 @@ class TestFailurePropagation:
         predecessor_event_ids: Optional[List[str]] = None,
         total_events: int = 3,
         completion_queue: Any = None,
-    ) -> OTelChatCompletionAPIData:
-        return OTelChatCompletionAPIData(
+    ) -> SessionChatCompletionAPIData:
+        return SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="Test")],
             max_tokens=50,
             event_id=event_id,

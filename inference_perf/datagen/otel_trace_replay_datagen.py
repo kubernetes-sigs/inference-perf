@@ -62,45 +62,30 @@ import json
 import logging
 import random
 import time
-from dataclasses import dataclass, field, replace as dc_replace
+from dataclasses import dataclass, field
 from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from aiohttp import ClientResponse
 
-from inference_perf.apis import (
-    ChatCompletionAPIData,
-    InferenceAPIData,
-    InferenceInfo,
-    LazyLoadInferenceAPIData,
-    SessionLifecycleMetric,
-)
-from inference_perf.apis.chat import ChatMessage
+from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.apis.streaming_parser import parse_sse_stream
-from inference_perf.config import APIConfig, APIType, DataConfig
-from inference_perf.datagen.base import SessionGenerator, LazyLoadDataMixin
+from inference_perf.apis.user_session import InferenceInfo
+from inference_perf.config import APIConfig, DataConfig
+from inference_perf.datagen.replay_graph_session_datagen import (
+    EventFailedError,
+    ReplaySession,
+    ReplayGraphSessionGeneratorBase,
+)
+from inference_perf.datagen.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.datagen.otel_trace_to_replay_graph import (
-    InputSegment,
-    ReplayGraph,
     build_raw_calls,
     build_graph,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# EventFailedError — raised by require_async when a predecessor event failed
-# ---------------------------------------------------------------------------
-
-
-class EventFailedError(Exception):
-    """Raised by EventOutputRegistry.require_async when the awaited event failed."""
-
-    def __init__(self, event_id: str) -> None:
-        super().__init__(f"Predecessor event {event_id!r} failed")
-        self.event_id = event_id
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +810,7 @@ def resolve_trace_files(trace_files: List[str]) -> List[Path]:
     return [Path(f) for f in all_files]
 
 
-class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
+class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     """
     Data generator that replays LLM requests from OpenTelemetry trace files.
 
@@ -849,7 +834,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         base_seed: Optional[int] = None,
         num_workers: int = 1,
     ) -> None:
-        super().__init__(api_config, config, tokenizer)
+        super().__init__(api_config, config, tokenizer, mp_manager=mp_manager, base_seed=base_seed, num_workers=num_workers)
 
         if not hasattr(config, "otel_trace_replay") or config.otel_trace_replay is None:
             raise ValueError("otel_trace_replay configuration is required for OTelTraceReplayDataGenerator")
@@ -889,45 +874,19 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         else:
             raise ValueError("Either trace_directory or trace_files must be provided in otel_trace_replay config")
 
-        # Intra-worker output registry: plain dicts + asyncio.Event, no IPC.
-        self.output_registry = EventOutputRegistry()
+        sessions = self._load_trace_files()
+        self.initialize_sessions(sessions)
 
-        # Intra-worker session tracker: tracks event completions and session failures within worker.
-        # Each worker has its own instance due to session-to-worker affinity.
-        self.worker_tracker = WorkerSessionTracker()
-
-        # Session completion queue: workers push (session_id, completion_data) when sessions complete.
-        # Main process consumes from this queue to update state and close OTEL spans.
-        # The completion_data includes a "failed" field to indicate session failure.
-        if mp_manager is not None:
-            self.session_completion_queue: Any = mp_manager.Queue()  # Queue for (session_id, completion_data)
-        else:
-            self.session_completion_queue = None
-
-        # Load and process all OTel trace files
-        self.sessions: List[OTelTraceSession] = []
-        self._load_trace_files()
-
-        # Session state tracking (LoadGen controls which sessions are active)
-        self.session_graph_state: Dict[str, SessionGraphState] = {}
-
-        if not self.sessions:
-            raise ValueError("No valid OTel trace files found")
-
-        # Build flat list of all events across all sessions for replay
-        self._build_replay_schedule()
-
-        logger.debug(f"Loaded {len(self.sessions)} sessions with {len(self.all_events)} total events")
-
-    def _load_trace_files(self) -> None:
+    def _load_trace_files(self) -> List[ReplaySession]:
         """Load and process OTel JSON files."""
         logger.info(f"Loading {len(self.trace_files_list)} trace files")
+        sessions: List[ReplaySession] = []
 
         for file_index, trace_file in enumerate(self.trace_files_list):
             try:
                 session = self._process_trace_file(trace_file, file_index)
                 if session:
-                    self.sessions.append(session)
+                    sessions.append(session)
                     event_count = len(session.graph.events)
                     logger.info(f"Loaded session {session.session_id} from {trace_file.name} with {event_count} events")
             except Exception as e:
@@ -935,13 +894,10 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
                 if not self.otel_config.skip_invalid_files:
                     raise
 
-        # Randomize session order using base_seed for reproducibility
         random.seed(self.base_seed)
-        random.shuffle(self.sessions)
+        random.shuffle(sessions)
         logger.info(f"Randomized session order using seed: {self.base_seed}")
-
-        # Duplicate sessions if needed to meet total session requirements
-        # self._duplicate_sessions_if_needed()
+        return sessions
 
     def _duplicate_sessions_if_needed(self) -> None:
         """Duplicate sessions to ensure we have enough for high-concurrency testing.
@@ -976,11 +932,11 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
             duplicate_count += 1
 
             # Create duplicate with unique ID
-            duplicate_session = OTelTraceSession(
+            duplicate_session = ReplaySession(
                 session_id=f"{source_session.session_id}_dup{duplicate_count}",
-                file_path=source_session.file_path,
-                file_index=source_session.file_index + 10000 + duplicate_count,  # Unique file_index
-                graph=source_session.graph,  # Graph can be shared (immutable)
+                source_id=source_session.source_id,
+                session_index=source_session.session_index + 10000 + duplicate_count,
+                graph=source_session.graph,
                 start_offset_ms=source_session.start_offset_ms,
             )
 
@@ -988,7 +944,7 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
 
         logger.info(f"Duplicated {duplicates_needed} sessions. Total sessions now: {len(self.sessions)}")
 
-    def _process_trace_file(self, trace_file: Path, file_index: int) -> Optional[OTelTraceSession]:
+    def _process_trace_file(self, trace_file: Path, file_index: int) -> Optional[ReplaySession]:
         """Process a single OTel JSON trace file into a ReplayGraph session."""
         try:
             data = json.loads(trace_file.read_text(encoding="utf-8"))
@@ -1023,401 +979,9 @@ class OTelTraceReplayDataGenerator(SessionGenerator, LazyLoadDataMixin):
         base_session_id = raw_calls[0].trace_id or f"session_{file_index}"
         session_id = f"file{file_index}_{base_session_id}"
 
-        return OTelTraceSession(
+        return ReplaySession(
             session_id=session_id,
-            file_path=trace_file,
-            file_index=file_index,
+            source_id=str(trace_file),
+            session_index=file_index,
             graph=graph,
         )
-
-    def _build_replay_schedule(self) -> None:
-        """Build the replay schedule using graph traversal (no time-based sorting).
-
-        Creates event list and initializes session graph states for traversal.
-        Sessions are activated on-demand based on concurrent_sessions limit.
-        """
-        self.all_events: List[OTelTraceReplayEvent] = []
-
-        for session in self.sessions:
-            # Initialize session graph state
-            state = SessionGraphState(
-                session_id=session.session_id,
-                graph=session.graph,
-                ready_events=set(),  # Will be populated when session is activated
-                dispatched_events=set(),
-                completed_events=set(),
-                event_completion_times={},
-                is_active=False,
-                is_complete=False,
-            )
-            self.session_graph_state[session.session_id] = state
-
-            # Build events for indexing (no time-based sorting)
-            for event in session.graph.events.values():
-                gc = event.call
-
-                if not gc.messages:
-                    logger.warning(f"Call {gc.call_id} in event {event.event_id} has no messages, skipping")
-                    continue
-
-                # Qualify event_id with session to avoid collisions
-                qualified_event_id = f"{session.session_id}:{event.event_id}"
-                qualified_predecessor_ids = [f"{session.session_id}:{pid}" for pid in event.predecessor_event_ids]
-
-                # Rewrite source_event_id in input_segments
-                qualified_segments = [
-                    dc_replace(seg, source_event_id=f"{session.session_id}:{seg.source_event_id}")
-                    if seg.source_event_id is not None
-                    else seg
-                    for seg in gc.input_segments
-                ]
-
-                self.all_events.append(
-                    OTelTraceReplayEvent(
-                        call_id=gc.call_id,
-                        event_id=qualified_event_id,
-                        file_index=session.file_index,
-                        t_start_ms=0,  # Not used in graph traversal
-                        t_end_ms=0,  # Not used in graph traversal
-                        model=gc.model,
-                        messages=gc.messages,  # type: ignore[arg-type]
-                        expected_output=gc.expected_output,
-                        input_segments=qualified_segments,
-                        expected_output_tokens=gc.expected_output_tokens,
-                        temperature=gc.temperature,
-                        max_tokens_recorded=gc.max_tokens_recorded,
-                        predecessor_event_ids=qualified_predecessor_ids,
-                        wait_ms=event.wait_ms,
-                    )
-                )
-
-        # NO SORTING - events accessed by index via mappings
-
-        logger.info(
-            f"Built replay schedule: {len(self.all_events)} events across "
-            f"{len(self.sessions)} sessions (graph-based traversal)"
-        )
-
-    def _get_effective_model(self, recorded_model: str) -> str:
-        """Get the effective model name for a request."""
-        if self.otel_config.use_static_model:
-            # Use static model from config
-            return self.otel_config.static_model_name
-        else:
-            # Use model mapping if provided
-            if self.otel_config.model_mapping:
-                return self.otel_config.model_mapping.get(recorded_model, recorded_model)
-            return recorded_model
-
-    def get_supported_apis(self) -> List[APIType]:
-        """Return supported API types."""
-        return [APIType.Chat]
-
-    def is_preferred_worker_requested(self) -> bool:
-        """Always True: all events of a session must run on the same worker for dependency waiting to work."""
-        return True
-
-    def get_session_count(self) -> int:
-        """Return the total number of sessions (trace files) available for replay."""
-        return len(self.sessions)
-
-    def get_session_event_indices(self, session_index: int) -> List[int]:
-        """Get the event indices for a specific session.
-
-        Args:
-            session_index: Index of the session (0-based)
-
-        Returns:
-            List of event indices (into self.all_events) that belong to this session
-
-        Raises:
-            IndexError: If session_index is out of range
-        """
-        if session_index < 0 or session_index >= len(self.sessions):
-            raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
-
-        session = self.sessions[session_index]
-        # Find all events that belong to this session by matching file_index
-        return [i for i, event in enumerate(self.all_events) if event.file_index == session.file_index]
-
-    def get_session_info(self, session_index: int) -> Dict[str, Any]:
-        """Get information about a specific session.
-
-        Args:
-            session_index: Index of the session (0-based)
-
-        Returns:
-            Dictionary with session metadata
-        """
-        if session_index < 0 or session_index >= len(self.sessions):
-            raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
-
-        session = self.sessions[session_index]
-        event_indices = self.get_session_event_indices(session_index)
-
-        return {
-            "session_id": session.session_id,
-            "file_path": str(session.file_path),
-            "file_index": session.file_index,
-            "num_events": len(event_indices),
-            "num_graph_events": len(session.graph.events),
-            "start_offset_ms": session.start_offset_ms,
-        }
-
-    def get_session_events(self, session_index: int) -> List[LazyLoadInferenceAPIData]:
-        """Get all events for a session, all assigned to the same worker.
-
-        Assigning a deterministic worker to every event in a session ensures that
-        all events run on the same event loop, which is required for dependency
-        waiting to work correctly. The assignment is based on a hash of the session
-        ID, so it is stable within a single run but not across runs.
-        """
-        session = self.sessions[session_index]
-        event_indices = self.get_session_event_indices(session_index)
-        session_worker_id = abs(hash(session.session_id)) % self.num_workers
-        return [LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=session_worker_id) for idx in event_indices]
-
-    def build_session_metric(
-        self,
-        session_id: str,
-        stage_id: int,
-        start_time: float,
-        end_time: float,
-    ) -> SessionLifecycleMetric:
-        """Build a SessionLifecycleMetric for a completed session.
-
-        Token totals are left at 0 here and filled in later by the report
-        generator once all metrics have been collected (the multiprocess
-        collector only exposes metrics after the full run completes).
-
-        Args:
-            session_id: The session ID
-            stage_id: The stage this session ran in
-            start_time: Wall-clock epoch when the session was dispatched
-            end_time: Wall-clock epoch when the session completed
-        """
-        state = self.session_graph_state.get(session_id)
-        if state is None:
-            raise ValueError(f"Unknown session: {session_id}")
-
-        # Find the file_path for this session
-        file_path = ""
-        for session in self.sessions:
-            if session.session_id == session_id:
-                file_path = str(session.file_path)
-                break
-
-        num_events = len(state.graph.events)
-        num_events_completed = len(state.completed_events)
-        num_events_cancelled = state.cancelled_events if state.failed else 0
-
-        return SessionLifecycleMetric(
-            session_id=session_id,
-            stage_id=stage_id,
-            file_path=file_path,
-            start_time=start_time,
-            end_time=end_time,
-            duration_sec=end_time - start_time,
-            num_events=num_events,
-            num_events_completed=num_events_completed,
-            num_events_cancelled=num_events_cancelled,
-        )
-
-    def activate_session(self, session_id: str) -> None:
-        """Internal method to activate a session (mark events as ready).
-
-        This is called by LoadGen when it decides to start a session.
-        """
-        state = self.session_graph_state.get(session_id)
-        if state is None:
-            logger.warning(f"Attempted to activate unknown session: {session_id}")
-            return
-
-        state.is_active = True
-
-        # Find and activate root events (no predecessors)
-        root_events = {event_id for event_id, event in state.graph.events.items() if not event.predecessor_event_ids}
-        state.ready_events.update(root_events)
-
-        logger.debug(f"Activated session {session_id} with {len(root_events)} root events")
-
-    def _process_completion_queue(self) -> None:
-        """Process all pending completion notifications from the queue.
-
-        Internal helper that drains the completion queue and updates
-        session_graph_state for all completed sessions, including their failure status.
-        """
-        if self.session_completion_queue is None:
-            return
-
-        try:
-            while True:
-                completion_data = self.session_completion_queue.get_nowait()
-                completed_session_id = completion_data["session_id"]
-
-                # Update state for the completed session
-                completed_state = self.session_graph_state.get(completed_session_id)
-                if completed_state is not None:
-                    # Mark all events as completed (event_ids are already unqualified)
-                    event_times = completion_data.get("event_completion_times", {})
-                    for event_id, completion_time in event_times.items():
-                        if event_id not in completed_state.completed_events:
-                            completed_state.completed_events.add(event_id)
-                            completed_state.event_completion_times[event_id] = completion_time
-
-                    completed_state.is_complete = True
-                    completed_state.failed = completion_data.get("failed", False)
-                    completed_state.cancelled_events = completion_data.get("cancelled_events", 0)
-                    logger.debug(
-                        f"Session {completed_session_id} marked complete from queue notification "
-                        f"(failed={completed_state.failed})"
-                    )
-        except Exception:
-            # Queue is empty, no more completions to process
-            pass
-
-    def check_session_completed(self, session_id: str) -> bool:
-        """Check if a specific session has completed all its events.
-
-        Processes all pending completion notifications first, then checks
-        the requested session's status.
-
-        Args:
-            session_id: The session ID to check
-
-        Returns:
-            True if all events in the session have completed, False otherwise
-        """
-        # Process all pending completions first
-        self._process_completion_queue()
-
-        # Then check the requested session
-        state = self.session_graph_state.get(session_id)
-        if state is None:
-            logger.warning(f"Attempted to check unknown session: {session_id}")
-            return False
-
-        # A session is considered completed if either:
-        # 1. It has completed normally (is_complete = True), OR
-        # 2. It has failed (marked in shared_failed_sessions for multiprocess mode)
-        if state.is_complete:
-            return True
-
-        # Check if session has failed in any worker process
-        # In multiprocess mode, workers add failed sessions to shared_failed_sessions
-        shared_failed = getattr(self, "shared_failed_sessions", None)
-        if shared_failed is not None:
-            is_failed = session_id in shared_failed
-            if is_failed:
-                # Mark it as complete so we don't check again
-                state.is_complete = True
-                logger.info(f"Session {session_id} marked as complete due to failure")
-                return True
-
-        return False
-
-    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
-        """Load the actual request data for a given index.
-
-        Returns an OTelChatCompletionAPIData instance carrying the dependency
-        information (predecessor_event_ids, wait_ms, input_segments). The worker
-        calls wait_for_predecessors_and_substitute() on this object before
-        dispatching the HTTP request, which suspends the coroutine until all
-        predecessors have completed and then substitutes their outputs into the
-        message list.
-        """
-        n = data.data_index
-
-        if n >= len(self.all_events):
-            raise IndexError(f"Event index {n} out of range (total: {len(self.all_events)})")
-
-        event = self.all_events[n]
-
-        # Convert messages to ChatMessage objects (substitution happens later in the worker).
-        chat_messages = []
-        for msg in event.messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-
-            # Handle content that might be a list (tool blocks)
-            if isinstance(content, list):
-                content_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            content_parts.append(block.get("text", ""))
-                        else:
-                            content_parts.append(json.dumps(block))
-                    else:
-                        content_parts.append(str(block))
-                content = " ".join(content_parts)
-
-            chat_messages.append(ChatMessage(role=role, content=str(content)))
-
-        # Use expected_output_tokens (from trace) so downstream prefix matching works.
-        # Fall back to config default if not available.
-        max_tokens = event.expected_output_tokens or self.otel_config.default_max_tokens
-
-        # Extract session_id and get total event count for completion detection
-        session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
-        state = self.session_graph_state.get(session_id)
-        total_events = len(state.graph.events) if state else 0
-
-        # Return OTelChatCompletionAPIData with dependency info.
-        # The worker calls wait_for_predecessors_and_substitute() before dispatching.
-        # Create the actual data object with all fields
-        actual_data = OTelChatCompletionAPIData(
-            messages=chat_messages,
-            max_tokens=max_tokens,
-            event_id=event.event_id,
-            registry=self.output_registry,
-            worker_tracker=getattr(self, "worker_tracker", WorkerSessionTracker()),
-            completion_queue=getattr(self, "session_completion_queue", None),
-            total_events_in_session=total_events,
-            # Pass dependency info for the worker to use during async waiting
-            predecessor_event_ids=event.predecessor_event_ids,
-            wait_ms=event.wait_ms,
-            input_segments=event.input_segments,
-            original_messages=event.messages,
-            expected_output_content=event.expected_output,
-            otel_context=data.otel_context,
-            session_id=data.session_id,
-            preferred_worker_id=data.preferred_worker_id,
-        )
-
-        return actual_data
-
-    def cleanup_session(self, session_id: str) -> None:
-        """Clean up memory for a completed session.
-
-        Removes all event outputs, messages, and completion tracking data
-        for the specified session to prevent memory leaks in long-running
-        benchmarks with many sessions.
-
-        Args:
-            session_id: The session ID to clean up
-        """
-        state = self.session_graph_state.get(session_id)
-        if state is None:
-            logger.warning(f"Attempted to cleanup unknown session: {session_id}")
-            return
-
-        # Count events for logging
-        event_count = len(state.graph.events)
-
-        # Remove event outputs and messages from registry
-        for event_id in state.graph.events.keys():
-            qualified_event_id = f"{session_id}:{event_id}"
-
-            # Remove from output registry
-            self.output_registry._event_output_text.pop(qualified_event_id, None)
-            self.output_registry._event_input_messages.pop(qualified_event_id, None)
-            self.output_registry._event_signals.pop(qualified_event_id, None)
-
-            # Completion times are tracked in worker_tracker and communicated via queue.
-            # No shared state cleanup needed.
-
-        # Remove session state
-        del self.session_graph_state[session_id]
-
-        logger.debug(f"Cleaned up session {session_id}: removed {event_count} events from memory")

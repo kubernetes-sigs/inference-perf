@@ -65,20 +65,16 @@ from inference_perf.datagen.otel_trace_utils import (
     reconstruct_llm_input,
     reconstruct_each_part_in_message_info,
 )
+from inference_perf.datagen.replay_graph_types import (
+    ComplexReplayMessage,
+    GraphCall,
+    GraphEvent,
+    InputSegment,
+    ReplayGraph,
+    ReplayMessage,
+)
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class OtelMessage:
-    role: str
-    text: str
-
-
-class ComplexOtelMessage(OtelMessage):  # usually, this message type can be user in the list of input messages.
-    def __init__(self, role: str, message_info: dict[str, Any], raw_reconstructed_text: str):
-        super().__init__(role=role, text=raw_reconstructed_text)
-        self.message_info = message_info
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +100,7 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def message_content_text(msg: OtelMessage) -> str:
+def message_content_text(msg: ReplayMessage) -> str:
     """Extract the text content of a message (handles string or list content)."""
     content = msg.text
     if isinstance(content, list):
@@ -118,17 +114,17 @@ def message_content_text(msg: OtelMessage) -> str:
     return str(content)
 
 
-def message_tokens(msg: OtelMessage) -> int:
+def message_tokens(msg: ReplayMessage) -> int:
     """Estimate token count for a single message."""
     return estimate_tokens(message_content_text(msg))
 
 
-def messages_equal(a: OtelMessage, b: OtelMessage) -> bool:
+def messages_equal(a: ReplayMessage, b: ReplayMessage) -> bool:
     """Return True if two messages have the same role and content."""
     return a.role == b.role and norm_text(message_content_text(a)) == norm_text(message_content_text(b))
 
 
-def output_matches_message(output_text: str, msg: OtelMessage, allow_partial_match: bool = False) -> bool:
+def output_matches_message(output_text: str, msg: ReplayMessage, allow_partial_match: bool = False) -> bool:
     """Return True if msg is an assistant message whose content matches output_text."""
     if msg.role != "assistant":
         return False
@@ -223,16 +219,18 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
                     # Transform message with content + tool_calls into parts format
                     message_with_parts = _convert_content_and_tool_calls_to_parts(x)
                     res.append(
-                        ComplexOtelMessage(
+                        ComplexReplayMessage(
                             role=role,
                             message_info=message_with_parts,
                             raw_reconstructed_text=reconstruct_llm_input(message_with_parts),
                         )
                     )
                 elif isinstance(content, str):
-                    res.append(OtelMessage(role=role, text=content))  # type: ignore[arg-type]
+                    res.append(ReplayMessage(role=role, text=content))  # type: ignore[arg-type]
                 else:
-                    res.append(ComplexOtelMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
+                    res.append(
+                        ComplexReplayMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x))
+                    )
             else:
                 """ This is the case here:
                 {
@@ -245,26 +243,26 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
 
                 """
-                res.append(ComplexOtelMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
+                res.append(ComplexReplayMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
         return res  # type: ignore[return-value]
     else:
         return []
     return []
 
 
-def extract_output_message(span: Dict[str, Any]) -> Optional[OtelMessage]:
-    """Extract output message from span attributes. Returns an OtelMessage or ComplexOtelMessage object."""
+def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
+    """Extract output message from span attributes. Returns a ReplayMessage or ComplexReplayMessage object."""
     attrs = span.get("attributes") or {}
     for k in ("gen_ai.output.text", "gen_ai.completion", "gen_ai.output"):
         if k in attrs and isinstance(attrs[k], str):
-            return OtelMessage(role="assistant", text=attrs[k])
+            return ReplayMessage(role="assistant", text=attrs[k])
     out = attrs.get("gen_ai.output.messages")
     if isinstance(out, str):
         try:
             msgs = json.loads(out)
             if len(msgs) > 1:
                 raise ValueError(f"Unexpected output messages fromat: expected a single message, got {len(msgs)} messages")
-            return ComplexOtelMessage(
+            return ComplexReplayMessage(
                 role="assistant",
                 message_info=reconstruct_each_part_in_message_info(msgs[0]),
                 raw_reconstructed_text=reconstruct_llm_output(msgs[0]),
@@ -272,7 +270,7 @@ def extract_output_message(span: Dict[str, Any]) -> Optional[OtelMessage]:
         except Exception as err:
             raise ValueError(f"Failed parsing {out}") from err
     if isinstance(out, list) and out:
-        return OtelMessage(role="assistant", text=message_content_text(out[-1]))
+        return ReplayMessage(role="assistant", text=message_content_text(out[-1]))
     return None
 
 
@@ -304,8 +302,8 @@ class RawCall:
     t_start_ms: int  # ms relative to earliest span in file
     t_end_ms: int
     model: str
-    messages: List[OtelMessage]  # original message list (required)
-    out_message: Optional[OtelMessage]
+    messages: List[ReplayMessage]  # original message list (required)
+    out_message: Optional[ReplayMessage]
     prompt_tokens: Optional[int]  # from gen_ai.usage.prompt_tokens
     completion_tokens: Optional[int]  # from gen_ai.usage.completion_tokens
     temperature: Optional[float]
@@ -448,7 +446,7 @@ def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dic
     b_tool_call_ids = set()
     for msg in b_messages:
         # we message_info may contain parts to tool_calls.
-        if isinstance(msg, ComplexOtelMessage):
+        if isinstance(msg, ComplexReplayMessage):
             if "tool_calls" in msg.message_info:
                 for tool_call in msg.message_info["tool_calls"]:
                     if tool_call.get("id"):
@@ -490,7 +488,7 @@ def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
             return DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
     # try matching parts
     if (
-        isinstance(a.out_message, ComplexOtelMessage)
+        isinstance(a.out_message, ComplexReplayMessage)
         and "parts" in a.out_message.message_info
         and len(a.out_message.message_info["parts"]) > 1
     ):
@@ -645,28 +643,6 @@ def _try_match_parts(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class InputSegment:
-    """One segment of an LLM call's input prompt, at message granularity.
-
-    type:
-        "shared"  — leading messages identical to a predecessor call's messages
-                    (KV cache hit opportunity — these tokens are already cached)
-        "output"  — a single assistant message whose content is a predecessor's output
-                    (injected result; at replay time, substitute with actual generated text)
-        "unique"  — messages unique to this call (no predecessor shares them)
-
-    message_count: how many messages this segment covers
-    token_count: estimated or recorded token count for this segment
-    source_event_id: which predecessor event this segment comes from (shared/output only)
-    """
-
-    type: str  # "shared" | "output" | "unique"
-    message_count: int
-    token_count: int
-    source_event_id: Optional[str] = None
-
-
 def decompose_input(
     call: RawCall,
     predecessors: List[RawCall],
@@ -804,50 +780,6 @@ def decompose_input(
 # ---------------------------------------------------------------------------
 # Graph data structures
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class GraphCall:
-    """An LLM call within a graph event, ready for replay."""
-
-    call_id: str
-    model: str
-    messages: List[OtelMessage]  # original messages (for replay)
-    expected_output: str  # original output
-    input_segments: List[InputSegment]
-    total_input_tokens: int
-    expected_output_tokens: int  # set max_tokens to this; disable EOS for downstream prefix
-    temperature: Optional[float]
-    max_tokens_recorded: Optional[int]
-
-
-@dataclass
-class GraphEvent:
-    """An event in the replay graph. Contains exactly one LLM call.
-
-    The replayer starts this event when ALL predecessor events have completed,
-    then waits `wait_ms` before dispatching the call.
-    """
-
-    event_id: str
-    call: GraphCall
-    predecessor_event_ids: List[str]  # all events that must complete before this one starts
-    predecessor_dependency_types: Dict[
-        str, str
-    ]  # mapping of predecessor event_id to dependency type (for visualization and analysis)
-    wait_ms: int  # delay after last predecessor finishes (ms)
-    # Timing info (informational, from original trace)
-    t_start_ms: int
-    t_end_ms: int
-
-
-@dataclass
-class ReplayGraph:
-    """The complete replay graph for one combined trace file."""
-
-    events: Dict[str, GraphEvent]
-    root_event_ids: List[str]  # events with no predecessors (start immediately)
-    source_file: str
 
 
 # ---------------------------------------------------------------------------

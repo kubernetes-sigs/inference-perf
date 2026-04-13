@@ -217,6 +217,14 @@ class SessionGenerator(BaseGenerator):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def get_session_state(self, session_id: str) -> Any:
+        """Return internal session state for the given session ID.
+
+        Returns implementation-specific state object, or None if the session is unknown.
+        """
+        raise NotImplementedError
+
     # notify load gen whether request has preferred worker
     def is_preferred_worker_requested(self) -> bool:
         return False
