@@ -226,7 +226,7 @@ def test_calculate_goodput_metrics_per_request_override() -> None:
     assert result is not None
     assert result["goodput_pct"] == 0.0
     assert result["good_requests"] == 0
-    
+
     # Now test that it meets if it is within per-request SLO
     ttft_values = [0.1]
     result = calculate_goodput_metrics(metrics, config, ttft_values, [None], [0.1], [2.0], [None])  # type: ignore[arg-type]
@@ -281,7 +281,6 @@ def test_calculate_goodput_metrics_ttft_none_fails() -> None:
     metric1.ttft_slo_sec = None
     metric1.tpot_slo_sec = None
 
-
     metrics = [metric1]
     ttft_values: list[float | None] = [None]  # Value is None
 
@@ -290,5 +289,3 @@ def test_calculate_goodput_metrics_ttft_none_fails() -> None:
     assert result is not None
     assert result["goodput_pct"] == 0.0
     assert result["good_requests"] == 0
-
-

@@ -32,17 +32,13 @@ class TestSampleFromDistribution:
         assert abs(result.mean() - 200.0) < 5.0
 
     def test_skew_normal_within_bounds(self) -> None:
-        config = Distribution(
-            type=DistributionType.SKEW_NORMAL, mean=200.0, min=10, max=2000, std_dev=80.0, skew=2.5
-        )
+        config = Distribution(type=DistributionType.SKEW_NORMAL, mean=200.0, min=10, max=2000, std_dev=80.0, skew=2.5)
         result = sample_from_distribution(config, 1000, rng=np.random.default_rng(42))
         assert result.min() >= 10
         assert result.max() <= 2000
 
     def test_skew_normal_positive_skew_has_right_tail(self) -> None:
-        config = Distribution(
-            type=DistributionType.SKEW_NORMAL, mean=100.0, min=0, max=1000, std_dev=50.0, skew=5.0
-        )
+        config = Distribution(type=DistributionType.SKEW_NORMAL, mean=100.0, min=0, max=1000, std_dev=50.0, skew=5.0)
         result = sample_from_distribution(config, 10000, rng=np.random.default_rng(42))
         # With positive skew, the median should be less than the mean of the samples
         median = float(np.median(result))
@@ -50,9 +46,7 @@ class TestSampleFromDistribution:
         assert median <= mean
 
     def test_skew_normal_zero_skew_approximates_normal(self) -> None:
-        config_skew = Distribution(
-            type=DistributionType.SKEW_NORMAL, mean=500.0, min=0, max=1000, std_dev=100.0, skew=0.0
-        )
+        config_skew = Distribution(type=DistributionType.SKEW_NORMAL, mean=500.0, min=0, max=1000, std_dev=100.0, skew=0.0)
         config_normal = Distribution(type=DistributionType.NORMAL, mean=500.0, min=0, max=1000, std_dev=100.0)
         rng1 = np.random.default_rng(42)
         rng2 = np.random.default_rng(42)

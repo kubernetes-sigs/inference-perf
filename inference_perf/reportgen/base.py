@@ -80,10 +80,10 @@ def calculate_goodput_metrics(
     has_constraints = False
     if goodput_config and goodput_config.constraints:
         has_constraints = True
-    
+
     if not has_constraints and not any(m.ttft_slo_sec is not None or m.tpot_slo_sec is not None for m in metrics):
         return None
-        
+
     total = len(metrics)
     if total == 0:
         return None
@@ -92,16 +92,24 @@ def calculate_goodput_metrics(
 
     good_requests_count = 0
     good_total_tokens = 0
-    
-    attainment_counts = defaultdict(int)
-    total_applicable_counts = defaultdict(int)
+
+    attainment_counts: defaultdict[str, int] = defaultdict(int)
+    total_applicable_counts: defaultdict[str, int] = defaultdict(int)
 
     for i, m in enumerate(metrics):
         is_good = True
-        
-        effective_ttft_slo = m.ttft_slo_sec if m.ttft_slo_sec is not None else (goodput_config.constraints.get("ttft") if goodput_config else None)
-        effective_tpot_slo = m.tpot_slo_sec if m.tpot_slo_sec is not None else (goodput_config.constraints.get("tpot") if goodput_config else None)
-        
+
+        effective_ttft_slo = (
+            m.ttft_slo_sec
+            if m.ttft_slo_sec is not None
+            else (goodput_config.constraints.get("ttft") if goodput_config else None)
+        )
+        effective_tpot_slo = (
+            m.tpot_slo_sec
+            if m.tpot_slo_sec is not None
+            else (goodput_config.constraints.get("tpot") if goodput_config else None)
+        )
+
         effective_itl_slo = goodput_config.constraints.get("itl") if goodput_config else None
         effective_ntpot_slo = goodput_config.constraints.get("ntpot") if goodput_config else None
         effective_latency_slo = goodput_config.constraints.get("request_latency") if goodput_config else None
@@ -121,7 +129,7 @@ def calculate_goodput_metrics(
                 attainment_counts["tpot"] += 1
             else:
                 is_good = False
-                
+
         if effective_itl_slo is not None:
             total_applicable_counts["itl"] += 1
             val = itl_values[i]
@@ -129,7 +137,7 @@ def calculate_goodput_metrics(
                 attainment_counts["itl"] += 1
             else:
                 is_good = False
-                
+
         if effective_ntpot_slo is not None:
             total_applicable_counts["ntpot"] += 1
             val = ntpot_values[i]
@@ -137,7 +145,7 @@ def calculate_goodput_metrics(
                 attainment_counts["ntpot"] += 1
             else:
                 is_good = False
-                
+
         if effective_latency_slo is not None:
             total_applicable_counts["request_latency"] += 1
             val = request_latency_values[i]
@@ -163,13 +171,12 @@ def calculate_goodput_metrics(
         "good_requests": good_requests_count,
         "total_requests": total,
     }
-    
+
     for k in total_applicable_counts:
         if total_applicable_counts[k] > 0:
-            result[f"{k}_attainment_pct"] = (attainment_counts[k] / total_applicable_counts[k] * 100)
+            result[f"{k}_attainment_pct"] = attainment_counts[k] / total_applicable_counts[k] * 100
 
     return result
-
 
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:

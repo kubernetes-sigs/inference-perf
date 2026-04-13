@@ -221,7 +221,7 @@ def test_prometheus_client_config_validation() -> None:
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(google_managed=False)
 
-<<<<<<< HEAD
+
 def test_shared_prefix_inline_distribution() -> None:
     config = Config.model_validate(
         {
@@ -335,7 +335,7 @@ def test_distribution_variance_conversion() -> None:
 def test_distribution_both_variance_and_std_dev_error() -> None:
     with pytest.raises(Exception, match="Specify either"):
         Distribution(type=DistributionType.NORMAL, mean=100.0, std_dev=10.0, variance=100.0)
-=======
+
 
 def test_goodput_config_parsing() -> None:
     config_content = {
@@ -360,4 +360,3 @@ def test_goodput_config_parsing() -> None:
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
->>>>>>> cfaf911 (Support goodput reporting based on latency SLOs)
