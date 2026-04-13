@@ -14,6 +14,31 @@ Each workload in the catalog is organized into a directory containing:
 2.  **`inference-perf.yaml`**: A benchmark configuration file specific to `inference-perf` that can be used to run the workload directly.
 3.  **`README.md`**: Documentation explaining the use case, rationale for distributions, reference datasets, and system impact.
 
+## Config File Schema
+
+The `config.json` file in each workload directory defines the statistical profile of the workload. Below is a description of the fields:
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `input_sequence_length` | Object | Distribution of input tokens (prompt size). Contains `min`, `max`, `mean`, `standard_deviation`, `distribution_type`. |
+| `output_sequence_length` | Object | Distribution of output tokens (completion size). Contains `min`, `max`, `mean`, `standard_deviation`, `distribution_type`. |
+| `number_of_turns` | Object | Distribution of the number of turns in the conversation. |
+| `time_between_turns` | Object | Distribution of time (in seconds) between turns. |
+| `system_prompt` | Object | Distribution of the system prompt length. |
+| `input_sequence_length_per_turn` | Object | Distribution of input tokens added per turn (for multi-turn). |
+| `multi_turn` | Boolean | Indicates if the workload is multi-turn. |
+| `metadata` | Object | Additional parameters for workload classification and optimization mapping. |
+
+### Metadata and Workload Classification
+
+The `metadata` field contains additional parameters that help classify the workload (e.g., **prefill heavy** vs **decode heavy**). These can be used to:
+
+- **Filter and Query**: Classify and filter benchmarks based on workload characteristics (e.g., finding workloads with specific prefill/decode ratios).
+- **Map to Optimizations**: Understand how workload characteristics map to underlying optimizations at the inference server level. For example:
+    - **Prefill Heavy Workloads**: May benefit from chunked prefill or prefill/decode disaggregation.
+    - **Shared Prefixes / System Prompts**: Benefit from prefix caching or prefix-aware routing.
+    - **Long Contexts**: May require KV cache offloading or specific quantization techniques.
+
 ## Standardization
 
 When these workloads are run through a harness (like `inference-perf`), they should produce a report in the upcoming standard benchmarking format. This will make it easier to compare results across different serving stacks and hardware configurations.
