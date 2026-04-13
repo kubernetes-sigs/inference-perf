@@ -53,7 +53,14 @@ TEST_SHAREGPT_PATH = os.path.abspath("e2e/testdata/sharegpt.json")
                 "type": "shareGPT",
                 "path": TEST_SHAREGPT_PATH,
             },
-            id="data_sharegpt",
+            id="data_sharegpt_mock",
+        ),
+        pytest.param(
+            {
+                "type": "shareGPT",
+                # omitted to use hf_sharegpt_datagen.py default
+            },
+            id="data_sharegpt_default",
         ),
         pytest.param(
             {

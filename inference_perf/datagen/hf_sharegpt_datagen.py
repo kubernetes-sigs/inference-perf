@@ -17,9 +17,10 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatComplet
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List, Optional
+from typing import Any, Generator, List, Optional
 from datasets import load_dataset
 import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,8 @@ class HFShareGPTDataGenerator(DataGenerator):
                 continue
 
             try:
-                prompt = data[self.data_key][0].get(self.content_key)
-                completion = data[self.data_key][1].get(self.content_key)
+                prompt = self.get_conversation_turn_content(data, 0)
+                completion = self.get_conversation_turn_content(data, 1)
                 if not prompt:
                     continue
                 completion_tokens = self.tokenizer.count_tokens(completion)
@@ -114,6 +115,23 @@ class HFShareGPTDataGenerator(DataGenerator):
             except (KeyError, TypeError) as e:
                 logger.warning(f"Skipping invalid completion data: {e}")
                 continue
+
+    def get_conversation_turn_content(self, data: Any, turn: int) -> str:
+        conversation = data[self.data_key][turn]
+        if isinstance(conversation, dict):
+            pass
+        elif isinstance(conversation, str):
+            # https://github.com/kubernetes-sigs/inference-perf/issues/429:
+            # The dataset sometimes contains a string containing a JSON
+            # object rather than the object itself for some reason.
+            conversation = json.loads(conversation)
+            assert isinstance(conversation, dict)
+        else:
+            raise Exception(f"Conversation from upstream gave unsupported type: {type(conversation).__name__}")
+
+        s = conversation.get(self.content_key)
+        assert isinstance(s, str)
+        return s
 
     def get_chat_data(self) -> Generator[InferenceAPIData, None, None]:
         while True:
