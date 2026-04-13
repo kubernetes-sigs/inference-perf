@@ -23,7 +23,7 @@ the previous one ends.
 
 At steady state, the C active conversations are uniformly distributed across
 turn 0..N, so the mean KV-cache context across all active slots matches the
-production mean (~83K tokens for Sidekick suggested-actions workloads).
+production mean across all active slots.
 
 Usage
 -----

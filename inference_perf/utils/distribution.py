@@ -22,7 +22,7 @@ def generate_distribution(
     mean: float,
     std_dev: float,
     total_count: int,
-    dist_type: str = "normal",
+    dist_type: str = "normal",  # one of: "normal", "lognormal", "uniform", "fixed"
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.int_]:
     """
@@ -72,13 +72,15 @@ def generate_distribution(
             generated_numbers = rng.lognormal(mean=mu, sigma=sigma, size=total_count) + min
         else:
             generated_numbers = np.random.lognormal(mean=mu, sigma=sigma, size=total_count) + min
-    else:  # normal (default)
+    elif dist_type == "normal":
         if mean < min or mean > max:
             raise ValueError("Mean cannot be outside min and max range.")
         if rng is not None:
             generated_numbers = rng.normal(loc=mean, scale=std_dev, size=total_count)
         else:
             generated_numbers = np.random.normal(loc=mean, scale=std_dev, size=total_count)
+    else:
+        raise ValueError(f"Unknown dist_type {dist_type!r}. Supported types: 'normal', 'lognormal', 'uniform', 'fixed'.")
 
     clipped_numbers = np.clip(generated_numbers, min, max)
     generated_lengths = np.round(clipped_numbers).astype(int)
