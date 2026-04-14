@@ -87,33 +87,33 @@ class RedisClient:
             raise RuntimeError("Redis client not connected")
         hash_key = f"otel:{job_id}:event_outputs"
         msg_key = f"otel:{job_id}:event_messages"
-        
+
         # Convert messages to dicts if they are not already, to avoid JSON serialization errors
-        serializable_messages = []
+        serializable_messages: List[Dict[str, Any]] = []
         for m in messages:
             if hasattr(m, "role") and hasattr(m, "content"):
                 serializable_messages.append({"role": m.role, "content": m.content})
             elif isinstance(m, dict):
                 serializable_messages.append(m)
             else:
-                serializable_messages.append(str(m))
-                
-        await self.redis.hset(hash_key, event_id, output_text)
-        await self.redis.hset(msg_key, event_id, json.dumps(serializable_messages))
+                serializable_messages.append({"role": "unknown", "content": str(m)})
+
+        await self.redis.hset(hash_key, event_id, output_text)  # type: ignore[misc]
+        await self.redis.hset(msg_key, event_id, json.dumps(serializable_messages))  # type: ignore[misc]
 
     async def get_event_output(self, job_id: str, event_id: str) -> Optional[str]:
         """Get event output from Redis."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         hash_key = f"otel:{job_id}:event_outputs"
-        return cast(Optional[str], await self.redis.hget(hash_key, event_id))
+        return cast(Optional[str], await self.redis.hget(hash_key, event_id))  # type: ignore[misc]
 
     async def get_event_messages(self, job_id: str, event_id: str) -> Optional[List[Any]]:
         """Get event input messages from Redis."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         msg_key = f"otel:{job_id}:event_messages"
-        data = await self.redis.hget(msg_key, event_id)
+        data = await self.redis.hget(msg_key, event_id)  # type: ignore[misc]
         if data:
             return cast(List[Any], json.loads(data))
         return None

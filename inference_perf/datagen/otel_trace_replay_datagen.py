@@ -468,14 +468,13 @@ class RedisEventOutputRegistry(EventOutputRegistry):
             await pubsub.close()
 
 
-class RedisWorkerSessionTracker(WorkerSessionTracker):
+class RedisWorkerSessionTracker:
     """Tracks session state in Redis for distributed mode.
 
     Replaces WorkerSessionTracker when running in distributed mode.
     """
 
     def __init__(self, redis_client: RedisClient, job_id: str, total_events: int) -> None:
-        super().__init__()
         self.redis_client = redis_client
         self.job_id = job_id
         self.total_events = total_events
@@ -483,42 +482,30 @@ class RedisWorkerSessionTracker(WorkerSessionTracker):
     async def is_session_failed(self, session_id: str) -> bool:
         if not self.redis_client.redis:
             return False
-        return await self.redis_client.redis.sismember(
-            f"otel:{self.job_id}:failed_sessions", session_id
-        )
+        return bool(await self.redis_client.redis.sismember(f"otel:{self.job_id}:failed_sessions", session_id))  # type: ignore[misc]
 
-    def record_event_completed(
-        self, session_id: str, event_id: str, completion_time: float
-    ) -> None:
-        asyncio.create_task(
-            self._record_event_completed_redis(session_id, event_id, completion_time)
-        )
+    def record_event_completed(self, session_id: str, event_id: str, completion_time: float) -> None:
+        asyncio.create_task(self._record_event_completed_redis(session_id, event_id, completion_time))
 
-    async def _record_event_completed_redis(
-        self, session_id: str, event_id: str, completion_time: float
-    ) -> None:
+    async def _record_event_completed_redis(self, session_id: str, event_id: str, completion_time: float) -> None:
         if not self.redis_client.redis:
             return
         key = f"otel:{self.job_id}:session:{session_id}:completions"
-        await self.redis_client.redis.hset(key, event_id, str(completion_time))
+        await self.redis_client.redis.hset(key, event_id, str(completion_time))  # type: ignore[misc]
 
         # Check completion
-        completed_count = await self.redis_client.redis.hlen(key)
+        completed_count = await self.redis_client.redis.hlen(key)  # type: ignore[misc]
         if completed_count == self.total_events:
             logger.info(f"Session {session_id} completed all events in Redis")
             # Publish completion
             channel = f"otel:{self.job_id}:session_completed:{session_id}"
             is_failed = await self.is_session_failed(session_id)
-            await self.redis_client.redis.publish(
-                channel, "failed" if is_failed else "completed"
-            )
+            await self.redis_client.redis.publish(channel, "failed" if is_failed else "completed")
 
     async def mark_session_failed(self, session_id: str) -> None:
         if not self.redis_client.redis:
             return
-        await self.redis_client.redis.sadd(
-            f"otel:{self.job_id}:failed_sessions", session_id
-        )
+        await self.redis_client.redis.sadd(f"otel:{self.job_id}:failed_sessions", session_id)  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +536,7 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
 
     event_id: str
     registry: EventOutputRegistry
-    worker_tracker: WorkerSessionTracker
+    worker_tracker: Any
 
     # Session completion notification
     completion_queue: Any  # mp.Queue for notifying main process

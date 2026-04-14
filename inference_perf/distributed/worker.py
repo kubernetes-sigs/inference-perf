@@ -105,6 +105,7 @@ class DistributedWorker:
                 return
 
             # Check task type
+            api_data: Any
             if task.get("type") == "otel_trace_replay":
                 # OTel replay mode
                 event_id = task["event_id"]
@@ -121,23 +122,29 @@ class DistributedWorker:
                     job_id = job_id.decode("utf-8") if isinstance(job_id, bytes) else job_id
                 else:
                     job_id = "default_job"
-                
-                from inference_perf.datagen.otel_trace_replay_datagen import RedisEventOutputRegistry, RedisWorkerSessionTracker, OTelChatCompletionAPIData
+
+                from inference_perf.datagen.otel_trace_replay_datagen import (
+                    RedisEventOutputRegistry,
+                    RedisWorkerSessionTracker,
+                    OTelChatCompletionAPIData,
+                )
                 from inference_perf.datagen.otel_trace_to_replay_graph import InputSegment
                 from inference_perf.apis.chat import ChatMessage
-                
+
                 registry = RedisEventOutputRegistry(self.redis, job_id)
                 tracker = RedisWorkerSessionTracker(self.redis, job_id, total_events)
 
                 # Reconstruct InputSegment objects
                 segments = []
                 for seg in input_segments:
-                    segments.append(InputSegment(
-                        type=seg["type"],
-                        message_count=seg["message_count"],
-                        token_count=seg["token_count"],
-                        source_event_id=seg.get("source_event_id")
-                    ))
+                    segments.append(
+                        InputSegment(
+                            type=seg["type"],
+                            message_count=seg["message_count"],
+                            token_count=seg["token_count"],
+                            source_event_id=seg.get("source_event_id"),
+                        )
+                    )
 
                 chat_messages = [ChatMessage(role=m["role"], content=m["content"]) for m in messages]
 
@@ -150,11 +157,13 @@ class DistributedWorker:
                     completion_queue=None,
                     total_events_in_session=total_events,
                     input_segments=segments,
+                    predecessor_event_ids=predecessor_event_ids,
+                    wait_ms=wait_ms,
                 )
 
                 # Wait for predecessors and substitute!
                 await api_data.wait_for_predecessors_and_substitute()
-                
+
                 if api_data.skip_request:
                     logger.info(f"Task {task_id} skipped due to predecessor failure or session skip.")
                     await self.redis.ack_task(self.stream_name, self.group_name, task_id)

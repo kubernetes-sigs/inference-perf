@@ -52,6 +52,7 @@ class Orchestrator:
         tokenizer = CustomTokenizer(tokenizer_config)
 
         # Initialize data generator
+        datagen: Any
         if data_config.type == DataGenType.OTelTraceReplay:
             datagen = OTelTraceReplayDataGenerator(api_config, data_config, tokenizer)
         else:
@@ -142,9 +143,7 @@ class Orchestrator:
             await self.redis.redis.hset("test_prompts", f"prompt_{i}", prompt)  # type: ignore[misc]
         logger.info(f"Stored {len(prompts)} prompts in Redis.")
 
-    async def dispatch_tasks(
-        self, datagen: Any, load_config: LoadConfig, global_start_time: float
-    ) -> int:
+    async def dispatch_tasks(self, datagen: Any, load_config: LoadConfig, global_start_time: float) -> int:
         logger.info("Dispatching tasks...")
 
         total_requests = 0
@@ -153,13 +152,13 @@ class Orchestrator:
         if isinstance(datagen, OTelTraceReplayDataGenerator):
             # OTel replay mode
             logger.info(f"Dispatching OTel replay tasks from {len(datagen.all_events)} events")
-            
+
             # Count total events per session
-            session_counts = {}
+            session_counts: dict[str, int] = {}
             for event in datagen.all_events:
                 session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
                 session_counts[session_id] = session_counts.get(session_id, 0) + 1
-                
+
             for event in datagen.all_events:
                 session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
                 # Convert input segments to dicts

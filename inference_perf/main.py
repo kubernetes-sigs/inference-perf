@@ -454,10 +454,10 @@ def main_cli() -> None:
             for i, stage in enumerate(config.load.stages):
                 # TraceSessionReplayLoadStage uses session_rate instead of rate
                 stage_rate = getattr(stage, "rate", 0.0) or getattr(stage, "session_rate", 0.0) or 0.0
-                
+
                 # TraceSessionReplayLoadStage uses timeout or inferred duration
                 stage_duration = getattr(stage, "duration", 0.0) or getattr(stage, "timeout", 0.0) or 10.0
-                
+
                 runtime_stages[i] = StageRuntimeInfo(
                     stage_id=i,
                     rate=stage_rate,
