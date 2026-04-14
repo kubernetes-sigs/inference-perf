@@ -1,6 +1,6 @@
 # Workload Catalog
 
-This directory contains a catalog of real-world benchmarking workloads covering a wide range of use cases that are currently relevant in the AI inference space.
+This directory contains a catalog of real-world benchmarking workloads. Extending beyond standard single-turn prompts, it models the distinct system constraints of agentic workflows—where models generate commands, pause for external tool execution, and inject results into subsequent prompts. By simulating these causal dependencies and inter-request wait times, users can evaluate KV cache retention, prefix-aware routing, and memory fragmentation under realistic agent-driven load.
 
 ## Goal
 
@@ -45,9 +45,9 @@ When these workloads are run through a harness (like `inference-perf`), they sho
 
 ## Available Workloads
 
-- **interactive-chat**: Simulates a multi-turn chat conversation.
-- **code-generation**: Simulates heavy code generation tasks.
-- **deep-research**: Simulates a long-running research agent with massive context.
-- **reasoning**: Simulates complex step-by-step reasoning tasks.
+- **interactive-chat**: Simulates multi-turn chat conversations with human-scale inter-request latency.
+- **code-generation**: Simulates coding agents (e.g., Tree of Thought) evaluating parallel paths, stressing prefix caching across shared codebase contexts.
+- **deep-research**: Simulates an autonomous research agent (e.g., Sequential ReAct) executing sequential tool calls, testing KV cache retention during causally dependent wait periods.
+- **reasoning**: Simulates step-by-step reasoning tasks (e.g., Chain of Thought) characterized by high output sequence lengths (OSL) and continuous decode phases.
 - **batch-summarization-rag**: Simulates RAG or batch summarization with long inputs.
 - **batch-synthetic-data-generation**: Simulates high-throughput synthetic data generation.
