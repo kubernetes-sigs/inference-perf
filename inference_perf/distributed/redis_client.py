@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast, Self
 import redis.asyncio as redis
 from redis.exceptions import ResponseError
 
@@ -15,11 +15,11 @@ class RedisClient:
         self.password = password
         self.redis: Optional[redis.Redis] = None
 
-    async def connect(self):
+    async def connect(self) -> Self:
         self.redis = redis.Redis(host=self.host, port=self.port, db=self.db, password=self.password, decode_responses=True)
         return self
 
-    async def close(self):
+    async def close(self) -> None:
         if self.redis:
             await self.redis.close()
 
@@ -28,9 +28,9 @@ class RedisClient:
         """Push a task to a Redis Stream."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
-        return await self.redis.xadd(stream_name, {"data": json.dumps(task_data)})
+        return cast(str, await self.redis.xadd(stream_name, {"data": json.dumps(task_data)}))
 
-    async def create_consumer_group(self, stream_name: str, group_name: str):
+    async def create_consumer_group(self, stream_name: str, group_name: str) -> None:
         """Create a consumer group, ignoring error if it already exists."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
@@ -55,26 +55,26 @@ class RedisClient:
                 tasks.append(task)
         return tasks
 
-    async def ack_task(self, stream_name: str, group_name: str, task_id: str):
+    async def ack_task(self, stream_name: str, group_name: str, task_id: str) -> None:
         """Acknowledge a task."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         await self.redis.xack(stream_name, group_name, task_id)
 
     # Telemetry Operations
-    async def publish_telemetry(self, channel: str, data: Dict[str, Any]):
+    async def publish_telemetry(self, channel: str, data: Dict[str, Any]) -> None:
         """Publish real-time telemetry."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         await self.redis.publish(channel, json.dumps(data))
 
-    async def add_result(self, stream_name: str, result_data: Dict[str, Any]):
+    async def add_result(self, stream_name: str, result_data: Dict[str, Any]) -> None:
         """Add rich result to results stream."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         await self.redis.xadd(stream_name, {"data": json.dumps(result_data)})
 
-    async def get_subscriber(self):
+    async def get_subscriber(self) -> Any:
         """Get a pubsub object for subscribing to channels."""
         if not self.redis:
             raise RuntimeError("Redis client not connected")

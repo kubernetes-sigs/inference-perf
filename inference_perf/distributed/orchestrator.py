@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 import json
-from typing import Any
+from typing import Any, Optional
 from inference_perf.config import Config, LoadConfig, DataConfig, APIConfig
 from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.distributed.redis_client import RedisClient
@@ -15,11 +15,11 @@ class Orchestrator:
     def __init__(
         self,
         redis_client: RedisClient,
-        load_config: LoadConfig = None,
-        data_config: DataConfig = None,
-        api_config: APIConfig = None,
-        tokenizer_config: Any = None,
-    ):
+        load_config: Optional[LoadConfig] = None,
+        data_config: Optional[DataConfig] = None,
+        api_config: Optional[APIConfig] = None,
+        tokenizer_config: Optional[Any] = None,
+    ) -> None:
         self.redis = redis_client
         self.load_config = load_config
         self.data_config = data_config
@@ -30,12 +30,23 @@ class Orchestrator:
         self.telemetry_channel = "telemetry_channel"
         self.group_name = "worker_group"
 
-    async def run(self):
+    async def run(self) -> None:
         """Original run method, kept for backward compatibility if needed."""
         await self.redis.connect()
         await self.run_job_with_configs(self.load_config, self.data_config, self.api_config, self.tokenizer_config)
 
-    async def run_job_with_configs(self, load_config, data_config, api_config, tokenizer_config, job_id=None):
+    async def run_job_with_configs(
+        self,
+        load_config: Optional[LoadConfig],
+        data_config: Optional[DataConfig],
+        api_config: Optional[APIConfig],
+        tokenizer_config: Any,
+        job_id: Optional[str] = None,
+    ) -> None:
+        assert self.redis.redis is not None
+        assert load_config is not None
+        assert api_config is not None
+        assert data_config is not None
         # Initialize tokenizer
         tokenizer = CustomTokenizer(tokenizer_config)
 
@@ -75,8 +86,9 @@ class Orchestrator:
                 json.dumps({"job_id": job_id.decode("utf-8") if isinstance(job_id, bytes) else job_id, "status": "completed"}),
             )
 
-    async def start_daemon(self):
+    async def start_daemon(self) -> None:
         await self.redis.connect()
+        assert self.redis.redis is not None
         logger.info("Orchestrator daemon started, waiting for jobs...")
 
         # Start reading from the end of the stream
@@ -116,12 +128,13 @@ class Orchestrator:
                 logger.error(f"Error in orchestrator daemon: {e}")
                 await asyncio.sleep(1)
 
-    async def prime_redis(self, datagen: SharedPrefixDataGenerator):
+    async def prime_redis(self, datagen: SharedPrefixDataGenerator) -> None:
+        assert self.redis.redis is not None
         logger.info("Priming Redis with prompts...")
         # Store prompts in hash
         prompts = datagen.prompts
         for i, prompt in enumerate(prompts):
-            await self.redis.redis.hset("test_prompts", f"prompt_{i}", prompt)
+            await self.redis.redis.hset("test_prompts", f"prompt_{i}", prompt)  # type: ignore[misc]
         logger.info(f"Stored {len(prompts)} prompts in Redis.")
 
     async def dispatch_tasks(
@@ -157,7 +170,8 @@ class Orchestrator:
         logger.info(f"Dispatched {total_requests} tasks in total.")
         return total_requests
 
-    async def wait_for_completion(self, total_requests: int):
+    async def wait_for_completion(self, total_requests: int) -> None:
+        assert self.redis.redis is not None
         logger.info("Waiting for completion...")
         completed = 0
         while completed < total_requests:
@@ -175,12 +189,13 @@ class Orchestrator:
 
         logger.info("All tasks completed.")
 
-    async def post_process(self):
+    async def post_process(self) -> None:
         logger.info("Running post-processing...")
         # TODO: Implement summary report generation by draining the results stream.
         # This will involve aggregating metrics like TTFT, ITL, and latency.
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
+        assert self.redis.redis is not None
         logger.info("Cleaning up...")
         await self.redis.redis.delete(self.stream_name)
         await self.redis.redis.delete("test_prompts")

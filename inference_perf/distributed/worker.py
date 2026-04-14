@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 import logging
 import time
 from inference_perf.client.modelserver import ModelServerClient
@@ -36,8 +37,9 @@ class DistributedWorker:
         self.collector = LocalRequestDataCollector()
         self.client.metrics_collector = self.collector
 
-    async def run(self):
+    async def run(self) -> None:
         await self.redis.connect()
+        assert self.redis.redis is not None
         await self.redis.create_consumer_group(self.stream_name, self.group_name)
 
         # Fetch global start time from Redis
@@ -76,7 +78,8 @@ class DistributedWorker:
                     logger.error(f"Error in worker loop: {e}")
                 await asyncio.sleep(1)
 
-    async def process_task(self, task: dict, global_start_time: float):
+    async def process_task(self, task: dict[str, Any], global_start_time: float) -> None:
+        assert self.redis.redis is not None
         await self.semaphore.acquire()
         task_id = task["_id"]
         stage_id = task.get("stage_id", 0)
@@ -103,7 +106,7 @@ class DistributedWorker:
 
             # Fetch prompt from Redis Hash
             prompt_field = task["prompt_field"]
-            prompt_text = await self.redis.redis.hget("test_prompts", prompt_field)
+            prompt_text = await self.redis.redis.hget("test_prompts", prompt_field)  # type: ignore[misc]
 
             if not prompt_text:
                 logger.error(f"Prompt not found for field {prompt_field}")
@@ -185,5 +188,5 @@ class DistributedWorker:
         finally:
             self.semaphore.release()
 
-    def stop(self):
+    def stop(self) -> None:
         self.stop_event.set()

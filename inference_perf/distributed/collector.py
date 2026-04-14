@@ -22,10 +22,11 @@ class RedisRequestDataCollector(RequestDataCollector):
     def get_metrics(self) -> List[RequestLifecycleMetric]:
         return self.metrics
 
-    async def reload_metrics(self):
+    async def reload_metrics(self) -> None:
         """Fetch all metrics from Redis results stream with pagination and optimization."""
         if not self.redis.redis:
             await self.redis.connect()
+        assert self.redis.redis is not None
 
         logger.info(f"Reloading metrics from Redis stream {self.stream_name}...")
 

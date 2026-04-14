@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from collections import deque
+from typing import Optional
 import numpy as np
 from rich.console import Console
 from rich.live import Live
@@ -10,12 +11,13 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.progress import Progress, BarColumn, TextColumn
 from inference_perf.distributed.redis_client import RedisClient
+from inference_perf.config import Config, StandardLoadStage, ConcurrentLoadStage, TraceSessionReplayLoadStage
 
 logger = logging.getLogger(__name__)
 
 
 class TUIDashboard:
-    def __init__(self, redis_client: RedisClient, channel: str, config=None):
+    def __init__(self, redis_client: RedisClient, channel: str, config: Optional[Config] = None):
         self.redis = redis_client
         self.channel = channel
         self.config = config
@@ -27,26 +29,42 @@ class TUIDashboard:
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
         )
 
-        total_all_reqs = 100
+        total_all_reqs = 0
         if config and config.load:
-            total_all_reqs = sum(int(stage.rate * stage.duration) for stage in config.load.stages)
+            for stage in config.load.stages:
+                if isinstance(stage, StandardLoadStage):
+                    total_all_reqs += int(stage.rate * stage.duration)
+                elif isinstance(stage, ConcurrentLoadStage):
+                    total_all_reqs += stage.num_requests
+                elif isinstance(stage, TraceSessionReplayLoadStage):
+                    total_all_reqs += stage.num_sessions or 0
+        if total_all_reqs == 0:
+            total_all_reqs = 100  # Fallback default
 
         self.overall_task = self.progress.add_task("Overall Progress", total=total_all_reqs)
 
         self.stage_tasks = []
         if config and config.load:
-            for i, stage in enumerate(config.load.stages):
-                total_reqs = int(stage.rate * stage.duration)
+            for i, stage in enumerate(config.load.stages):  # type: ignore[assignment]
+                total_reqs = 0
+                if isinstance(stage, StandardLoadStage):
+                    total_reqs = int(stage.rate * stage.duration)
+                elif isinstance(stage, ConcurrentLoadStage):
+                    total_reqs = stage.num_requests
+                elif isinstance(stage, TraceSessionReplayLoadStage):
+                    total_reqs = stage.num_sessions or 0
+                if total_reqs == 0:
+                    total_reqs = 100  # Fallback default
                 t = self.progress.add_task(f"Stage {i}", total=total_reqs)
                 self.stage_tasks.append(t)
 
         # Stats tracing
-        self.latencies = deque(maxlen=1000)  # Keep last 1000 latencies for P99
-        self.request_times = deque(maxlen=1000)  # For RPS calculation
+        self.latencies: deque[float] = deque(maxlen=1000)  # Keep last 1000 latencies for P99
+        self.request_times: deque[float] = deque(maxlen=1000)  # For RPS calculation
         self.success_count = 0
         self.fail_count = 0
-        self.ttfts = deque(maxlen=1000)  # Keep last 1000 for percentiles
-        self.itls = deque(maxlen=1000)  # Keep last 1000 for percentiles
+        self.ttfts: deque[float] = deque(maxlen=1000)  # Keep last 1000 for percentiles
+        self.itls: deque[float] = deque(maxlen=1000)  # Keep last 1000 for percentiles
 
     def make_layout(self) -> Layout:
         progress_size = 3
@@ -75,8 +93,9 @@ class TUIDashboard:
             return 0.0
         return float(np.percentile(list(self.latencies), 99))
 
-    async def run(self):
+    async def run(self) -> None:
         await self.redis.connect()
+        assert self.redis.redis is not None
         pubsub = await self.redis.get_subscriber()
         await pubsub.subscribe(self.channel)
 

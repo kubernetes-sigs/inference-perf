@@ -15,7 +15,7 @@ import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
-from typing import List, Optional
+from typing import List, Optional, Any
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
@@ -212,7 +212,7 @@ def main_cli() -> None:
             raise Exception("Tokenizer initialization failed") from e
 
     # Define Model Server Client
-    model_server_client: ModelServerClient
+    model_server_client: Optional[ModelServerClient]
     if args.mode == "orchestrator":
         model_server_client = None
     elif config.server:
@@ -394,8 +394,10 @@ def main_cli() -> None:
     reports = None
     if args.mode == "submit":
 
-        async def run_submit_flow():
+        async def run_submit_flow() -> None:
             await redis_client.connect()
+            assert redis_client.redis is not None
+            assert model_server_client is not None
 
             # Check if job is already running
             global_start_time = await redis_client.redis.get("global_start_time")
@@ -480,7 +482,7 @@ def main_cli() -> None:
 
         import signal
 
-        def signal_handler(sig, frame):
+        def signal_handler(sig: int, frame: Any) -> None:
             print("\nCtrl+C detected, canceling job...")
             import redis as sync_redis
 
@@ -499,7 +501,7 @@ def main_cli() -> None:
 
     elif args.mode == "orchestrator":
 
-        async def run_orchestrator_daemon():
+        async def run_orchestrator_daemon() -> None:
             orchestrator = Orchestrator(redis_client=redis_client)
             await orchestrator.start_daemon()
 
@@ -510,6 +512,7 @@ def main_cli() -> None:
         if not args.worker_id:
             parser.error("--worker-id is required in worker mode")
 
+        assert model_server_client is not None
         worker = DistributedWorker(
             worker_id=args.worker_id,
             redis_client=redis_client,
@@ -530,6 +533,7 @@ def main_cli() -> None:
 
     else:
         # Local mode
+        assert model_server_client is not None
         perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
         start_time = time.time()
