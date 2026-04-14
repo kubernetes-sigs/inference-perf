@@ -52,7 +52,6 @@ Falls back to len(text) // 4 (rough chars-per-token estimate) per message.
 import argparse
 import json
 import logging
-import re
 from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -94,11 +93,6 @@ def parse_iso(ts: str) -> float:
     return dt.timestamp()
 
 
-def norm_text(s: str) -> str:
-    """Normalize text by collapsing whitespace."""
-    return re.sub(r"\s+", " ", s or "").strip()
-
-
 def estimate_tokens(text: str) -> int:
     """Estimate token count from character length (rough: 4 chars per token)."""
     return max(1, len(text) // 4)
@@ -125,21 +119,20 @@ def message_tokens(msg: OtelMessage) -> int:
 
 def messages_equal(a: OtelMessage, b: OtelMessage) -> bool:
     """Return True if two messages have the same role and content."""
-    return a.role == b.role and norm_text(message_content_text(a)) == norm_text(message_content_text(b))
+    return a.role == b.role and message_content_text(a) == message_content_text(b)
 
 
 def output_matches_message(output_text: str, msg: OtelMessage, allow_partial_match: bool = False) -> bool:
     """Return True if msg is an assistant message whose content matches output_text."""
     if msg.role != "assistant":
         return False
-    msg_text = norm_text(message_content_text(msg))
-    out_text = norm_text(output_text)
-    if msg_text == out_text:
+    msg_text = message_content_text(msg)
+    if msg_text == output_text:
         return True
     if not allow_partial_match:
         return False
     else:  # try partial match
-        if out_text in msg_text:  # out_text is entirely contained in msg_text
+        if output_text in msg_text:  # output_text is entirely contained in msg_text
             return True
     return False
 
@@ -462,13 +455,19 @@ def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dic
     return all(tc_id in b_tool_call_ids for tc_id in tool_call_ids)
 
 
-def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
+def get_causal_dep(
+    a: RawCall, b: RawCall, output_matches_for_substitutions: Optional[Dict[tuple[str, str], List[int]]] = None
+) -> Optional[DEPENDENCY_TYPE]:
     """Return the type of causal dependency if call B causally depends on call A, None otherwise.
 
     A call B depends on A if any assistant message in B's message list has content
     that matches A's output text (full content match, not a snippet).
     This means A's output was injected into B's prompt as a prior assistant turn.
     We start with trying to detect FULL_MATCH dependency. Then, if not detected, we proceed to TOOL_CALL_IDS_MATCHED. If this dependency is not detected either we proceed to the other options.
+
+    Args:
+        output_matches_for_substitutions: Optional cache storing message indices with EXACT output matches.
+                                         Key: (pred_call_id, curr_call_id), Value: list of matching indices
 
     Returns:
         FULL_MATCH: Full text of output A matches the full text in B
@@ -483,10 +482,15 @@ def get_causal_dep(a: RawCall, b: RawCall) -> Optional[DEPENDENCY_TYPE]:
     """
     if not a.out_message or not b.messages:
         return None
-    # match entire output message:
-    a_out = norm_text(a.out_message.text)
-    for msg in b.messages:
+    a_out = a.out_message.text or ""
+    for msg_idx, msg in enumerate(b.messages):
         if output_matches_message(a_out, msg, allow_partial_match=True):
+            # Cache only exact matches (for reuse in decompose_input)
+            if output_matches_for_substitutions is not None and output_matches_message(a_out, msg, allow_partial_match=False):
+                cache_key = (a.call_id, b.call_id)
+                if cache_key not in output_matches_for_substitutions:
+                    output_matches_for_substitutions[cache_key] = []
+                output_matches_for_substitutions[cache_key].append(msg_idx)
             return DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
     # try matching parts
     if (
@@ -671,6 +675,7 @@ def decompose_input(
     call: RawCall,
     predecessors: List[RawCall],
     predecessor_event_ids: List[str],
+    output_matches_for_substitutions: Optional[Dict[tuple[str, str], List[int]]] = None,
 ) -> List[InputSegment]:
     """Decompose a call's message list into segments relative to its predecessors.
 
@@ -746,14 +751,27 @@ def decompose_input(
         for pred_idx, pred in enumerate(predecessors):
             if not pred.out_message:
                 continue
-            pred_out = norm_text(pred.out_message.text)
-            # Search in remaining messages
-            for msg_idx in range(cursor, total_msgs):
-                if output_matches_message(pred_out, messages[msg_idx]):
-                    if msg_idx < best_out_msg_idx:
-                        best_out_msg_idx = msg_idx
-                        best_out_pred_idx = pred_idx
-                    break  # found earliest occurrence for this pred
+
+            # Check cache first for exact matches
+            cache_key = (pred.call_id, call.call_id)
+            if output_matches_for_substitutions and cache_key in output_matches_for_substitutions:
+                # Use cached exact match indices
+                matched_indices = output_matches_for_substitutions[cache_key]
+                for msg_idx in matched_indices:
+                    if cursor <= msg_idx < total_msgs:
+                        if msg_idx < best_out_msg_idx:
+                            best_out_msg_idx = msg_idx
+                            best_out_pred_idx = pred_idx
+                        break
+            else:
+                # Fallback: search for exact matches
+                pred_out = pred.out_message.text or ""
+                for msg_idx in range(cursor, total_msgs):
+                    if output_matches_message(pred_out, messages[msg_idx]):
+                        if msg_idx < best_out_msg_idx:
+                            best_out_msg_idx = msg_idx
+                            best_out_pred_idx = pred_idx
+                        break  # found earliest occurrence for this pred
 
         if best_out_pred_idx == -1:
             # No more injected outputs — rest is unique
@@ -885,21 +903,24 @@ def build_graph(
     # predecessor_indices[i] = dict mapping predecessor index to dependency type
     predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
 
-    def is_causal_ancestor(ancestor: int, descendant: int) -> bool:
-        """Return True if ancestor is a (transitive) predecessor of descendant
-        following only causal edges (not timing-fallback edges)."""
-        visited: Set[int] = set()
-        stack = [idx for idx, dep_type in predecessor_indices[descendant].items() if dep_type != DEPENDENCY_TYPE.TEMPORAL]
+    def get_causal_ancestors(node_idx: int) -> Set[int]:
+        """Get all causal ancestors of a node (excluding temporal edges)."""
+        ancestors: Set[int] = set()
+        stack = [
+            pred_idx for pred_idx, dep_type in predecessor_indices[node_idx].items() if dep_type != DEPENDENCY_TYPE.TEMPORAL
+        ]
         while stack:
-            node = stack.pop()
-            if node == ancestor:
-                return True
-            if node not in visited:
-                visited.add(node)
+            ancestor = stack.pop()
+            if ancestor not in ancestors:
+                ancestors.add(ancestor)
                 stack.extend(
-                    [idx for idx, dep_type in predecessor_indices[node].items() if dep_type != DEPENDENCY_TYPE.TEMPORAL]
+                    [
+                        pred_idx
+                        for pred_idx, dep_type in predecessor_indices[ancestor].items()
+                        if dep_type != DEPENDENCY_TYPE.TEMPORAL
+                    ]
                 )
-        return False
+        return ancestors
 
     def is_valid_predecessor(predecessor_candidate: Any, curr_call: Any) -> bool:
         # checks if candidate can be a predecessor to curr_call. Make sure times are not overlapping
@@ -909,24 +930,30 @@ def build_graph(
             return False
         return True
 
+    # Cache for exact output matches: (pred_call_id, curr_call_id) -> list of matching message indices. Is used when input segments are created.
+    output_matches_for_substitutions: Dict[tuple[str, str], List[int]] = {}
+
     for i in range(1, n):
         # Collect all calls that causally feed call i
         curr_causal_preds: Dict[int, DEPENDENCY_TYPE] = {}
+        # Track indices that are transitively connected (ancestors of found predecessors)
+        transitive_preds: Set[int] = set()
+
         for j in range(i - 1, -1, -1):
-            dep_type = get_causal_dep(calls[j], calls[i])
+            # If j is already known to be a transitive predecessor, skip expensive check
+            if j in transitive_preds:
+                continue
+
+            dep_type = get_causal_dep(calls[j], calls[i], output_matches_for_substitutions)
             if dep_type is not None:
                 curr_causal_preds[j] = dep_type
+                # Add all of j's causal ancestors as transitive predecessors
+                # so we skip checking them in future iterations
+                transitive_preds.update(get_causal_ancestors(j))
 
-        if curr_causal_preds:
-            # Transitive reduction: remove j if it's already a causal ancestor of another
-            # causal pred k. Only traverse causal edges — timing-fallback edges do not
-            # create transitive relationships that should suppress direct causal deps.
-            direct_preds = {
-                j: dep_type
-                for j, dep_type in curr_causal_preds.items()
-                if not any(is_causal_ancestor(j, k) for k in curr_causal_preds.keys() if k != j)
-            }
-            predecessor_indices[i].update(direct_preds)
+        # All predecessors in curr_causal_preds are direct (not transitive)
+        # because we skipped transitive ones in the loop above
+        predecessor_indices[i].update(curr_causal_preds)
 
         """
         Add a temporal fallback predecessor (the closest non-overlapping event) if one exists.
@@ -969,7 +996,7 @@ def build_graph(
         ancestor_event_ids = [event_ids[j] for j in ancestor_idxs]
 
         # Decompose input into message-level segments
-        segments = decompose_input(rc, ancestor_calls, ancestor_event_ids)
+        segments = decompose_input(rc, ancestor_calls, ancestor_event_ids, output_matches_for_substitutions)
 
         # Validate that segment message counts sum to total messages
         total_segment_messages = sum(seg.message_count for seg in segments)
