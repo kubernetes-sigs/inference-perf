@@ -6,6 +6,7 @@ from redis.exceptions import ResponseError
 
 logger = logging.getLogger(__name__)
 
+
 class RedisClient:
     def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0, password: Optional[str] = None):
         self.host = host
@@ -15,13 +16,7 @@ class RedisClient:
         self.redis: Optional[redis.Redis] = None
 
     async def connect(self):
-        self.redis = redis.Redis(
-            host=self.host,
-            port=self.port,
-            db=self.db,
-            password=self.password,
-            decode_responses=True
-        )
+        self.redis = redis.Redis(host=self.host, port=self.port, db=self.db, password=self.password, decode_responses=True)
         return self
 
     async def close(self):
@@ -50,13 +45,10 @@ class RedisClient:
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         entries = await self.redis.xreadgroup(
-            groupname=group_name,
-            consumername=consumer_name,
-            streams={stream_name: ">"},
-            count=count
+            groupname=group_name, consumername=consumer_name, streams={stream_name: ">"}, count=count
         )
         tasks = []
-        for stream, messages in entries:
+        for _stream, messages in entries:
             for msg_id, data in messages:
                 task = json.loads(data["data"])
                 task["_id"] = msg_id

@@ -122,7 +122,9 @@ def main_cli() -> None:
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
     add_pydantic_args(parser, Config)
-    parser.add_argument("--mode", help="Running mode", default="local", choices=["local", "orchestrator", "worker", "tui", "submit"])
+    parser.add_argument(
+        "--mode", help="Running mode", default="local", choices=["local", "orchestrator", "worker", "tui", "submit"]
+    )
     parser.add_argument("--redis-host", help="Redis host", default="localhost")
     parser.add_argument("--redis-port", help="Redis port", type=int, default=6379)
     parser.add_argument("--worker-id", help="Worker ID (required in worker mode)", default=None)
@@ -138,7 +140,17 @@ def main_cli() -> None:
     if args.mode in ["local", "submit"] and not args.config_file:
         parser.error(f"argument -c/--config_file is required in {args.mode} mode")
 
-    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level", "mode", "redis_host", "redis_port", "worker_id", "headless"}
+    base_args = {
+        "config_file",
+        "analyze",
+        "unified_analysis_dir",
+        "log_level",
+        "mode",
+        "redis_host",
+        "redis_port",
+        "worker_id",
+        "headless",
+    }
     cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
     cli_overrides = unflatten_dict(cli_overrides_flat)
 
@@ -381,23 +393,24 @@ def main_cli() -> None:
 
     reports = None
     if args.mode == "submit":
+
         async def run_submit_flow():
             await redis_client.connect()
-            
+
             # Check if job is already running
             global_start_time = await redis_client.redis.get("global_start_time")
             if global_start_time:
                 print("Error: A job is already running. Please stop it before submitting a new one.")
                 return
-                
+
             # Serialize config to JSON
             config_json = config.model_dump_json()
-            
+
             # Push to job_stream
             job_id_bytes = await redis_client.redis.xadd("job_stream", {"config": config_json})
-            job_id = job_id_bytes.decode('utf-8') if isinstance(job_id_bytes, bytes) else job_id_bytes
+            job_id = job_id_bytes.decode("utf-8") if isinstance(job_id_bytes, bytes) else job_id_bytes
             print(f"Job submitted successfully with ID: {job_id}")
-            
+
             tui_task = None
             if not args.headless:
                 # Start TUI to monitor the job
@@ -405,34 +418,35 @@ def main_cli() -> None:
                 tui_task = asyncio.create_task(tui.run())
             else:
                 print("Running in headless mode. No TUI will be displayed.")
-            
+
             # Wait for completion on job_status channel
             pubsub = redis_client.redis.pubsub()
             await pubsub.subscribe("job_status")
-            
+
             print("Monitoring job status...")
             while True:
                 message = await pubsub.get_message(ignore_subscribe_messages=True)
                 if message:
                     import json
+
                     data = json.loads(message["data"])
                     if data.get("job_id") == job_id and data.get("status") == "completed":
                         print("Job completed!")
                         break
                 await asyncio.sleep(1)
-                
+
             # Cancel TUI task after job completion if it was running
             if tui_task:
                 tui_task.cancel()
-            
+
             # Now generate reports!
             print("Generating reports...")
             redis_collector = RedisRequestDataCollector(redis_client, "results_stream")
             await redis_collector.reload_metrics()
-            
+
             global_start_str = await redis_client.redis.get("global_start_time")
             start_time = float(global_start_str) if global_start_str else time.time()
-            
+
             runtime_stages = {}
             current_time = start_time
             for i, stage in enumerate(config.load.stages):
@@ -441,12 +455,12 @@ def main_cli() -> None:
                     rate=stage.rate,
                     start_time=current_time,
                     end_time=current_time + stage.duration,
-                    status=StageStatus.COMPLETED
+                    status=StageStatus.COMPLETED,
                 )
                 current_time += stage.duration
-                
+
             reportgen.metrics_collector = redis_collector
-            
+
             reports = await reportgen.generate_reports(
                 report_config=config.report,
                 runtime_parameters=PerfRuntimeParameters(
@@ -456,19 +470,20 @@ def main_cli() -> None:
                     stages=runtime_stages,
                 ),
             )
-            
+
             # Save Reports
             for storage_client in storage_clients:
                 storage_client.save_report(reports)
-
 
             # Print summary table to CLI
             print_summary_table(reports)
 
         import signal
+
         def signal_handler(sig, frame):
             print("\nCtrl+C detected, canceling job...")
             import redis as sync_redis
+
             try:
                 r = sync_redis.Redis(host=args.redis_host, port=args.redis_port)
                 r.set("cancel_job", "1")
@@ -476,24 +491,25 @@ def main_cli() -> None:
             except Exception as e:
                 print(f"Failed to send cancellation signal to Redis: {e}")
             sys.exit(0)
-            
+
         signal.signal(signal.SIGINT, signal_handler)
-        
+
         asyncio.run(run_submit_flow())
         return
 
     elif args.mode == "orchestrator":
+
         async def run_orchestrator_daemon():
             orchestrator = Orchestrator(redis_client=redis_client)
             await orchestrator.start_daemon()
 
         asyncio.run(run_orchestrator_daemon())
         return
-        
+
     elif args.mode == "worker":
         if not args.worker_id:
             parser.error("--worker-id is required in worker mode")
-            
+
         worker = DistributedWorker(
             worker_id=args.worker_id,
             redis_client=redis_client,
@@ -502,16 +518,16 @@ def main_cli() -> None:
             group_name="worker_group",
             results_stream="results_stream",
             telemetry_channel="telemetry_channel",
-            max_concurrency=config.load.worker_max_concurrency if config.load else 10
+            max_concurrency=config.load.worker_max_concurrency if config.load else 10,
         )
         asyncio.run(worker.run())
         return
-        
+
     elif args.mode == "tui":
         tui = TUIDashboard(redis_client=redis_client, channel="telemetry_channel")
         asyncio.run(tui.run())
         return
-        
+
     else:
         # Local mode
         perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
@@ -527,7 +543,7 @@ def main_cli() -> None:
         end_time = time.time()
         duration = end_time - start_time
         runtime_stages = loadgen.stage_runtime_info
-        
+
         # Enrich session metrics before generating reports
         if session_metrics_collector:
             session_metrics_collector.enrich_metrics(reportgen.metrics_collector.get_metrics())
@@ -549,7 +565,7 @@ def main_cli() -> None:
 
         # Print summary table to CLI
         print_summary_table(reports)
-        
+
     if args.mode == "local":
         perfrunner.stop()
 

@@ -384,9 +384,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Translate token times if available to wall-clock scale
         if response_info and response_info.output_token_times:
-            response_info.output_token_times = [
-                start_wall + (t - start_perf) for t in response_info.output_token_times
-            ]
+            response_info.output_token_times = [start_wall + (t - start_perf) for t in response_info.output_token_times]
 
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
