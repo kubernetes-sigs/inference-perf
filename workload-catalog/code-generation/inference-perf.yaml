@@ -13,7 +13,7 @@ load:
     concurrency_level: 20
   num_workers: 1
 api:
-  type: chat
+  type: completion
   streaming: true
 server:
   type: vllm
