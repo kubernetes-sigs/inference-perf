@@ -1,0 +1,19 @@
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 5
+api:
+  type: completion
+server:
+  type: vllm
+  model_name: dummy-model
+  base_url: http://localhost:8000
+tokenizer:
+  pretrained_model_name_or_path: gpt2
+data:
+  type: synthetic
+  input_distribution:
+    total_count: 10
+  output_distribution:
+    total_count: 10

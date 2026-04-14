@@ -4,8 +4,18 @@ import time
 import json
 from typing import Any, Optional
 from inference_perf.config import Config, LoadConfig, DataConfig, APIConfig, DataGenType
-from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
-from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.apis import LazyLoadInferenceAPIData
+from inference_perf.datagen import (
+    MockDataGenerator,
+    HFShareGPTDataGenerator,
+    SyntheticDataGenerator,
+    RandomDataGenerator,
+    SharedPrefixDataGenerator,
+    CNNDailyMailDataGenerator,
+    InfinityInstructDataGenerator,
+    BillsumConversationsDataGenerator,
+    OTelTraceReplayDataGenerator,
+)
 from inference_perf.distributed.redis_client import RedisClient
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -53,13 +63,29 @@ class Orchestrator:
 
         # Initialize data generator
         datagen: Any
-        if data_config.type == DataGenType.OTelTraceReplay:
+        if data_config.type == DataGenType.Mock:
+            datagen = MockDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.ShareGPT:
+            datagen = HFShareGPTDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.Synthetic:
+            datagen = SyntheticDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.Random:
+            datagen = RandomDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.SharedPrefix:
+            datagen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.CNNDailyMail:
+            datagen = CNNDailyMailDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.InfinityInstruct:
+            datagen = InfinityInstructDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.BillsumConversations:
+            datagen = BillsumConversationsDataGenerator(api_config, data_config, tokenizer)
+        elif data_config.type == DataGenType.OTelTraceReplay:
             datagen = OTelTraceReplayDataGenerator(api_config, data_config, tokenizer)
         else:
-            datagen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+            datagen = MockDataGenerator(api_config, data_config, tokenizer)
 
-        # Prime Redis with prompts (skip for OTel replay as tasks carry full data)
-        if data_config.type != DataGenType.OTelTraceReplay:
+        # Prime Redis with prompts (only for SharedPrefix for now, others handled in dispatch)
+        if data_config.type == DataGenType.SharedPrefix:
             await self.prime_redis(datagen)
 
         # Set global start time
@@ -190,28 +216,77 @@ class Orchestrator:
                 await self.redis.push_task(self.stream_name, task)
                 total_requests += 1
         else:
-            # Legacy mode
-            for stage_id, stage in enumerate(load_config.stages):
-                rate = stage.rate
-                duration = stage.duration
-                num_requests = int(rate * duration)
+            # Legacy mode / DataGenerator mode
+            if hasattr(datagen, "prompts") and hasattr(datagen, "flat_output_lens"):
+                # SharedPrefix optimized path (already primed in Redis)
+                for stage_id, stage in enumerate(load_config.stages):
+                    rate = stage.rate
+                    duration = stage.duration
+                    num_requests = int(rate * duration)
 
-                logger.info(f"Staging stage {stage_id}: rate={rate}, duration={duration}, requests={num_requests}")
+                    logger.info(f"Staging stage {stage_id}: rate={rate}, duration={duration}, requests={num_requests}")
 
-                for i in range(num_requests):
-                    data_index = (total_requests + i) % len(datagen.prompts)
-                    task = {
-                        "prompt_field": f"prompt_{data_index}",
-                        "output_len": datagen.flat_output_lens[data_index],
-                        "scheduled_offset": current_offset + (i / rate),
-                        "stage_id": stage_id,
-                        "node_id": f"stage_{stage_id}_req_{i}",
-                        "global_start_time": global_start_time,
-                    }
-                    await self.redis.push_task(self.stream_name, task)
+                    for i in range(num_requests):
+                        data_index = (total_requests + i) % len(datagen.prompts)
+                        task = {
+                            "prompt_field": f"prompt_{data_index}",
+                            "output_len": datagen.flat_output_lens[data_index],
+                            "scheduled_offset": current_offset + (i / rate),
+                            "stage_id": stage_id,
+                            "node_id": f"stage_{stage_id}_req_{i}",
+                            "global_start_time": global_start_time,
+                        }
+                        await self.redis.push_task(self.stream_name, task)
 
-                current_offset += duration
-                total_requests += num_requests
+                    current_offset += duration
+                    total_requests += num_requests
+            else:
+                # Fallback for generators that only support streaming via get_data()
+                logger.info("Using streaming get_data() for dispatching tasks")
+                data_gen = datagen.get_data()
+
+                for stage_id, stage in enumerate(load_config.stages):
+                    rate = stage.rate
+                    duration = stage.duration
+                    num_requests = int(rate * duration)
+
+                    logger.info(f"Staging stage {stage_id}: rate={rate}, duration={duration}, requests={num_requests}")
+
+                    for i in range(num_requests):
+                        try:
+                            data_item = next(data_gen)
+                        except StopIteration:
+                            logger.warning("Data generator exhausted before reaching requested request count.")
+                            break
+
+                        # Materialize if needed
+                        if isinstance(data_item, LazyLoadInferenceAPIData):
+                            real_data = datagen.load_lazy_data(data_item)
+                        else:
+                            real_data = data_item
+
+                        prompt_field = f"prompt_stream_{total_requests + i}"
+
+                        # Store prompt in Redis
+                        if hasattr(real_data, "prompt") and self.redis.redis is not None:
+                            await self.redis.redis.hset("test_prompts", prompt_field, real_data.prompt)  # type: ignore[misc]
+                        else:
+                            logger.warning(
+                                f"Request {total_requests + i} has no prompt attribute or Redis not connected, skipping prompt storage."
+                            )
+
+                        task = {
+                            "prompt_field": prompt_field,
+                            "output_len": real_data.max_tokens if hasattr(real_data, "max_tokens") else 50,
+                            "scheduled_offset": current_offset + (i / rate),
+                            "stage_id": stage_id,
+                            "node_id": f"stage_{stage_id}_req_{i}",
+                            "global_start_time": global_start_time,
+                        }
+                        await self.redis.push_task(self.stream_name, task)
+
+                    current_offset += duration
+                    total_requests += num_requests
 
         logger.info(f"Dispatched {total_requests} tasks in total.")
         return total_requests
