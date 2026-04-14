@@ -3,8 +3,9 @@ import logging
 import time
 import json
 from typing import Any, Optional
-from inference_perf.config import Config, LoadConfig, DataConfig, APIConfig
+from inference_perf.config import Config, LoadConfig, DataConfig, APIConfig, DataGenType
 from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.distributed.redis_client import RedisClient
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -51,10 +52,14 @@ class Orchestrator:
         tokenizer = CustomTokenizer(tokenizer_config)
 
         # Initialize data generator
-        datagen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+        if data_config.type == DataGenType.OTelTraceReplay:
+            datagen = OTelTraceReplayDataGenerator(api_config, data_config, tokenizer)
+        else:
+            datagen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
 
-        # Prime Redis with prompts
-        await self.prime_redis(datagen)
+        # Prime Redis with prompts (skip for OTel replay as tasks carry full data)
+        if data_config.type != DataGenType.OTelTraceReplay:
+            await self.prime_redis(datagen)
 
         # Set global start time
         global_start_time = time.time() + 5  # Give workers time to start
@@ -138,34 +143,76 @@ class Orchestrator:
         logger.info(f"Stored {len(prompts)} prompts in Redis.")
 
     async def dispatch_tasks(
-        self, datagen: SharedPrefixDataGenerator, load_config: LoadConfig, global_start_time: float
+        self, datagen: Any, load_config: LoadConfig, global_start_time: float
     ) -> int:
         logger.info("Dispatching tasks...")
 
         total_requests = 0
         current_offset = 0.0
 
-        for stage_id, stage in enumerate(load_config.stages):
-            rate = stage.rate
-            duration = stage.duration
-            num_requests = int(rate * duration)
+        if isinstance(datagen, OTelTraceReplayDataGenerator):
+            # OTel replay mode
+            logger.info(f"Dispatching OTel replay tasks from {len(datagen.all_events)} events")
+            
+            # Count total events per session
+            session_counts = {}
+            for event in datagen.all_events:
+                session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
+                session_counts[session_id] = session_counts.get(session_id, 0) + 1
+                
+            for event in datagen.all_events:
+                session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
+                # Convert input segments to dicts
+                input_segments = []
+                for seg in event.input_segments:
+                    seg_dict = {
+                        "type": seg.type,
+                        "message_count": seg.message_count,
+                        "token_count": seg.token_count,
+                    }
+                    if seg.source_event_id:
+                        seg_dict["source_event_id"] = seg.source_event_id
+                    input_segments.append(seg_dict)
 
-            logger.info(f"Staging stage {stage_id}: rate={rate}, duration={duration}, requests={num_requests}")
-
-            for i in range(num_requests):
-                data_index = (total_requests + i) % len(datagen.prompts)
                 task = {
-                    "prompt_field": f"prompt_{data_index}",
-                    "output_len": datagen.flat_output_lens[data_index],
-                    "scheduled_offset": current_offset + (i / rate),
-                    "stage_id": stage_id,
-                    "node_id": f"stage_{stage_id}_req_{i}",
+                    "type": "otel_trace_replay",
+                    "event_id": event.event_id,
+                    "messages": event.messages,
+                    "predecessor_event_ids": event.predecessor_event_ids,
+                    "wait_ms": event.wait_ms,
+                    "input_segments": input_segments,
+                    "scheduled_offset": event.t_start_ms / 1000.0,
+                    "stage_id": 0,
+                    "node_id": event.event_id,
                     "global_start_time": global_start_time,
+                    "expected_output_tokens": event.expected_output_tokens,
+                    "total_events_in_session": session_counts[session_id],
                 }
                 await self.redis.push_task(self.stream_name, task)
+                total_requests += 1
+        else:
+            # Legacy mode
+            for stage_id, stage in enumerate(load_config.stages):
+                rate = stage.rate
+                duration = stage.duration
+                num_requests = int(rate * duration)
 
-            current_offset += duration
-            total_requests += num_requests
+                logger.info(f"Staging stage {stage_id}: rate={rate}, duration={duration}, requests={num_requests}")
+
+                for i in range(num_requests):
+                    data_index = (total_requests + i) % len(datagen.prompts)
+                    task = {
+                        "prompt_field": f"prompt_{data_index}",
+                        "output_len": datagen.flat_output_lens[data_index],
+                        "scheduled_offset": current_offset + (i / rate),
+                        "stage_id": stage_id,
+                        "node_id": f"stage_{stage_id}_req_{i}",
+                        "global_start_time": global_start_time,
+                    }
+                    await self.redis.push_task(self.stream_name, task)
+
+                current_offset += duration
+                total_requests += num_requests
 
         logger.info(f"Dispatched {total_requests} tasks in total.")
         return total_requests

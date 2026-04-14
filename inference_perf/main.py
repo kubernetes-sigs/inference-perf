@@ -452,14 +452,20 @@ def main_cli() -> None:
             runtime_stages = {}
             current_time = start_time
             for i, stage in enumerate(config.load.stages):
+                # TraceSessionReplayLoadStage uses session_rate instead of rate
+                stage_rate = getattr(stage, "rate", 0.0) or getattr(stage, "session_rate", 0.0) or 0.0
+                
+                # TraceSessionReplayLoadStage uses timeout or inferred duration
+                stage_duration = getattr(stage, "duration", 0.0) or getattr(stage, "timeout", 0.0) or 10.0
+                
                 runtime_stages[i] = StageRuntimeInfo(
                     stage_id=i,
-                    rate=stage.rate,
+                    rate=stage_rate,
                     start_time=current_time,
-                    end_time=current_time + stage.duration,
+                    end_time=current_time + stage_duration,
                     status=StageStatus.COMPLETED,
                 )
-                current_time += stage.duration
+                current_time += stage_duration
 
             reportgen.metrics_collector = redis_collector
 

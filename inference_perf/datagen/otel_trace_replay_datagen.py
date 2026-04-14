@@ -79,6 +79,7 @@ from inference_perf.apis import (
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig
+from inference_perf.distributed.redis_client import RedisClient
 from inference_perf.datagen.base import SessionGenerator, LazyLoadDataMixin
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     InputSegment,
@@ -407,6 +408,119 @@ class EventOutputRegistry:
         return output
 
 
+class RedisEventOutputRegistry(EventOutputRegistry):
+    """Redis-based registry mapping event_id → actual output text and input messages.
+
+    Inherits from EventOutputRegistry to reuse the local cache for synchronous lookups
+    after they have been fetched asynchronously in require_async.
+    """
+
+    def __init__(self, redis_client: RedisClient, job_id: str) -> None:
+        super().__init__()
+        self.redis_client = redis_client
+        self.job_id = job_id
+
+    def record(self, event_id: str, output_text: str, messages: List[Any]) -> None:
+        super().record(event_id, output_text, messages)
+        asyncio.create_task(self._record_redis(event_id, output_text, messages))
+
+    async def _record_redis(self, event_id: str, output_text: str, messages: List[Any]) -> None:
+        await self.redis_client.record_event_output(self.job_id, event_id, output_text, messages)
+        await self.redis_client.signal_event_completion(self.job_id, event_id)
+
+    async def require_async(self, event_id: str, timeout_sec: float = 3600.0) -> str:
+        output = self.get_output_by_event_id(event_id)
+        if output is not None:
+            return output
+
+        output = await self.redis_client.get_event_output(self.job_id, event_id)
+        if output is not None:
+            messages = await self.redis_client.get_event_messages(self.job_id, event_id)
+            super().record(event_id, output, messages or [])
+            return output
+
+        pubsub = await self.redis_client.get_subscriber()
+        channel = f"otel:{self.job_id}:event_completed:{event_id}"
+        await pubsub.subscribe(channel)
+
+        start_time = time.time()
+        try:
+            while True:
+                if time.time() - start_time > timeout_sec:
+                    raise TimeoutError(f"Timed out waiting for event {event_id}")
+
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message:
+                    status = message["data"]
+                    if status == "failed":
+                        raise EventFailedError(event_id)
+                    elif status == "completed":
+                        output = await self.redis_client.get_event_output(self.job_id, event_id)
+                        if output is not None:
+                            messages = await self.redis_client.get_event_messages(self.job_id, event_id)
+                            super().record(event_id, output, messages or [])
+                            return output
+                        else:
+                            raise RuntimeError(f"Signal received but output missing for {event_id}")
+                await asyncio.sleep(0.1)
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+
+
+class RedisWorkerSessionTracker(WorkerSessionTracker):
+    """Tracks session state in Redis for distributed mode.
+
+    Replaces WorkerSessionTracker when running in distributed mode.
+    """
+
+    def __init__(self, redis_client: RedisClient, job_id: str, total_events: int) -> None:
+        super().__init__()
+        self.redis_client = redis_client
+        self.job_id = job_id
+        self.total_events = total_events
+
+    async def is_session_failed(self, session_id: str) -> bool:
+        if not self.redis_client.redis:
+            return False
+        return await self.redis_client.redis.sismember(
+            f"otel:{self.job_id}:failed_sessions", session_id
+        )
+
+    def record_event_completed(
+        self, session_id: str, event_id: str, completion_time: float
+    ) -> None:
+        asyncio.create_task(
+            self._record_event_completed_redis(session_id, event_id, completion_time)
+        )
+
+    async def _record_event_completed_redis(
+        self, session_id: str, event_id: str, completion_time: float
+    ) -> None:
+        if not self.redis_client.redis:
+            return
+        key = f"otel:{self.job_id}:session:{session_id}:completions"
+        await self.redis_client.redis.hset(key, event_id, str(completion_time))
+
+        # Check completion
+        completed_count = await self.redis_client.redis.hlen(key)
+        if completed_count == self.total_events:
+            logger.info(f"Session {session_id} completed all events in Redis")
+            # Publish completion
+            channel = f"otel:{self.job_id}:session_completed:{session_id}"
+            is_failed = await self.is_session_failed(session_id)
+            await self.redis_client.redis.publish(
+                channel, "failed" if is_failed else "completed"
+            )
+
+    async def mark_session_failed(self, session_id: str) -> None:
+        if not self.redis_client.redis:
+            return
+        await self.redis_client.redis.sadd(
+            f"otel:{self.job_id}:failed_sessions", session_id
+        )
+
+
 # ---------------------------------------------------------------------------
 # OTelChatCompletionAPIData — captures output and registers it in the registry
 # ---------------------------------------------------------------------------
@@ -477,7 +591,12 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         session_id = self._extract_session_id()
 
         # Pre-wait check: if session already failed, skip immediately.
-        if self.worker_tracker.is_session_failed(session_id):
+        if isinstance(self.worker_tracker, RedisWorkerSessionTracker):
+            is_failed = await self.worker_tracker.is_session_failed(session_id)
+        else:
+            is_failed = self.worker_tracker.is_session_failed(session_id)
+
+        if is_failed:
             logger.info(f"Event {self.event_id} skipping - session {session_id} has failed (pre-wait check)")
             self.skip_request = True
             self.registry.record_failure(self.event_id)
@@ -600,14 +719,20 @@ class OTelChatCompletionAPIData(ChatCompletionAPIData):
         self.worker_tracker.record_event_completed(session_id, event_id, completion_time)
         logger.debug(f"Recorded event completion in worker tracker for {self.event_id}")
 
-        # Check if this was the last event in the session
+        # Handle completion check differently for Redis mode
+        if isinstance(self.worker_tracker, RedisWorkerSessionTracker):
+            # In Redis mode, completion tracking is handled asynchronously within
+            # record_event_completed to avoid blocking the sync on_completion call.
+            return
+
+        # Legacy mode completion check
         completed_count = self.worker_tracker.get_session_event_count(session_id)
 
         if completed_count == self.total_events_in_session:
             # Session complete! Notify main process via queue
             logger.debug(f"Session {session_id} completed all {self.total_events_in_session} events in worker")
 
-            # Gather completion data (event_ids are already unqualified in nested structure)
+            # Gather completion data
             completion_data = {
                 "session_id": session_id,
                 "completion_time": completion_time,

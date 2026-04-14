@@ -79,3 +79,49 @@ class RedisClient:
         if not self.redis:
             raise RuntimeError("Redis client not connected")
         return self.redis.pubsub()
+
+    # OTel Event Coordination Operations
+    async def record_event_output(self, job_id: str, event_id: str, output_text: str, messages: List[Any]) -> None:
+        """Record event output and messages in Redis."""
+        if not self.redis:
+            raise RuntimeError("Redis client not connected")
+        hash_key = f"otel:{job_id}:event_outputs"
+        msg_key = f"otel:{job_id}:event_messages"
+        
+        # Convert messages to dicts if they are not already, to avoid JSON serialization errors
+        serializable_messages = []
+        for m in messages:
+            if hasattr(m, "role") and hasattr(m, "content"):
+                serializable_messages.append({"role": m.role, "content": m.content})
+            elif isinstance(m, dict):
+                serializable_messages.append(m)
+            else:
+                serializable_messages.append(str(m))
+                
+        await self.redis.hset(hash_key, event_id, output_text)
+        await self.redis.hset(msg_key, event_id, json.dumps(serializable_messages))
+
+    async def get_event_output(self, job_id: str, event_id: str) -> Optional[str]:
+        """Get event output from Redis."""
+        if not self.redis:
+            raise RuntimeError("Redis client not connected")
+        hash_key = f"otel:{job_id}:event_outputs"
+        return cast(Optional[str], await self.redis.hget(hash_key, event_id))
+
+    async def get_event_messages(self, job_id: str, event_id: str) -> Optional[List[Any]]:
+        """Get event input messages from Redis."""
+        if not self.redis:
+            raise RuntimeError("Redis client not connected")
+        msg_key = f"otel:{job_id}:event_messages"
+        data = await self.redis.hget(msg_key, event_id)
+        if data:
+            return cast(List[Any], json.loads(data))
+        return None
+
+    async def signal_event_completion(self, job_id: str, event_id: str, failed: bool = False) -> None:
+        """Signal event completion via Pub/Sub."""
+        if not self.redis:
+            raise RuntimeError("Redis client not connected")
+        channel = f"otel:{job_id}:event_completed:{event_id}"
+        status = "failed" if failed else "completed"
+        await self.redis.publish(channel, status)

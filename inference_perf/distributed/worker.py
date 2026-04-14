@@ -104,17 +104,74 @@ class DistributedWorker:
                 await self.redis.ack_task(self.stream_name, self.group_name, task_id)
                 return
 
-            # Fetch prompt from Redis Hash
-            prompt_field = task["prompt_field"]
-            prompt_text = await self.redis.redis.hget("test_prompts", prompt_field)  # type: ignore[misc]
+            # Check task type
+            if task.get("type") == "otel_trace_replay":
+                # OTel replay mode
+                event_id = task["event_id"]
+                messages = task["messages"]
+                predecessor_event_ids = task["predecessor_event_ids"]
+                wait_ms = task["wait_ms"]
+                input_segments = task["input_segments"]
+                expected_output_tokens = task.get("expected_output_tokens", 50)
+                total_events = task.get("total_events_in_session", 1)
 
-            if not prompt_text:
-                logger.error(f"Prompt not found for field {prompt_field}")
-                await self.redis.ack_task(self.stream_name, self.group_name, task_id)
-                return
+                # Initialize Redis registries
+                job_id = await self.redis.redis.get("current_job_id")
+                if job_id:
+                    job_id = job_id.decode("utf-8") if isinstance(job_id, bytes) else job_id
+                else:
+                    job_id = "default_job"
+                
+                from inference_perf.datagen.otel_trace_replay_datagen import RedisEventOutputRegistry, RedisWorkerSessionTracker, OTelChatCompletionAPIData
+                from inference_perf.datagen.otel_trace_to_replay_graph import InputSegment
+                from inference_perf.apis.chat import ChatMessage
+                
+                registry = RedisEventOutputRegistry(self.redis, job_id)
+                tracker = RedisWorkerSessionTracker(self.redis, job_id, total_events)
 
-            # Construct API Data
-            api_data = CompletionAPIData(prompt=prompt_text, max_tokens=task.get("output_len", 50))
+                # Reconstruct InputSegment objects
+                segments = []
+                for seg in input_segments:
+                    segments.append(InputSegment(
+                        type=seg["type"],
+                        message_count=seg["message_count"],
+                        token_count=seg["token_count"],
+                        source_event_id=seg.get("source_event_id")
+                    ))
+
+                chat_messages = [ChatMessage(role=m["role"], content=m["content"]) for m in messages]
+
+                api_data = OTelChatCompletionAPIData(
+                    messages=chat_messages,
+                    max_tokens=expected_output_tokens,
+                    event_id=event_id,
+                    registry=registry,
+                    worker_tracker=tracker,
+                    completion_queue=None,
+                    total_events_in_session=total_events,
+                    input_segments=segments,
+                )
+
+                # Wait for predecessors and substitute!
+                await api_data.wait_for_predecessors_and_substitute()
+                
+                if api_data.skip_request:
+                    logger.info(f"Task {task_id} skipped due to predecessor failure or session skip.")
+                    await self.redis.ack_task(self.stream_name, self.group_name, task_id)
+                    return
+            else:
+                # Legacy mode
+                # Fetch prompt from Redis Hash
+                prompt_field = task["prompt_field"]
+                prompt_text = await self.redis.redis.hget("test_prompts", prompt_field)  # type: ignore[misc]
+
+                if not prompt_text:
+                    logger.error(f"Prompt not found for field {prompt_field}")
+                    await self.redis.ack_task(self.stream_name, self.group_name, task_id)
+                    return
+
+                # Construct API Data
+                api_data = CompletionAPIData(prompt=prompt_text, max_tokens=task.get("output_len", 50))
 
             # Execute request
             start_perf = time.perf_counter()
