@@ -94,6 +94,7 @@ Explore detailed documentation for specific topics:
 | **Goodput** | How to measure requests meeting SLOs. | [goodput.md](./docs/goodput.md) |
 | **Reports** | Understanding generated JSON reports. | [reports.md](./docs/reports.md) |
 | **OTel Instrumentation** | OpenTelemetry integration for tracing. | [otel_instrumentation.md](./docs/otel_instrumentation.md) |
+| **OTel Trace Replay** | Replay production traces with dependency graphs and session metrics. | [examples/otel/README.md](./examples/otel/README.md) |
 | **Analysis** | Visualizations and plots for performance metrics. | [analysis.md](./docs/analysis.md) |
 
 ---
