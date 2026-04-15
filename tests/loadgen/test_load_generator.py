@@ -45,8 +45,6 @@ if sys.version_info < (3, 11):
 if sys.version_info < (3, 10):
     typing.TypeAlias = typing.Any
 
-from inference_perf.loadgen.load_generator import LoadGenerator
-from inference_perf.config import LoadConfig, LoadType
 from inference_perf.datagen import DataGenerator
 
 

@@ -30,6 +30,7 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 # --- Tests from HEAD (Mock based) ---
 
+
 def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     """Create a mock tokenizer that returns predictable text."""
     mock_tokenizer = MagicMock()
@@ -164,8 +165,9 @@ class TestMultiTurnChat:
 
 # --- Tests from d168373 (Tokenizer based) ---
 
+
 @pytest.fixture
-def api_config():
+def api_config() -> APIConfig:
     return APIConfig(
         api_type=APIType.Completion,
         model_name="gpt2",
@@ -174,7 +176,7 @@ def api_config():
 
 
 @pytest.fixture
-def shared_prefix_config():
+def shared_prefix_config() -> SharedPrefix:
     return SharedPrefix(
         num_groups=2,
         num_prompts_per_group=3,
@@ -185,17 +187,19 @@ def shared_prefix_config():
 
 
 @pytest.fixture
-def data_config(shared_prefix_config):
+def data_config(shared_prefix_config: SharedPrefix) -> DataConfig:
     return DataConfig(shared_prefix=shared_prefix_config)
 
 
 @pytest.fixture
-def tokenizer():
+def tokenizer() -> CustomTokenizer:
     tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path="gpt2")
     return CustomTokenizer(tokenizer_config)
 
 
-def test_shared_prefix_datagen_token_counts(api_config, data_config, tokenizer, shared_prefix_config):
+def test_shared_prefix_datagen_token_counts(
+    api_config: APIConfig, data_config: DataConfig, tokenizer: CustomTokenizer, shared_prefix_config: SharedPrefix
+) -> None:
     generator = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
 
     # The generator shuffles prompts, so we test all of them
@@ -206,6 +210,8 @@ def test_shared_prefix_datagen_token_counts(api_config, data_config, tokenizer, 
 
         # The expected total length is system_prompt_len + question_len.
         # There's also a space added between them, which is usually 1 token.
+        assert isinstance(shared_prefix_config.system_prompt_len, int)
+        assert isinstance(shared_prefix_config.question_len, int)
         expected_min_len = shared_prefix_config.system_prompt_len + shared_prefix_config.question_len
 
         token_ids = tokenizer.get_tokenizer().encode(prompt)
