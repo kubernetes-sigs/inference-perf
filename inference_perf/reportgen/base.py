@@ -531,7 +531,14 @@ class ReportGenerator:
                 if metric.stage_id is not None:
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
-                stage_rate = runtime_parameters.stages[stage_id].rate
+                logger.info(
+                    f"Processing stage_id={stage_id}, runtime_parameters.stages type={type(runtime_parameters.stages)}, length={len(runtime_parameters.stages) if isinstance(runtime_parameters.stages, list) else 'N/A'}"
+                )
+                try:
+                    stage_rate = runtime_parameters.stages[stage_id].rate
+                except IndexError as e:
+                    logger.error(f"IndexError accessing stage {stage_id}. stages={runtime_parameters.stages}")
+                    raise e
                 concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
                 if concurrency_level is not None:
                     report_file = ReportFile(

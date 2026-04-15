@@ -1,3 +1,4 @@
+{{- if .Values.job.enabled -}}
 # inference-perf/templates/job.yaml
 apiVersion: batch/v1
 kind: Job
@@ -85,4 +86,5 @@ spec:
 {{- if .Values.s3Path}}
         - name: s3-dataset-volume
           emptyDir: {}
+{{- end }}
 {{- end }}

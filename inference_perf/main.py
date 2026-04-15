@@ -15,7 +15,7 @@ import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
-from typing import List, Optional
+from typing import List, Optional, Any
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
@@ -48,7 +48,7 @@ from inference_perf.client.modelserver import (
     SGlangModelServerClient,
     MockModelServerClient,
 )
-from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
+from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters, StageRuntimeInfo, StageStatus
 from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
 from inference_perf.client.filestorage import (
     StorageClient,
@@ -121,9 +121,14 @@ def main_cli() -> None:
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
-
     add_pydantic_args(parser, Config)
-
+    parser.add_argument(
+        "--mode", help="Running mode", default="local", choices=["local", "orchestrator", "worker", "tui", "submit"]
+    )
+    parser.add_argument("--redis-host", help="Redis host", default="localhost")
+    parser.add_argument("--redis-port", help="Redis port", type=int, default=6379)
+    parser.add_argument("--worker-id", help="Worker ID (required in worker mode)", default=None)
+    parser.add_argument("--headless", help="Run without TUI", action="store_true")
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -132,11 +137,27 @@ def main_cli() -> None:
         analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
-    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level"}
+    if args.mode in ["local", "submit"] and not args.config_file:
+        parser.error(f"argument -c/--config_file is required in {args.mode} mode")
+
+    base_args = {
+        "config_file",
+        "analyze",
+        "unified_analysis_dir",
+        "log_level",
+        "mode",
+        "redis_host",
+        "redis_port",
+        "worker_id",
+        "headless",
+    }
     cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
     cli_overrides = unflatten_dict(cli_overrides_flat)
 
-    config = read_config(args.config_file, cli_overrides)
+    if args.config_file:
+        config = read_config(args.config_file, cli_overrides)
+    else:
+        config = Config()
 
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
@@ -191,8 +212,10 @@ def main_cli() -> None:
             raise Exception("Tokenizer initialization failed") from e
 
     # Define Model Server Client
-    model_server_client: ModelServerClient
-    if config.server:
+    model_server_client: Optional[ModelServerClient]
+    if args.mode == "orchestrator":
+        model_server_client = None
+    elif config.server:
         if config.server.type == ModelServerType.VLLM:
             model_server_client = vLLMModelServerClient(
                 reportgen.get_metrics_collector(),
@@ -257,11 +280,12 @@ def main_cli() -> None:
 
     # Check load exists so datagen can derive total_count from the
     # stage configurations.
-    if config.load is None:
-        raise Exception("load config missing")
+    if args.mode in ["local", "submit"]:
+        if config.load is None:
+            raise Exception("load config missing")
 
-    if len(config.load.stages) == 0 and config.load.sweep is None:
-        raise Exception("Load stages must be configured, or sweep must be configured")
+        if len(config.load.stages) == 0 and config.load.sweep is None:
+            raise Exception("Load stages must be configured, or sweep must be configured")
 
     # Create multiprocessing manager for OTel trace replay if needed
     # Must be created before workers are forked
@@ -359,42 +383,201 @@ def main_cli() -> None:
     if session_metrics_collector:
         reportgen.session_metrics_collector = session_metrics_collector
 
-    # Setup Perf Test Runner
-    perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
+    from inference_perf.distributed.redis_client import RedisClient
+    from inference_perf.distributed.orchestrator import Orchestrator
+    from inference_perf.distributed.worker import DistributedWorker
+    from inference_perf.cli.tui import TUIDashboard
+    from inference_perf.distributed.collector import RedisRequestDataCollector
 
-    start_time = time.time()
+    redis_client = RedisClient(host=args.redis_host, port=args.redis_port)
 
-    # Run Perf Test
-    try:
-        perfrunner.run()
-    except KeyboardInterrupt:
-        pass
+    reports = None
+    if args.mode == "submit":
 
-    end_time = time.time()
-    duration = end_time - start_time  # Calculate the duration of the test
+        async def run_submit_flow() -> None:
+            await redis_client.connect()
+            assert redis_client.redis is not None
+            assert model_server_client is not None
 
-    # Enrich session metrics before generating reports
-    if session_metrics_collector:
-        session_metrics_collector.enrich_metrics(reportgen.metrics_collector.get_metrics())
+            # Check if job is already running
+            global_start_time = await redis_client.redis.get("global_start_time")
+            if global_start_time:
+                print("Error: A job is already running. Please stop it before submitting a new one.")
+                return
 
-    # Generate Reports after the tests
-    reports = perfrunner.generate_reports(
-        report_config=config.report,
-        runtime_parameters=PerfRuntimeParameters(
-            start_time=start_time,
-            duration=duration,
-            model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
-            stages=loadgen.stage_runtime_info,
-        ),
-    )
+            # Serialize config to JSON
+            config_json = config.model_dump_json()
+
+            # Push to job_stream
+            job_id_bytes = await redis_client.redis.xadd("job_stream", {"config": config_json})
+            job_id = job_id_bytes.decode("utf-8") if isinstance(job_id_bytes, bytes) else job_id_bytes
+            print(f"Job submitted successfully with ID: {job_id}")
+
+            tui_task = None
+            if not args.headless:
+                # Start TUI to monitor the job
+                tui = TUIDashboard(redis_client=redis_client, channel="telemetry_channel", config=config)
+                tui_task = asyncio.create_task(tui.run())
+            else:
+                print("Running in headless mode. No TUI will be displayed.")
+
+            # Wait for completion on job_status channel
+            pubsub = redis_client.redis.pubsub()
+            await pubsub.subscribe("job_status")
+
+            print("Monitoring job status...")
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True)
+                if message:
+                    import json
+
+                    data = json.loads(message["data"])
+                    if data.get("job_id") == job_id and data.get("status") == "completed":
+                        print("Job completed!")
+                        break
+                await asyncio.sleep(1)
+
+            # Cancel TUI task after job completion if it was running
+            if tui_task:
+                tui_task.cancel()
+
+            # Now generate reports!
+            print("Generating reports...")
+            redis_collector = RedisRequestDataCollector(redis_client, "results_stream")
+            await redis_collector.reload_metrics()
+
+            global_start_str = await redis_client.redis.get("global_start_time")
+            start_time = float(global_start_str) if global_start_str else time.time()
+
+            runtime_stages = {}
+            current_time = start_time
+            for i, stage in enumerate(config.load.stages):
+                # TraceSessionReplayLoadStage uses session_rate instead of rate
+                stage_rate = getattr(stage, "rate", 0.0) or getattr(stage, "session_rate", 0.0) or 0.0
+
+                # TraceSessionReplayLoadStage uses timeout or inferred duration
+                stage_duration = getattr(stage, "duration", 0.0) or getattr(stage, "timeout", 0.0) or 10.0
+
+                runtime_stages[i] = StageRuntimeInfo(
+                    stage_id=i,
+                    rate=stage_rate,
+                    start_time=current_time,
+                    end_time=current_time + stage_duration,
+                    status=StageStatus.COMPLETED,
+                )
+                current_time += stage_duration
+
+            reportgen.metrics_collector = redis_collector
+
+            reports = await reportgen.generate_reports(
+                report_config=config.report,
+                runtime_parameters=PerfRuntimeParameters(
+                    start_time=start_time,
+                    duration=current_time - start_time,
+                    model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
+                    stages=runtime_stages,
+                ),
+            )
+
+            # Save Reports
+            for storage_client in storage_clients:
+                storage_client.save_report(reports)
+
+            # Print summary table to CLI
+            print_summary_table(reports)
+
+        import signal
+
+        def signal_handler(sig: int, frame: Any) -> None:
+            print("\nCtrl+C detected, canceling job...")
+            import redis as sync_redis
+
+            try:
+                r = sync_redis.Redis(host=args.redis_host, port=args.redis_port)
+                r.set("cancel_job", "1")
+                print("Cancellation signal sent to Redis.")
+            except Exception as e:
+                print(f"Failed to send cancellation signal to Redis: {e}")
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+
+        asyncio.run(run_submit_flow())
+        return
+
+    elif args.mode == "orchestrator":
+
+        async def run_orchestrator_daemon() -> None:
+            orchestrator = Orchestrator(redis_client=redis_client)
+            await orchestrator.start_daemon()
+
+        asyncio.run(run_orchestrator_daemon())
+        return
+
+    elif args.mode == "worker":
+        if not args.worker_id:
+            parser.error("--worker-id is required in worker mode")
+
+        assert model_server_client is not None
+        worker = DistributedWorker(
+            worker_id=args.worker_id,
+            redis_client=redis_client,
+            client=model_server_client,
+            stream_name="task_stream",
+            group_name="worker_group",
+            results_stream="results_stream",
+            telemetry_channel="telemetry_channel",
+            max_concurrency=config.load.worker_max_concurrency if config.load else 10,
+        )
+        asyncio.run(worker.run())
+        return
+
+    elif args.mode == "tui":
+        tui = TUIDashboard(redis_client=redis_client, channel="telemetry_channel")
+        asyncio.run(tui.run())
+        return
+
+    else:
+        # Local mode
+        assert model_server_client is not None
+        perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
+
+        start_time = time.time()
+
+        # Run Perf Test
+        try:
+            perfrunner.run()
+        except KeyboardInterrupt:
+            pass
+
+        end_time = time.time()
+        duration = end_time - start_time
+        runtime_stages = loadgen.stage_runtime_info
+
+        # Enrich session metrics before generating reports
+        if session_metrics_collector:
+            session_metrics_collector.enrich_metrics(reportgen.metrics_collector.get_metrics())
+
+        reports = perfrunner.generate_reports(
+            report_config=config.report,
+            runtime_parameters=PerfRuntimeParameters(
+                start_time=start_time,
+                duration=duration,
+                model_server_metrics=model_server_client.get_prometheus_metric_metadata(),
+                stages=runtime_stages,
+            ),
+        )
 
     # Save Reports
-    perfrunner.save_reports(reports=reports)
+    if reports:
+        for storage_client in storage_clients:
+            storage_client.save_report(reports)
 
-    # Print summary table to CLI
-    print_summary_table(reports)
+        # Print summary table to CLI
+        print_summary_table(reports)
 
-    perfrunner.stop()
+    if args.mode == "local":
+        perfrunner.stop()
 
 
 if __name__ == "__main__":

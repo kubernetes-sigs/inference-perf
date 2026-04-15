@@ -1,0 +1,26 @@
+load:
+  type: constant
+  stages:
+  - rate: 1
+    duration: 10
+api:
+  type: completion
+server:
+  type: vllm
+  model_name: dummy-model
+  base_url: http://localhost:8000
+tokenizer:
+  pretrained_model_name_or_path: gpt2
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_unique_system_prompts: 2
+    num_users_per_system_prompt: 2
+    system_prompt_len: 10
+    system_prompt_tokens: 10
+    user_prompt_len: 10
+    user_prompt_tokens: 10
+    reference_data_percentile: 50
+report:
+  request_lifecycle:
+    summary: true

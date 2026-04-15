@@ -1,0 +1,35 @@
+{{- if .Values.orchestrator.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inference-perf.fullname" . }}-orchestrator
+  labels:
+    {{- include "inference-perf.labels" . | nindent 4 }}
+    app: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "inference-perf.selectorLabels" . | nindent 6 }}
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "inference-perf.selectorLabels" . | nindent 8 }}
+        app: orchestrator
+    spec:
+      containers:
+      - name: orchestrator
+        image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+        imagePullPolicy: Always
+        command: ["inference-perf"]
+        args:
+          - "--mode"
+          - "orchestrator"
+          - "--redis-host"
+          - "{{ include "inference-perf.fullname" . }}-redis"
+          - "--redis-port"
+          - "6379"
+          - "--log-level"
+          - {{ .Values.logLevel }}
+{{- end }}
