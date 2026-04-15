@@ -28,7 +28,6 @@ import logging
 import requests
 import ssl
 
-from ...datagen.otel_trace_replay_datagen import OTelChatCompletionAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -321,11 +320,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             # This ensures that if request X fails and request Y depends on X's output,
                             # Y raises EventFailedError and skips rather than hanging indefinitely.
                             #
-                            # Note: The original code only logged errors for non-200 responses without
-                            # calling process_failure(). This special handling for OTelChatCompletionAPIData
-                            # ensures proper failure propagation in trace replay scenarios.
-
-                            if isinstance(data, OTelChatCompletionAPIData) and response is not None:
+                            # Note: We call process_failure() for all data types on non-200 responses
+                            # to ensure proper state cleanup (e.g. releasing locks in multi-turn chat)
+                            # and failure propagation.
+                            if response is not None:
                                 error = ErrorResponseInfo(
                                     error_msg=response_content,
                                     error_type=f"HTTP Error {response.status}",
