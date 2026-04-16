@@ -767,7 +767,8 @@ class TestEndToEndSimpleChain:
         gen.worker_tracker = tracker
         gen.session_completion_queue = queue
         gen.api_config = make_api_config()
-        gen.session_graph_state = {session_id: MagicMock(graph=graph)}
+        gen.replay_config = None  # Add missing replay_config attribute
+        gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
 
         from inference_perf.apis import LazyLoadInferenceAPIData
 
@@ -985,3 +986,181 @@ class TestFailurePropagation:
         assert data["session_id"] == "session_1"
         # 3 total - 0 completed before failure - 1 (the failing event itself) = 2 cancelled
         assert data["cancelled_events"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Random Session ID Injection tests
+# ---------------------------------------------------------------------------
+
+
+class TestRandomSessionIDInjection:
+    """Test random session ID injection for KV-cache invalidation."""
+
+    def test_random_string_generation_is_unique_per_session(self) -> None:
+        """Each session gets a unique random string, but events in same session share it."""
+        import uuid
+
+        # Generate two different random strings (simulating two different sessions)
+        random_str1 = uuid.uuid4().hex[:16]
+        random_str2 = uuid.uuid4().hex[:16]
+
+        # Verify they are different and correct length
+        assert random_str1 != random_str2
+        assert len(random_str1) == 16
+        assert len(random_str2) == 16
+
+    def test_events_in_same_session_share_random_string(self) -> None:
+        """Events in the same session should use the same random string."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Same session random string for both events
+        session_random_str = "a1b2c3d4e5f6g7h8"
+
+        api_data1 = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Hello")],
+            max_tokens=50,
+            event_id="session_1:event_0",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            inject_random_session_id=True,
+            session_random_string=session_random_str,
+        )
+
+        api_data2 = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="World")],
+            max_tokens=50,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            inject_random_session_id=True,
+            session_random_string=session_random_str,
+        )
+
+        # Both events in the same session should have the same random string
+        assert api_data1.session_random_string == api_data2.session_random_string
+        assert api_data1.session_random_string == session_random_str
+
+    @pytest.mark.asyncio
+    async def test_unique_segments_get_random_string_injected(self) -> None:
+        """Unique segments have random session string injected when enabled."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Create messages with unique segment
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_1:event_0",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=True,
+            session_random_string="test123456789abc",  # Provide session random string
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message should have random string injected
+        assert len(api_data.messages) == 1
+        assert api_data.messages[0].content is not None
+        assert "[SESS:test123456789abc]" in api_data.messages[0].content
+        assert "What is the capital of France?" in api_data.messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_output_segments_do_not_get_random_string(self) -> None:
+        """Output segments should NOT have random string injected."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Register predecessor output
+        registry.record("session_1:event_0", "Paris is the capital.", [])
+
+        # Create messages with output segment
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+            {"role": "assistant", "content": "Original output"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="session_1:event_0"),
+        ]
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[
+                ChatMessage(role="user", content="What is the capital of France?"),
+                ChatMessage(role="assistant", content="Original output"),
+            ],
+            max_tokens=50,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
+            inject_random_session_id=True,
+            session_random_string="test123456789abc",  # Provide session random string
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # First message (unique) should have random string
+        assert api_data.messages[0].content is not None
+        assert "[SESS:test123456789abc]" in api_data.messages[0].content
+        # Second message (output) should be substituted but NOT have random string
+        assert api_data.messages[1].content == "Paris is the capital."
+        assert "[SESS:" not in api_data.messages[1].content
+
+    @pytest.mark.asyncio
+    async def test_injection_disabled_by_default(self) -> None:
+        """Random string injection is disabled when inject_random_session_id=False."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_1:event_0",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=False,  # Disabled
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message should NOT have random string injected
+        assert api_data.messages[0].content == "What is the capital of France?"
+        assert "[ID:" not in api_data.messages[0].content

@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field, replace as dc_replace
 from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -43,7 +44,7 @@ from inference_perf.apis import (
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
-from inference_perf.config import APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
 from inference_perf.datagen.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -208,6 +209,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     skip_request: bool = False
     expected_output_is_tool_call: bool = False
     expected_output_tool_names: Optional[List[str]] = None
+    # KV-cache invalidation configuration
+    inject_random_session_id: bool = False
+    session_random_string: Optional[str] = None
 
     async def to_payload(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -298,8 +302,16 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             logger.debug(f"Event {self.event_id} waiting {wait_sec:.3f}s (wait_ms={self.wait_ms})")
             await asyncio.sleep(wait_sec)
 
-        if any(seg.type == "output" or seg.type == "shared" for seg in self.input_segments):
-            logger.debug(f"Event {self.event_id} substituting output/shared segments")
+        # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
+        needs_substitution = any(seg.type == "output" or seg.type == "shared" for seg in self.input_segments)
+        needs_random_injection = self.inject_random_session_id and any(seg.type == "unique" for seg in self.input_segments)
+
+        if needs_substitution or needs_random_injection:
+            if needs_substitution:
+                logger.debug(f"Event {self.event_id} substituting output/shared segments")
+            if needs_random_injection:
+                logger.debug(f"Event {self.event_id} injecting random session ID into unique segments")
+
             substituted = self._build_messages_with_substitution()
             # _build_messages_with_substitution calls record_failure and returns
             # early when substitution is not possible (e.g. tool call expected but
@@ -315,7 +327,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 )
                 for m in substituted
             ]
-            logger.debug(f"Event {self.event_id} substitution complete, {len(self.messages)} messages")
+            logger.debug(f"Event {self.event_id} substitution/injection complete, {len(self.messages)} messages")
 
     def _build_messages_with_substitution(self) -> List[Dict[str, Any]]:
         # NOTE: when input_segments is empty, the original_messages list is returned
@@ -430,8 +442,20 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         else:
                             result.append(dict(msg))
             elif seg.type == "unique":
+                # Unique message - inject random session string if enabled
                 for msg in seg_msgs:
-                    result.append(msg)
+                    if self.inject_random_session_id and self.session_random_string:
+                        # Use the session random string passed from SessionGraphState
+                        # Inject random string into message content
+                        msg_copy = dict(msg)
+                        original_content = msg_copy.get("content", "")
+
+                        # Prepend random session identifier to content
+                        msg_copy["content"] = f"[SESS:{self.session_random_string}] {original_content}"
+                        result.append(msg_copy)
+                        logger.debug(f"Event {self.event_id}: injected random session string into unique segment message")
+                    else:
+                        result.append(msg)
             else:
                 result.extend(seg_msgs)
 
@@ -670,7 +694,7 @@ class ReplaySessionState:
     is_active: bool = False
     is_complete: bool = False
     failed: bool = False
-    cancelled_events: int = 0
+    random_string: Optional[str] = None  # Random string for KV-cache invalidation (shared by all events in session)
 
 
 @dataclass
@@ -716,9 +740,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         mp_manager: Optional[SyncManager] = None,
         base_seed: Optional[int] = None,
         num_workers: int = 1,
+        replay_config: Optional[SessionReplayConfig] = None,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
         self.config = config
+        self.replay_config = replay_config
         self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
@@ -736,11 +762,66 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
     def initialize_sessions(self, sessions: List[ReplaySession]) -> None:
         """Finalize generator state from prepared sessions."""
+        # Duplicate sessions if needed to meet total session requirements
+        if self.replay_config and self.replay_config.duplicate_sessions_target is not None:
+            sessions = self._duplicate_sessions_if_needed(sessions, self.replay_config.duplicate_sessions_target)
+
         self.sessions = sessions
         if not self.sessions:
             raise ValueError("No valid replay sessions found")
         self._build_replay_schedule()
         logger.debug("Loaded %d sessions with %d total events", len(self.sessions), len(self.all_events))
+
+    def _duplicate_sessions_if_needed(self, sessions: List[ReplaySession], target_sessions: int) -> List[ReplaySession]:
+        """Duplicate sessions to ensure we have enough for high-concurrency testing.
+
+        This is useful when the trace corpus is smaller than needed for stress testing.
+        Sessions are duplicated with unique IDs to avoid conflicts.
+
+        Args:
+            sessions: List of sessions to potentially duplicate
+            target_sessions: Target number of sessions to reach by duplication
+
+        Returns:
+            List of sessions (original + duplicates if needed)
+        """
+        current_count = len(sessions)
+
+        if current_count >= target_sessions:
+            logger.info(f"Session corpus sufficient: {current_count} sessions available (target: {target_sessions})")
+            return sessions
+
+        # Calculate how many duplicates we need
+        duplicates_needed = target_sessions - current_count
+        logger.warning(
+            f"Session corpus small: {current_count} sessions available. "
+            f"Duplicating to reach {target_sessions} sessions for stress testing."
+        )
+
+        # Duplicate sessions in round-robin fashion
+        original_sessions = list(sessions)
+        duplicate_count = 0
+        session_idx = 0
+
+        while len(sessions) < target_sessions:
+            # Get next session to duplicate (round-robin)
+            source_session = original_sessions[session_idx % len(original_sessions)]
+            session_idx += 1
+            duplicate_count += 1
+
+            # Create duplicate with unique ID
+            duplicate_session = ReplaySession(
+                session_id=f"{source_session.session_id}_dup{duplicate_count}",
+                source_id=source_session.source_id,
+                session_index=source_session.session_index + 10000 + duplicate_count,
+                graph=source_session.graph,
+                start_offset_ms=source_session.start_offset_ms,
+            )
+
+            sessions.append(duplicate_session)
+
+        logger.info(f"Duplicated {duplicates_needed} sessions. Total sessions now: {len(sessions)}")
+        return sessions
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat]
@@ -752,15 +833,23 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         self.all_events = []
 
         for session in self.sessions:
+            # Generate random string for KV-cache invalidation if enabled
+            random_string = None
+            if self.replay_config and self.replay_config.inject_random_session_id:
+                random_string = uuid.uuid4().hex[:16]
+                logger.debug(f"Generated random string for session {session.session_id}: {random_string}")
+
+            # Initialize session graph state
             state = ReplaySessionState(
                 session_id=session.session_id,
                 graph=session.graph,
-                ready_events=set(),
+                ready_events=set(),  # Will be populated when session is activated
                 dispatched_events=set(),
                 completed_events=set(),
                 event_completion_times={},
                 is_active=False,
                 is_complete=False,
+                random_string=random_string,
             )
             self.session_graph_state[session.session_id] = state
 
@@ -1002,6 +1091,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             otel_context=data.otel_context,
             session_id=data.session_id,
             preferred_worker_id=data.preferred_worker_id,
+            # Pass KV-cache invalidation configuration and session random string
+            inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
+            session_random_string=state.random_string if state else None,
         )
 
     def cleanup_session(self, session_id: str) -> None:

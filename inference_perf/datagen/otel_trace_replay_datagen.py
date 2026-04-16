@@ -248,12 +248,22 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         base_seed: Optional[int] = None,
         num_workers: int = 1,
     ) -> None:
-        super().__init__(api_config, config, tokenizer, mp_manager=mp_manager, base_seed=base_seed, num_workers=num_workers)
-
         if not hasattr(config, "otel_trace_replay") or config.otel_trace_replay is None:
             raise ValueError("otel_trace_replay configuration is required for OTelTraceReplayDataGenerator")
 
         self.otel_config = config.otel_trace_replay
+
+        # Pass the replay config to the parent class
+        super().__init__(
+            api_config,
+            config,
+            tokenizer,
+            mp_manager=mp_manager,
+            base_seed=base_seed,
+            num_workers=num_workers,
+            replay_config=self.otel_config,
+        )
+
         self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
@@ -325,52 +335,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         random.seed(self.base_seed)
         random.shuffle(sessions)
         logger.info(f"Randomized session order using seed: {self.base_seed}")
+
         return sessions
-
-    def _duplicate_sessions_if_needed(self) -> None:
-        """Duplicate sessions to ensure we have enough for high-concurrency testing.
-
-        This is useful when the trace corpus is smaller than needed for stress testing.
-        Sessions are duplicated with unique IDs to avoid conflicts.
-        Target: 300 sessions (enough for most test scenarios)
-        """
-        target_sessions = 300
-        current_count = len(self.sessions)
-
-        if current_count >= target_sessions:
-            logger.info(f"Session corpus sufficient: {current_count} sessions available (target: {target_sessions})")
-            return
-
-        # Calculate how many duplicates we need
-        duplicates_needed = target_sessions - current_count
-        logger.warning(
-            f"Session corpus small: {current_count} sessions available. "
-            f"Duplicating to reach {target_sessions} sessions for stress testing."
-        )
-
-        # Duplicate sessions in round-robin fashion
-        original_sessions = list(self.sessions)
-        duplicate_count = 0
-        session_idx = 0
-
-        while len(self.sessions) < target_sessions:
-            # Get next session to duplicate (round-robin)
-            source_session = original_sessions[session_idx % len(original_sessions)]
-            session_idx += 1
-            duplicate_count += 1
-
-            # Create duplicate with unique ID
-            duplicate_session = ReplaySession(
-                session_id=f"{source_session.session_id}_dup{duplicate_count}",
-                source_id=source_session.source_id,
-                session_index=source_session.session_index + 10000 + duplicate_count,
-                graph=source_session.graph,
-                start_offset_ms=source_session.start_offset_ms,
-            )
-
-            self.sessions.append(duplicate_session)
-
-        logger.info(f"Duplicated {duplicates_needed} sessions. Total sessions now: {len(self.sessions)}")
 
     def _process_trace_file(self, trace_file: Path, file_index: int) -> Optional[ReplaySession]:
         """Process a single OTel JSON trace file into a ReplayGraph session."""
