@@ -965,7 +965,9 @@ class LoadGenerator:
                 if not has_open_ended and total_requested > total_sessions:
                     raise ValueError(
                         f"Stages request {total_requested} sessions total but corpus only has "
-                        f"{total_sessions}. Reduce num_sessions across stages or add more trace files."
+                        f"{total_sessions}. Reduce num_sessions across stages, add more trace files, "
+                        f"or set 'duplicate_sessions_target: {total_requested}' in data.otel_trace_replay config "
+                        f"to duplicate sessions to meet the total required across all stages."
                     )
 
         # Create progress context for all stages

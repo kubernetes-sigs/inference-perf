@@ -1164,3 +1164,172 @@ class TestRandomSessionIDInjection:
         # Message should NOT have random string injected
         assert api_data.messages[0].content == "What is the capital of France?"
         assert "[ID:" not in api_data.messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_no_injection_for_original_session_when_flag_disabled(self) -> None:
+        """Case 1: inject_random_session_id=False, original session (not duplicate) -> NO injection."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_001:event_0",  # Original session (no _dup)
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=False,  # Flag disabled
+            session_random_string="test123456789abc",  # Random string available but not used
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message should NOT have random string injected (flag off, not duplicate)
+        assert api_data.messages[0].content == "What is the capital of France?"
+        assert "[SESS:" not in api_data.messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_injection_for_duplicate_session_when_flag_disabled(self) -> None:
+        """Case 2: inject_random_session_id=False, duplicate session -> YES injection (automatic)."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_001_dup1:event_0",  # Duplicate session (has _dup1)
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=False,  # Flag disabled
+            session_random_string="test123456789abc",  # Random string available
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message SHOULD have random string injected (duplicate session, automatic)
+        assert "[SESS:test123456789abc]" in api_data.messages[0].content
+        assert "What is the capital of France?" in api_data.messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_injection_for_original_session_when_flag_enabled(self) -> None:
+        """Case 3: inject_random_session_id=True, original session -> YES injection (flag enabled)."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_001:event_0",  # Original session (no _dup)
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=True,  # Flag enabled
+            session_random_string="test123456789abc",  # Random string available
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message SHOULD have random string injected (flag enabled)
+        assert "[SESS:test123456789abc]" in api_data.messages[0].content
+        assert "What is the capital of France?" in api_data.messages[0].content
+
+    @pytest.mark.asyncio
+    async def test_injection_for_duplicate_session_when_flag_enabled(self) -> None:
+        """Case 4: inject_random_session_id=True, duplicate session -> YES injection (both conditions)."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        messages = [
+            {"role": "user", "content": "What is the capital of France?"},
+        ]
+
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
+        ]
+
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="What is the capital of France?")],
+            max_tokens=50,
+            event_id="session_001_dup1:event_0",  # Duplicate session (has _dup1)
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+            inject_random_session_id=True,  # Flag enabled
+            session_random_string="test123456789abc",  # Random string available
+            input_segments=segments,
+            original_messages=messages,
+        )
+
+        # Trigger substitution
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Message SHOULD have random string injected (both flag and duplicate)
+        assert "[SESS:test123456789abc]" in api_data.messages[0].content
+        assert "What is the capital of France?" in api_data.messages[0].content
+
+    def test_is_duplicate_session_detection(self) -> None:
+        """Test the _is_duplicate_session() method with various session ID patterns."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Create a test instance to access the method
+        api_data = OTelChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="test")],
+            max_tokens=50,
+            event_id="test:event_0",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=1,
+        )
+
+        # Test cases that SHOULD be detected as duplicates
+        assert api_data._is_duplicate_session("session_001_dup1") is True
+        assert api_data._is_duplicate_session("my_session_dup123") is True
+        assert api_data._is_duplicate_session("trace_abc_dup5") is True
+        assert api_data._is_duplicate_session("a_dup999") is True
+
+        # Test cases that should NOT be detected as duplicates
+        assert api_data._is_duplicate_session("session_001") is False
+        assert api_data._is_duplicate_session("my_dup_session") is False  # _dup not at end
+        assert api_data._is_duplicate_session("session_dup") is False  # No number after _dup
+        assert api_data._is_duplicate_session("duplicate_session") is False  # Contains "dup" but wrong pattern
+        assert api_data._is_duplicate_session("session_001_duplicate") is False  # Wrong suffix
