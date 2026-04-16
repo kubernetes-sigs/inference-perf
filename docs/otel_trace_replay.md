@@ -305,6 +305,40 @@ OTel trace replay cannot use the `DataGenerator` model because:
 2. A's actual output must be injected into B's prompt (not the recorded text)
 3. A flat iterator has no way to express "don't yield this yet" or "substitute with live output"
 
+### Layered Architecture: Extensible Session Replay
+
+The session replay implementation uses a layered architecture that separates trace-source-specific logic from the generic session replay runtime:
+
+```
+ReplayGraphSessionGeneratorBase (shared runtime)
+├── Session scheduling & lifecycle
+├── Worker coordination
+├── Output substitution
+└── Completion tracking
+
+OTelTraceReplayDataGenerator (OTel-specific)
+├── OTel trace parsing
+├── Span extraction
+└── Dependency inference → ReplayGraph
+```
+
+**Key components:**
+
+- **`replay_graph_types.py`** — Shared domain types (`ReplayGraph`, `ReplaySession`, `GraphEvent`, `InputSegment`) that are agnostic to the trace source
+- **`replay_graph_session_datagen.py`** — `ReplayGraphSessionGeneratorBase` abstract base class that handles all session replay runtime logic
+- **`otel_trace_replay_datagen.py`** — `OTelTraceReplayDataGenerator` extends the base class and focuses solely on OTel-specific concerns (trace parsing, span extraction, dependency inference)
+
+**Extensibility:**
+
+This architecture enables any generator that produces a `ReplayGraph` to leverage the shared session replay runtime. Future generators (e.g., synthetic conversational workloads, agent framework replays, custom trace formats) can extend `ReplayGraphSessionGeneratorBase` and implement `_load_sessions()` to return `List[ReplaySession]`. The base class handles all coordination:
+
+- Session-to-worker affinity
+- Dependency-aware scheduling
+- Output substitution via `EventOutputRegistry`
+- Failure propagation
+- Session completion tracking
+- Metrics collection
+
 `OTelTraceReplayDataGenerator` works at the granularity of whole *sessions* (one trace file = one session).
 
 ### SessionGenerator API
