@@ -21,7 +21,7 @@ from inference_perf.config import (
     APIConfig,
     APIType,
     ConversationReplayConfig,
-    ConversationReplayDistribution,
+    Distribution,
     DataConfig,
     DataGenType,
 )
@@ -57,12 +57,10 @@ def _make_config(
         seed=seed,
         num_conversations=num_conversations,
         shared_system_prompt_len=shared_system_prompt_len,
-        dynamic_system_prompt_len=ConversationReplayDistribution(type="normal", min=50, max=200, mean=100, std_dev=30),
-        turns_per_conversation=ConversationReplayDistribution(
-            type="normal", min=turns_min, max=turns_max, mean=turns_mean, std_dev=1
-        ),
-        input_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=100, mean=50, std_dev=20),
-        output_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=100, mean=50, std_dev=20),
+        dynamic_system_prompt_len=Distribution(type="normal", min=50, max=200, mean=100, std_dev=30),
+        turns_per_conversation=Distribution(type="normal", min=turns_min, max=turns_max, mean=turns_mean, std_dev=1),
+        input_tokens_per_turn=Distribution(type="normal", min=10, max=100, mean=50, std_dev=20),
+        output_tokens_per_turn=Distribution(type="normal", min=10, max=100, mean=50, std_dev=20),
     )
     data_config = DataConfig(
         type=DataGenType.ConversationReplay,
@@ -184,10 +182,10 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=2,
             shared_system_prompt_len=50,
-            turns_per_conversation=ConversationReplayDistribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
-            input_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            output_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            tool_call_latency_sec=ConversationReplayDistribution(type="fixed", min=5, max=5, mean=5, std_dev=0),
+            turns_per_conversation=Distribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
+            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            tool_call_latency_sec=Distribution(type="fixed", min=5, max=5, mean=5, std_dev=0),
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
@@ -209,10 +207,10 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=3,
             shared_system_prompt_len=50,
-            turns_per_conversation=ConversationReplayDistribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
-            input_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            output_tokens_per_turn=ConversationReplayDistribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            tool_call_latency_sec=ConversationReplayDistribution(type="lognormal", min=1, max=30, mean=8, std_dev=6),
+            turns_per_conversation=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            tool_call_latency_sec=Distribution(type="lognormal", min=1, max=30, mean=8, std_dev=6),
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())

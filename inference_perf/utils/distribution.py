@@ -138,6 +138,9 @@ def sample_from_distribution(
     if rng is None:
         rng = np.random.default_rng()
 
+    if config.type == DistributionType.FIXED:
+        return cast(NDArray[np.int_], np.full(count, int(config.mean), dtype=int))
+
     if config.type == DistributionType.NORMAL:
         samples = rng.normal(loc=config.mean, scale=config.std_dev, size=count)
 

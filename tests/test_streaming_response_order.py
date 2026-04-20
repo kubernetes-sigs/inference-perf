@@ -4,9 +4,11 @@ Verifies that process_response() is called before the response body is consumed,
 so the SSE streaming parser can iterate response.content.
 """
 
+from typing import AsyncGenerator, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientResponse
 
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
@@ -26,7 +28,7 @@ class FakeStreamingResponse:
     def _make_content(self) -> MagicMock:
         content = MagicMock()
 
-        async def iter_any() -> AsyncMock:
+        async def iter_any() -> AsyncGenerator[bytes, None]:
             self._iter_called = True
             if self._text_called:
                 # Stream already consumed by text()
@@ -62,7 +64,7 @@ async def test_streaming_parser_receives_content() -> None:
         max_tokens=100,
     )
 
-    info = await data.process_response(response, config, tokenizer)
+    info = await data.process_response(cast(ClientResponse, response), config, tokenizer)
 
     assert info.output_tokens > 0, "Output tokens should be > 0 when streaming content is present"
     assert response._iter_called, "Streaming iterator should have been called"
@@ -85,6 +87,6 @@ async def test_non_streaming_reads_body() -> None:
         max_tokens=100,
     )
 
-    info = await data.process_response(response, config, tokenizer)
+    info = await data.process_response(cast(ClientResponse, response), config, tokenizer)
 
     assert info.output_tokens == 2

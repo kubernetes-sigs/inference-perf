@@ -51,11 +51,11 @@ from inference_perf.config import (
     APIConfig,
     APIType,
     ConversationReplayConfig,
-    ConversationReplayDistribution,
     DataConfig,
+    Distribution,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.distribution import sample_from_distribution
 
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -215,7 +215,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         # This happens in the worker process (after fork), so each worker safely
         # manages its own copy of the session for its assigned slots.
         if turn_idx == 0 and round_num > 0:
-            self.user_sessions[conv_idx] = LocalUserSession(
+            self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=f"slot_{conv_idx}_convo_{convo_num}",
                 context=bp.system_prompt,
             )
@@ -225,7 +225,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             # Random Qwen3 tokens decode to ~12 chars/token on average, so
             # 225K tokens ≈ 2.7M chars. Reset to fresh context rather than
             # letting vLLM reject the request due to exceeding max_model_len.
-            self.user_sessions[conv_idx] = LocalUserSession(
+            self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=f"slot_{conv_idx}_convo_{convo_num}_reset",
                 context=bp.system_prompt,
             )
@@ -236,7 +236,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         return _ConversationReplayAPIData(
             prompt=bp.turn_prompts[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
-            user_session=self.user_sessions[conv_idx],
+            user_session_id=self.user_sessions[conv_idx].user_session_id,
             target_round=round_num,
             tool_call_latency_sec=latency,
         )
@@ -258,17 +258,19 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     # -- Internal ---------------------------------------------------------
 
-    def _sample_distribution(self, dist: ConversationReplayDistribution, count: int) -> List[int]:
-        """Sample ``count`` values from a ConversationReplayDistribution."""
-        arr = generate_distribution(
-            min=dist.min,
-            max=dist.max,
-            mean=dist.mean,
-            std_dev=dist.std_dev,
-            total_count=count,
-            dist_type=dist.type,
-            rng=self.rng,
-        )
+    @staticmethod
+    def _new_session(user_session_id: str, context: str) -> LocalUserSession:
+        """Create a LocalUserSession and register it in the class-level registry
+        so that UserSessionCompletionAPIData.user_session (which looks up via
+        ``LocalUserSession.get_instance``) resolves to it.
+        """
+        session = LocalUserSession(user_session_id=user_session_id, context=context)
+        LocalUserSession._instances[user_session_id] = session
+        return session
+
+    def _sample_distribution(self, dist: Distribution, count: int) -> List[int]:
+        """Sample ``count`` values from a Distribution."""
+        arr = sample_from_distribution(dist, count, rng=self.rng)
         return [int(v) for v in arr]
 
     def _generate_random_token_text(self, num_tokens: int) -> str:
@@ -359,7 +361,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
             # Create a LocalUserSession with the system prompt as initial context
             self.user_sessions.append(
-                LocalUserSession(
+                self._new_session(
                     user_session_id=f"conv_{conv_id}",
                     context=system_prompt,
                 )

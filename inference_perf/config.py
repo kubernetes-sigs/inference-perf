@@ -97,6 +97,7 @@ class DistributionType(str, Enum):
     LOGNORMAL = "lognormal"
     UNIFORM = "uniform"
     POISSON = "poisson"
+    FIXED = "fixed"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -169,16 +170,6 @@ class SharedPrefix(BaseModel):
         return self
 
 
-class ConversationReplayDistribution(BaseModel):
-    """Distribution config for conversation replay parameters."""
-
-    type: str = "normal"  # normal, lognormal, uniform, fixed
-    min: int = 10
-    max: int = 1024
-    mean: float = 512
-    std_dev: float = 200
-
-
 class ConversationReplayConfig(BaseModel):
     """Configuration for conversation replay data generator.
 
@@ -191,19 +182,13 @@ class ConversationReplayConfig(BaseModel):
     seed: int = Field(42, description="Random seed for deterministic generation")
     num_conversations: int = Field(200, gt=0, description="Number of conversation blueprints to generate")
     shared_system_prompt_len: int = Field(8359, ge=0, description="Fixed shared system prompt length in tokens")
-    dynamic_system_prompt_len: Optional[ConversationReplayDistribution] = Field(
+    dynamic_system_prompt_len: Optional[Distribution] = Field(
         None, description="Per-conversation dynamic system prompt length distribution"
     )
-    turns_per_conversation: Optional[ConversationReplayDistribution] = Field(
-        None, description="Number of turns per conversation distribution"
-    )
-    input_tokens_per_turn: Optional[ConversationReplayDistribution] = Field(
-        None, description="Input tokens per turn distribution"
-    )
-    output_tokens_per_turn: Optional[ConversationReplayDistribution] = Field(
-        None, description="Output tokens per turn distribution"
-    )
-    tool_call_latency_sec: Optional[ConversationReplayDistribution] = Field(
+    turns_per_conversation: Optional[Distribution] = Field(None, description="Number of turns per conversation distribution")
+    input_tokens_per_turn: Optional[Distribution] = Field(None, description="Input tokens per turn distribution")
+    output_tokens_per_turn: Optional[Distribution] = Field(None, description="Output tokens per turn distribution")
+    tool_call_latency_sec: Optional[Distribution] = Field(
         None,
         description=(
             "Per-turn tool execution latency distribution in seconds. "
