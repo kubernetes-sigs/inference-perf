@@ -1,0 +1,50 @@
+{
+  "input_sequence_length": {
+    "min": 2000,
+    "max": 150000,
+    "mean": 45000,
+    "standard_deviation": 35000,
+    "distribution_type": "exponential"
+  },
+  "output_sequence_length": {
+    "min": 50,
+    "max": 4000,
+    "mean": 300,
+    "standard_deviation": 850,
+    "distribution_type": "bimodal"
+  },
+  "number_of_turns": {
+    "min": 2,
+    "max": 50,
+    "mean": 15,
+    "standard_deviation": 8.5,
+    "distribution_type": "normal"
+  },
+  "time_between_turns": {
+    "min": 5,
+    "max": 60,
+    "mean": 25,
+    "standard_deviation": 12,
+    "distribution_type": "normal"
+  },
+  "system_prompt": {
+    "min": 2000,
+    "max": 2000,
+    "mean": 2000,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_length_per_turn": {
+    "min": 500,
+    "max": 15000,
+    "mean": 3000,
+    "standard_deviation": 2500,
+    "distribution_type": "log_normal"
+  },
+  "multi_turn": true,
+  "input_sequence_type_token_ratio": 0.08,
+  "metadata": {
+    "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
+    "prefill_decode_ratio": 150.0
+  }
+}

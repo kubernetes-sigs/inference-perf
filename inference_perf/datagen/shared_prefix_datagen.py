@@ -11,9 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import random
-from typing import Generator, List, Optional
-from inference_perf.utils.distribution import generate_distribution
+from typing import Generator, List, Optional, Union
+
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
@@ -21,12 +20,27 @@ from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.distribution import sample_from_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 
 
 # Shared Prefix Generator generates shared prefix in the prompts that are sent.
 # This can be used to benchmark prefix caching cases.
 class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
+    @staticmethod
+    def _resolve_distribution(
+        param: Union[int, Distribution],
+        legacy_dist: Optional[Distribution] = None,
+    ) -> Distribution:
+        """Resolve a Union[int, Distribution] + optional legacy Distribution into a Distribution."""
+        if isinstance(param, Distribution):
+            return param
+        # param is an int
+        if legacy_dist is not None:
+            return legacy_dist
+        # Fixed value: min=max=mean, std_dev=0
+        return Distribution(mean=float(param), min=param, max=param, std_dev=0.0)
+
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
@@ -55,36 +69,30 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.num_groups: int = self.shared_prefix.num_groups
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
-        self.system_prompt_len: int = self.shared_prefix.system_prompt_len
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
 
-        # Use distribution configs, or fall back to question_len/output_len with std_dev=0
-        q_len = self.shared_prefix.question_len
-        o_len = self.shared_prefix.output_len
-        question_dist = self.shared_prefix.question_distribution or Distribution(min=q_len, max=q_len, mean=q_len, std_dev=0)
-        output_dist = self.shared_prefix.output_distribution or Distribution(min=o_len, max=o_len, mean=o_len, std_dev=0)
+        # Deterministic seeded RNG
+        self.rng: np.random.Generator = np.random.default_rng(self.shared_prefix.seed)
+
+        # Resolve all parameters to Distribution
+        system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
+        question_dist = self._resolve_distribution(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
+        output_dist = self._resolve_distribution(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
+
+        # Generate per-group system prompt lengths
+        self.system_prompt_lens_per_group: List[int] = sample_from_distribution(
+            system_prompt_dist, self.num_groups, self.rng
+        ).tolist()
 
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
 
         for _ in range(self.num_groups):
-            question_lens = generate_distribution(
-                question_dist.min,
-                question_dist.max,
-                question_dist.mean,
-                question_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
+            question_lens = sample_from_distribution(question_dist, self.num_prompts_per_group, self.rng)
             self.question_len_list_per_group.append(question_lens.tolist())
 
-            output_lens = generate_distribution(
-                output_dist.min,
-                output_dist.max,
-                output_dist.mean,
-                output_dist.std_dev,
-                self.shared_prefix.num_prompts_per_group,
-            )
+            output_lens = sample_from_distribution(output_dist, self.num_prompts_per_group, self.rng)
             self.output_len_list_per_group.append(output_lens.tolist())
 
         self.prompts: List[str] = []
@@ -114,7 +122,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             return UserSessionCompletionAPIData(
                 prompt=self.prompts[i],
                 max_tokens=output_len,
-                user_session=self.user_sessions[user_id],
+                user_session_id=self.user_sessions[user_id].user_session_id,
                 target_round=round,
             )
         else:
@@ -134,13 +142,11 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Generates a list of random token IDs of a specified length."""
         if length == 0:
             return []
-        # np.random.randint's high parameter is exclusive
-        return np.random.randint(0, self.vocab_size, size=length, dtype=np.int64).tolist()  # type: ignore[no-any-return]
+        return self.rng.integers(0, self.vocab_size, size=length, dtype=np.int64).tolist()  # type: ignore[no-any-return]
 
     def _generate_prompts(self) -> None:
         """Pre-generates all prompts based on the configuration."""
         if self.tokenizer is None:
-            # This check is defensive; __init__ should have already validated this.
             raise ValueError("Tokenizer is not available for generating prompts.")
 
         if self.shared_prefix is None:
@@ -149,8 +155,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         hf_tokenizer = self.tokenizer.get_tokenizer()
 
         for group_id in range(self.num_groups):
-            # Generate a shared prefix (system prompt)
-            shared_prefix_token_ids = self._generate_random_token_ids(self.system_prompt_len)
+            # Generate a shared prefix (system prompt) with per-group length
+            sys_prompt_len = self.system_prompt_lens_per_group[group_id]
+            shared_prefix_token_ids = self._generate_random_token_ids(sys_prompt_len)
             shared_prefix_text = hf_tokenizer.decode(shared_prefix_token_ids, skip_special_tokens=True)
 
             # Batch generate all question token IDs for this group
@@ -184,12 +191,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.output_len_list_per_group[g][p] for g in range(self.num_groups) for p in range(self.num_prompts_per_group)
         ]
 
-        # Shuffle the generated prompts to ensure randomness if served sequentially by different workers
+        # Shuffle using seeded RNG for reproducibility
+        indices = self.rng.permutation(len(self.prompts))
+        self.prompts = [self.prompts[i] for i in indices]
+        self.flat_output_lens = [self.flat_output_lens[i] for i in indices]
         if self.enable_multi_turn_chat:
-            # no need to sync shuffles - multi-round initial prompt does not include system prompt
-            random.shuffle(self.user_sessions)
-        else:
-            # Shuffle prompts and output lengths in sync
-            combined = list(zip(self.prompts, self.flat_output_lens, strict=True))
-            random.shuffle(combined)
-            self.prompts, self.flat_output_lens = [list(t) for t in zip(*combined, strict=True)]
+            self.user_sessions = [self.user_sessions[i] for i in indices]

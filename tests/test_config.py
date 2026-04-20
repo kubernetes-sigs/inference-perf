@@ -15,6 +15,8 @@ from inference_perf.config import (
     APIType,
     Config,
     DataGenType,
+    Distribution,
+    DistributionType,
     LoadType,
     MetricsClientType,
     deep_merge,
@@ -29,6 +31,8 @@ from inference_perf.config import (
 )
 import os
 import tempfile
+
+import pytest
 import yaml
 
 
@@ -216,3 +220,143 @@ def test_prometheus_client_config_validation() -> None:
     # Neither set
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(google_managed=False)
+
+
+def test_shared_prefix_inline_distribution() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {
+                    "num_groups": 5,
+                    "question_len": {
+                        "type": "skew_normal",
+                        "mean": 200,
+                        "std_dev": 80,
+                        "skew": 2.5,
+                        "min": 10,
+                        "max": 2000,
+                    },
+                },
+            }
+        }
+    )
+    sp = config.data.shared_prefix
+    assert sp is not None
+    assert isinstance(sp.question_len, Distribution)
+    assert sp.question_len.type == DistributionType.SKEW_NORMAL
+    assert sp.question_len.mean == 200
+    assert sp.question_len.skew == 2.5
+
+
+def test_shared_prefix_fixed_int_unchanged() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {"question_len": 75},
+            }
+        }
+    )
+    sp = config.data.shared_prefix
+    assert sp is not None
+    assert sp.question_len == 75
+    assert isinstance(sp.question_len, int)
+
+
+def test_shared_prefix_ambiguous_distribution_error() -> None:
+    with pytest.raises(Exception, match="Cannot specify both"):
+        Config.model_validate(
+            {
+                "data": {
+                    "type": DataGenType.SharedPrefix,
+                    "shared_prefix": {
+                        "question_len": {
+                            "type": "normal",
+                            "mean": 200,
+                            "min": 10,
+                            "max": 2000,
+                            "std_dev": 50,
+                        },
+                        "question_distribution": {
+                            "min": 10,
+                            "max": 1024,
+                            "mean": 512,
+                            "std_dev": 200,
+                        },
+                    },
+                }
+            }
+        )
+
+
+def test_shared_prefix_legacy_distribution_compat() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {
+                    "question_len": 50,
+                    "question_distribution": {
+                        "min": 10,
+                        "max": 1024,
+                        "mean": 512,
+                        "std_dev": 200,
+                    },
+                },
+            }
+        }
+    )
+    sp = config.data.shared_prefix
+    assert sp is not None
+    assert sp.question_len == 50
+    assert sp.question_distribution is not None
+    assert sp.question_distribution.mean == 512
+
+
+def test_shared_prefix_seed_field() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {"seed": 42},
+            }
+        }
+    )
+    assert config.data.shared_prefix is not None
+    assert config.data.shared_prefix.seed == 42
+
+
+def test_distribution_variance_conversion() -> None:
+    d = Distribution(type=DistributionType.NORMAL, mean=100.0, variance=6400.0, std_dev=0.0)
+    assert abs(d.std_dev - 80.0) < 1e-6
+
+
+def test_distribution_both_variance_and_std_dev_error() -> None:
+    with pytest.raises(Exception, match="Specify either"):
+        Distribution(type=DistributionType.NORMAL, mean=100.0, std_dev=10.0, variance=100.0)
+
+
+def test_goodput_config_parsing() -> None:
+    config_content = {
+        "report": {
+            "goodput": {
+                "constraints": {
+                    "ttft": 0.5,
+                    "tpot": 0.1,
+                },
+            }
+        }
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+
+    try:
+        config = read_config(tmp_path)
+        assert config.report.goodput is not None
+        assert config.report.goodput.constraints["ttft"] == 0.5
+        assert config.report.goodput.constraints["tpot"] == 0.1
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

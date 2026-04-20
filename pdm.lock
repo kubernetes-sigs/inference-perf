@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:7afcc4c11c354168d2ccb268671389f88cda2279e2bb7cc11a1d2f8e38a001f9"
+content_hash = "sha256:45f19ab12efb05d131467dadd696944891e181789f7a8c343103a2c2406b1faa"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -2737,6 +2737,20 @@ files = [
 ]
 
 [[package]]
+name = "pytest-picked"
+version = "0.5.1"
+requires_python = ">=3.8"
+summary = "Run the tests related to the changed files"
+groups = ["dev"]
+dependencies = [
+    "pytest>=3.7.0",
+]
+files = [
+    {file = "pytest_picked-0.5.1-py3-none-any.whl", hash = "sha256:af65c4763b51dc095ae4bc5073a962406902422ad9629c26d8b01122b677d998"},
+    {file = "pytest_picked-0.5.1.tar.gz", hash = "sha256:6634c4356a560a5dc3dba35471865e6eb06bbd356b56b69c540593e9d5620ded"},
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
@@ -3307,7 +3321,7 @@ version = "2026.1"
 requires_python = ">=2"
 summary = "Provider of IANA time zone data"
 groups = ["default"]
-marker = "sys_platform == \"win32\" or sys_platform == \"emscripten\""
+marker = "sys_platform == \"emscripten\" or sys_platform == \"win32\""
 files = [
     {file = "tzdata-2026.1-py2.py3-none-any.whl", hash = "sha256:4b1d2be7ac37ceafd7327b961aa3a54e467efbdb563a23655fbfe0d39cfc42a9"},
     {file = "tzdata-2026.1.tar.gz", hash = "sha256:67658a1903c75917309e753fdc349ac0efd8c27db7a0cb406a25be4840f87f98"},

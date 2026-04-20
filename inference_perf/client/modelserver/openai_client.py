@@ -28,7 +28,6 @@ import logging
 import requests
 import ssl
 
-from ...datagen.otel_trace_replay_datagen import OTelChatCompletionAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -290,20 +289,27 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                     response = resp
                     try:
-                        if response.status == 200:
-                            # Process response before reading the body so streaming
-                            # parsers (SSE) can iterate response.content. Reading
-                            # response.text() first would consume the stream.
+                        if self.client.api_config.streaming and response.status == 200:
                             response_info = await data.process_response(
                                 response=response,
                                 config=self.client.api_config,
                                 tokenizer=self.client.tokenizer,
                                 lora_adapter=lora_adapter,
                             )
+                            response_content = response_info.extra_info.get("raw_response", "") if response_info else ""
                         else:
-                            # Read body for error responses (not streamed)
+                            # Read response body once to avoid double-read issue
                             response_content = await response.text()
 
+                            if response.status == 200:
+                                response_info = await data.process_response(
+                                    response=response,
+                                    config=self.client.api_config,
+                                    tokenizer=self.client.tokenizer,
+                                    lora_adapter=lora_adapter,
+                                )
+
+                        if response.status != 200:
                             # Handle HTTP error responses (status != 200).
                             #
                             # For OTel trace replay, process_failure() is called to:
@@ -314,11 +320,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             # This ensures that if request X fails and request Y depends on X's output,
                             # Y raises EventFailedError and skips rather than hanging indefinitely.
                             #
-                            # Note: The original code only logged errors for non-200 responses without
-                            # calling process_failure(). This special handling for OTelChatCompletionAPIData
-                            # ensures proper failure propagation in trace replay scenarios.
-
-                            if isinstance(data, OTelChatCompletionAPIData) and response is not None:
+                            # Note: We call process_failure() for all data types on non-200 responses
+                            # to ensure proper state cleanup (e.g. releasing locks in multi-turn chat)
+                            # and failure propagation.
+                            if response is not None:
                                 error = ErrorResponseInfo(
                                     error_msg=response_content,
                                     error_type=f"HTTP Error {response.status}",

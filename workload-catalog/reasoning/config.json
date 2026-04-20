@@ -1,0 +1,50 @@
+{
+  "input_sequence_length": {
+    "min": 100,
+    "max": 5000,
+    "mean": 1000,
+    "standard_deviation": 800,
+    "distribution_type": "log_normal"
+  },
+  "output_sequence_length": {
+    "min": 500,
+    "max": 32000,
+    "mean": 8000,
+    "standard_deviation": 6500,
+    "distribution_type": "exponential"
+  },
+  "number_of_turns": {
+    "min": 1,
+    "max": 1,
+    "mean": 1,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "time_between_turns": {
+    "min": 0,
+    "max": 0,
+    "mean": 0,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "system_prompt": {
+    "min": 250,
+    "max": 250,
+    "mean": 250,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_length_per_turn": {
+    "min": 0,
+    "max": 0,
+    "mean": 0,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "multi_turn": false,
+  "input_sequence_type_token_ratio": 0.5,
+  "metadata": {
+    "suitable_optimizations": ["P/D disaggregation"],
+    "prefill_decode_ratio": 0.125
+  }
+}

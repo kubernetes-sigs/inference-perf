@@ -13,10 +13,14 @@ To contribute to this project, please adhere to the following procedure:
 - **Fork the repository** and submit a Pull Request (PR) in accordance with the Kubernetes contribution guidelines below.
 - For initial contributions, it is recommended to select an issue designated with the **`good-first-issue`** label.
 - **Create an issue** detailing the proposed changes. Upon confirmation of assignment, you may proceed to submit a Pull Request.
-- Implement the required code modifications and perform **manual verification** by executing a benchmark run. Utilize `pdm install` to set up the dependencies within a virtual environment.
-- **Include comprehensive unit tests** to validate the changes.
-- Execute **static type checking and code formatting** by running `pdm run validate`.
-- Conduct **test execution and code coverage analysis** using `pdm test` and `pdm check:cov`.
+- **Initial Setup**: Run `pdm run setup` to install dependencies and set up pre-commit hooks.
+- Implement the required code modifications and perform **manual verification** by executing a benchmark run.
+- **Include comprehensive unit tests** to validate the changes. You can use `pdm test:picked` to run tests only on modified files.
+- Execute **validation** before pushing:
+  - `pdm check`: Fast check (formatting and linting).
+  - `pdm run validate`: Full check (formatting, linting, and strict type checking).
+- Conduct **full test execution and code coverage analysis** using `pdm test` and `pdm check:cov`.
+- **Branch Up-to-Date Requirement**: Your branch must be based on the latest `origin/main` before you can push. A pre-push hook enforces this by running `git fetch origin main` automatically. If it fails, you will need to rebase or merge `origin/main`.
 - **Submit the Pull Request** utilizing the provided template.
 
 ### Resources

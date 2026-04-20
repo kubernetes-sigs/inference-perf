@@ -21,6 +21,7 @@ from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
+    Config,
     DataGenType,
     LoadType,
     MetricsClientType,
@@ -63,7 +64,7 @@ from inference_perf.client.requestdatacollector import (
 )
 from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.utils import CustomTokenizer, ReportFile
+from inference_perf.utils import CustomTokenizer, ReportFile, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
 from inference_perf.logger import setup_logging
 import asyncio
@@ -121,6 +122,9 @@ def main_cli() -> None:
     parser.add_argument(
         "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     )
+
+    add_pydantic_args(parser, Config)
+
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -129,10 +133,11 @@ def main_cli() -> None:
         analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
-    if not args.config_file:
-        parser.error("argument -c/--config_file is required when not using --analyze")
+    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level"}
+    cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
+    cli_overrides = unflatten_dict(cli_overrides_flat)
 
-    config = read_config(args.config_file)
+    config = read_config(args.config_file, cli_overrides)
 
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:

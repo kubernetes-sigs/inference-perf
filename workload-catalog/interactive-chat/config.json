@@ -1,0 +1,50 @@
+{
+  "input_sequence_length": {
+    "min": 500,
+    "max": 15000,
+    "mean": 4000,
+    "standard_deviation": 2500,
+    "distribution_type": "log_normal"
+  },
+  "output_sequence_length": {
+    "min": 10,
+    "max": 1000,
+    "mean": 300,
+    "standard_deviation": 150,
+    "distribution_type": "normal"
+  },
+  "number_of_turns": {
+    "min": 1,
+    "max": 15,
+    "mean": 4,
+    "standard_deviation": 2.5,
+    "distribution_type": "log_normal"
+  },
+  "time_between_turns": {
+    "min": 5,
+    "max": 300,
+    "mean": 45,
+    "standard_deviation": 40,
+    "distribution_type": "log_normal"
+  },
+  "system_prompt": {
+    "min": 1000,
+    "max": 1000,
+    "mean": 1000,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_length_per_turn": {
+    "min": 10,
+    "max": 1000,
+    "mean": 50,
+    "standard_deviation": 40,
+    "distribution_type": "log_normal"
+  },
+  "multi_turn": true,
+  "input_sequence_type_token_ratio": 0.35,
+  "metadata": {
+    "suitable_optimizations": ["Prefix aware routing", "P/D disaggregation"],
+    "prefill_decode_ratio": 13.3
+  }
+}

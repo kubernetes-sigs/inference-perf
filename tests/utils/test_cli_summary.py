@@ -41,7 +41,7 @@ class TestCliSummary(unittest.TestCase):
         report = ReportFile(name="stage_0_lifecycle_metrics", contents=contents)
         print_summary_table([report])
 
-        self.assertEqual(mock_console_print.call_count, 2)
+        self.assertEqual(mock_console_print.call_count, 4)
 
 
 if __name__ == "__main__":

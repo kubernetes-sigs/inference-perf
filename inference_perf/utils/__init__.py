@@ -13,5 +13,6 @@
 # limitations under the License.
 from .custom_tokenizer import CustomTokenizer
 from .report_file import ReportFile
+from .cli_parser import add_pydantic_args, unflatten_dict
 
-__all__ = ["CustomTokenizer", "ReportFile"]
+__all__ = ["CustomTokenizer", "ReportFile", "add_pydantic_args", "unflatten_dict"]

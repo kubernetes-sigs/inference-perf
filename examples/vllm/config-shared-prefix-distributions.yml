@@ -1,0 +1,47 @@
+load:
+  type: constant
+  interval: 15
+  stages:
+  - rate: 1
+    duration: 30
+  - rate: 2
+    duration: 30
+api:
+  type: completion
+server:
+  type: vllm
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: shared_prefix
+  shared_prefix:
+    seed: 42                              # Deterministic seeding for reproducible benchmarks
+    num_unique_system_prompts: 10
+    num_users_per_system_prompt: 10
+    system_prompt_len: 100                # Fixed length (backward compatible)
+    question_len:                         # Inline distribution syntax
+      type: skew_normal
+      mean: 200
+      std_dev: 80
+      skew: 2.5
+      min: 10
+      max: 2000
+    output_len:
+      type: lognormal
+      mean: 150
+      std_dev: 60
+      min: 1
+      max: 4096
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

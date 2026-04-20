@@ -158,6 +158,8 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
         qps_vs_itps: List[Tuple[float, float]] = []
         qps_vs_otps: List[Tuple[float, float]] = []
         qps_vs_ttps: List[Tuple[float, float]] = []
+        qps_vs_goodput_percentage: List[Tuple[float, float]] = []
+        qps_vs_request_goodput_rate: List[Tuple[float, float]] = []
         # Throughput vs Latency data
         ttft_vs_otps: List[Tuple[float, float]] = []
         ntpot_vs_otps: List[Tuple[float, float]] = []
@@ -231,6 +233,21 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                             concurrency_vs_ttps.append((concurrency, ttps))
                         else:
                             qps_vs_ttps.append((qps, ttps))
+
+                # Extract goodput metrics if they exist
+                goodput_metrics = success_data.get("goodput_metrics", {})
+                if goodput_metrics:
+                    goodput_percentage = goodput_metrics.get("goodput_percentage")
+                    if goodput_percentage is not None:
+                        if not concurrency:
+                            qps_vs_goodput_percentage.append((qps, goodput_percentage))
+
+                    req_goodput_rate = goodput_metrics.get("request_goodput")
+                    if req_goodput_rate is None:
+                        req_goodput_rate = goodput_metrics.get("request_goodput_rate")
+                    if req_goodput_rate is not None:
+                        if not concurrency:
+                            qps_vs_request_goodput_rate.append((qps, req_goodput_rate))
 
                 # Populate latency vs throughput data
                 if otps is not None:
@@ -386,6 +403,32 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
             report_path / "throughput_vs_qps.png",
         )
 
+        # --- Generate QPS Goodput Plot ---
+        goodput_charts_to_generate = []
+        if qps_vs_goodput_percentage:
+            goodput_charts_to_generate.append(
+                {
+                    "title": "Goodput % vs. QPS",
+                    "ylabel": "Goodput (%)",
+                    "data": sorted(qps_vs_goodput_percentage, key=operator.itemgetter(0)),
+                }
+            )
+        if qps_vs_request_goodput_rate:
+            goodput_charts_to_generate.append(
+                {
+                    "title": "Request Goodput Rate vs. QPS",
+                    "ylabel": "Goodput Rate (req/s)",
+                    "data": sorted(qps_vs_request_goodput_rate, key=operator.itemgetter(0)),
+                }
+            )
+
+        if goodput_charts_to_generate:
+            _generate_plot(
+                goodput_charts_to_generate,
+                "Goodput vs Request Rate",
+                report_path / "goodput_vs_qps.png",
+            )
+
         # --- Generate Throughput vs Latency Curve Plot ---
         throughput_latency_charts_to_generate = []
         if ntpot_vs_otps:
@@ -428,6 +471,7 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
             latency_charts_to_generate,
             throughput_charts_to_generate,
             throughput_latency_charts_to_generate,
+            goodput_charts_to_generate,
         ]
 
     if analysis_dir:
@@ -493,4 +537,17 @@ def analyze_reports(report_dirs: List[str], analysis_dir: Optional[str] = None) 
                 report_names,
                 "Latency vs Throughput",
                 analysis_path / "throughput_vs_latency.png",
+            )
+
+        # --- Generate QPS Goodput Plot (Unified) ---
+        setof_goodput_charts_to_generate = [
+            charts_to_generate[5] for charts_to_generate in chartset.values() if len(charts_to_generate) > 5
+        ]
+        if len(setof_goodput_charts_to_generate) > 0:
+            _generate_multi_plot(
+                setof_goodput_charts_to_generate,
+                len(max(setof_goodput_charts_to_generate, key=len)),
+                report_names,
+                "Goodput vs Request Rate",
+                analysis_path / "goodput_vs_qps.png",
             )

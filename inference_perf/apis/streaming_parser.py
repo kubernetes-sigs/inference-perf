@@ -28,7 +28,7 @@ from aiohttp import ClientResponse
 
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float]]:
+) -> Tuple[str, List[float], str]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -44,19 +44,20 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, output_token_times) where:
+        Tuple of (output_text, output_token_times, raw_content) where:
         - output_text: The concatenated text content from all chunks
         - output_token_times: List of timestamps when each token was received
+        - raw_content: The raw string content of the stream
 
     Example:
         # For chat completions
-        output_text, times = await parse_sse_stream(
+        output_text, times, raw = await parse_sse_stream(
             response,
             lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
         )
 
         # For text completions
-        output_text, times = await parse_sse_stream(
+        output_text, times, raw = await parse_sse_stream(
             response,
             lambda d: d.get("choices", [{}])[0].get("text")
         )
@@ -64,8 +65,10 @@ async def parse_sse_stream(
     output_text = ""
     output_token_times: List[float] = []
     buffer = b""
+    raw_content = b""
 
     async for chunk in response.content.iter_any():
+        raw_content += chunk
         buffer += chunk
         while b"\n\n" in buffer:
             message, buffer = buffer.split(b"\n\n", 1)
@@ -85,4 +88,4 @@ async def parse_sse_stream(
                 continue
             break
 
-    return output_text, output_token_times
+    return output_text, output_token_times, raw_content.decode("utf-8", errors="ignore")
