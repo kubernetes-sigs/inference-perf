@@ -24,11 +24,11 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel
 
-from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedInferenceResponseInfo
-from inference_perf.client.metricsclient import MetricsClient, PerfRuntimeParameters
-from inference_perf.client.metricsclient.base import ModelServerMetrics
-from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
+from inference_perf.client.server_metrics.base import ModelServerMetrics
+from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
     Config,
     PrometheusMetricsReportConfig,
@@ -159,10 +159,10 @@ def calculate_goodput_metrics(
 
         if is_good:
             good_requests_count += 1
-            in_tokens = m.info.input_tokens if m.info.input_tokens is not None else 0
+            in_tokens = m.info.request_metrics.text.input_tokens
             out_tokens = (
-                m.info.response_info.output_tokens
-                if m.info.response_info and m.info.response_info.output_tokens is not None
+                m.info.response_metrics.output_tokens
+                if m.info.response_metrics and m.info.response_metrics.output_tokens is not None
                 else 0
             )
             good_total_tokens += in_tokens + out_tokens
@@ -398,19 +398,19 @@ def summarize_requests(
 
         # Process raw chunks if present and tokenizer is available
         if (
-            isinstance(m.info.response_info, StreamedInferenceResponseInfo)
-            and m.info.response_info.response_chunks
+            isinstance(m.info.response_metrics, StreamedResponseMetrics)
+            and m.info.response_metrics.response_chunks
             and tokenizer
         ):
             output_token_times = []
             accumulated_tokens = 0
             parsed_chunks = []
             expected_output_tokens = (
-                m.info.response_info.server_usage.get("completion_tokens") if m.info.response_info.server_usage else None
+                m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
             )
 
             for chunk_str, chunk_time in zip(
-                m.info.response_info.response_chunks, m.info.response_info.chunk_times, strict=True
+                m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
             ):
                 try:
                     data = json.loads(chunk_str)
@@ -432,36 +432,36 @@ def summarize_requests(
                         output_token_times.append(chunk_time)
                     accumulated_tokens += tokens_in_chunk
 
-            m.info.response_info.output_token_times = output_token_times
-            m.info.response_info.output_tokens = accumulated_tokens
+            m.info.response_metrics.output_token_times = output_token_times
+            m.info.response_metrics.output_tokens = accumulated_tokens
 
             if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
                 mismatched_requests += 1
 
         # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
-        if m.info.response_info and m.info.response_info.output_tokens and m.info.response_info.output_tokens > 0:
-            ntpot_values.append((m.end_time - m.start_time) / m.info.response_info.output_tokens)
+        if m.info.response_metrics and m.info.response_metrics.output_tokens and m.info.response_metrics.output_tokens > 0:
+            ntpot_values.append((m.end_time - m.start_time) / m.info.response_metrics.output_tokens)
         else:
             ntpot_values.append(0.0)
 
         # Check if streamable: Must have more than 1 output token timestamp
-        response_info = m.info.response_info
-        if isinstance(response_info, StreamedInferenceResponseInfo) and len(response_info.output_token_times) > 1:
+        response_metrics = m.info.response_metrics
+        if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
             # TTFT: First Token Time - Start Time
-            ttft = response_info.output_token_times[0] - m.start_time
+            ttft = response_metrics.output_token_times[0] - m.start_time
             ttft_values.append(ttft)
 
             # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
-            duration = response_info.output_token_times[-1] - response_info.output_token_times[0]
-            if response_info.output_tokens > 1:
-                tpot = duration / (response_info.output_tokens - 1)
+            duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
+            if response_metrics.output_tokens > 1:
+                tpot = duration / (response_metrics.output_tokens - 1)
             else:
                 tpot = None
             tpot_values.append(tpot)
 
             # Add inter-token deltas
             request_itl = []
-            for t1, t2 in zip(response_info.output_token_times, response_info.output_token_times[1:], strict=False):
+            for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False):
                 inter_token_latencies.append(t2 - t1)
                 request_itl.append(t2 - t1)
 
@@ -484,7 +484,29 @@ def summarize_requests(
     valid_tpot = [v for v in tpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
 
-    successes_dict = {
+    request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
+    all_images = []
+    all_videos = []
+    all_audios = []
+    for success in all_successful:
+        if success.info.request_metrics.image:
+            all_images.extend(success.info.request_metrics.image.instances)
+        if success.info.request_metrics.video:
+            all_videos.extend(success.info.request_metrics.video.instances)
+        if success.info.request_metrics.audio:
+            all_audios.extend(success.info.request_metrics.audio.instances)
+
+    image_counts = [
+        safe_float(s.info.request_metrics.image.count if s.info.request_metrics.image else 0) for s in all_successful
+    ]
+    video_counts = [
+        safe_float(s.info.request_metrics.video.count if s.info.request_metrics.video else 0) for s in all_successful
+    ]
+    audio_counts = [
+        safe_float(s.info.request_metrics.audio.count if s.info.request_metrics.audio else 0) for s in all_successful
+    ]
+
+    successes_dict: dict[str, Any] = {
         "count": len(all_successful),
         "latency": {
             "request_latency": summarize(request_latency_values, percentiles),
@@ -495,18 +517,23 @@ def summarize_requests(
         },
         "throughput": {
             "input_tokens_per_sec": (
-                sum(safe_float(x.info.input_tokens) for x in all_successful) / total_time if total_time > 0 else 0.0
+                sum(safe_float(x.info.request_metrics.text.input_tokens) for x in all_successful) / total_time
+                if total_time > 0
+                else 0.0
             ),
             "output_tokens_per_sec": (
-                sum(safe_float(x.info.response_info.output_tokens) if x.info.response_info else 0.0 for x in all_successful)
+                sum(
+                    safe_float(x.info.response_metrics.output_tokens) if x.info.response_metrics else 0.0
+                    for x in all_successful
+                )
                 / total_time
                 if total_time > 0
                 else 0.0
             ),
             "total_tokens_per_sec": (
                 sum(
-                    safe_float(x.info.input_tokens)
-                    + (safe_float(x.info.response_info.output_tokens) if x.info.response_info else 0.0)
+                    safe_float(x.info.request_metrics.text.input_tokens)
+                    + (safe_float(x.info.response_metrics.output_tokens) if x.info.response_metrics else 0.0)
                     for x in all_successful
                 )
                 / total_time
@@ -514,13 +541,37 @@ def summarize_requests(
                 else 0.0
             ),
             "requests_per_sec": (len(all_successful) / total_time if total_time > 0 else 0.0),
+            "images_per_sec": (sum(image_counts) / total_time if total_time > 0 else 0.0),
+            "videos_per_sec": (sum(video_counts) / total_time if total_time > 0 else 0.0),
+            "audios_per_sec": (sum(audio_counts) / total_time if total_time > 0 else 0.0),
         },
-        "prompt_len": summarize([safe_float(success.info.input_tokens) for success in all_successful], percentiles),
+        "request_size_bytes": summarize([float(x) for x in request_sizes], percentiles),
+        "prompt_len": summarize(
+            [safe_float(success.info.request_metrics.text.input_tokens) for success in all_successful], percentiles
+        ),
+        "image": {
+            "count": summarize(image_counts, percentiles),
+            "pixels": summarize([safe_float(inst.pixels) for inst in all_images], percentiles),
+            "bytes": summarize([safe_float(inst.bytes) for inst in all_images], percentiles),
+            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_images], percentiles),
+        },
+        "video": {
+            "count": summarize(video_counts, percentiles),
+            "frames": summarize([safe_float(inst.frames) for inst in all_videos], percentiles),
+            "pixels": summarize([safe_float(inst.pixels) for inst in all_videos], percentiles),
+            "bytes": summarize([safe_float(inst.bytes) for inst in all_videos], percentiles),
+            "aspect_ratio": summarize([safe_float(inst.aspect_ratio) for inst in all_videos], percentiles),
+        },
+        "audio": {
+            "count": summarize(audio_counts, percentiles),
+            "seconds": summarize([safe_float(inst.seconds) for inst in all_audios], percentiles),
+            "bytes": summarize([safe_float(inst.bytes) for inst in all_audios], percentiles),
+        },
         "output_len": summarize(
             [
                 float(v)
                 for success in all_successful
-                if success.info.response_info and (v := success.info.response_info.output_tokens) is not None
+                if success.info.response_metrics and (v := success.info.response_metrics.output_tokens) is not None
             ],
             percentiles,
         ),
@@ -536,7 +587,9 @@ def summarize_requests(
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
-            "prompt_len": summarize([safe_float(failed.info.input_tokens) for failed in all_failed], percentiles),
+            "prompt_len": summarize(
+                [safe_float(failed.info.request_metrics.text.input_tokens) for failed in all_failed], percentiles
+            ),
         },
     )
 
@@ -544,8 +597,8 @@ def summarize_requests(
 class ReportGenerator:
     def __init__(
         self,
-        metrics_client: Optional[MetricsClient],
-        metrics_collector: RequestDataCollector,
+        metrics_client: Optional[ServerMetricsClient],
+        metrics_collector: RequestMetricCollector,
         config: "Config",
         datagen: Optional[Union["DataGenerator", "SessionGenerator"]] = None,
     ) -> None:
@@ -555,7 +608,7 @@ class ReportGenerator:
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
 
-    def get_metrics_collector(self) -> RequestDataCollector:
+    def get_metrics_collector(self) -> RequestMetricCollector:
         """
         Returns the metrics collector.
         """
@@ -680,8 +733,10 @@ class ReportGenerator:
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
+            session_metrics = self.session_metrics_collector.get_metrics()
+            self._enrich_sessions(session_metrics, request_metrics)
             session_reports = self.generate_session_reports(
-                self.session_metrics_collector.get_metrics(),
+                session_metrics,
                 report_config.session_lifecycle,
                 percentiles,
             )
@@ -726,17 +781,44 @@ class ReportGenerator:
             ),
         }
 
+    def _enrich_sessions(
+        self,
+        session_metrics: List[SessionLifecycleMetric],
+        request_metrics: List[RequestLifecycleMetric],
+    ) -> None:
+        """Aggregate per-request token totals and error status onto each session.
+
+        Mutates each ``SessionLifecycleMetric`` in ``session_metrics`` in place,
+        setting ``total_input_tokens``, ``total_output_tokens``, ``error``, and
+        ``success`` from the matching request-level metrics.
+        """
+        token_by_session: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+        error_by_session: dict[str, Any] = {}
+
+        for m in request_metrics:
+            if m.session_id:
+                inp, out = token_by_session[m.session_id]
+                token_by_session[m.session_id] = (
+                    inp + m.info.request_metrics.text.input_tokens,
+                    out + (m.info.response_metrics.output_tokens if m.info.response_metrics else 0),
+                )
+                if m.session_id not in error_by_session and m.error is not None:
+                    error_by_session[m.session_id] = m.error
+
+        for sm in session_metrics:
+            inp, out = token_by_session.get(sm.session_id, (0, 0))
+            sm.total_input_tokens = inp
+            sm.total_output_tokens = out
+            sm.error = error_by_session.get(sm.session_id)
+            sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
+
     def generate_session_reports(
         self,
         session_metrics: List[SessionLifecycleMetric],
         report_config: SessionLifecycleReportConfig,
         percentiles: List[float],
     ) -> List[ReportFile]:
-        """Generate session-level lifecycle reports.
-
-        Note: Session metrics should be enriched (via SessionMetricsCollector.enrich_metrics())
-        before calling this method.
-        """
+        """Generate session-level lifecycle reports."""
         reports: List[ReportFile] = []
 
         if not session_metrics:

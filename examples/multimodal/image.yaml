@@ -1,0 +1,44 @@
+# Visual-QA-style benchmark: a text prompt with one or more images per request.
+# Swap server.model_name for an image-capable VLM (Qwen2-VL, Qwen3-VL, LLaVA, ...).
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: synthetic
+  input_distribution: { type: uniform, min: 100, max: 500, mean: 250 }
+  output_distribution: { type: uniform, min: 50, max: 200, mean: 100 }
+  multimodal:
+    image:
+      # 1–3 images per request, typically 2.
+      count: { type: uniform, min: 1, max: 3, mean: 2 }
+      # Place images at the start of the prompt (0.0). Use 1.0 for suffix
+      # placement, or a Distribution to vary placement per request.
+      insertion_point: 0.0
+      # Mix 1080p (most requests) with occasional 4K.
+      resolutions:
+        - resolution: "1080p"
+          weight: 0.8
+        - resolution: "4k"
+          weight: 0.2
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 60
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

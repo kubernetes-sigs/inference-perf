@@ -75,8 +75,8 @@ class SessionMetricsCollector:
             if m.session_id:
                 inp, out = token_by_session[m.session_id]
                 token_by_session[m.session_id] = (
-                    inp + m.info.input_tokens,
-                    out + (m.info.response_info.output_tokens if m.info.response_info else 0),
+                    inp + m.info.request_metrics.text.input_tokens,
+                    out + (m.info.response_metrics.output_tokens if m.info.response_metrics else 0),
                 )
                 if m.session_id not in error_by_session and m.error is not None:
                     error_by_session[m.session_id] = m.error

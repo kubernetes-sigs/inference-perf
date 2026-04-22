@@ -1,0 +1,68 @@
+# Shared-prefix benchmark with multimodal payloads. Tests prefix-cache hit
+# behavior when the same heavy media is reused across many requests in a group.
+#
+# - Prefix side: one 1080p image + one video (emitted as frame sequences for
+#   server-cache friendliness). Prefix bytes are deterministic per group, so
+#   identical bytes reach the server on every request → cache hits.
+# - Payload side: one fresh 720p image per request.
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: shared_prefix
+  # Per-request payload media (fresh per request).
+  multimodal:
+    image:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0  # after the text question
+      resolutions:
+        - resolution: "720p"
+          weight: 1.0
+  shared_prefix:
+    num_groups: 5
+    num_prompts_per_group: 10
+    system_prompt_len: { type: fixed, min: 200, max: 200, mean: 200 }
+    question_len: { type: fixed, min: 50, max: 50, mean: 50 }
+    output_len: { type: fixed, min: 64, max: 64, mean: 64 }
+    # Prefix-side media (cached across the group).
+    multimodal:
+      image:
+        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        insertion_point: 0.0
+        resolutions:
+          - resolution: "1080p"
+            weight: 1.0
+      video:
+        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        insertion_point: 0.5
+        # Frames-as-images representation: each video expands to N image_url
+        # blocks at one insertion point. Avoids the model server's MP4 decode
+        # path and is friendlier to image-based prefix-cache hits on VLMs that
+        # don't natively accept ``video_url``. Use ``jpeg_frames`` for smaller
+        # wire payloads.
+        representation: png_frames
+        profiles:
+          - profile: { resolution: "720p", frames: 16 }
+            weight: 1.0
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 120
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

@@ -1,0 +1,45 @@
+# Video benchmark using MP4 wire format (one ``video_url`` block per request).
+# Measures the full pipeline including the model server's MP4 decode cost.
+# Swap server.model_name for a video-capable VLM (Qwen2-VL, Qwen3-VL, ...).
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: synthetic
+  input_distribution: { type: uniform, min: 100, max: 500, mean: 250 }
+  output_distribution: { type: uniform, min: 50, max: 200, mean: 100 }
+  multimodal:
+    video:
+      # One video per request, placed at the end of the prompt.
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0
+      representation: mp4
+      # Mix of profiles. Most VLMs sample to a fixed frame budget (8/16/32);
+      # match yours to avoid wasted bytes.
+      profiles:
+        - profile: { resolution: "720p", frames: 16 }
+          weight: 0.7
+        - profile: { resolution: "720p", frames: 32 }
+          weight: 0.3
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 60
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

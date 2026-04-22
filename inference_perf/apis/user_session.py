@@ -13,11 +13,12 @@
 # limitations under the License.
 import logging
 import asyncio
-from typing import Any, Optional
+from typing import Optional
 from pydantic import ConfigDict, Field
 
 from aiohttp import ClientResponse
 from inference_perf.apis import CompletionAPIData, InferenceInfo
+from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig
 
@@ -95,16 +96,16 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     def user_session(self) -> LocalUserSession:
         return LocalUserSession.get_instance(self.user_session_id)
 
-    async def to_payload(
+    async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
-    ) -> dict[str, Any]:
+    ) -> RequestBody:
         self._session_context = await self.user_session.get_context(self.target_round)
         # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
         self.prompt = self._session_context + " " + self.prompt
         # TODO: The combined prompt (session context + current prompt) might exceed the model's
         #       maximum sequence length. Implement truncation logic/strategy to prevent
         #       errors/failures from the inference server.
-        return await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
+        return await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:
         inference_info.extra_info["user_session"] = self.user_session_id
@@ -127,7 +128,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         # no response returned, use context from the last round
-        inference_info = InferenceInfo()
+        inference_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
         self.update_inference_info(inference_info)
         self.user_session.update_context(self._session_context)
         return inference_info

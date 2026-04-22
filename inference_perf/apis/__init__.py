@@ -18,8 +18,8 @@ from .base import (
     ErrorResponseInfo,
     LazyLoadInferenceAPIData,
     SessionLifecycleMetric,
-    UnaryInferenceResponseInfo,
-    StreamedInferenceResponseInfo,
+    UnaryResponseMetrics,
+    StreamedResponseMetrics,
 )
 from .chat import ChatCompletionAPIData, ChatMessage
 from .completion import CompletionAPIData
@@ -34,6 +34,6 @@ __all__ = [
     "ChatCompletionAPIData",
     "ChatMessage",
     "CompletionAPIData",
-    "UnaryInferenceResponseInfo",
-    "StreamedInferenceResponseInfo",
+    "UnaryResponseMetrics",
+    "StreamedResponseMetrics",
 ]

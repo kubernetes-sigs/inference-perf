@@ -13,30 +13,44 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional
 from aiohttp import ClientResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializeAsAny, computed_field
+from inference_perf.payloads import RequestBody, RequestMetrics
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
 
-class UnaryInferenceResponseInfo(BaseModel):
+class ResponseMetrics(BaseModel):
     output_tokens: int = 0
 
 
-class StreamedInferenceResponseInfo(BaseModel):
+class UnaryResponseMetrics(ResponseMetrics):
+    pass
+
+
+class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
-    output_tokens: int = 0
     output_token_times: List[float] = []
     server_usage: Optional[dict[str, Any]] = None
 
 
 class InferenceInfo(BaseModel):
-    input_tokens: int = 0
+    request_metrics: RequestMetrics
+    response_metrics: Optional[SerializeAsAny[ResponseMetrics]] = None
     extra_info: dict[str, Any] = {}
     lora_adapter: Optional[str] = None
-    response_info: Optional[Union[UnaryInferenceResponseInfo, StreamedInferenceResponseInfo]] = None
+
+    # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top
+    # level for back-compat with parsers of pre-multimodal
+    # per_request_lifecycle_metrics.json. Slated for removal alongside the
+    # lifecycle-report rewrite — new consumers should read
+    # request_metrics.text.input_tokens.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def input_tokens(self) -> int:
+        return self.request_metrics.text.input_tokens
 
 
 class ErrorResponseInfo(BaseModel):
@@ -90,9 +104,9 @@ class InferenceAPIData(BaseModel):
         raise NotImplementedError
 
     @abstractmethod
-    async def to_payload(
+    async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
-    ) -> dict[str, Any]:
+    ) -> RequestBody:
         raise NotImplementedError
 
     @abstractmethod
@@ -132,9 +146,9 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
     def get_route(self) -> str:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
-    async def to_payload(
+    async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
-    ) -> dict[str, Any]:
+    ) -> RequestBody:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
 
     async def process_response(

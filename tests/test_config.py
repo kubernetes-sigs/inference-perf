@@ -18,6 +18,7 @@ from inference_perf.config import (
     Distribution,
     DistributionType,
     LoadType,
+    VideoProfile,
     MetricsClientType,
     deep_merge,
     read_config,
@@ -387,6 +388,45 @@ def test_goodput_config_parsing() -> None:
         assert config.report.goodput is not None
         assert config.report.goodput.constraints["ttft"] == 0.5
         assert config.report.goodput.constraints["tpot"] == 0.1
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def test_multimodal_config_parsing() -> None:
+    config_content = {
+        "data": {
+            "type": "synthetic",
+            "multimodal": {
+                "image": {
+                    "count": {"type": "uniform", "min": 3, "max": 3, "mean": 3},
+                    "insertion_point": 0.5,
+                },
+                "video": {
+                    "count": {"type": "uniform", "min": 1, "max": 1, "mean": 1},
+                    "profiles": {"resolution": "1080p", "frames": 30},
+                },
+            },
+        }
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+
+    try:
+        config = read_config(tmp_path)
+        assert config.data.multimodal is not None
+        assert config.data.multimodal.image is not None
+        assert config.data.multimodal.image.insertion_point == 0.5
+        assert config.data.multimodal.image.count is not None
+        assert config.data.multimodal.image.count.mean == 3
+        assert config.data.multimodal.video is not None
+        assert config.data.multimodal.video.count is not None
+        assert config.data.multimodal.video.count.mean == 1
+        assert config.data.multimodal.video.profiles is not None
+        assert isinstance(config.data.multimodal.video.profiles, VideoProfile)
+        assert config.data.multimodal.video.profiles.resolution == "1080p"
+        assert config.data.multimodal.video.profiles.frames == 30
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

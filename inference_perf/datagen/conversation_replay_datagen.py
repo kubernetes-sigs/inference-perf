@@ -45,6 +45,7 @@ import numpy as np
 
 from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
@@ -112,7 +113,7 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         # On failure, release the lock without sleeping (no tool was called).
-        inference_info = InferenceInfo()
+        inference_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
         self.update_inference_info(inference_info)
         self.user_session.update_context(self._session_context)
         return inference_info

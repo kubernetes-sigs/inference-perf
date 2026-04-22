@@ -1,0 +1,40 @@
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://qwen3-32b-vllm-service:8000
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2
+    num_prompts_per_group: 5
+    system_prompt_len: { type: fixed, min: 100, max: 100, mean: 100 }
+    multimodal:
+      image:
+        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        insertion_point: 0.0
+        resolutions:
+          - resolution: "1080p"
+            weight: 1.0
+      video:
+        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        insertion_point: 1.0
+        # Frames-as-images representation: each video expands to N image_url
+        # blocks at one insertion point. Preserves this case's pre-port intent
+        # of exercising prefix-cache hits on image-frame content.
+        representation: png_frames
+        profiles:
+          - profile: { resolution: "720p", frames: 32 }
+            weight: 1.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 10
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

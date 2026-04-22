@@ -13,15 +13,16 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import (
     InferenceAPIData,
     InferenceInfo,
     RequestLifecycleMetric,
     ErrorResponseInfo,
-    StreamedInferenceResponseInfo,
+    StreamedResponseMetrics,
 )
+from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
 from .otel_instrumentation import get_otel_instrumentation
@@ -44,7 +45,7 @@ class openAIModelServerClient(ModelServerClient):
 
     def __init__(
         self,
-        metrics_collector: RequestDataCollector,
+        metrics_collector: RequestMetricCollector,
         api_config: APIConfig,
         uri: str,
         model_name: Optional[str],
@@ -182,23 +183,23 @@ class openAIModelServerClientSession(ModelServerClientSession):
         span: Any,
         data: InferenceAPIData,
         response: Optional[aiohttp.ClientResponse],
-        response_info: Optional[InferenceInfo],
+        info: Optional[InferenceInfo],
         response_content: str,
         error: Optional[ErrorResponseInfo],
         start_time: float,
         end_time: float,
     ) -> None:
         """Record OTEL metrics for the request."""
-        if response_info:
-            inner = response_info.response_info
+        if info:
+            inner = info.response_metrics
             otel_response_info: Dict[str, Any] = {
-                "prompt_tokens": response_info.input_tokens,
+                "prompt_tokens": info.request_metrics.text.input_tokens,
                 "completion_tokens": inner.output_tokens if inner else 0,
                 "total_latency": end_time - start_time,
             }
 
             # Calculate TTFT if token times are available (streaming only)
-            if isinstance(inner, StreamedInferenceResponseInfo) and inner.output_token_times:
+            if isinstance(inner, StreamedResponseMetrics) and inner.output_token_times:
                 ttft = inner.output_token_times[0] - start_time
                 otel_response_info["time_to_first_token"] = ttft
 
@@ -210,8 +211,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     otel_response_info["time_per_output_token"] = tpot
 
             # Add finish reason from extra_info if available
-            if "finish_reason" in response_info.extra_info:
-                otel_response_info["finish_reason"] = response_info.extra_info["finish_reason"]
+            if "finish_reason" in info.extra_info:
+                otel_response_info["finish_reason"] = info.extra_info["finish_reason"]
 
             # Extract input and output following GenAI semantic conventions
             try:
@@ -256,7 +257,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
     ) -> None:
         # Compute effective model name: use LoRA adapter if provided, otherwise use client's model name
         effective_model_name = lora_adapter if lora_adapter else self.client.model_name
-        payload = await data.to_payload(
+        payload = await data.to_request_body(
             effective_model_name=effective_model_name,
             max_tokens=self.client.max_completion_tokens,
             ignore_eos=self.client.ignore_eos,
@@ -282,7 +283,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         start = time.perf_counter()
         response: Optional[aiohttp.ClientResponse] = None
-        response_info = None
+        info = None
         error = None
         response_content = ""
         caught_exception: Optional[Exception] = None
@@ -302,19 +303,19 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     response = resp
                     try:
                         if self.client.api_config.streaming and response.status == 200:
-                            response_info = await data.process_response(
+                            info = await data.process_response(
                                 response=response,
                                 config=self.client.api_config,
                                 tokenizer=self.client.tokenizer,
                                 lora_adapter=lora_adapter,
                             )
-                            response_content = response_info.extra_info.get("raw_response", "") if response_info else ""
+                            response_content = info.extra_info.get("raw_response", "") if info else ""
                         else:
                             # Read response body once to avoid double-read issue
                             response_content = await response.text()
 
                             if response.status == 200:
-                                response_info = await data.process_response(
+                                info = await data.process_response(
                                     response=response,
                                     config=self.client.api_config,
                                     tokenizer=self.client.tokenizer,
@@ -341,7 +342,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                     error_type=f"HTTP Error {response.status}",
                                 )
                                 exception = Exception(f"{error.error_type}: {error.error_msg}")
-                                response_info = await data.process_failure(
+                                info = await data.process_failure(
                                     response=response,
                                     config=self.client.api_config,
                                     tokenizer=self.client.tokenizer,
@@ -356,13 +357,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         # run ClientResponse.__aexit__ on a broken connection, which can raise
                         # a second exception that masks the original and bypasses the outer
                         # aiohttp.ClientError handler.
-                        if response is not None and response.status == 200 and not response_info:
+                        if response is not None and response.status == 200 and not info:
                             caught_exception = read_error
                             error = ErrorResponseInfo(
                                 error_msg=str(read_error),
                                 error_type=type(read_error).__name__,
                             )
-                            response_info = await data.process_failure(
+                            info = await data.process_failure(
                                 response=None,
                                 config=self.client.api_config,
                                 tokenizer=self.client.tokenizer,
@@ -394,15 +395,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 span=span,
                 data=data,
                 response=response,
-                response_info=response_info,
+                info=info,
                 response_content=response_content,
                 error=error,
                 start_time=start,
                 end_time=end_time,
             )
 
-        if caught_exception is not None and not response_info:
-            response_info = await data.process_failure(
+        if caught_exception is not None and not info:
+            info = await data.process_failure(
                 response=response,
                 config=self.client.api_config,
                 tokenizer=self.client.tokenizer,
@@ -415,7 +416,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
             session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
-            info=response_info if response_info else InferenceInfo(),
+            info=info if info else InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))),
             error=error,
             start_time=start,
             end_time=end_time,
@@ -425,8 +426,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # Grab TTFT and TPOT thresholds from request headers if available for streaming requests with token-level timestamps
         if (
             metric.info
-            and isinstance(metric.info.response_info, StreamedInferenceResponseInfo)
-            and metric.info.response_info.output_token_times
+            and isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+            and metric.info.response_metrics.output_token_times
         ):
             ttft_threshold = None
             tpot_threshold = None

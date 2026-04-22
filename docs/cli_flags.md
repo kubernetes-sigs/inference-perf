@@ -54,6 +54,70 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.shared_prefix.output_distribution.variance` | float | Matches data.shared_prefix.output_distribution.variance in config |
 | `--data.shared_prefix.output_distribution.skew` | float | Matches data.shared_prefix.output_distribution.skew in config |
 | `--data.shared_prefix.enable_multi_turn_chat` | boolean | Matches data.shared_prefix.enable_multi_turn_chat in config |
+| `--data.shared_prefix.multimodal.image.count.min` | int | Matches data.shared_prefix.multimodal.image.count.min in config |
+| `--data.shared_prefix.multimodal.image.count.max` | int | Matches data.shared_prefix.multimodal.image.count.max in config |
+| `--data.shared_prefix.multimodal.image.count.mean` | float | Matches data.shared_prefix.multimodal.image.count.mean in config |
+| `--data.shared_prefix.multimodal.image.count.std_dev` | float | Matches data.shared_prefix.multimodal.image.count.std_dev in config |
+| `--data.shared_prefix.multimodal.image.count.total_count` | int | Matches data.shared_prefix.multimodal.image.count.total_count in config |
+| `--data.shared_prefix.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.image.count.type in config |
+| `--data.shared_prefix.multimodal.image.count.variance` | float | Matches data.shared_prefix.multimodal.image.count.variance in config |
+| `--data.shared_prefix.multimodal.image.count.skew` | float | Matches data.shared_prefix.multimodal.image.count.skew in config |
+| `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
+| `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.shared_prefix.multimodal.video.count.min` | int | Matches data.shared_prefix.multimodal.video.count.min in config |
+| `--data.shared_prefix.multimodal.video.count.max` | int | Matches data.shared_prefix.multimodal.video.count.max in config |
+| `--data.shared_prefix.multimodal.video.count.mean` | float | Matches data.shared_prefix.multimodal.video.count.mean in config |
+| `--data.shared_prefix.multimodal.video.count.std_dev` | float | Matches data.shared_prefix.multimodal.video.count.std_dev in config |
+| `--data.shared_prefix.multimodal.video.count.total_count` | int | Matches data.shared_prefix.multimodal.video.count.total_count in config |
+| `--data.shared_prefix.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.video.count.type in config |
+| `--data.shared_prefix.multimodal.video.count.variance` | float | Matches data.shared_prefix.multimodal.video.count.variance in config |
+| `--data.shared_prefix.multimodal.video.count.skew` | float | Matches data.shared_prefix.multimodal.video.count.skew in config |
+| `--data.shared_prefix.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
+| `--data.shared_prefix.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
+| `--data.shared_prefix.multimodal.audio.count.min` | int | Matches data.shared_prefix.multimodal.audio.count.min in config |
+| `--data.shared_prefix.multimodal.audio.count.max` | int | Matches data.shared_prefix.multimodal.audio.count.max in config |
+| `--data.shared_prefix.multimodal.audio.count.mean` | float | Matches data.shared_prefix.multimodal.audio.count.mean in config |
+| `--data.shared_prefix.multimodal.audio.count.std_dev` | float | Matches data.shared_prefix.multimodal.audio.count.std_dev in config |
+| `--data.shared_prefix.multimodal.audio.count.total_count` | int | Matches data.shared_prefix.multimodal.audio.count.total_count in config |
+| `--data.shared_prefix.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.audio.count.type in config |
+| `--data.shared_prefix.multimodal.audio.count.variance` | float | Matches data.shared_prefix.multimodal.audio.count.variance in config |
+| `--data.shared_prefix.multimodal.audio.count.skew` | float | Matches data.shared_prefix.multimodal.audio.count.skew in config |
+| `--data.shared_prefix.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
+| `--data.multimodal.image.count.min` | int | Matches data.multimodal.image.count.min in config |
+| `--data.multimodal.image.count.max` | int | Matches data.multimodal.image.count.max in config |
+| `--data.multimodal.image.count.mean` | float | Matches data.multimodal.image.count.mean in config |
+| `--data.multimodal.image.count.std_dev` | float | Matches data.multimodal.image.count.std_dev in config |
+| `--data.multimodal.image.count.total_count` | int | Matches data.multimodal.image.count.total_count in config |
+| `--data.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.image.count.type in config |
+| `--data.multimodal.image.count.variance` | float | Matches data.multimodal.image.count.variance in config |
+| `--data.multimodal.image.count.skew` | float | Matches data.multimodal.image.count.skew in config |
+| `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
+| `--data.multimodal.image.representation` | Enum (png, jpeg) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.multimodal.video.count.min` | int | Matches data.multimodal.video.count.min in config |
+| `--data.multimodal.video.count.max` | int | Matches data.multimodal.video.count.max in config |
+| `--data.multimodal.video.count.mean` | float | Matches data.multimodal.video.count.mean in config |
+| `--data.multimodal.video.count.std_dev` | float | Matches data.multimodal.video.count.std_dev in config |
+| `--data.multimodal.video.count.total_count` | int | Matches data.multimodal.video.count.total_count in config |
+| `--data.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.video.count.type in config |
+| `--data.multimodal.video.count.variance` | float | Matches data.multimodal.video.count.variance in config |
+| `--data.multimodal.video.count.skew` | float | Matches data.multimodal.video.count.skew in config |
+| `--data.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
+| `--data.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
+| `--data.multimodal.audio.count.min` | int | Matches data.multimodal.audio.count.min in config |
+| `--data.multimodal.audio.count.max` | int | Matches data.multimodal.audio.count.max in config |
+| `--data.multimodal.audio.count.mean` | float | Matches data.multimodal.audio.count.mean in config |
+| `--data.multimodal.audio.count.std_dev` | float | Matches data.multimodal.audio.count.std_dev in config |
+| `--data.multimodal.audio.count.total_count` | int | Matches data.multimodal.audio.count.total_count in config |
+| `--data.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.audio.count.type in config |
+| `--data.multimodal.audio.count.variance` | float | Matches data.multimodal.audio.count.variance in config |
+| `--data.multimodal.audio.count.skew` | float | Matches data.multimodal.audio.count.skew in config |
+| `--data.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
 | `--data.trace.file` | str | Matches data.trace.file in config |
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
 | `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |

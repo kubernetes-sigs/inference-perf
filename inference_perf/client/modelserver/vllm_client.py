@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from .base import PrometheusMetricMetadata, ModelServerPrometheusMetric
 from typing import List, Optional
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class vLLMModelServerClient(openAIModelServerClient):
     def __init__(
         self,
-        metrics_collector: RequestDataCollector,
+        metrics_collector: RequestMetricCollector,
         api_config: APIConfig,
         uri: str,
         model_name: Optional[str],
