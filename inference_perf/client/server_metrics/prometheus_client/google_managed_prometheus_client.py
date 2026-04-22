@@ -14,7 +14,7 @@
 import logging
 from typing import Any
 from pydantic import HttpUrl
-from inference_perf.client.metricsclient.prometheus_client.base import PrometheusMetricsClient
+from inference_perf.client.server_metrics.prometheus_client.base import PrometheusMetricsClient
 from inference_perf.config import PrometheusClientConfig
 import google.auth
 import google.auth.transport.requests

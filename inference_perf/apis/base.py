@@ -16,6 +16,7 @@ from abc import abstractmethod
 from typing import Any, List, Optional, Union
 from aiohttp import ClientResponse
 from pydantic import BaseModel
+from inference_perf.payloads import Payload
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 
@@ -33,6 +34,7 @@ class StreamedInferenceResponseInfo(BaseModel):
 
 
 class InferenceInfo(BaseModel):
+    payload: Payload
     input_tokens: int = 0
     extra_info: dict[str, Any] = {}
     lora_adapter: Optional[str] = None

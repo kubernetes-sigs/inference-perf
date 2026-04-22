@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from typing import List, Optional
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import (
@@ -22,6 +22,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     UnaryInferenceResponseInfo,
 )
+from inference_perf.payloads import Payload, Text
 from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata
 import asyncio
 import time
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 class MockModelServerClient(ModelServerClient):
     def __init__(
         self,
-        metrics_collector: RequestDataCollector,
+        metrics_collector: RequestMetricCollector,
         api_config: APIConfig,
         timeout: Optional[float] = None,
         mock_latency: float = 1,
@@ -58,8 +59,7 @@ class MockModelServerClient(ModelServerClient):
                     await asyncio.sleep(self.mock_latency)
 
                 info = InferenceInfo(
-                    input_tokens=0,
-                    output_tokens=0,
+                    payload=Payload(text=Text(input_tokens=0, output_tokens=0)),
                     lora_adapter=lora_adapter,
                 )
                 data.on_completion(info)
@@ -68,6 +68,7 @@ class MockModelServerClient(ModelServerClient):
                         stage_id=stage_id,
                         request_data=str(await data.to_payload(effective_model_name, 3, False, False)),
                         info=InferenceInfo(
+                            payload=Payload(text=Text(input_tokens=0, output_tokens=0)),
                             input_tokens=0,
                             response_info=UnaryInferenceResponseInfo(output_tokens=0),
                             lora_adapter=lora_adapter,
@@ -85,6 +86,7 @@ class MockModelServerClient(ModelServerClient):
                     stage_id=stage_id,
                     request_data=str(data.to_payload(effective_model_name, 3, False, False)),
                     info=InferenceInfo(
+                        payload=Payload(text=Text(input_tokens=0, output_tokens=0)),
                         input_tokens=0,
                         response_info=UnaryInferenceResponseInfo(output_tokens=0),
                         lora_adapter=lora_adapter,

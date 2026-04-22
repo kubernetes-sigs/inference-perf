@@ -20,14 +20,14 @@ from queue import Empty
 from typing import AsyncIterator, Optional
 from functools import partial
 import logging
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.circuit_breaker import feed_breakers
 
 logger = logging.getLogger(__name__)
 
 
-class MultiprocessRequestDataCollector(RequestDataCollector):
+class MultiprocessRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:

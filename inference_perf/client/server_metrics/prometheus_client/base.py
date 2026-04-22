@@ -18,7 +18,7 @@ from typing import List, cast, Any, Optional
 import requests
 from inference_perf.client.modelserver.base import ModelServerPrometheusMetric
 from inference_perf.config import PrometheusClientConfig
-from ..base import MetricsClient, MetricsMetadata, PerfRuntimeParameters, ModelServerMetrics
+from ..base import ServerMetricsClient, MetricsMetadata, PerfRuntimeParameters, ModelServerMetrics
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
 
@@ -200,7 +200,7 @@ class PrometheusQueryBuilder:
         return queries[metric_type][query_op]
 
 
-class PrometheusMetricsClient(MetricsClient):
+class PrometheusMetricsClient(ServerMetricsClient):
     def __init__(self, config: PrometheusClientConfig) -> None:
         if config:
             if not config.url:

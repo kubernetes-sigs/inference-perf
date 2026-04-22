@@ -11,22 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import ABC, abstractmethod
+from typing import List, AsyncIterator
+from contextlib import asynccontextmanager
 
-from typing import List
-from inference_perf.client.requestdatacollector import RequestDataCollector
 from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.circuit_breaker import feed_breakers
 
 
-class LocalRequestDataCollector(RequestDataCollector):
-    """Responsible for accumulating client request metrics"""
+class RequestMetricCollector(ABC):
+    """
+    Responsible for collecting request information
+    """
 
-    def __init__(self) -> None:
-        self.metrics: List[RequestLifecycleMetric] = []
-
+    @abstractmethod
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
-        self.metrics.append(metric)
-        feed_breakers(metric)
+        raise NotImplementedError
 
+    @abstractmethod
     def get_metrics(self) -> List[RequestLifecycleMetric]:
-        return self.metrics
+        raise NotImplementedError
+
+    @asynccontextmanager
+    async def start(self) -> AsyncIterator[None]:
+        yield

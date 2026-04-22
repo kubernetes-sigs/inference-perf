@@ -17,6 +17,7 @@ import aiohttp
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
 from inference_perf.apis import ErrorResponseInfo, InferenceInfo
+from inference_perf.payloads import Payload, Text
 
 
 @pytest.fixture
@@ -37,8 +38,8 @@ def mock_client() -> MagicMock:
 def mock_data() -> MagicMock:
     data = MagicMock()
     data.get_route.return_value = "/test"
-    data.process_failure = AsyncMock(return_value=InferenceInfo())
-    data.process_response = AsyncMock(return_value=InferenceInfo())
+    data.process_failure = AsyncMock(return_value=InferenceInfo(payload=Payload(text=Text(input_tokens=0, output_tokens=0))))
+    data.process_response = AsyncMock(return_value=InferenceInfo(payload=Payload(text=Text(input_tokens=0, output_tokens=0))))
     data.to_payload = AsyncMock(return_value={"mock": "data"})
     return data
 

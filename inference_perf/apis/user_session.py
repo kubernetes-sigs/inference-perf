@@ -18,6 +18,7 @@ from pydantic import ConfigDict, Field
 
 from aiohttp import ClientResponse
 from inference_perf.apis import CompletionAPIData, InferenceInfo
+from inference_perf.payloads import Payload, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig
 
@@ -127,7 +128,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         # no response returned, use context from the last round
-        inference_info = InferenceInfo()
+        inference_info = InferenceInfo(payload=Payload(text=Text(input_tokens=0, output_tokens=0)))
         self.update_inference_info(inference_info)
         self.user_session.update_context(self._session_context)
         return inference_info

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-32b-vllm-deployment
+  namespace: test-ns
+  labels:
+    app: qwen3-32b-vllm-inference-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen3-32b-vllm-inference-server
+      deployment: qwen3-32b-vllm-deployment
+  template:
+    metadata:
+      labels:
+        ai.gke.io/inference-server: vllm
+        ai.gke.io/model: qwen3-32b
+        app: qwen3-32b-vllm-inference-server
+        deployment: qwen3-32b-vllm-deployment
+        examples.ai.gke.io/source: blueprints
+    spec:
+      containers:
+      - args:
+        - --model=$(MODEL_ID)
+        - --tokenizer-mode
+        - slow
+        - --chat-template
+        - '{{ bos_token }}{% for message in messages %}{% if message[''role''] == ''user'' %}{{ ''USER: '' + message[''content''] + ''\n'' }}{% elif message[''role''] == ''assistant'' %}{{ ''ASSISTANT: '' + message[''content''] + eos_token + ''\n'' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ ''ASSISTANT:'' }}{% endif %}'
+        command:
+        - /bin/sh
+        - -c
+        - pip install vllm[audio,video] && exec python3 -m vllm.entrypoints.openai.api_server "$@"
+        - dummy-arg
+        env:
+        - name: MODEL_ID
+          value: Qwen/Qwen3-VL-8B-Instruct
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: hf_api_token
+              name: hf-secret
+        - name: TENSOR_PARALLEL_SIZE
+          value: "1"
+        image: vllm/vllm-openai:latest
+        imagePullPolicy: IfNotPresent
+        name: inference-server
+        ports:
+        - containerPort: 8000
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-h100-80gb
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Equal
+        value: present
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: dshm

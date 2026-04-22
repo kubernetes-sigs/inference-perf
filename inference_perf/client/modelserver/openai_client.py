@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import abstractmethod
-from inference_perf.client.requestdatacollector import RequestDataCollector
+from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import (
     InferenceAPIData,
@@ -22,6 +22,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     StreamedInferenceResponseInfo,
 )
+from inference_perf.payloads import Payload, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
 from .otel_instrumentation import get_otel_instrumentation
@@ -44,7 +45,7 @@ class openAIModelServerClient(ModelServerClient):
 
     def __init__(
         self,
-        metrics_collector: RequestDataCollector,
+        metrics_collector: RequestMetricCollector,
         api_config: APIConfig,
         uri: str,
         model_name: Optional[str],
@@ -415,7 +416,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
-            info=response_info if response_info else InferenceInfo(),
+            info=response_info
+            if response_info
+            else InferenceInfo(payload=Payload(text=Text(input_tokens=0, output_tokens=0))),
             error=error,
             start_time=start,
             end_time=end_time,

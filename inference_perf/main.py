@@ -35,6 +35,7 @@ from inference_perf.datagen import (
     MockDataGenerator,
     HFShareGPTDataGenerator,
     SyntheticDataGenerator,
+    MultimodalDataGenerator,
     RandomDataGenerator,
     SharedPrefixDataGenerator,
     CNNDailyMailDataGenerator,
@@ -42,6 +43,9 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     ConversationReplayDataGenerator,
+    VisionArenaDataGenerator,
+    MMMUDataGenerator,
+    ShareGPT4VDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -49,18 +53,21 @@ from inference_perf.client.modelserver import (
     SGlangModelServerClient,
     MockModelServerClient,
 )
-from inference_perf.client.metricsclient.base import MetricsClient, PerfRuntimeParameters
-from inference_perf.client.metricsclient.prometheus_client import PrometheusMetricsClient, GoogleManagedPrometheusMetricsClient
+from inference_perf.client.server_metrics.base import ServerMetricsClient, PerfRuntimeParameters
+from inference_perf.client.server_metrics.prometheus_client import (
+    PrometheusMetricsClient,
+    GoogleManagedPrometheusMetricsClient,
+)
 from inference_perf.client.filestorage import (
     StorageClient,
     GoogleCloudStorageClient,
     LocalStorageClient,
     SimpleStorageServiceClient,
 )
-from inference_perf.client.requestdatacollector import (
-    RequestDataCollector,
-    LocalRequestDataCollector,
-    MultiprocessRequestDataCollector,
+from inference_perf.metrics.request_collector import (
+    RequestMetricCollector,
+    LocalRequestMetricCollector,
+    MultiprocessRequestMetricCollector,
 )
 from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
@@ -157,7 +164,7 @@ def main_cli() -> None:
         init_circuit_breakers(config.circuit_breakers)
 
     # Define Metrics Client
-    metrics_client: Optional[MetricsClient] = None
+    metrics_client: Optional[ServerMetricsClient] = None
     if config.metrics:
         if config.metrics.type == MetricsClientType.PROMETHEUS and config.metrics.prometheus:
             if config.metrics.prometheus.google_managed:
@@ -176,11 +183,11 @@ def main_cli() -> None:
             storage_clients.append(SimpleStorageServiceClient(config=config.storage.simple_storage_service))
 
     # Define Report Generator
-    collector: RequestDataCollector
+    collector: RequestMetricCollector
     if config.load.num_workers > 0:
-        collector = MultiprocessRequestDataCollector()
+        collector = MultiprocessRequestMetricCollector()
     else:
-        collector = LocalRequestDataCollector()
+        collector = LocalRequestMetricCollector()
     reportgen = ReportGenerator(metrics_client, collector, config=config)
 
     # Create tokenizer based on tokenizer config
@@ -332,7 +339,10 @@ def main_cli() -> None:
         elif config.data.type == DataGenType.CNNDailyMail:
             datagen = CNNDailyMailDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Synthetic:
-            datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
+            if config.data.multimodal:
+                datagen = MultimodalDataGenerator(config.api, config.data, tokenizer)
+            else:
+                datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Random:
             datagen = RandomDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.SharedPrefix:
@@ -347,6 +357,12 @@ def main_cli() -> None:
             datagen = OTelTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.VisionArena:
+            datagen = VisionArenaDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.MMMU:
+            datagen = MMMUDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.ShareGPT4V:
+            datagen = ShareGPT4VDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:
@@ -379,10 +395,6 @@ def main_cli() -> None:
 
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
-
-    # Enrich session metrics before generating reports
-    if session_metrics_collector:
-        session_metrics_collector.enrich_metrics(reportgen.metrics_collector.get_metrics())
 
     # Generate Reports after the tests
     reports = perfrunner.generate_reports(

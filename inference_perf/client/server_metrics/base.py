@@ -168,7 +168,7 @@ class ModelServerMetrics(BaseModel):
     p99_kv_block_reuse_gap: float = 0.0
 
 
-class MetricsClient(ABC):
+class ServerMetricsClient(ABC):
     @abstractmethod
     def __init__(self) -> None:
         pass

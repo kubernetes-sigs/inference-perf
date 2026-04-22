@@ -32,8 +32,16 @@ from typing import Any, Dict, List, Optional, Set
 
 from aiohttp import ClientResponse
 
-from inference_perf.apis import ChatCompletionAPIData, InferenceInfo, LazyLoadInferenceAPIData, SessionLifecycleMetric
+from inference_perf.apis import (
+    ChatCompletionAPIData,
+    InferenceInfo,
+    LazyLoadInferenceAPIData,
+    SessionLifecycleMetric,
+    StreamedInferenceResponseInfo,
+    UnaryInferenceResponseInfo,
+)
 from inference_perf.apis.chat import ChatMessage
+from inference_perf.payloads import Payload, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
@@ -55,8 +63,6 @@ class SessionInferenceInfo(InferenceInfo):
     """InferenceInfo subclass that also carries the raw output text."""
 
     output_text: Optional[str] = None
-    output_tokens: int = 0
-    output_token_times: list[float] = field(default_factory=list)
 
 
 class WorkerSessionTracker:
@@ -336,33 +342,53 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         logger.debug(f"process_response called for event {self.event_id}")
         output_text: str = ""
 
+        def _get_text(content: Any) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return "".join(
+                    [
+                        item.get("text", "")
+                        for item in content
+                        if isinstance(item, dict) and item.get("type") in ("text", "input_text")
+                    ]
+                )
+            return ""
+
         if config.streaming:
             # Use shared streaming parser with chat-specific content extraction
-            output_text, output_token_times, raw_content, _, _ = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
 
-            prompt_text = "".join([msg.content for msg in self.messages if msg.content])
+            prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
             output_len = tokenizer.count_tokens(output_text)
             info = SessionInferenceInfo(
+                payload=Payload(text=Text(input_tokens=prompt_len, output_tokens=output_len)),
                 input_tokens=prompt_len,
-                output_tokens=output_len,
-                output_token_times=output_token_times,
+                response_info=StreamedInferenceResponseInfo(
+                    response_chunks=response_chunks,
+                    chunk_times=chunk_times,
+                    output_tokens=output_len,
+                    output_token_times=chunk_times,
+                    server_usage=server_usage,
+                ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 extra_info={"raw_response": raw_content},
             )
         else:
             data = await response.json()
-            prompt_len = tokenizer.count_tokens("".join([m.content for m in self.messages]))
+            prompt_len = tokenizer.count_tokens("".join([_get_text(m.content) for m in self.messages]))
             choices = data.get("choices", [])
             if choices:
                 output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
             output_len = tokenizer.count_tokens(output_text)
             info = SessionInferenceInfo(
+                payload=Payload(text=Text(input_tokens=prompt_len, output_tokens=output_len)),
                 input_tokens=prompt_len,
-                output_tokens=output_len,
+                response_info=UnaryInferenceResponseInfo(output_tokens=output_len),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
             )
@@ -412,8 +438,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 logger.error(f"Failed to push session {session_id} failure notification to queue: {e}")
 
         return SessionInferenceInfo(
+            payload=Payload(text=Text(input_tokens=0, output_tokens=0)),
             input_tokens=0,
-            output_tokens=0,
+            response_info=UnaryInferenceResponseInfo(output_tokens=0),
             lora_adapter=lora_adapter,
             output_text="",
         )
