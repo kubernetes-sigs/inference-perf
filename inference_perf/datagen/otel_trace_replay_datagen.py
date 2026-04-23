@@ -64,6 +64,7 @@ from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import List, Optional
 
+from datasets import load_dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
@@ -122,6 +123,105 @@ def resolve_trace_files(trace_files: List[str]) -> List[Path]:
 
     # Convert to sorted list for consistent output
     return [Path(f) for f in all_files]
+
+
+def _download_hf_dataset(dataset_path: str) -> tuple[Path, List[Path]]:
+    """Download HuggingFace dataset and extract trace JSON files.
+
+    Args:
+        dataset_path: HuggingFace dataset identifier (e.g., 'lenadan/otel-test-snippet')
+
+    Returns:
+        Tuple of (temp_dir, list of trace file paths)
+
+    Raises:
+        ValueError: If dataset cannot be downloaded or doesn't contain trace data
+    """
+    try:
+        logger.info(f"Loading HuggingFace dataset: {dataset_path}")
+        # Load dataset - this downloads it to HuggingFace cache if not already present
+        dataset = load_dataset(dataset_path)
+
+        # Create a temporary directory to store extracted trace files
+        import tempfile
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="hf_otel_traces_"))
+        logger.info(f"Extracting traces to temporary directory: {temp_dir}")
+
+        trace_files = []
+        row_count = 0
+
+        # Iterate through all splits in the dataset
+        for split_name, split_data in dataset.items():
+            logger.info(f"Processing split '{split_name}' with {len(split_data)} rows")
+
+            # Each row should contain trace data
+            for idx, row in enumerate(split_data):
+                # Try to find trace data in the row
+                # Common column names: 'trace', 'json', 'data', 'content'
+                trace_content = None
+                for col_name in ["trace", "json", "data", "content", "text", "spans"]:
+                    if col_name in row:
+                        trace_content = row[col_name]
+                        break
+
+                if trace_content is None:
+                    # If no standard column found, try the first column
+                    if len(row) > 0:
+                        trace_content = list(row.values())[0]
+
+                if trace_content:
+                    # Write trace to a JSON file
+                    trace_file = temp_dir / f"{split_name}_{idx}.json"
+
+                    # Parse trace_content and wrap in "spans" key if needed
+                    if isinstance(trace_content, str):
+                        try:
+                            trace_data = json.loads(trace_content)
+                        except json.JSONDecodeError:
+                            # If not valid JSON, skip this row
+                            logger.warning(f"Skipping row {idx} in split '{split_name}': invalid JSON")
+                            continue
+                    else:
+                        # Assume it's already a dict/object
+                        trace_data = trace_content
+
+                    # Wrap trace_data in "spans" key if needed
+                    if isinstance(trace_data, list):
+                        # trace_data is a list of spans, wrap it
+                        trace_data = {"spans": trace_data}
+                    elif isinstance(trace_data, dict) and "spans" not in trace_data:
+                        # trace_data is a dict but doesn't have "spans" key, wrap it
+                        trace_data = {"spans": trace_data}
+                    # else: trace_data is already a dict with "spans" key, use as-is
+
+                    trace_file.write_text(json.dumps(trace_data, indent=2))
+                    trace_files.append(trace_file)
+                    row_count += 1
+
+        if not trace_files:
+            raise ValueError(
+                f"No trace data found in HuggingFace dataset '{dataset_path}'. "
+                f"Expected columns: 'trace', 'json', 'data', 'content', or 'text'"
+            )
+
+        logger.info(f"Extracted {len(trace_files)} trace files from {row_count} rows")
+        return temp_dir, trace_files
+
+    except Exception as e:
+        error_msg = str(e)
+        if "gated dataset" in error_msg.lower() or "authenticated" in error_msg.lower():
+            raise ValueError(
+                f"Failed to load HuggingFace dataset '{dataset_path}': {e}\n\n"
+                f"This is a gated dataset that requires authentication. To access it:\n"
+                f"1. Create a HuggingFace account at https://huggingface.co/join\n"
+                f"2. Request access to the dataset at https://huggingface.co/datasets/{dataset_path}\n"
+                f"3. Generate an access token at https://huggingface.co/settings/tokens\n"
+                f"4. Login using: huggingface-cli login\n"
+                f"   Or set the HF_TOKEN environment variable with your token"
+            ) from e
+        else:
+            raise ValueError(f"Failed to load HuggingFace dataset '{dataset_path}': {e}") from e
 
 
 class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
@@ -185,8 +285,22 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     raise ValueError(f"Trace file path is not a file: {trace_file}")
                 if trace_file.suffix != ".json":
                     raise ValueError(f"Trace file must be a JSON file: {trace_file}")
+
+        elif self.otel_config.hf_dataset_path:
+            # HuggingFace dataset mode
+            logger.info(f"Loading traces from HuggingFace dataset: {self.otel_config.hf_dataset_path}")
+            dataset_dir, trace_files = _download_hf_dataset(self.otel_config.hf_dataset_path)
+
+            # Use the extracted trace files
+            self.trace_files_list = trace_files
+            self.trace_dir = dataset_dir
+
+            logger.info(f"Loaded {len(self.trace_files_list)} JSON trace files from HuggingFace dataset")
+
         else:
-            raise ValueError("Either trace_directory or trace_files must be provided in otel_trace_replay config")
+            raise ValueError(
+                "Either trace_directory, trace_files, or hf_dataset_path must be provided in otel_trace_replay config"
+            )
 
         sessions = self._load_trace_files()
         self.initialize_sessions(sessions)

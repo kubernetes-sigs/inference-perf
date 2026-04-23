@@ -90,8 +90,9 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `trace_files` | list[string] | One of `trace_files` or `trace_directory` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`) |
-| `trace_directory` | string | One of `trace_files` or `trace_directory` | Directory containing trace files. All `.json` files will be loaded |
+| `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`) |
+| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` files will be loaded |
+| `hf_dataset_path` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier (e.g., `"lenadan/otel-test-snippet"`). Dataset will be automatically downloaded and cached |
 | `use_static_model` | boolean | No (default: `false`) | Override all recorded model names with `static_model_name` |
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |
 | `model_mapping` | dict | No | Map recorded model names to target models (e.g., `"gpt-4": "my-model"`) |
@@ -99,9 +100,10 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `include_errors` | boolean | No (default: `false`) | Include spans marked as errors in the trace |
 | `skip_invalid_files` | boolean | No (default: `true`) | Skip unparseable trace files instead of failing |
 
-**Example:**
+**Examples:**
 
 ```yaml
+# Option 1: Load from local directory
 data:
   type: otel_trace_replay
   otel_trace_replay:
@@ -110,7 +112,28 @@ data:
     static_model_name: "llama-3-8b"
     default_max_tokens: 2048
     skip_invalid_files: true
+
+# Option 2: Load from specific files (supports glob patterns)
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_files:
+      - "traces/agent_*.json"
+      - "traces/rag_pipeline.json"
+    use_static_model: true
+    static_model_name: "llama-3-8b"
+
+# Option 3: Load from HuggingFace dataset (NEW)
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    hf_dataset_path: "lenadan/otel-test-snippet"
+    use_static_model: true
+    static_model_name: "llama-3-8b"
+    default_max_tokens: 2048
 ```
+
+> **Note:** The `hf_dataset_path` option automatically downloads the dataset from HuggingFace Hub and caches it locally (typically in `~/.cache/huggingface/datasets`). Subsequent runs will use the cached version. All JSON files in the dataset directory tree will be loaded as trace files.
 
 ### Load Configuration: `trace_session_replay`
 

@@ -122,6 +122,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
 | `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
 | `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
+| `--data.otel_trace_replay.hf_dataset_path` | str | HuggingFace dataset path (e.g., 'username/dataset-name') |
 | `--data.otel_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |

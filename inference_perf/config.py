@@ -321,6 +321,7 @@ class OTelTraceReplayConfig(BaseModel):
 
     trace_directory: Optional[str] = Field(None, description="Directory containing OTel JSON trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific OTel JSON trace files")
+    hf_dataset_path: Optional[str] = Field(None, description="HuggingFace dataset path (e.g., 'username/dataset-name')")
 
     # Model configuration
     use_static_model: bool = Field(False, description="Use a single static model for all requests")
@@ -336,18 +337,21 @@ class OTelTraceReplayConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_static_model(self) -> "OTelTraceReplayConfig":
-        # Validate that exactly one of trace_directory or trace_files is provided
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
         sources_provided = sum(
             [
                 self.trace_directory is not None,
                 self.trace_files is not None,
+                self.hf_dataset_path is not None,
             ]
         )
 
         if sources_provided == 0:
-            raise ValueError("Either trace_directory or trace_files must be provided")
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
         if sources_provided > 1:
-            raise ValueError("Cannot specify both trace_directory and trace_files; choose one")
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
 
         # Validate static model configuration
         if self.use_static_model and not self.static_model_name:
