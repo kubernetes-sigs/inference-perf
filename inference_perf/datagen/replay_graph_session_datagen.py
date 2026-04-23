@@ -55,6 +55,8 @@ class SessionInferenceInfo(InferenceInfo):
     """InferenceInfo subclass that also carries the raw output text."""
 
     output_text: Optional[str] = None
+    output_tokens: int = 0
+    output_token_times: list[float] = field(default_factory=list)
 
 
 class WorkerSessionTracker:
