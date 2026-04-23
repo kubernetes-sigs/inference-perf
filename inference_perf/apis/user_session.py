@@ -28,14 +28,36 @@ class LocalUserSession:
     user_session_id: str
     context: str
 
+    _instances: dict[str, "LocalUserSession"] = {}
+
     def __init__(self, user_session_id: str, context: str = ""):
         self.user_session_id = user_session_id
         self.contexts = context if context else ""
         self._current_round = 0
-        self._in_flight: asyncio.Lock = asyncio.Lock()
-        self._waiting_rounds: asyncio.Queue[asyncio.Future[bool]] = asyncio.Queue()
+        self._in_flight: Optional[asyncio.Lock] = None
+        self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
+
+    @classmethod
+    def get_instance(cls, user_session_id: str) -> "LocalUserSession":
+        if user_session_id not in cls._instances:
+            cls._instances[user_session_id] = LocalUserSession(user_session_id)
+        return cls._instances[user_session_id]
+
+    @classmethod
+    def clear_instances(cls) -> None:
+        cls._instances.clear()
+
+    def _ensure_initialized(self) -> None:
+        if self._in_flight is None:
+            self._in_flight = asyncio.Lock()
+        if self._waiting_rounds is None:
+            self._waiting_rounds = asyncio.Queue()
 
     async def get_context(self, round: int) -> str:
+        self._ensure_initialized()
+        assert self._waiting_rounds is not None
+        assert self._in_flight is not None
+
         if not self._waiting_rounds.empty() or self._in_flight.locked():
             # entering waiting queue
             future: asyncio.Future[bool] = asyncio.Future()
@@ -48,6 +70,10 @@ class LocalUserSession:
     def update_context(self, response: str) -> None:
         self.contexts = response
 
+        self._ensure_initialized()
+        assert self._waiting_rounds is not None
+        assert self._in_flight is not None
+
         if not self._waiting_rounds.empty():
             future = self._waiting_rounds.get_nowait()
             future.set_result(True)
@@ -57,8 +83,12 @@ class LocalUserSession:
 
 class UserSessionCompletionAPIData(CompletionAPIData):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    user_session: LocalUserSession = Field(exclude=True)
+    user_session_id: str = Field(exclude=True)
     target_round: int
+
+    @property
+    def user_session(self) -> LocalUserSession:
+        return LocalUserSession.get_instance(self.user_session_id)
 
     async def to_payload(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -72,7 +102,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         return await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:
-        inference_info.extra_info["user_session"] = self.user_session.user_session_id
+        inference_info.extra_info["user_session"] = self.user_session_id
         inference_info.extra_info["chat_round"] = self.user_session._current_round
 
     async def process_response(

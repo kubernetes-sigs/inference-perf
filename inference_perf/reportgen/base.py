@@ -65,6 +65,7 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
 
 
 class ResponsesSummary(BaseModel):
+    benchmark_time_seconds: float
     load_summary: dict[str, Any]
     successes: dict[str, Any]
     failures: dict[str, Any]
@@ -183,6 +184,7 @@ def calculate_goodput_metrics(
 
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
     return ResponsesSummary(
+        benchmark_time_seconds=0.0,
         load_summary={},  # model server doesn't report failed requests
         failures={},
         successes={
@@ -419,7 +421,9 @@ def summarize_requests(
             for text, chunk_time in parsed_chunks:
                 tokens_in_chunk = tokenizer.count_tokens(text)
                 if tokens_in_chunk > 0:
-                    # All tokens in a chunk get the timestamp when the chunk was received
+                    # Assign every token in a chunk the chunk's arrival time to match user-perceived
+                    # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
+                    # reports the smoothed average.
                     for _ in range(tokens_in_chunk):
                         output_token_times.append(chunk_time)
                     accumulated_tokens += tokens_in_chunk
@@ -522,6 +526,7 @@ def summarize_requests(
         successes_dict["goodput_metrics"] = goodput_metrics
 
     return ResponsesSummary(
+        benchmark_time_seconds=total_time,
         load_summary=load_summary,
         successes=successes_dict,
         failures={

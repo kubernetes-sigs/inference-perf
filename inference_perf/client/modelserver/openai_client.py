@@ -34,7 +34,6 @@ import logging
 import requests
 import ssl
 
-from ...datagen.otel_trace_replay_datagen import OTelChatCompletionAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -327,11 +326,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             # This ensures that if request X fails and request Y depends on X's output,
                             # Y raises EventFailedError and skips rather than hanging indefinitely.
                             #
-                            # Note: The original code only logged errors for non-200 responses without
-                            # calling process_failure(). This special handling for OTelChatCompletionAPIData
-                            # ensures proper failure propagation in trace replay scenarios.
-
-                            if isinstance(data, OTelChatCompletionAPIData) and response is not None:
+                            # Note: We call process_failure() for all data types on non-200 responses
+                            # to ensure proper state cleanup (e.g. releasing locks in multi-turn chat)
+                            # and failure propagation.
+                            if response is not None:
                                 error = ErrorResponseInfo(
                                     error_msg=response_content,
                                     error_type=f"HTTP Error {response.status}",
@@ -345,10 +343,30 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                     lora_adapter=lora_adapter,
                                 )
                     except Exception as read_error:
-                        # Handle errors reading response body
-                        if not response_content:
-                            response_content = f"Failed to read response text: {read_error}"
-                        raise
+                        # Handle errors reading response body or streaming.
+                        # For 200 responses, process_response() raised (e.g. ClientPayloadError
+                        # from a broken SSE stream). Call process_failure() here so that session
+                        # locks are released before the context manager exits. Re-raising would
+                        # run ClientResponse.__aexit__ on a broken connection, which can raise
+                        # a second exception that masks the original and bypasses the outer
+                        # aiohttp.ClientError handler.
+                        if response is not None and response.status == 200 and not response_info:
+                            caught_exception = read_error
+                            error = ErrorResponseInfo(
+                                error_msg=str(read_error),
+                                error_type=type(read_error).__name__,
+                            )
+                            response_info = await data.process_failure(
+                                response=None,
+                                config=self.client.api_config,
+                                tokenizer=self.client.tokenizer,
+                                exception=read_error,
+                                lora_adapter=lora_adapter,
+                            )
+                        else:
+                            if not response_content:
+                                response_content = f"Failed to read response text: {read_error}"
+                            raise
 
             except aiohttp.ClientError as e:
                 caught_exception = e

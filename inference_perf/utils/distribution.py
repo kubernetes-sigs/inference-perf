@@ -23,7 +23,15 @@ if TYPE_CHECKING:
     from inference_perf.config import Distribution
 
 
-def generate_distribution(min: int, max: int, mean: float, std_dev: float, total_count: int) -> NDArray[np.int_]:
+def generate_distribution(
+    min: int,
+    max: int,
+    mean: float,
+    std_dev: float,
+    total_count: int,
+    dist_type: str = "normal",  # one of: "normal", "lognormal", "uniform", "fixed"
+    rng: np.random.Generator | None = None,
+) -> NDArray[np.int_]:
     """
     Generates an array of lengths in integer adhering to the specified distribution constraints.
 
@@ -33,6 +41,9 @@ def generate_distribution(min: int, max: int, mean: float, std_dev: float, total
         mean: The target mean of the distribution.
         std_dev: The target standard deviation of the distribution.
         total_count: The total number of lengths to generate.
+        dist_type: Distribution type — "normal", "lognormal", "uniform", or "fixed".
+        rng: Optional numpy Generator for deterministic output. Falls back to
+            legacy ``np.random`` when *None* (preserves existing call-sites).
 
     Returns:
         A numpy array of integers representing lengths for input prompts or output generations.
@@ -46,23 +57,40 @@ def generate_distribution(min: int, max: int, mean: float, std_dev: float, total
         raise ValueError("Total count must be a positive integer.")
     if std_dev < 0:
         raise ValueError("Standard deviation cannot be negative.")
-    if mean < min or mean > max:
-        raise ValueError("Mean cannot be outside min and max range.")
 
-    # Generate floating-point numbers from a normal distribution
-    # Use a large enough intermediate pool if std_dev is high relative to range
-    # to increase chances of getting values within bounds after generation.
-    # This is a heuristic; perfect adherence isn't guaranteed.
-    generated_numbers = np.random.normal(loc=mean, scale=std_dev, size=total_count)
+    if dist_type == "fixed":
+        return cast(NDArray[np.int_], np.full(total_count, int(mean), dtype=int))
 
-    # Clip the numbers to the specified min/max range
+    if dist_type == "uniform":
+        if rng is not None:
+            generated_numbers = rng.uniform(low=min, high=max, size=total_count)
+        else:
+            generated_numbers = np.random.uniform(low=min, high=max, size=total_count)
+    elif dist_type == "lognormal":
+        # Parameterise the underlying normal so the *lognormal* has the
+        # requested mean/std_dev, then shift so that ``min`` maps to 0.
+        shifted_mean = mean - min
+        if shifted_mean <= 0:
+            shifted_mean = 1.0
+        sigma2 = np.log(1 + (std_dev / shifted_mean) ** 2)
+        mu = np.log(shifted_mean) - sigma2 / 2
+        sigma = np.sqrt(sigma2)
+        if rng is not None:
+            generated_numbers = rng.lognormal(mean=mu, sigma=sigma, size=total_count) + min
+        else:
+            generated_numbers = np.random.lognormal(mean=mu, sigma=sigma, size=total_count) + min
+    elif dist_type == "normal":
+        if mean < min or mean > max:
+            raise ValueError("Mean cannot be outside min and max range.")
+        if rng is not None:
+            generated_numbers = rng.normal(loc=mean, scale=std_dev, size=total_count)
+        else:
+            generated_numbers = np.random.normal(loc=mean, scale=std_dev, size=total_count)
+    else:
+        raise ValueError(f"Unknown dist_type {dist_type!r}. Supported types: 'normal', 'lognormal', 'uniform', 'fixed'.")
+
     clipped_numbers = np.clip(generated_numbers, min, max)
-
-    # Round to the nearest integer and convert type
     generated_lengths = np.round(clipped_numbers).astype(int)
-
-    # Ensure integer values are strictly within bounds after rounding
-    # (e.g., rounding 4.6 when max is 4 could result in 5 without this)
     generated_lengths = np.clip(generated_lengths, min, max)
 
     return cast(NDArray[np.int_], generated_lengths)
@@ -109,6 +137,9 @@ def sample_from_distribution(
 
     if rng is None:
         rng = np.random.default_rng()
+
+    if config.type == DistributionType.FIXED:
+        return cast(NDArray[np.int_], np.full(count, int(config.mean), dtype=int))
 
     if config.type == DistributionType.NORMAL:
         samples = rng.normal(loc=config.mean, scale=config.std_dev, size=count)

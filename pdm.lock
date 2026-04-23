@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:7afcc4c11c354168d2ccb268671389f88cda2279e2bb7cc11a1d2f8e38a001f9"
+content_hash = "sha256:45f19ab12efb05d131467dadd696944891e181789f7a8c343103a2c2406b1faa"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -2734,6 +2734,20 @@ dependencies = [
 files = [
     {file = "pytest_cov-7.1.0-py3-none-any.whl", hash = "sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678"},
     {file = "pytest_cov-7.1.0.tar.gz", hash = "sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2"},
+]
+
+[[package]]
+name = "pytest-picked"
+version = "0.5.1"
+requires_python = ">=3.8"
+summary = "Run the tests related to the changed files"
+groups = ["dev"]
+dependencies = [
+    "pytest>=3.7.0",
+]
+files = [
+    {file = "pytest_picked-0.5.1-py3-none-any.whl", hash = "sha256:af65c4763b51dc095ae4bc5073a962406902422ad9629c26d8b01122b677d998"},
+    {file = "pytest_picked-0.5.1.tar.gz", hash = "sha256:6634c4356a560a5dc3dba35471865e6eb06bbd356b56b69c540593e9d5620ded"},
 ]
 
 [[package]]

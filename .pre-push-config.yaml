@@ -1,0 +1,39 @@
+default_stages: [pre-push]
+repos:
+- repo: https://github.com/pdm-project/pdm
+  rev: 2.22.3
+  hooks:
+    - id: pdm-lock-check
+      name: check lock file matches pyproject
+
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.14.1
+  hooks:
+    - id: mypy
+      name: run static type check
+      args: [--strict, --ignore-missing-imports]
+- repo: local
+  hooks:
+    - id: check-license
+      name: check license headers
+      entry: python scripts/check_license.py
+      language: python
+      files: \.py$
+    - id: ruff
+      name: ruff
+      entry: pdm run ruff check --fix
+      language: system
+      types: [python]
+      require_serial: true
+    - id: ruff-format
+      name: ruff-format
+      entry: pdm run ruff format
+      language: system
+      types: [python]
+      require_serial: true
+    - id: check-ancestor-main
+      name: check branch is based on origin/main
+      entry: >
+        bash -c "git fetch origin main && git merge-base --is-ancestor origin/main HEAD || (echo 'Error: Your branch is not based on the latest origin/main. Please rebase or merge origin/main.' && exit 1)"
+      language: system
+      pass_filenames: false

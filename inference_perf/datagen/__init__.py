@@ -21,6 +21,7 @@ from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
 from .infinity_instruct_datagen import InfinityInstructDataGenerator
 from .hf_billsum_datagen import BillsumConversationsDataGenerator
 from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from .conversation_replay_datagen import ConversationReplayDataGenerator
 
 __all__ = [
     "BaseGenerator",
@@ -36,4 +37,5 @@ __all__ = [
     "InfinityInstructDataGenerator",
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
+    "ConversationReplayDataGenerator",
 ]

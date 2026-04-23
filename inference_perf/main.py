@@ -41,6 +41,7 @@ from inference_perf.datagen import (
     InfinityInstructDataGenerator,
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
+    ConversationReplayDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -281,6 +282,7 @@ def main_cli() -> None:
                 DataGenType.InfinityInstruct,
                 DataGenType.BillsumConversations,
                 DataGenType.OTelTraceReplay,
+                DataGenType.ConversationReplay,
             }
         ):
             if tokenizer is None:
@@ -322,6 +324,9 @@ def main_cli() -> None:
         if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
 
+        if config.data.type == DataGenType.ConversationReplay and config.data.conversation_replay is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'conversation_replay' to be configured")
+
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.CNNDailyMail:
@@ -332,6 +337,8 @@ def main_cli() -> None:
             datagen = RandomDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.SharedPrefix:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.ConversationReplay:
+            datagen = ConversationReplayDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.InfinityInstruct:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.BillsumConversations:

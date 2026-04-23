@@ -122,7 +122,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             return UserSessionCompletionAPIData(
                 prompt=self.prompts[i],
                 max_tokens=output_len,
-                user_session=self.user_sessions[user_id],
+                user_session_id=self.user_sessions[user_id].user_session_id,
                 target_round=round,
             )
         else:

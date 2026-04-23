@@ -88,6 +88,7 @@ class DataGenType(Enum):
     InfinityInstruct = "infinity_instruct"
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
+    ConversationReplay = "conversation_replay"
 
 
 class DistributionType(str, Enum):
@@ -96,6 +97,7 @@ class DistributionType(str, Enum):
     LOGNORMAL = "lognormal"
     UNIFORM = "uniform"
     POISSON = "poisson"
+    FIXED = "fixed"
 
 
 # Represents the distribution for input prompts and output generations.
@@ -168,6 +170,39 @@ class SharedPrefix(BaseModel):
         return self
 
 
+class ConversationReplayConfig(BaseModel):
+    """Configuration for conversation replay data generator.
+
+    Generates synthetic multi-turn conversations in-memory from configurable
+    distributions. Each conversation has a two-part system prompt (shared prefix
+    + dynamic per-conversation suffix) and a sequence of user/assistant turns
+    with independently sampled input/output token lengths.
+    """
+
+    seed: int = Field(42, description="Random seed for deterministic generation")
+    num_conversations: int = Field(200, gt=0, description="Number of conversation blueprints to generate")
+    shared_system_prompt_len: int = Field(8359, ge=0, description="Fixed shared system prompt length in tokens")
+    dynamic_system_prompt_len: Optional[Distribution] = Field(
+        None, description="Per-conversation dynamic system prompt length distribution"
+    )
+    turns_per_conversation: Optional[Distribution] = Field(None, description="Number of turns per conversation distribution")
+    input_tokens_per_turn: Optional[Distribution] = Field(None, description="Input tokens per turn distribution")
+    output_tokens_per_turn: Optional[Distribution] = Field(None, description="Output tokens per turn distribution")
+    tool_call_latency_sec: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Per-turn tool execution latency distribution in seconds. "
+            "When set, each turn sleeps for the sampled duration after model "
+            "inference completes and before the next turn begins, simulating "
+            "tool call round-trips. The sleep holds the session lock so the "
+            "GPU is free to serve other concurrent conversations — correctly "
+            "modelling offline agentic workloads. Omit for pure GPU throughput "
+            "measurement. Values are in seconds; min/max are whole seconds, "
+            "mean/std_dev may be fractional."
+        ),
+    )
+
+
 class OTelTraceReplayConfig(BaseModel):
     """Configuration for OTel trace replay data generator."""
 
@@ -225,6 +260,9 @@ class DataConfig(BaseModel):
 
     # OTel trace replay configuration
     otel_trace_replay: Optional[OTelTraceReplayConfig] = None
+
+    # Conversation replay configuration
+    conversation_replay: Optional[ConversationReplayConfig] = None
 
 
 class ModelServerType(Enum):
