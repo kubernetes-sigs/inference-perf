@@ -44,6 +44,7 @@ def create_data_config(
     config.shared_prefix.enable_multi_turn_chat = enable_multi_turn_chat
     config.shared_prefix.question_distribution = None
     config.shared_prefix.output_distribution = None
+    config.shared_prefix.seed = 42
     return config
 
 
