@@ -37,6 +37,8 @@ class LocalStorageClient(StorageClient):
             with open(report_path, "w", encoding="utf-8") as f:
                 if report.file_type == "yaml":
                     yaml.dump(report.get_contents(), f, sort_keys=False, default_flow_style=False)
+                elif report.file_type == "prom":
+                    f.write(report.get_contents())
                 else:
                     f.write(json.dumps(report.get_contents(), indent=2))
             logger.info(f"Report saved to: {report_path}")
