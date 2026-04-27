@@ -64,7 +64,7 @@ from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import List, Optional
 
-from datasets import load_dataset
+from huggingface_hub import hf_hub_download, list_repo_files
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
@@ -138,74 +138,62 @@ def _download_hf_dataset(dataset_path: str) -> tuple[Path, List[Path]]:
         ValueError: If dataset cannot be downloaded or doesn't contain trace data
     """
     try:
-        logger.info(f"Loading HuggingFace dataset: {dataset_path}")
-        # Load dataset - this downloads it to HuggingFace cache if not already present
-        dataset = load_dataset(dataset_path)
-
-        # Create a temporary directory to store extracted trace files
+        # We use huggingface_hub directly instead of datasets.load_dataset() because:
+        # - load_dataset() always tries to parse/unify the schema across all files.
+        # - Our JSONL files contain heterogeneous nested structures (tool call schemas vary
+        #   per benchmark), so Arrow cannot cast them to a single unified schema.
+        # - Additionally, some datasets library versions don't support the 'Json' feature
+        #   type that the Hub auto-infers for nested objects, causing an immediate failure.
+        # Downloading the raw files via huggingface_hub bypasses all schema handling.
         import tempfile
 
+        logger.info(f"Loading HuggingFace dataset: {dataset_path}")
+
+        repo_files = [
+            f
+            for f in list_repo_files(dataset_path, repo_type="dataset")
+            if f.endswith(".jsonl") or f.endswith(".json")
+        ]
+
+        if not repo_files:
+            raise ValueError(
+                f"No .jsonl or .json files found in HuggingFace dataset '{dataset_path}'"
+            )
+
+        logger.info(f"Found {len(repo_files)} trace files in dataset")
+
         temp_dir = Path(tempfile.mkdtemp(prefix="hf_otel_traces_"))
-        logger.info(f"Extracting traces to temporary directory: {temp_dir}")
-
         trace_files = []
-        row_count = 0
 
-        # Iterate through all splits in the dataset
-        for split_name, split_data in dataset.items():
-            logger.info(f"Processing split '{split_name}' with {len(split_data)} rows")
+        for repo_file in repo_files:
+            local_path = hf_hub_download(dataset_path, repo_file, repo_type="dataset")
+            with open(local_path) as f:
+                for line_idx, line in enumerate(f):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        trace_data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Skipping invalid JSON line {line_idx} in {repo_file}")
+                        continue
 
-            # Each row should contain trace data
-            for idx, row in enumerate(split_data):
-                # Try to find trace data in the row
-                # Common column names: 'trace', 'json', 'data', 'content'
-                trace_content = None
-                for col_name in ["trace", "json", "data", "content", "text", "spans"]:
-                    if col_name in row:
-                        trace_content = row[col_name]
-                        break
-
-                if trace_content is None:
-                    # If no standard column found, try the first column
-                    if len(row) > 0:
-                        trace_content = list(row.values())[0]
-
-                if trace_content:
-                    # Write trace to a JSON file
-                    trace_file = temp_dir / f"{split_name}_{idx}.json"
-
-                    # Parse trace_content and wrap in "spans" key if needed
-                    if isinstance(trace_content, str):
-                        try:
-                            trace_data = json.loads(trace_content)
-                        except json.JSONDecodeError:
-                            # If not valid JSON, skip this row
-                            logger.warning(f"Skipping row {idx} in split '{split_name}': invalid JSON")
-                            continue
-                    else:
-                        # Assume it's already a dict/object
-                        trace_data = trace_content
-
-                    # Wrap trace_data in "spans" key if needed
                     if isinstance(trace_data, list):
-                        # trace_data is a list of spans, wrap it
                         trace_data = {"spans": trace_data}
                     elif isinstance(trace_data, dict) and "spans" not in trace_data:
-                        # trace_data is a dict but doesn't have "spans" key, wrap it
-                        trace_data = {"spans": trace_data}
-                    # else: trace_data is already a dict with "spans" key, use as-is
+                        trace_data = {"spans": [trace_data]}
 
-                    trace_file.write_text(json.dumps(trace_data, indent=2))
+                    safe_name = repo_file.replace("/", "_")
+                    trace_file = temp_dir / f"{safe_name}_{line_idx}.json"
+                    trace_file.write_text(json.dumps(trace_data))
                     trace_files.append(trace_file)
-                    row_count += 1
 
         if not trace_files:
             raise ValueError(
-                f"No trace data found in HuggingFace dataset '{dataset_path}'. "
-                f"Expected columns: 'trace', 'json', 'data', 'content', or 'text'"
+                f"No trace data found in HuggingFace dataset '{dataset_path}'"
             )
 
-        logger.info(f"Extracted {len(trace_files)} trace files from {row_count} rows")
+        logger.info(f"Extracted {len(trace_files)} trace files from dataset")
         return temp_dir, trace_files
 
     except Exception as e:

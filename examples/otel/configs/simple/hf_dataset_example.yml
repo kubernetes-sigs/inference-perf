@@ -45,5 +45,3 @@ report:
     summary: true
     per_stage: false
     per_request: false
-
-# Made with Bob
