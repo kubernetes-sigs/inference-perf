@@ -103,6 +103,14 @@ class DataGenerator(BaseGenerator):
         """Whether this generator supports shared prefix patterns."""
         raise NotImplementedError
 
+    def get_request_count(self) -> int:
+        """Return the total number of requests this generator will produce.
+
+        Only meaningful for trace-driven generators where the count is bounded
+        by the trace. Subclasses that drive load from a trace must override.
+        """
+        raise NotImplementedError
+
 
 class SessionGenerator(BaseGenerator):
     """Session-based trace replay for agentic workloads (TRACE_SESSION_REPLAY load type).

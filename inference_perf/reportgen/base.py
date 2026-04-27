@@ -160,7 +160,11 @@ def calculate_goodput_metrics(
         if is_good:
             good_requests_count += 1
             in_tokens = m.info.input_tokens if m.info.input_tokens is not None else 0
-            out_tokens = m.info.output_tokens if m.info.output_tokens is not None else 0
+            out_tokens = (
+                m.info.response_info.output_tokens
+                if m.info.response_info and m.info.response_info.output_tokens is not None
+                else 0
+            )
             good_total_tokens += in_tokens + out_tokens
 
     goodput_percentage = (good_requests_count / total * 100) if total > 0 else 0.0

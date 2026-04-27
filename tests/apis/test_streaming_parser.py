@@ -42,10 +42,11 @@ async def test_parse_sse_stream() -> None:
     output_text, chunk_times, raw_content, response_chunks = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "Hello world"
-    assert len(chunk_times) == 3
     assert "Hello" in raw_content
     assert "world" in raw_content
     assert "[DONE]" in raw_content
     assert len(response_chunks) == 2
     assert "Hello" in response_chunks[0]
     assert "world" in response_chunks[1]
+    # response_chunks and chunk_times must stay in lockstep — reportgen zips them with strict=True.
+    assert len(chunk_times) == len(response_chunks)

@@ -28,9 +28,11 @@ jobs:
 
       - name: Run end-to-end tests
         run: |
+          set -euxo pipefail
           nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
 
       - name: Upload test_e2e.out
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test_e2e

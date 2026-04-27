@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import multiprocessing as mp
+from queue import Empty
 from typing import Generic, List, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ class RequestQueue(Generic[T]):
                 try:
                     _ = queue.get_nowait()
                     queue.task_done()
-                except mp.queues.Empty:
+                except Empty:
                     if queue.qsize() == 0:
                         logger.debug("Drain finished")
                         break

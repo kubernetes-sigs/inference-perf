@@ -16,6 +16,7 @@ import multiprocessing as mp
 
 from asyncio import get_event_loop, create_task
 from contextlib import asynccontextmanager
+from queue import Empty
 from typing import AsyncIterator, Optional
 from functools import partial
 import logging
@@ -44,7 +45,7 @@ class MultiprocessRequestDataCollector(RequestDataCollector):
         while True:
             try:
                 item = await event_loop.run_in_executor(None, get_queue)
-            except mp.queues.Empty:
+            except Empty:
                 continue
 
             if item is None:

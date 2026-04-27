@@ -204,7 +204,9 @@ class OTelInstrumentation:
                 logger.info("Created OTEL tracer provider with console exporter")
 
         self.tracer = trace.get_tracer(self.service_name)
-        self._provider = provider  # Store provider for shutdown
+        # The hasattr check above guarantees `provider` exposes the SDK surface
+        # (force_flush, shutdown, add_span_processor); cast so the static type matches.
+        self._provider: "TracerProvider" = cast("TracerProvider", provider)
         logger.info(f"OTEL instrumentation enabled for service: {self.service_name}")
 
     def shutdown(self) -> None:

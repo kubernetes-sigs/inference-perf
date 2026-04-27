@@ -57,6 +57,7 @@ from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
 from types import FrameType
 import time
 import multiprocessing as mp
+from queue import Empty
 from multiprocessing.synchronize import Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
@@ -80,7 +81,7 @@ logger = logging.getLogger(__name__)
 
 class RequestQueueData(NamedTuple):
     stage_id: int
-    request_data: Union[InferenceAPIData, int]
+    request_data: InferenceAPIData
     request_time: float
     lora_adapter: Optional[str]
 
@@ -90,7 +91,7 @@ class Worker(mp.Process):
         self,
         id: int,
         client: ModelServerClient,
-        request_queue: mp.Queue,  # type: ignore[type-arg]
+        request_queue: "mp.JoinableQueue[RequestQueueData]",
         datagen: BaseGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
@@ -160,7 +161,7 @@ class Worker(mp.Process):
                     logger.debug(f"[Worker {self.id}] timed out getting request from queue")
                     semaphore.release()
                     continue
-                except mp.queues.Empty:
+                except Empty:
                     semaphore.release()
                     continue
                 except Exception as e:
@@ -169,7 +170,7 @@ class Worker(mp.Process):
                     continue
 
                 async def schedule_client(
-                    queue: mp.Queue,  # type: ignore[type-arg]
+                    queue: "mp.JoinableQueue[RequestQueueData]",
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
@@ -350,12 +351,12 @@ class LoadGenerator:
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
 
-    async def drain(self, queue: mp.Queue) -> None:  # type: ignore[type-arg]
+    async def drain(self, queue: "mp.JoinableQueue[RequestQueueData]") -> None:
         while True:
             try:
                 _ = queue.get_nowait()
                 queue.task_done()
-            except mp.queues.Empty:
+            except Empty:
                 if queue.qsize() == 0:
                     logger.debug("Drain finished")
                     return

@@ -238,8 +238,9 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
 
     async def test_drain(self) -> None:
         q: RequestQueue[RequestQueueData] = RequestQueue(1)
-        q.put(RequestQueueData(0, 1, 0.0, None), 0)
-        q.put(RequestQueueData(0, 2, 0.0, None), 0)
+        dummy_data = MagicMock(spec=InferenceAPIData)
+        q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
+        q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
 
         # Small sleep to let queue populate
         await asyncio.sleep(0.1)

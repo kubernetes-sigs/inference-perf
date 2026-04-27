@@ -15,7 +15,8 @@ import pytest
 import asyncio
 import aiohttp
 from unittest.mock import AsyncMock, MagicMock
-from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, ErrorResponseInfo, InferenceInfo
+from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
+from inference_perf.apis import ErrorResponseInfo, InferenceInfo
 
 
 @pytest.fixture

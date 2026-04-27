@@ -15,7 +15,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 from inference_perf.apis import LazyLoadInferenceAPIData
-from inference_perf.datagen.random_datagen import RandomDataGenerator, LazyLoadDataMixin
+from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.datagen.random_datagen import RandomDataGenerator
+from inference_perf.datagen.base import LazyLoadDataMixin
 from inference_perf.config import APIConfig, DataConfig, APIType, TraceFormat, TraceConfig, DataGenType
 
 
@@ -72,6 +74,9 @@ class TestTraceReplay:
             assert timestamps[2] - timestamps[1] > 0.99
 
             # Token counts preserved
+            assert isinstance(data_list[0], CompletionAPIData)
+            assert isinstance(data_list[1], CompletionAPIData)
+            assert isinstance(data_list[2], CompletionAPIData)
             assert data_list[0].max_tokens == 50
             assert data_list[1].max_tokens == 75
             assert data_list[2].max_tokens == 60

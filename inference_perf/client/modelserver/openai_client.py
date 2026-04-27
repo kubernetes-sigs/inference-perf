@@ -78,7 +78,10 @@ class openAIModelServerClient(ModelServerClient):
             if not supported_models:
                 logger.error("No supported models found")
                 raise Exception("openAI client init failed, no model_name could be found")
-            self.model_name = supported_models[0].get("id")
+            inferred_id = supported_models[0].get("id")
+            if not isinstance(inferred_id, str):
+                raise Exception(f"openAI client init failed, model entry has no string 'id': {supported_models[0]}")
+            self.model_name: str = inferred_id
             logger.info(f"Inferred model {self.model_name}")
             if len(supported_models) > 1:
                 logger.warning(f"More than one supported model found {supported_models}, selecting {self.model_name}")
@@ -151,6 +154,8 @@ class openAIModelServerClient(ModelServerClient):
 
 
 class openAIModelServerClientSession(ModelServerClientSession):
+    client: openAIModelServerClient
+
     def __init__(self, client: openAIModelServerClient):
         timeout = aiohttp.ClientTimeout(total=client.timeout) if client.timeout else aiohttp.helpers.sentinel
         connector = None
@@ -185,21 +190,22 @@ class openAIModelServerClientSession(ModelServerClientSession):
     ) -> None:
         """Record OTEL metrics for the request."""
         if response_info:
-            otel_response_info = {
+            inner = response_info.response_info
+            otel_response_info: Dict[str, Any] = {
                 "prompt_tokens": response_info.input_tokens,
-                "completion_tokens": response_info.output_tokens,
+                "completion_tokens": inner.output_tokens if inner else 0,
                 "total_latency": end_time - start_time,
             }
 
-            # Calculate TTFT if token times are available
-            if response_info.output_token_times and len(response_info.output_token_times) > 0:
-                ttft = response_info.output_token_times[0] - start_time
+            # Calculate TTFT if token times are available (streaming only)
+            if isinstance(inner, StreamedInferenceResponseInfo) and inner.output_token_times:
+                ttft = inner.output_token_times[0] - start_time
                 otel_response_info["time_to_first_token"] = ttft
 
                 # Calculate average TPOT if we have multiple tokens
-                if len(response_info.output_token_times) > 1:
-                    total_decode_time = response_info.output_token_times[-1] - response_info.output_token_times[0]
-                    num_decode_tokens = len(response_info.output_token_times) - 1
+                if len(inner.output_token_times) > 1:
+                    total_decode_time = inner.output_token_times[-1] - inner.output_token_times[0]
+                    num_decode_tokens = len(inner.output_token_times) - 1
                     tpot = total_decode_time / num_decode_tokens if num_decode_tokens > 0 else 0
                     otel_response_info["time_per_output_token"] = tpot
 

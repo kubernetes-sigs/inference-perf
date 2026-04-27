@@ -68,7 +68,7 @@ async def parse_sse_stream(
         buffer += chunk
         while b"\n\n" in buffer:
             message, buffer = buffer.split(b"\n\n", 1)
-            chunk_times.append(time.perf_counter())
+            message_time = time.perf_counter()
             for line in message.split(sep=b"\n"):
                 if line.startswith(b"data:"):
                     data_str = line.removeprefix(b"data: ").strip()
@@ -77,6 +77,7 @@ async def parse_sse_stream(
                     try:
                         data = json.loads(data_str)
                         response_chunks.append(data_str.decode("utf-8", errors="ignore"))
+                        chunk_times.append(message_time)
                         if content := extract_content(data):
                             output_text += content
                     except (json.JSONDecodeError, IndexError):
