@@ -17,13 +17,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 @dataclass
 class ReplayMessage:
     role: str
-    text: Any
+    text: str
 
 
 class ComplexReplayMessage(ReplayMessage):
@@ -32,6 +32,14 @@ class ComplexReplayMessage(ReplayMessage):
     def __init__(self, role: str, message_info: dict[str, Any], raw_reconstructed_text: str):
         super().__init__(role=role, text=raw_reconstructed_text)
         self.message_info = message_info
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ComplexReplayMessage):
+            return NotImplemented
+        return self.role == other.role and self.text == other.text and self.message_info == other.message_info
+
+    def __hash__(self) -> int:
+        return hash((self.role, self.text))
 
 
 @dataclass
@@ -50,7 +58,7 @@ class InputSegment:
     source_event_id: which predecessor event this segment comes from (shared/output only)
     """
 
-    type: str  # "shared" | "output" | "unique"
+    type: Literal["shared", "output", "unique"]
     message_count: int
     token_count: int
     source_event_id: Optional[str] = None
@@ -62,13 +70,25 @@ class GraphCall:
 
     call_id: str
     model: str
-    messages: List[ReplayMessage]
+    # Stored as plain dicts at graph-build time (not ReplayMessage objects) because
+    # the graph is serialisable to JSON. Dict format: {"role": str, "content": str}.
+    messages: List[Dict[str, Any]]
     expected_output: str
     input_segments: List[InputSegment]
     total_input_tokens: int
     expected_output_tokens: int
     temperature: Optional[float]
     max_tokens_recorded: Optional[int]
+    tool_definitions: Optional[List[Dict[str, Any]]] = None
+    # True when the recorded output was a tool call (not plain text). Used at
+    # replay time to force tool_choice so the live model can't return plain text
+    # where the original trace had a tool call — which would leave role:tool
+    # messages in the successor with dangling tool_call_id references.
+    expected_output_is_tool_call: bool = False
+    # Function names from the recorded tool calls, in order. Used to force the
+    # specific function when there is exactly one tool call; with multiple calls
+    # we fall back to "required" since vLLM only accepts one name at a time.
+    expected_output_tool_names: Optional[List[str]] = None
 
 
 @dataclass

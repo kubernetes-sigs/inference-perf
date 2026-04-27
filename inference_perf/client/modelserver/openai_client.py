@@ -218,9 +218,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
             try:
                 # Extract input based on request type
                 if hasattr(data, "messages"):
-                    # Chat completion - serialize messages as JSON string (gen_ai.input.messages)
-                    input_messages = [{"role": msg.role, "content": msg.content} for msg in data.messages]
+                    # Serialize each message, preserving tool_calls when present.
+                    input_messages = [msg.to_dict() for msg in data.messages]
                     otel_response_info["input_messages"] = json.dumps(input_messages)
+
+                    # Record tool definitions so they appear in Jaeger alongside the request.
+                    if hasattr(data, "tool_definitions") and data.tool_definitions:
+                        otel_response_info["tool_definitions"] = json.dumps(data.tool_definitions)
                 elif hasattr(data, "prompt"):
                     # Text completion - store as prompt string (gen_ai.prompt)
                     otel_response_info["input_prompt"] = data.prompt
@@ -232,14 +236,20 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     if choices:
                         if "message" in choices[0]:
                             # Chat completion response
-                            output_text = choices[0].get("message", {}).get("content", "")
-                            otel_response_info["output_text"] = output_text
+                            msg_out = choices[0].get("message", {})
+                            output_text = msg_out.get("content") or ""
+                            if msg_out.get("tool_calls"):
+                                # Store the full message under a dedicated key so
+                                # gen_ai.output.text stays as plain text only.
+                                otel_response_info["output_message"] = json.dumps(msg_out)
+                            else:
+                                otel_response_info["output_text"] = output_text
                         elif "text" in choices[0]:
                             # Text completion response
                             output_text = choices[0].get("text", "")
                             otel_response_info["output_text"] = output_text
             except Exception as e:
-                logger.debug(f"Failed to extract messages for OTEL: {e}")
+                logger.warning(f"Failed to extract messages for OTEL: {e}")
 
             self.client.otel.record_response_metrics(
                 span=span,
