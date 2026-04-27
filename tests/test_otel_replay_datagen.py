@@ -1179,7 +1179,7 @@ class TestRandomSessionIDInjection:
             InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
         ]
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="What is the capital of France?")],
             max_tokens=50,
             event_id="session_001:event_0",  # Original session (no _dup)
@@ -1214,7 +1214,7 @@ class TestRandomSessionIDInjection:
             InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
         ]
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="What is the capital of France?")],
             max_tokens=50,
             event_id="session_001_dup1:event_0",  # Duplicate session (has _dup1)
@@ -1232,6 +1232,7 @@ class TestRandomSessionIDInjection:
         await api_data.wait_for_predecessors_and_substitute()
 
         # Message SHOULD have random string injected (duplicate session, automatic)
+        assert api_data.messages[0].content is not None
         assert "[SESS:test123456789abc]" in api_data.messages[0].content
         assert "What is the capital of France?" in api_data.messages[0].content
 
@@ -1249,7 +1250,7 @@ class TestRandomSessionIDInjection:
             InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
         ]
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="What is the capital of France?")],
             max_tokens=50,
             event_id="session_001:event_0",  # Original session (no _dup)
@@ -1267,6 +1268,7 @@ class TestRandomSessionIDInjection:
         await api_data.wait_for_predecessors_and_substitute()
 
         # Message SHOULD have random string injected (flag enabled)
+        assert api_data.messages[0].content is not None
         assert "[SESS:test123456789abc]" in api_data.messages[0].content
         assert "What is the capital of France?" in api_data.messages[0].content
 
@@ -1284,7 +1286,7 @@ class TestRandomSessionIDInjection:
             InputSegment(type="unique", message_count=1, token_count=10, source_event_id=None),
         ]
 
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="What is the capital of France?")],
             max_tokens=50,
             event_id="session_001_dup1:event_0",  # Duplicate session (has _dup1)
@@ -1302,6 +1304,7 @@ class TestRandomSessionIDInjection:
         await api_data.wait_for_predecessors_and_substitute()
 
         # Message SHOULD have random string injected (both flag and duplicate)
+        assert api_data.messages[0].content is not None
         assert "[SESS:test123456789abc]" in api_data.messages[0].content
         assert "What is the capital of France?" in api_data.messages[0].content
 
@@ -1311,7 +1314,7 @@ class TestRandomSessionIDInjection:
         tracker = WorkerSessionTracker()
 
         # Create a test instance to access the method
-        api_data = OTelChatCompletionAPIData(
+        api_data = SessionChatCompletionAPIData(
             messages=[ChatMessage(role="user", content="test")],
             max_tokens=50,
             event_id="test:event_0",

@@ -264,7 +264,6 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         # Match pattern: anything followed by _dup and one or more digits at the end
         return bool(re.search(r"_dup\d+$", session_id))
 
-
     def _fail_and_notify(self, session_id: str, reason: str) -> None:
         """Mark this event and session as failed, notify the completion queue.
 
