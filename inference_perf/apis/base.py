@@ -29,6 +29,7 @@ class StreamedInferenceResponseInfo(BaseModel):
     chunk_times: List[float] = []
     output_tokens: int = 0
     output_token_times: List[float] = []
+    server_usage: Optional[dict[str, Any]] = None
 
 
 class InferenceInfo(BaseModel):

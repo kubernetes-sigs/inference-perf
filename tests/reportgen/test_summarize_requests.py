@@ -89,9 +89,9 @@ def test_summarize_requests_token_mismatch() -> None:
             response_chunks=[
                 '{"choices": [{"text": "hello"}]}',
                 '{"choices": [{"text": "world"}]}',
-                '{"usage": {"completion_tokens": 6}}',
             ],
-            chunk_times=[1.0, 2.0, 3.0],
+            chunk_times=[1.0, 2.0],
+            server_usage={"completion_tokens": 6},
         ),
     )
 

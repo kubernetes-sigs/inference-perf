@@ -52,7 +52,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, message_times, raw_content, response_chunks = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
 
@@ -62,9 +62,10 @@ class CompletionAPIData(InferenceAPIData):
                 input_tokens=prompt_len,
                 response_info=StreamedInferenceResponseInfo(
                     response_chunks=response_chunks,
-                    chunk_times=message_times,
+                    chunk_times=chunk_times,
                     output_tokens=output_len,
-                    output_token_times=message_times,
+                    output_token_times=chunk_times,
+                    server_usage=server_usage,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},

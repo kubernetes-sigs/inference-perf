@@ -405,7 +405,9 @@ def summarize_requests(
             output_token_times = []
             accumulated_tokens = 0
             parsed_chunks = []
-            expected_output_tokens = None
+            expected_output_tokens = (
+                m.info.response_info.server_usage.get("completion_tokens") if m.info.response_info.server_usage else None
+            )
 
             for chunk_str, chunk_time in zip(
                 m.info.response_info.response_chunks, m.info.response_info.chunk_times, strict=True
@@ -417,8 +419,6 @@ def summarize_requests(
                         text = delta.get("text") or delta.get("delta", {}).get("content")
                         if text:
                             parsed_chunks.append((text, chunk_time))
-                    if usage := data.get("usage"):
-                        expected_output_tokens = usage.get("completion_tokens")
                 except json.JSONDecodeError:
                     continue
 

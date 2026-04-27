@@ -28,7 +28,7 @@ from aiohttp import ClientResponse
 
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str]]:
+) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -44,24 +44,24 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks) where:
+        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
         - output_text: The concatenated text content from all chunks
-        - chunk_times: List of timestamps when each message was received
+        - chunk_times: Timestamps for content-bearing chunks only. Role-only
+          deltas, usage-only chunks, [DONE] signals, and unparseable messages
+          are excluded so they don't corrupt downstream TPOT/TTFT/ITL.
         - raw_content: The raw string content of the stream
-        - response_chunks: List of raw JSON strings from data: lines (for token interpolation)
-
-    Example:
-        # For chat completions
-        output_text, times, raw, chunks = await parse_sse_stream(
-            response,
-            lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
-        )
+        - response_chunks: Raw JSON strings of content-bearing chunks, 1:1 with
+          chunk_times.
+        - server_usage: Last-seen `usage` dict from any chunk that carried one
+          (e.g. trailing `{"choices":[],"usage":{...}}` when stream_options
+          include_usage=true). None if the server didn't emit usage.
     """
     output_text = ""
     chunk_times: List[float] = []
     buffer = b""
     raw_content = b""
     response_chunks: List[str] = []
+    server_usage: Optional[dict[str, Any]] = None
 
     async for chunk in response.content.iter_any():
         raw_content += chunk
@@ -69,21 +69,24 @@ async def parse_sse_stream(
         while b"\n\n" in buffer:
             message, buffer = buffer.split(b"\n\n", 1)
             message_time = time.perf_counter()
+            done = False
             for line in message.split(sep=b"\n"):
                 if line.startswith(b"data:"):
                     data_str = line.removeprefix(b"data: ").strip()
                     if data_str == b"[DONE]":
+                        done = True
                         break
                     try:
                         data = json.loads(data_str)
-                        response_chunks.append(data_str.decode("utf-8", errors="ignore"))
-                        chunk_times.append(message_time)
+                        if usage := data.get("usage"):
+                            server_usage = usage
                         if content := extract_content(data):
                             output_text += content
+                            chunk_times.append(message_time)
+                            response_chunks.append(data_str.decode("utf-8", errors="ignore"))
                     except (json.JSONDecodeError, IndexError):
                         continue
-            else:
-                continue
-            break
+            if done:
+                break
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks
+    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
