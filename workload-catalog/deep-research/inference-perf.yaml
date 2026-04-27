@@ -1,15 +1,15 @@
 load:
   type: concurrent
   stages:
-  - num_requests: 15
+  - num_requests: 50
     concurrency_level: 1
-  - num_requests: 30
+  - num_requests: 50
     concurrency_level: 2
-  - num_requests: 45
+  - num_requests: 50
     concurrency_level: 3
-  - num_requests: 60
+  - num_requests: 50
     concurrency_level: 4
-  - num_requests: 75
+  - num_requests: 50
     concurrency_level: 5
   num_workers: 1
 api:
@@ -20,26 +20,38 @@ server:
   model_name: google/gemma-3-1b-it
   base_url: http://localhost:8000
 data:
-  type: shared_prefix
-  shared_prefix:
-    num_groups: 10
-    num_prompts_per_group: 15
-    enable_multi_turn_chat: true
-    system_prompt_len:
+  type: conversation_replay
+  conversation_replay:
+    seed: 42
+    num_conversations: 5
+    shared_system_prompt_len: 2000
+    dynamic_system_prompt_len:
+      type: lognormal
       min: 2000
-      max: 2000
-      mean: 2000.0
-      std_dev: 0.0
+      max: 150000
+      mean: 45000
+      std_dev: 35000
+    turns_per_conversation:
       type: normal
-    question_len:
+      min: 2
+      max: 50
+      mean: 15
+      std_dev: 8.5
+    input_tokens_per_turn:
+      type: lognormal
       min: 500
       max: 15000
-      mean: 3000.0
-      std_dev: 2500.0
-      type: lognormal
-    output_len:
+      mean: 3000
+      std_dev: 2500
+    output_tokens_per_turn:
+      type: normal
       min: 50
       max: 4000
-      mean: 300.0
-      std_dev: 850.0
+      mean: 300
+      std_dev: 850
+    tool_call_latency_sec:
       type: normal
+      min: 5
+      max: 60
+      mean: 25
+      std_dev: 12
