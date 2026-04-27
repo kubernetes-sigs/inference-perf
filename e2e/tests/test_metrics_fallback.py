@@ -144,7 +144,7 @@ async def test_legacy_metric_name(prometheus_server):
         )
 
         assert result.success, f"Benchmark failed: {result.stdout}"
-        assert "summary_prometheus_metrics.json" in result.reports
+        assert result.reports and "summary_prometheus_metrics.json" in result.reports
         report = result.reports["summary_prometheus_metrics.json"]
         assert "successes" in report
         success_count = report["successes"]["request_success_count"]
@@ -169,7 +169,7 @@ async def test_new_metric_name(prometheus_server):
         )
 
         assert result.success, f"Benchmark failed: {result.stdout}"
-        assert "summary_prometheus_metrics.json" in result.reports
+        assert result.reports and "summary_prometheus_metrics.json" in result.reports
         report = result.reports["summary_prometheus_metrics.json"]
         assert "successes" in report
         success_count = report["successes"]["request_success_count"]

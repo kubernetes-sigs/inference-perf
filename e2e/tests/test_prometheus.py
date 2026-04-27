@@ -17,13 +17,19 @@ import pathlib
 import re
 import shutil
 import sys
-
+import logging
+from typing import Any
 import pytest
 import requests
+import textwrap
 
 from utils.benchmark import run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.testdata import extract_tarball
+
+
+logger = logging.getLogger(__name__)
+
 
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 MAIN_PY_PATH = PROJECT_ROOT / "inference_perf" / "main.py"
@@ -99,29 +105,31 @@ async def test_prometheus_metrics_collection(prometheus_server):
         )
 
         # Verify benchmark succeeded before proceeding
-        assert result.success, f"Benchmark failed with output:\n{result.stdout}"
+        assert result.success, f"Benchmark failed with output: {format_content(result.stdout)}"
 
         # Debug and verify metrics exposed by simulator
         try:
             resp = requests.get("http://127.0.0.1:18000/metrics", timeout=1)
             metrics_content = resp.text
-            print(f"Simulator Metrics Content:\n{metrics_content}")
+            logger.debug(f"Simulator Metrics Content: {format_content(metrics_content)}")
 
             # Verify simulator recorded 150 successes (rate 5 * duration 30)
             match = re.search(r"vllm:request_success(?:_total)?\{.*?\} (\d+)", metrics_content)
             assert match, "vllm:request_success(_total) not found in simulator metrics"
+
             sim_success_count = int(match.group(1))
             assert sim_success_count == 150, f"Expected 150 successes in simulator metrics, got {sim_success_count}"
-            print("Verified 150 successes in simulator metrics")
+
+            logger.debug("Verified 150 successes in simulator metrics")
         except Exception as e:
-            print(f"Failed to get or verify simulator metrics: {e}")
+            logger.debug(f"Failed to get or verify simulator metrics: {e}")
             raise
 
     # Check if Prometheus metrics report was generated
     assert result.reports, "No reports generated"
 
     report_names = list(result.reports.keys())
-    print(f"Generated reports: {report_names}")
+    logger.debug(f"Generated reports: {report_names}")
 
     assert "summary_prometheus_metrics.json" in result.reports, f"Missing prometheus report in {report_names}"
 
@@ -129,7 +137,7 @@ async def test_prometheus_metrics_collection(prometheus_server):
     assert prom_report, "Prometheus report is empty"
     assert isinstance(prom_report, dict), "Report should be a dictionary"
 
-    print(f"Prometheus Report Content:\n{json.dumps(prom_report, indent=2)}")
+    logger.debug(f"Prometheus Report Content: {format_content(prom_report)}")
 
     # Assertions on content
     assert "successes" in prom_report, "Report missing 'successes' section"
@@ -137,19 +145,19 @@ async def test_prometheus_metrics_collection(prometheus_server):
 
     assert "request_success_count" in successes_obj, "Missing 'request_success_count'"
     success_count = successes_obj["request_success_count"]
-    print(f"Asserting request_success_count ({success_count}) is greater than 100")
+    logger.debug(f"Asserting request_success_count ({success_count}) is greater than 100")
     assert success_count > 100.0, f"Expected > 100 successes in report, got {success_count}"
 
     assert "rate" in successes_obj, "Missing 'rate' (requests_per_second)"
     rps = successes_obj["rate"]
-    print(f"Asserting rate/requests_per_second ({rps}) is reasonable")
+    logger.debug(f"Asserting rate/requests_per_second ({rps}) is reasonable")
     assert 3.0 < rps < 7.0, f"Expected rate around 5, got {rps}"
 
     lifecycle_report = result.reports.get("summary_lifecycle_metrics.json")
     if lifecycle_report:
-        print(f"Lifecycle Report Content:\n{json.dumps(lifecycle_report, indent=2)}")
+        logger.debug(f"Lifecycle Report Content: {format_content(lifecycle_report)}")
         if lifecycle_report.get("failures", {}).get("count", 0) > 0:
-            print(f"Benchmark Stdout:\n{result.stdout}")
+            logger.debug(f"Benchmark Stdout:\n{result.stdout}")
 
 
 @pytest.mark.asyncio
@@ -214,23 +222,23 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
         try:
             resp = requests.get("http://127.0.0.1:18001/metrics", timeout=1)
             metrics_content = resp.text
-            print(f"Simulator Metrics Content:\n{metrics_content}")
+            logger.debug(f"Simulator Metrics Content: {format_content(metrics_content)}")
 
             # Verify simulator recorded 150 successes
             match = re.search(r"vllm:request_success(?:_total)?\{.*?\} (\d+)", metrics_content)
             assert match, "vllm:request_success(_total) not found in simulator metrics"
             sim_success_count = int(match.group(1))
             assert sim_success_count == 150, f"Expected 150 successes in simulator metrics, got {sim_success_count}"
-            print("Verified 150 successes in simulator metrics")
+            logger.debug("Verified 150 successes in simulator metrics")
         except Exception as e:
-            print(f"Failed to get or verify simulator metrics: {e}")
+            logger.debug(f"Failed to get or verify simulator metrics: {e}")
             raise
 
     # Check if Prometheus metrics report was generated
     assert result.reports, "No reports generated"
 
     report_names = list(result.reports.keys())
-    print(f"Generated reports: {report_names}")
+    logger.debug(f"Generated reports: {report_names}")
 
     assert "summary_prometheus_metrics.json" in result.reports, f"Missing prometheus report in {report_names}"
 
@@ -238,7 +246,7 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
     assert prom_report, "Prometheus report is empty"
     assert isinstance(prom_report, dict), "Report should be a dictionary"
 
-    print(f"Prometheus Report Content:\n{json.dumps(prom_report, indent=2)}")
+    logger.debug(f"Prometheus Report Content: {format_content(prom_report)}")
 
     # Assertions on content
     assert "successes" in prom_report, "Report missing 'successes' section"
@@ -246,10 +254,15 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
 
     assert "request_success_count" in successes_obj, "Missing 'request_success_count'"
     success_count = successes_obj["request_success_count"]
-    print(f"Asserting request_success_count ({success_count}) is greater than 100")
+    logger.debug(f"Asserting request_success_count ({success_count}) is greater than 100")
     assert success_count > 100.0, f"Expected > 100 successes in report, got {success_count}"
 
     assert "rate" in successes_obj, "Missing 'rate' (requests_per_second)"
     rps = successes_obj["rate"]
-    print(f"Asserting rate/requests_per_second ({rps}) is reasonable")
+    logger.debug(f"Asserting rate/requests_per_second ({rps}) is reasonable")
     assert 3.0 < rps < 7.0, f"Expected rate around 5, got {rps}"
+
+
+def format_content(content: str | Any) -> str:
+    content_str = content if isinstance(content, str) else json.dumps(content, indent=2)
+    return "\n" + textwrap.indent(content_str, "  | ")

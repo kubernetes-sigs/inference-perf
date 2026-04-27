@@ -17,7 +17,11 @@ import subprocess
 import tempfile
 import time
 import pytest
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="module")
@@ -42,6 +46,7 @@ scrape_configs:
 
         data_dir = tmp_path / "data"
         data_dir.mkdir()
+        logger.debug(f"Prometheus config and data dirs created at {config_path} and {data_dir}. Starting Prometheus...")
 
         # Start prometheus
         proc = subprocess.Popen(
@@ -54,6 +59,7 @@ scrape_configs:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
+        logger.debug("Prometheus started. Starting HTTP poll...")
 
         # Wait for ready
         ready = False
@@ -61,6 +67,7 @@ scrape_configs:
             try:
                 resp = requests.get("http://127.0.0.1:9090/-/ready", timeout=1)
                 if resp.status_code == 200:
+                    logger.debug(f"Prometheus started. Status code: {resp.status_code}")
                     ready = True
                     break
             except Exception:

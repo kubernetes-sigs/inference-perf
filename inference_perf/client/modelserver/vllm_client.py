@@ -245,24 +245,22 @@ class vLLMModelServerClient(openAIModelServerClient):
                 "gauge",
                 self.metric_filters,
             ),
-            # Preemptions (renamed in v1: num_preemptions_total -> num_preemptions, now counter)
             num_preemptions_total=ModelServerPrometheusMetric(
-                "vllm:num_preemptions",
+                '{__name__=~"vllm:num_preemptions(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             # Deprecated in v1 (KV cache offloading unused)
             num_requests_swapped=None,
-            # Prefix Cache (renamed in v1: dropped _total suffix)
             prefix_cache_hits=ModelServerPrometheusMetric(
-                "vllm:prefix_cache_hits",
+                '{__name__=~"vllm:prefix_cache_hits(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             prefix_cache_queries=ModelServerPrometheusMetric(
-                "vllm:prefix_cache_queries",
+                '{__name__=~"vllm:prefix_cache_queries(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
@@ -519,37 +517,37 @@ class vLLMModelServerClient(openAIModelServerClient):
             ),
             # Token Cache Stats
             prompt_tokens_cached=ModelServerPrometheusMetric(
-                "vllm:prompt_tokens_cached",
+                '{__name__=~"vllm:prompt_tokens_cached(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             prompt_tokens_recomputed=ModelServerPrometheusMetric(
-                "vllm:prompt_tokens_recomputed",
+                '{__name__=~"vllm:prompt_tokens_recomputed(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             external_prefix_cache_hits=ModelServerPrometheusMetric(
-                "vllm:external_prefix_cache_hits",
+                '{__name__=~"vllm:external_prefix_cache_hits(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             external_prefix_cache_queries=ModelServerPrometheusMetric(
-                "vllm:external_prefix_cache_queries",
+                '{__name__=~"vllm:external_prefix_cache_queries(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             mm_cache_hits=ModelServerPrometheusMetric(
-                "vllm:mm_cache_hits",
+                '{__name__=~"vllm:mm_cache_hits(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
             ),
             mm_cache_queries=ModelServerPrometheusMetric(
-                "vllm:mm_cache_queries",
+                '{__name__=~"vllm:mm_cache_queries(_total)?"}',
                 "increase",
                 "counter",
                 self.metric_filters,
