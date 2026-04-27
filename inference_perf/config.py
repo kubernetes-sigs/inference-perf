@@ -17,7 +17,7 @@ from enum import Enum
 from os import cpu_count
 import time
 from math import sqrt
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
@@ -435,6 +435,9 @@ class GoogleCloudStorageConfig(StorageConfigBase):
 
 class SimpleStorageServiceConfig(StorageConfigBase):
     bucket_name: str
+    endpoint_url: Optional[str] = None
+    region_name: Optional[str] = None
+    addressing_style: Optional[Literal["auto", "virtual", "path"]] = None
 
 
 class StorageConfig(BaseModel):

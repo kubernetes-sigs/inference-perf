@@ -13,8 +13,9 @@
 # limitations under the License.
 import json
 import logging
-from typing import List
+from typing import Any, List, Optional
 import boto3
+from botocore.config import Config as BotoConfig
 from inference_perf.client.filestorage import StorageClient
 from inference_perf.config import SimpleStorageServiceConfig
 from inference_perf.utils import ReportFile
@@ -22,12 +23,33 @@ from inference_perf.utils import ReportFile
 logger = logging.getLogger(__name__)
 
 
+def _build_boto_config(addressing_style: Optional[str]) -> Optional[BotoConfig]:
+    """Build a botocore Config that honors the configured S3 addressing style.
+
+    Some S3-compatible object stores only accept virtual-hosted style requests
+    (`bucket.host/key`) and reject path-style (`host/bucket/key`) with a
+    `PathStyleRequestNotAllowed` error. Exposing this knob lets users target
+    those backends without relying on environment-specific AWS config files.
+    """
+    if addressing_style is None:
+        return None
+    return BotoConfig(s3={"addressing_style": addressing_style})
+
+
 class SimpleStorageServiceClient(StorageClient):
     def __init__(self, config: SimpleStorageServiceConfig) -> None:
         super().__init__(config=config)
         logger.debug("Created new S3 client")
         self.output_bucket = config.bucket_name
-        self.client = boto3.client("s3")
+        client_kwargs: dict[str, Any] = {}
+        if config.endpoint_url is not None:
+            client_kwargs["endpoint_url"] = config.endpoint_url
+        if config.region_name is not None:
+            client_kwargs["region_name"] = config.region_name
+        boto_config = _build_boto_config(config.addressing_style)
+        if boto_config is not None:
+            client_kwargs["config"] = boto_config
+        self.client = boto3.client("s3", **client_kwargs)
 
     def save_report(self, reports: List[ReportFile]) -> None:
         filenames = [report.get_filename() for report in reports]

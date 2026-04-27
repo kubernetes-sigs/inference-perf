@@ -23,6 +23,7 @@ from inference_perf.config import (
     read_config,
     ResponseFormat,
     ResponseFormatType,
+    SimpleStorageServiceConfig,
     StandardLoadStage,
     ConcurrentLoadStage,
     LoadConfig,
@@ -335,6 +336,35 @@ def test_distribution_variance_conversion() -> None:
 def test_distribution_both_variance_and_std_dev_error() -> None:
     with pytest.raises(Exception, match="Specify either"):
         Distribution(type=DistributionType.NORMAL, mean=100.0, std_dev=10.0, variance=100.0)
+
+
+def test_simple_storage_service_config_defaults() -> None:
+    config = SimpleStorageServiceConfig(bucket_name="my-bucket")
+
+    assert config.bucket_name == "my-bucket"
+    assert config.endpoint_url is None
+    assert config.region_name is None
+    assert config.addressing_style is None
+
+
+def test_simple_storage_service_config_accepts_addressing_overrides() -> None:
+    config = SimpleStorageServiceConfig(
+        bucket_name="my-bucket",
+        endpoint_url="https://s3.example.com",
+        region_name="us-east-1",
+        addressing_style="virtual",
+    )
+
+    assert config.endpoint_url == "https://s3.example.com"
+    assert config.region_name == "us-east-1"
+    assert config.addressing_style == "virtual"
+
+
+def test_simple_storage_service_config_rejects_invalid_addressing_style() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SimpleStorageServiceConfig(bucket_name="my-bucket", addressing_style="hosted")
 
 
 def test_goodput_config_parsing() -> None:

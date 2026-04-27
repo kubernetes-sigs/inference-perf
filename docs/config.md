@@ -208,6 +208,9 @@ storage:
     bucket_name: "your-bucket-name"   # Required S3 bucket
     path: "reports-{timestamp}"       # Optional path prefix
     report_file_prefix: null          # Optional filename prefix
+    endpoint_url: null                # Optional custom endpoint (e.g. for S3-compatible stores)
+    region_name: null                 # Optional AWS region name
+    addressing_style: null            # Optional: "auto" (default), "virtual", or "path".
 ```
 
 ### Tokenizer

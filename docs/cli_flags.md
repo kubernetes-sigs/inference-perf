@@ -107,6 +107,9 @@ These command line flags are automatically generated from the internal `Config` 
 | `--storage.simple_storage_service.path` | str | Matches storage.simple_storage_service.path in config |
 | `--storage.simple_storage_service.report_file_prefix` | str | Matches storage.simple_storage_service.report_file_prefix in config |
 | `--storage.simple_storage_service.bucket_name` | str | Matches storage.simple_storage_service.bucket_name in config |
+| `--storage.simple_storage_service.endpoint_url` | str | Matches storage.simple_storage_service.endpoint_url in config |
+| `--storage.simple_storage_service.region_name` | str | Matches storage.simple_storage_service.region_name in config |
+| `--storage.simple_storage_service.addressing_style` | string | Matches storage.simple_storage_service.addressing_style in config |
 | `--server.type` | Enum (vllm, sglang, tgi, mock) | Matches server.type in config |
 | `--server.model_name` | str | Matches server.model_name in config |
 | `--server.base_url` | str | Matches server.base_url in config |
