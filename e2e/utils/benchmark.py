@@ -88,6 +88,7 @@ async def run_benchmark_minimal(
     executable: str = "inference-perf",
     timeout_sec: Optional[int] = 300,
     extra_env: Optional[Dict[str, str]] = None,
+    url: Optional[str] = None,
 ) -> BenchmarkResult:
     """
     Minimal wrapper:
@@ -106,6 +107,8 @@ async def run_benchmark_minimal(
         env.update({k: str(v) for k, v in extra_env.items()})
 
     args = [executable, "--config_file", str(cfg_path), "--log-level", "DEBUG"]
+    if url:
+        args.extend(["--url", url])
     logger.debug(f"starting inference-perf, {args=}")
 
     proc = await asyncio.create_subprocess_exec(

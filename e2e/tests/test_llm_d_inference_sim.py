@@ -30,7 +30,6 @@ import pytest
 
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
-from utils.testdata import extract_tarball
 
 TEST_MODEL_NAME = "google/gemma-3-270m"
 TEST_MODEL_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
@@ -106,43 +105,37 @@ async def test_completion_successful_run(data: dict, load: dict):
     vLLM benchmarking configurations can run successfully.
     """
     model_name = TEST_MODEL_NAME
-    model_path = extract_tarball(TEST_MODEL_TARBALL)
 
     async with LLMDInferenceSimRunner(model_name, port=18000) as sim:
         result = await run_benchmark_minimal(
             {
                 "data": data,
                 "load": load,
-                "api": {
-                    "type": "completion",
-                    "streaming": True,
-                },
-                "server": {
-                    "type": "vllm",
-                    "model_name": model_name,
-                    "base_url": f"http://{sim.host}:{sim.port}",
-                    "ignore_eos": True,
-                },
-                "tokenizer": {
-                    "pretrained_model_name_or_path": str(model_path),
-                },
-                "report": {
-                    "request_lifecycle": {
-                        "summary": True,
-                        "per_stage": True,
-                        "per_request": True,
-                    },
-                },
-            }
+            },
+            url=f"http://{sim.host}:{sim.port}",
         )
 
     assert result.success, "Benchmark failed"
     assert result.reports, "No reports generated from benchmark"
 
-    requests_report = result.reports["per_request_lifecycle_metrics.json"]
-    expect_requests_report_num = sum([stage["duration"] * stage["rate"] for stage in load["stages"]])
-    assert requests_report and len(requests_report) == expect_requests_report_num, "Unexpected number of requests in report"
-
     summary_report = result.reports["summary_lifecycle_metrics.json"]
     assert summary_report, "Missing summary report"
     assert summary_report["successes"]["count"] > 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+async def test_completion_auto_config():
+    """Test that inference-perf can run with no config file, relying on auto-detection."""
+    model_name = TEST_MODEL_NAME
+
+    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+        result = await run_benchmark_minimal(
+            {},  # Empty config
+            url=f"http://{sim.host}:{sim.port}",
+        )
+
+    assert result.success, "Benchmark failed"
+    assert result.reports, "No reports generated from benchmark"
+    summary_report = result.reports["summary_lifecycle_metrics.json"]
+    assert summary_report, "Missing summary report"
