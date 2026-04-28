@@ -150,15 +150,11 @@ def _download_hf_dataset(dataset_path: str) -> tuple[Path, List[Path]]:
         logger.info(f"Loading HuggingFace dataset: {dataset_path}")
 
         repo_files = [
-            f
-            for f in list_repo_files(dataset_path, repo_type="dataset")
-            if f.endswith(".jsonl") or f.endswith(".json")
+            f for f in list_repo_files(dataset_path, repo_type="dataset") if f.endswith(".jsonl") or f.endswith(".json")
         ]
 
         if not repo_files:
-            raise ValueError(
-                f"No .jsonl or .json files found in HuggingFace dataset '{dataset_path}'"
-            )
+            raise ValueError(f"No .jsonl or .json files found in HuggingFace dataset '{dataset_path}'")
 
         logger.info(f"Found {len(repo_files)} trace files in dataset")
 
@@ -189,9 +185,7 @@ def _download_hf_dataset(dataset_path: str) -> tuple[Path, List[Path]]:
                     trace_files.append(trace_file)
 
         if not trace_files:
-            raise ValueError(
-                f"No trace data found in HuggingFace dataset '{dataset_path}'"
-            )
+            raise ValueError(f"No trace data found in HuggingFace dataset '{dataset_path}'")
 
         logger.info(f"Extracted {len(trace_files)} trace files from dataset")
         return temp_dir, trace_files

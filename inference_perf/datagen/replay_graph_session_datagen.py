@@ -722,6 +722,7 @@ class ReplaySessionState:
     is_active: bool = False
     is_complete: bool = False
     failed: bool = False
+    cancelled_events: int = 0
     random_string: Optional[str] = None  # Random string for KV-cache invalidation (shared by all events in session)
 
 
