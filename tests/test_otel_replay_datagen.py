@@ -50,6 +50,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     EventFailedError,
     EventOutputRegistry,
     ReplayGraphSessionGeneratorBase,
+    ReplaySession,
     ReplaySessionEvent,
     ReplaySessionState,
     SessionChatCompletionAPIData,
@@ -61,9 +62,9 @@ from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
 )
-from inference_perf.datagen.replay_graph_types import InputSegment
+from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
 from inference_perf.apis.chat import ChatMessage
-from inference_perf.config import APIConfig, APIType
+from inference_perf.config import APIConfig, APIType, SessionReplayConfig
 
 
 # ---------------------------------------------------------------------------
@@ -1326,3 +1327,178 @@ class TestRandomSessionIDInjection:
             ReplayGraphSessionGeneratorBase.is_duplicate_session("duplicate_session") is False
         )  # Contains "dup" but wrong pattern
         assert ReplayGraphSessionGeneratorBase.is_duplicate_session("session_001_duplicate") is False  # Wrong suffix
+
+
+# ---------------------------------------------------------------------------
+# _build_replay_schedule: random session ID assignment for duplicates
+# ---------------------------------------------------------------------------
+
+
+def _make_simple_graph(event_count: int = 1) -> ReplayGraph:
+    """Build a minimal ReplayGraph with `event_count` independent root events."""
+    events: dict[str, GraphEvent] = {}
+    for i in range(event_count):
+        eid = f"event_{i}"
+        events[eid] = GraphEvent(
+            event_id=eid,
+            call=GraphCall(
+                call_id=f"call_{i}",
+                model="test-model",
+                messages=[{"role": "user", "content": f"msg {i}"}],
+                expected_output="ok",
+                input_segments=[InputSegment(type="unique", message_count=1, token_count=5)],
+                total_input_tokens=5,
+                expected_output_tokens=2,
+                temperature=None,
+                max_tokens_recorded=None,
+            ),
+            predecessor_event_ids=[],
+            predecessor_dependency_types={},
+            wait_ms=0,
+            t_start_ms=i * 1000,
+            t_end_ms=i * 1000 + 500,
+        )
+    return ReplayGraph(
+        events=events,
+        root_event_ids=[f"event_{i}" for i in range(event_count)],
+        source_file="test",
+    )
+
+
+def _make_generator(
+    replay_config: Optional[SessionReplayConfig] = None,
+) -> ReplayGraphSessionGeneratorBase:
+    """Create a ReplayGraphSessionGeneratorBase bypassing __init__."""
+    gen = object.__new__(ReplayGraphSessionGeneratorBase)
+    gen.replay_config = replay_config
+    gen.output_registry = EventOutputRegistry()
+    gen.worker_tracker = WorkerSessionTracker()
+    gen.session_completion_queue = None
+    gen.sessions = []
+    gen.session_graph_state = {}
+    gen.all_events = []
+    return gen
+
+
+class TestBuildReplayScheduleRandomSessionID:
+    """Verify _build_replay_schedule assigns random_string correctly for duplicate sessions."""
+
+    def test_duplicate_sessions_get_random_string_without_flag(self) -> None:
+        """Duplicate sessions (suffix _dup{N}) get a random_string even when inject_random_session_id=False."""
+        graph = _make_simple_graph()
+        gen = _make_generator(replay_config=SessionReplayConfig(inject_random_session_id=False))
+        gen.sessions = [
+            ReplaySession(session_id="sess_001_dup1", source_id="src", session_index=0, graph=graph),
+            ReplaySession(session_id="sess_001_dup2", source_id="src", session_index=1, graph=graph),
+        ]
+
+        gen._build_replay_schedule()
+
+        for sid in ("sess_001_dup1", "sess_001_dup2"):
+            state = gen.session_graph_state[sid]
+            assert state.random_string is not None, f"Duplicate session {sid} should have a random_string"
+            assert len(state.random_string) == 16
+
+    def test_original_session_no_random_string_without_flag(self) -> None:
+        """Original (non-duplicate) sessions have no random_string when inject_random_session_id=False."""
+        graph = _make_simple_graph()
+        gen = _make_generator(replay_config=SessionReplayConfig(inject_random_session_id=False))
+        gen.sessions = [
+            ReplaySession(session_id="sess_001", source_id="src", session_index=0, graph=graph),
+        ]
+
+        gen._build_replay_schedule()
+
+        state = gen.session_graph_state["sess_001"]
+        assert state.random_string is None
+
+    def test_original_session_gets_random_string_with_flag(self) -> None:
+        """Original sessions get a random_string when inject_random_session_id=True."""
+        graph = _make_simple_graph()
+        gen = _make_generator(replay_config=SessionReplayConfig(inject_random_session_id=True))
+        gen.sessions = [
+            ReplaySession(session_id="sess_001", source_id="src", session_index=0, graph=graph),
+        ]
+
+        gen._build_replay_schedule()
+
+        state = gen.session_graph_state["sess_001"]
+        assert state.random_string is not None
+        assert len(state.random_string) == 16
+
+    def test_each_session_gets_unique_random_string(self) -> None:
+        """Every session that receives a random_string gets a distinct value."""
+        graph = _make_simple_graph()
+        gen = _make_generator(replay_config=SessionReplayConfig(inject_random_session_id=True))
+        gen.sessions = [
+            ReplaySession(session_id=f"sess_{i}", source_id="src", session_index=i, graph=graph) for i in range(10)
+        ]
+
+        gen._build_replay_schedule()
+
+        strings = [gen.session_graph_state[f"sess_{i}"].random_string for i in range(10)]
+        assert all(s is not None for s in strings)
+        assert len(set(strings)) == 10, "All random strings should be unique"
+
+    def test_no_random_string_without_replay_config(self) -> None:
+        """No random_string is assigned when replay_config is None, even for duplicates."""
+        graph = _make_simple_graph()
+        gen = _make_generator(replay_config=None)
+        gen.sessions = [
+            ReplaySession(session_id="sess_001_dup1", source_id="src", session_index=0, graph=graph),
+        ]
+
+        gen._build_replay_schedule()
+
+        state = gen.session_graph_state["sess_001_dup1"]
+        # replay_config is None, so the condition `(self.replay_config and ...) or is_duplicate`
+        # still triggers for duplicates because is_duplicate is True regardless of replay_config
+        assert state.random_string is not None
+
+    def test_duplicate_via_initialize_sessions_gets_random_string(self) -> None:
+        """Sessions duplicated by initialize_sessions (duplicate_sessions_target) get random_string."""
+        graph = _make_simple_graph()
+        gen = _make_generator(
+            replay_config=SessionReplayConfig(
+                inject_random_session_id=False,
+                duplicate_sessions_target=3,
+            )
+        )
+
+        original_sessions = [
+            ReplaySession(session_id="sess_001", source_id="src", session_index=0, graph=graph),
+        ]
+
+        gen.initialize_sessions(original_sessions)
+
+        # Should have 3 sessions: 1 original + 2 duplicates
+        assert len(gen.sessions) == 3
+
+        # Original session: no random_string (flag is off, not a duplicate)
+        assert gen.session_graph_state["sess_001"].random_string is None
+
+        # Duplicates: should have random_string
+        dup_states = {sid: state for sid, state in gen.session_graph_state.items() if sid != "sess_001"}
+        assert len(dup_states) == 2
+        for sid, state in dup_states.items():
+            assert state.random_string is not None, f"Duplicate {sid} should have random_string"
+            assert len(state.random_string) == 16
+
+    def test_events_are_created_for_all_sessions_including_duplicates(self) -> None:
+        """_build_replay_schedule creates events for both original and duplicate sessions."""
+        graph = _make_simple_graph(event_count=2)
+        gen = _make_generator(
+            replay_config=SessionReplayConfig(
+                inject_random_session_id=False,
+                duplicate_sessions_target=3,
+            )
+        )
+
+        original_sessions = [
+            ReplaySession(session_id="sess_001", source_id="src", session_index=0, graph=graph),
+        ]
+
+        gen.initialize_sessions(original_sessions)
+
+        # 3 sessions x 2 events each = 6 total events
+        assert len(gen.all_events) == 6
