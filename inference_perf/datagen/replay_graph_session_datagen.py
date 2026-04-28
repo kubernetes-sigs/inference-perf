@@ -27,7 +27,6 @@ import json
 import logging
 import time
 import uuid
-import re
 from dataclasses import dataclass, field, replace as dc_replace
 from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -248,22 +247,6 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     def _extract_session_id(self) -> str:
         return self.event_id.split(":")[0] if ":" in self.event_id else self.event_id
 
-    @staticmethod
-    def _is_duplicate_session(session_id: str) -> bool:
-        """Check if a session is a duplicate based on its ID.
-
-        Duplicates are created with the pattern: {original_id}_dup{number}
-        This method uses regex to robustly detect this pattern.
-
-        Args:
-            session_id: The session ID to check
-
-        Returns:
-            True if the session is a duplicate, False otherwise
-        """
-        # Match pattern: anything followed by _dup and one or more digits at the end
-        return bool(re.search(r"_dup\d+$", session_id))
-
     def _fail_and_notify(self, session_id: str, reason: str) -> None:
         """Mark this event and session as failed, notify the completion queue.
 
@@ -322,7 +305,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
         needs_substitution = any(seg.type == "output" or seg.type == "shared" for seg in self.input_segments)
         # Inject random string if flag is enabled OR session is a duplicate
-        is_duplicate = self._is_duplicate_session(session_id)
+        is_duplicate = SessionGenerator.is_duplicate_session(session_id)
         needs_random_injection = (self.inject_random_session_id or is_duplicate) and any(
             seg.type == "unique" for seg in self.input_segments
         )
@@ -468,7 +451,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 # 2. Session is a duplicate (matches pattern: {id}_dup{number})
                 for msg in seg_msgs:
                     session_id = self._extract_session_id()
-                    is_duplicate = self._is_duplicate_session(session_id)
+                    is_duplicate = SessionGenerator.is_duplicate_session(session_id)
                     should_inject = (self.inject_random_session_id or is_duplicate) and self.session_random_string
 
                     if should_inject:
@@ -867,7 +850,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             # 1. inject_random_session_id flag is enabled, OR
             # 2. Session is a duplicate (contains "_dup" in session_id)
             random_string = None
-            if self.replay_config and self.replay_config.inject_random_session_id:
+            is_duplicate = self.is_duplicate_session(session.session_id)
+            if (self.replay_config and self.replay_config.inject_random_session_id) or is_duplicate:
                 random_string = uuid.uuid4().hex[:16]
                 logger.debug(f"Generated random string for session {session.session_id}: {random_string}")
 
