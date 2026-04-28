@@ -16,7 +16,6 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix, TraceConfig
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, List, Dict, Any
-import re
 
 
 class BaseGenerator(ABC):
@@ -120,22 +119,6 @@ class SessionGenerator(BaseGenerator):
     sessions with dependencies between requests. Used for replaying complex multi-turn
     conversations and agentic workflows.
     """
-
-    @staticmethod
-    def is_duplicate_session(session_id: str) -> bool:
-        """Check if a session is a duplicate based on its ID.
-
-        Duplicates are created with the pattern: {original_id}_dup{number}
-        This method uses regex to robustly detect this pattern.
-
-        Args:
-            session_id: The session ID to check
-
-        Returns:
-            True if the session is a duplicate, False otherwise
-        """
-        # Match pattern: anything followed by _dup and one or more digits at the end
-        return bool(re.search(r"_dup\d+$", session_id))
 
     @abstractmethod
     def get_session_count(self) -> int:

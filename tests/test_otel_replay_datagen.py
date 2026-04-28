@@ -45,11 +45,11 @@ import pytest
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from inference_perf.datagen.base import SessionGenerator
 from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.datagen.replay_graph_session_datagen import (
     EventFailedError,
     EventOutputRegistry,
+    ReplayGraphSessionGeneratorBase,
     ReplaySessionEvent,
     ReplaySessionState,
     SessionChatCompletionAPIData,
@@ -1313,14 +1313,16 @@ class TestRandomSessionIDInjection:
         """Test the _is_duplicate_session() method with various session ID patterns."""
 
         # Test cases that SHOULD be detected as duplicates
-        assert SessionGenerator.is_duplicate_session("session_001_dup1") is True
-        assert SessionGenerator.is_duplicate_session("my_session_dup123") is True
-        assert SessionGenerator.is_duplicate_session("trace_abc_dup5") is True
-        assert SessionGenerator.is_duplicate_session("a_dup999") is True
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("session_001_dup1") is True
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("my_session_dup123") is True
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("trace_abc_dup5") is True
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("a_dup999") is True
 
         # Test cases that should NOT be detected as duplicates
-        assert SessionGenerator.is_duplicate_session("session_001") is False
-        assert SessionGenerator.is_duplicate_session("my_dup_session") is False  # _dup not at end
-        assert SessionGenerator.is_duplicate_session("session_dup") is False  # No number after _dup
-        assert SessionGenerator.is_duplicate_session("duplicate_session") is False  # Contains "dup" but wrong pattern
-        assert SessionGenerator.is_duplicate_session("session_001_duplicate") is False  # Wrong suffix
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("session_001") is False
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("my_dup_session") is False  # _dup not at end
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("session_dup") is False  # No number after _dup
+        assert (
+            ReplayGraphSessionGeneratorBase.is_duplicate_session("duplicate_session") is False
+        )  # Contains "dup" but wrong pattern
+        assert ReplayGraphSessionGeneratorBase.is_duplicate_session("session_001_duplicate") is False  # Wrong suffix
