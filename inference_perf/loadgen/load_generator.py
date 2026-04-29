@@ -19,6 +19,7 @@ from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
+from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
 from inference_perf.circuit_breaker import get_circuit_breaker
@@ -57,7 +58,7 @@ from types import FrameType
 import time
 import multiprocessing as mp
 from queue import Empty
-from multiprocessing.synchronize import Event as SyncEvent
+from multiprocessing.synchronize import Barrier as SyncBarrier, Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
 from functools import partial
@@ -100,6 +101,7 @@ class Worker(mp.Process):
         active_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
+        stage_barrier: Optional[SyncBarrier] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -115,6 +117,7 @@ class Worker(mp.Process):
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
         self.base_seed = base_seed
+        self.stage_barrier = stage_barrier
 
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
@@ -246,6 +249,9 @@ class Worker(mp.Process):
             if not self.request_phase.is_set():
                 await gather(*tasks)
                 tasks = []
+                LocalUserSession.clear_instances()
+                if self.stage_barrier:
+                    self.stage_barrier.wait()
                 logger.debug(f"[Worker {self.id}] waiting for next phase")
                 self.request_phase.wait()
 
@@ -902,6 +908,9 @@ class LoadGenerator:
         request_phase: SyncEvent = mp.Event()
         stop_signal: SyncEvent = mp.Event()
         cancel_signal: SyncEvent = mp.Event()
+        # Synchronize workers and main at stage boundaries so workers finish
+        # in-flight requests and clear session state before the next stage begins.
+        stage_barrier: SyncBarrier = mp.Barrier(self.num_workers + 1)
         # start workers in the request phase
         request_phase.set()
 
@@ -927,6 +936,7 @@ class LoadGenerator:
                     active_requests_counter,
                     shared_max_concurrency,
                     self.base_seed,
+                    stage_barrier,
                 )
             )
             self.workers[-1].start()
@@ -1021,6 +1031,8 @@ class LoadGenerator:
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
 
+                stage_barrier.wait()
+
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
                     break
@@ -1109,6 +1121,7 @@ class LoadGenerator:
                     concurrency_level=None,
                 )
                 progress.update(overall_task, advance=1)
+                LocalUserSession.clear_instances()
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
 
