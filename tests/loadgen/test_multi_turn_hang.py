@@ -128,6 +128,32 @@ class TestMultiTurnHang(unittest.IsolatedAsyncioTestCase):
         except asyncio.TimeoutError:
             self.fail("Should NOT have hung on request 1 after failure release!")
 
+    async def test_update_context_idempotent_on_double_release(self) -> None:
+        """Regression: process_response can release the session lock and then
+        raise (e.g. broken SSE stream after partial parse), causing the outer
+        openai_client handler to invoke process_failure, which calls
+        update_context again. The second release must be a no-op rather than
+        raising RuntimeError("Lock is not acquired."), since that would kill
+        the loadgen task and stall the conversation slot.
+        """
+        session = LocalUserSession("conv_double_release")
+        await session.get_context(0)  # acquire (to_payload)
+        session.update_context("first response")  # first release (process_response success)
+
+        # Second release simulates process_failure being invoked after
+        # process_response already released the lock.
+        try:
+            session.update_context("failure context")
+        except RuntimeError as e:
+            self.fail(f"Second update_context raised: {e}")
+
+        # Lock should be free; next get_context must not hang.
+        try:
+            ctx = await asyncio.wait_for(session.get_context(1), timeout=2.0)
+        except asyncio.TimeoutError:
+            self.fail("get_context hung after double release")
+        self.assertEqual(ctx, "failure context")
+
 
 if __name__ == "__main__":
     unittest.main()

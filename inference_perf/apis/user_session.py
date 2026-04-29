@@ -78,7 +78,12 @@ class LocalUserSession:
             future = self._waiting_rounds.get_nowait()
             future.set_result(True)
 
-        self._in_flight.release()
+        # Release defensively: failure paths can call update_context after the
+        # success path already released (e.g. process_response raises post-release,
+        # then process_failure runs), so calling release() unconditionally raises
+        # RuntimeError("Lock is not acquired."). Skip if already released.
+        if self._in_flight.locked():
+            self._in_flight.release()
 
 
 class UserSessionCompletionAPIData(CompletionAPIData):
