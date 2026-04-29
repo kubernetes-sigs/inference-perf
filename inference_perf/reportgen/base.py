@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import json
+import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -37,6 +38,13 @@ from inference_perf.config import (
     GoodputConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.reportgen.br.v0_2 import generate_br_v0_2
+from inference_perf.reportgen.br.v0_2.collectors import (
+    ConfigStackCollector,
+    NoopStackCollector,
+    StackObservabilityCollector,
+    _try_import_k8s_collector,
+)
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -541,6 +549,26 @@ def summarize_requests(
     )
 
 
+def _default_br_v0_2_collector(config: "Config") -> StackObservabilityCollector:
+    cfg = config.report.br_v0_2
+    if cfg is None or not cfg.enabled:
+        return NoopStackCollector()
+    # When kubernetes config is supplied (or we're in-cluster) and the k8s extra
+    # is installed, prefer K8s discovery. Manually-supplied stack overrides take
+    # precedence — that's the path llm-d-benchmark uses to drop its translator.
+    if cfg.stack:
+        return ConfigStackCollector(cfg)
+    if cfg.kubernetes is not None or os.environ.get("KUBERNETES_SERVICE_HOST"):
+        k8s_cls = _try_import_k8s_collector()
+        if k8s_cls is not None:
+            return k8s_cls(cfg)
+        logger.warning(
+            "BR0.2: kubernetes config detected but the 'k8s' extra is not installed; "
+            "falling back to ConfigStackCollector. Install with: pip install 'inference-perf[k8s]'"
+        )
+    return ConfigStackCollector(cfg)
+
+
 class ReportGenerator:
     def __init__(
         self,
@@ -548,18 +576,26 @@ class ReportGenerator:
         metrics_collector: RequestDataCollector,
         config: "Config",
         datagen: Optional[Union["DataGenerator", "SessionGenerator"]] = None,
+        br_v0_2_collector: Optional[StackObservabilityCollector] = None,
     ) -> None:
         self.metrics_collector = metrics_collector
         self.metrics_client = metrics_client
         self.config = config
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
+        self.br_v0_2_collector = br_v0_2_collector or _default_br_v0_2_collector(config)
 
     def get_metrics_collector(self) -> RequestDataCollector:
         """
         Returns the metrics collector.
         """
         return self.metrics_collector
+
+    async def start_br_v0_2_collector(self) -> None:
+        await self.br_v0_2_collector.start()
+
+    async def stop_br_v0_2_collector(self) -> None:
+        await self.br_v0_2_collector.stop()
 
     def generate_config_report(self) -> ReportFile:
         """
@@ -677,6 +713,33 @@ class ReportGenerator:
 
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+
+        if report_config.br_v0_2 and report_config.br_v0_2.enabled and request_metrics:
+            collected = self.br_v0_2_collector.collect()
+            br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None:
+                    br_stage_buckets[metric.stage_id].append(metric)
+            for br_stage_id, stage_metrics in br_stage_buckets.items():
+                stage_server_metrics: Optional[ModelServerMetrics] = None
+                if isinstance(self.metrics_client, PrometheusMetricsClient):
+                    stage_server_metrics = self.metrics_client.collect_metrics_for_stage(runtime_parameters, br_stage_id)
+                br_dict = generate_br_v0_2(
+                    config=self.config,
+                    request_metrics=stage_metrics,
+                    runtime_parameters=runtime_parameters,
+                    server_metrics=stage_server_metrics,
+                    collected=collected,
+                    tokenizer=tokenizer,
+                    stage_id=br_stage_id,
+                )
+                lifecycle_reports.append(
+                    ReportFile(
+                        name=f"stage_{br_stage_id}_benchmark_report_v0_2",
+                        file_type="yaml",
+                        contents=br_dict,
+                    )
+                )
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:

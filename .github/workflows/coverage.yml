@@ -28,6 +28,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
-          pdm sync -d -G analysis -G otel
+          pdm sync -d -G analysis -G otel -G k8s
       - name: Run Validation
         run: pdm run check:cov

@@ -96,6 +96,7 @@ Explore detailed documentation for specific topics:
 | **OTel Observability** | Instrument benchmark runs with OpenTelemetry tracing to export to Jaeger, Tempo, etc. | [otel_instrumentation.md](./docs/otel_instrumentation.md) |
 | **OTel Trace Replay** | Data/load type for replaying production traces with complex dependency graphs. | [otel_trace_replay.md](./docs/otel_trace_replay.md) |
 | **Conversation Replay** | Data/load type for benchmarking concurrent multi-turn agentic conversations with configurable distributions. | [conversation_replay.md](./docs/conversation_replay.md) |
+| **BR0.2 Reports** | Emit llm-d-benchmark BR0.2 reports natively (workload + optional in-cluster discovery). | [br_v0_2.md](./docs/br_v0_2.md) |
 | **Analysis** | Visualizations and plots for performance metrics. | [analysis.md](./docs/analysis.md) |
 
 ---
