@@ -934,7 +934,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                         temperature=gc.temperature,
                         max_tokens_recorded=gc.max_tokens_recorded,
                         predecessor_event_ids=qualified_predecessor_ids,
-                        wait_ms=event.wait_ms,
+                        wait_ms=min(event.wait_ms, self.replay_config.max_wait_ms) if self.replay_config else event.wait_ms,
                         tool_definitions=gc.tool_definitions,
                     )
                 )

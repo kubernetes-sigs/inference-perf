@@ -339,6 +339,13 @@ class SessionReplayConfig(BaseModel):
         description="Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs.",
     )
 
+    # Timing
+    max_wait_ms: int = Field(
+        15000,
+        ge=0,
+        description="Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace.",
+    )
+
     # Error handling
     include_errors: bool = Field(True, description="Include spans with error status")
     skip_invalid_files: bool = Field(False, description="Skip invalid trace files instead of failing")

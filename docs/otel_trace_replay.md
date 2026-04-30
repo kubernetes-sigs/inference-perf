@@ -97,6 +97,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |
 | `model_mapping` | dict | No | Map recorded model names to target models (e.g., `"gpt-4": "my-model"`) |
 | `default_max_tokens` | integer | No (default: `1000`) | Fallback `max_tokens` for traces that don't specify it |
+| `max_wait_ms` | integer | No (default: `15000`) | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace |
 | `include_errors` | boolean | No (default: `false`) | Include spans marked as errors in the trace |
 | `skip_invalid_files` | boolean | No (default: `true`) | Skip unparseable trace files instead of failing |
 
