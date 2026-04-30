@@ -16,6 +16,7 @@ from typing import Generator, List, Optional, Union
 import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
@@ -96,12 +97,13 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.output_len_list_per_group.append(output_lens.tolist())
 
         self.prompts: List[str] = []
+        self.prompt_pairs: List[tuple[str, str]] = []  # (shared_prefix, question) pairs for Chat API
         self.user_sessions: List[LocalUserSession] = []
         self.flat_output_lens: List[int] = []
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -125,6 +127,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session_id=self.user_sessions[user_id].user_session_id,
                 target_round=round,
             )
+        elif self.api_config.type == APIType.Chat:
+            shared_prefix, question = self.prompt_pairs[i]
+            messages = [ChatMessage(role="system", content=shared_prefix), ChatMessage(role="user", content=question)]
+            return ChatCompletionAPIData(messages=messages, max_tokens=output_len)
         else:
             return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
@@ -181,7 +187,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                         )
                     )
                 else:
-                    # Single turn chat, Combine shared prefix and question
+                    # Single turn: store (shared_prefix, question) pair for Chat API
+                    self.prompt_pairs.append((shared_prefix_text, question_text))
+                    # Combine shared prefix and question for Completion API
                     question_text = shared_prefix_text + " " + question_text
 
                 self.prompts.append(question_text)
@@ -197,3 +205,5 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.flat_output_lens = [self.flat_output_lens[i] for i in indices]
         if self.enable_multi_turn_chat:
             self.user_sessions = [self.user_sessions[i] for i in indices]
+        else:
+            self.prompt_pairs = [self.prompt_pairs[i] for i in indices]
