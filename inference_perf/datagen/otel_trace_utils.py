@@ -217,16 +217,38 @@ def _format_tool_call(tool_call: Dict[str, Any]) -> str:
     Format a tool call as the LLM would have generated it.
 
     Uses special token format which is closest to what models actually generate.
+    
+    Handles both "arguments" and "input" field names for compatibility with
+    different API formats (OpenAI uses "arguments", some OTEL formats use "input").
     """
-    function_name = tool_call.get("name", "unknown_function")
-    arguments = tool_call.get("arguments", "{}")
+    function_name = tool_call.get("name", "unknown_tool")
+    # Try both "arguments" (OpenAI format) and "input" (OTEL format)
+    arguments = tool_call.get("arguments") or tool_call.get("input", "{}")
 
     # If arguments is a dict, serialize it
     if isinstance(arguments, dict):
-        arguments = json.dumps(arguments, indent=2)
+        arguments = json.dumps(arguments, separators=(', ', ': '))
 
     # Format with special tokens (most accurate for token counting)
     return f"<|tool_call|>{function_name}<|tool_args|>{arguments}<|end|>"
+
+
+def _format_tool_result(tool_result: Dict[str, Any]) -> str:
+    """
+    Format a tool result as it would appear in the message.
+    
+    Handles tool result formatting consistently across different parts of the code.
+    Supports both formats:
+    - tool_result: {"tool_use_id": "...", "content": "...", "is_error": ...}
+    - tool_call_response: {"id": "...", "result": "...", "is_error": ...}
+    """
+    # Handle both "tool_use_id" and "id" field names
+    tool_id = tool_result.get("tool_use_id") or tool_result.get("id", "unknown")
+    # Handle both "content" and "result" field names
+    result_content = tool_result.get("content") or tool_result.get("result", "")
+    is_error = tool_result.get("is_error", False)
+    error_marker = " [ERROR]" if is_error else ""
+    return f"<tool_result: {tool_id}{error_marker}>\n{result_content}\n</tool_result>"
 
 
 def reconstruct_each_part_in_message_info(message_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -324,27 +346,15 @@ def _extract_content_from_parts(parts: List[Dict[str, Any]]) -> str:
 
         elif part_type == "tool_call":
             # Tool call (OTEL output format)
-            tool_name = part.get("name", "unknown_tool")
-            tool_args = part.get("arguments", "{}")
-            if isinstance(tool_args, dict):
-                tool_args = json.dumps(tool_args, indent=2)
-            content_parts.append(f"<|tool_call|>{tool_name}<|tool_args|>{tool_args}<|end|>")
+            content_parts.append(_format_tool_call(part))
 
-        elif part_type == "tool_result":
-            # Tool result
-            tool_id = part.get("tool_use_id", "unknown")
-            result_content = part.get("content", "")
-            is_error = part.get("is_error", False)
-            error_marker = " [ERROR]" if is_error else ""
-            content_parts.append(f"<tool_result: {tool_id}{error_marker}>\n{result_content}\n</tool_result>")
+        elif part_type == "tool_result" or part_type == "tool_call_response":
+            # Tool result (both formats handled by _format_tool_result)
+            content_parts.append(_format_tool_result(part))
 
         elif part_type == "tool_use":
             # Tool use (input format - same as tool_call)
-            tool_name = part.get("name", "unknown_tool")
-            tool_input = part.get("input", {})
-            if isinstance(tool_input, dict):
-                tool_input = json.dumps(tool_input, indent=2)
-            content_parts.append(f"<|tool_call|>{tool_name}<|tool_args|>{tool_input}<|end|>")
+            content_parts.append(_format_tool_call(part))
 
     return "\n".join(content_parts)
 
@@ -365,19 +375,12 @@ def _extract_content_from_list(content_list: List[Any]) -> str:
                 elif "content" in item:
                     content_parts.append(item["content"])
 
-            elif item_type == "tool_result":
-                tool_id = item.get("tool_use_id", "unknown")
-                result_content = item.get("content", "")
-                is_error = item.get("is_error", False)
-                error_marker = " [ERROR]" if is_error else ""
-                content_parts.append(f"<tool_result: {tool_id}{error_marker}>\n{result_content}\n</tool_result>")
+            elif item_type == "tool_result" or item_type == "tool_call_response":
+                # Tool result (both formats handled by _format_tool_result)
+                content_parts.append(_format_tool_result(item))
 
             elif item_type == "tool_use":
-                tool_name = item.get("name", "unknown_tool")
-                tool_input = item.get("input", {})
-                if isinstance(tool_input, dict):
-                    tool_input = json.dumps(tool_input, indent=2)
-                content_parts.append(f"<|tool_call|>{tool_name}<|tool_args|>{tool_input}<|end|>")
+                content_parts.append(_format_tool_call(item))
 
             # Handle other dict formats
             elif "text" in item:
