@@ -30,7 +30,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@b21b43df682dab285bf5146c1955e7f3560805f8 # v1
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
       with:
         name: Release ${{ env.RELEASE_VERSION }}
         body: |
