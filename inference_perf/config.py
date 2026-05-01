@@ -89,6 +89,9 @@ class DataGenType(Enum):
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
     ConversationReplay = "conversation_replay"
+    VisionArena = "vision_arena"
+    MMMU = "mmmu"
+    ShareGPT4V = "sharegpt4v"
 
 
 class DistributionType(str, Enum):
@@ -127,6 +130,91 @@ class Distribution(BaseModel):
         return self
 
 
+# --- Base Utility Types ---
+class ResolutionPreset(str, Enum):
+    P4K = "4k"
+    P1080 = "1080p"
+    P720 = "720p"
+    P360 = "360p"
+
+
+class Resolution(BaseModel):
+    height: int
+    width: int
+
+
+AnyResolution = Union[ResolutionPreset, Resolution]
+
+
+class WeightedResolution(BaseModel):
+    resolution: AnyResolution
+    weight: float = 1.0
+
+
+class VideoProfile(BaseModel):
+    resolution: AnyResolution
+    frames: int = Field(description="The exact number of frames to sample for this profile. Required.")
+
+
+class WeightedVideoProfile(BaseModel):
+    profile: VideoProfile
+    weight: float = Field(default=1.0, description="Relative frequency of this exact video profile being selected.")
+
+
+class WeightedDuration(BaseModel):
+    duration: float = Field(description="The length of the audio clip in seconds.")
+    weight: float = Field(default=1.0, description="Relative frequency of this duration being selected.")
+
+
+# --- Modality-Specific Payload Configs ---
+class MediaDatagenConfig(BaseModel):
+    count: Optional[Distribution] = Field(
+        default=None, description="Distribution of the number of media items to generate per request."
+    )
+    insertion_point: Optional[Union[float, Distribution]] = Field(
+        default=None,
+        description="Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from.",
+    )
+
+
+class ImageDatagenConfig(MediaDatagenConfig):
+    resolutions: Optional[Union[AnyResolution, List[WeightedResolution]]] = Field(
+        default=None, description="Resolution or list of weighted resolutions for generated images."
+    )
+
+
+class VideoDatagenConfig(MediaDatagenConfig):
+    profiles: Optional[Union[VideoProfile, List[WeightedVideoProfile]]] = Field(
+        default=None, description="Video profile or list of weighted video profiles for generated videos."
+    )
+
+
+class AudioDatagenConfig(MediaDatagenConfig):
+    durations: Optional[Union[float, List[WeightedDuration]]] = Field(
+        default=None, description="Duration or list of weighted durations for generated audio clips."
+    )
+
+
+# --- Main Wrapper Models ---
+class SyntheticMultimodalDatagenConfig(BaseModel):
+    """Configuration for standard multimodal data generation.
+
+    Caveat: resolutions, video profiles, and audio durations specified here are
+    sent to the model server as-is. There is no model-aware validation — real
+    VLMs each impose their own limits (per-request media count via
+    --limit-mm-per-prompt, vision-encoder pixel caps, video frame budgets,
+    audio duration caps, max-model-len). Out-of-range payloads typically fail
+    at the wire (counted in `failures`) or get silently downsized server-side,
+    which makes per-modality byte/pixel throughput numbers reflect what was
+    sent rather than what the model processed. Consult your model's spec sheet
+    when picking values. See docs/config.md ("Multimodal Data Generation").
+    """
+
+    image: Optional[ImageDatagenConfig] = None
+    video: Optional[VideoDatagenConfig] = None
+    audio: Optional[AudioDatagenConfig] = None
+
+
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
 class SharedPrefix(BaseModel):
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
@@ -154,6 +242,7 @@ class SharedPrefix(BaseModel):
     output_distribution: Optional[Distribution] = None
 
     enable_multi_turn_chat: bool = False
+    multimodal: Optional[SyntheticMultimodalDatagenConfig] = None
 
     @model_validator(mode="after")
     def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
@@ -254,6 +343,7 @@ class DataConfig(BaseModel):
     input_distribution: Optional[Distribution] = None
     output_distribution: Optional[Distribution] = None
     shared_prefix: Optional[SharedPrefix] = None
+    multimodal: Optional[SyntheticMultimodalDatagenConfig] = None
 
     # Trace file is only supported for random dataset at this moment
     trace: Optional[TraceConfig] = None

@@ -22,6 +22,10 @@ from .infinity_instruct_datagen import InfinityInstructDataGenerator
 from .hf_billsum_datagen import BillsumConversationsDataGenerator
 from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from .conversation_replay_datagen import ConversationReplayDataGenerator
+from .multimodal_datagen import MultimodalDataGenerator
+from .vision_arena_datagen import VisionArenaDataGenerator
+from .mmmu_datagen import MMMUDataGenerator
+from .sharegpt4v_datagen import ShareGPT4VDataGenerator
 
 __all__ = [
     "BaseGenerator",
@@ -38,4 +42,8 @@ __all__ = [
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",
+    "MultimodalDataGenerator",
+    "VisionArenaDataGenerator",
+    "MMMUDataGenerator",
+    "ShareGPT4VDataGenerator",
 ]

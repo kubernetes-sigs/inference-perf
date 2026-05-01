@@ -1,0 +1,28 @@
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://qwen3-32b-vllm-service.test-ns.svc.cluster.local:8000
+data:
+  type: synthetic
+  input_distribution: { type: uniform, min: 100, max: 1000 }
+  output_distribution: { type: uniform, min: 50, max: 100 }
+  multimodal:
+    image:
+      count: { type: uniform, min: 10, max: 60 }
+      insertion_point: 0.0
+      resolutions:
+        - resolution: { width: 360, height: 640 }
+          weight: 1.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 10
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

@@ -55,6 +55,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
+from inference_perf.payloads import Payload, Text
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
@@ -308,8 +309,7 @@ class TestSessionChatCompletionAPIData:
 
         info = SessionInferenceInfo(
             output_text="test output",
-            input_tokens=10,
-            output_tokens=5,
+            payload=Payload(text=Text(input_tokens=10, output_tokens=5)),
         )
 
         api_data.on_completion(info)
@@ -332,7 +332,11 @@ class TestSessionChatCompletionAPIData:
         # Session has 2 events total
         # First complete event_0
         api_data_0 = self._make_api_data("session_1:event_0", registry, tracker, mock_queue, total_events=2)
-        info_0 = SessionInferenceInfo(output_text="first", input_tokens=5, output_tokens=3)
+        info_0 = SessionInferenceInfo(
+            output_text="first",
+            payload=Payload(text=Text(input_tokens=5, output_tokens=3)),
+            input_tokens=5,
+        )
         api_data_0.on_completion(info_0)
 
         # No notification yet (only 1 of 2 events complete)
@@ -340,7 +344,11 @@ class TestSessionChatCompletionAPIData:
 
         # Now complete event_1 (the last event)
         api_data_1 = self._make_api_data("session_1:event_1", registry, tracker, mock_queue, total_events=2)
-        info_1 = SessionInferenceInfo(output_text="done", input_tokens=5, output_tokens=3)
+        info_1 = SessionInferenceInfo(
+            output_text="done",
+            payload=Payload(text=Text(input_tokens=5, output_tokens=3)),
+            input_tokens=5,
+        )
         api_data_1.on_completion(info_1)
 
         # Should now have completion notification
@@ -853,8 +861,8 @@ class TestSessionChatCompletionAPIDataErrorPaths:
         # Should return empty inference info
         assert isinstance(result, SessionInferenceInfo)
         assert result.output_text == ""
-        assert result.input_tokens == 0
-        assert result.output_tokens == 0
+        assert result.payload.text.input_tokens == 0
+        assert result.payload.text.output_tokens == 0
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_post_wait_failure_check(self) -> None:

@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryInferenceResponseInfo, StreamedInferenceResponseInfo
+from inference_perf.payloads import Payload, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis.streaming_parser import parse_sse_stream
@@ -58,7 +59,9 @@ class CompletionAPIData(InferenceAPIData):
 
             prompt_len = tokenizer.count_tokens(self.prompt)
             output_len = tokenizer.count_tokens(output_text)
+            self.model_response = output_text
             return InferenceInfo(
+                payload=Payload(text=Text(input_tokens=prompt_len, output_tokens=output_len)),
                 input_tokens=prompt_len,
                 response_info=StreamedInferenceResponseInfo(
                     response_chunks=response_chunks,
@@ -75,11 +78,16 @@ class CompletionAPIData(InferenceAPIData):
             prompt_len = tokenizer.count_tokens(self.prompt)
             choices = data.get("choices", [])
             if len(choices) == 0:
-                return InferenceInfo(input_tokens=prompt_len, lora_adapter=lora_adapter)
+                return InferenceInfo(
+                    payload=Payload(text=Text(input_tokens=prompt_len, output_tokens=0)),
+                    input_tokens=prompt_len,
+                    lora_adapter=lora_adapter,
+                )
             output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
             return InferenceInfo(
+                payload=Payload(text=Text(input_tokens=prompt_len, output_tokens=output_len)),
                 input_tokens=prompt_len,
                 response_info=UnaryInferenceResponseInfo(output_tokens=output_len),
                 lora_adapter=lora_adapter,

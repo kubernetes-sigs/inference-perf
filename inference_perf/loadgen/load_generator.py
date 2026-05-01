@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from pathlib import Path
-from inference_perf.client.metricsclient.base import StageRuntimeInfo, StageStatus
+from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue

@@ -80,6 +80,52 @@ data:
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
+#### Multimodal Data Generation
+
+For VLMs, the `synthetic` and `shared_prefix` data types accept an optional `multimodal` block that produces images, videos, and/or audio alongside the text prompt:
+
+```yaml
+data:
+  type: synthetic
+  input_distribution: { ... }
+  output_distribution: { ... }
+  multimodal:
+    image:
+      count: { type: uniform, min: 1, max: 2, mean: 1.5 }  # items per request
+      insertion_point: 0.0                                  # 0=prefix, 1=suffix, or a Distribution
+      resolutions:                                          # AnyResolution or list of weighted resolutions
+        - resolution: "1080p"
+          weight: 0.8
+        - resolution: "4k"
+          weight: 0.2
+    video:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0
+      profiles:                                             # (resolution, frames) tuples
+        - profile: { resolution: "720p", frames: 32 }
+          weight: 1.0
+    audio:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 0.5
+      durations:
+        - duration: 5.0
+          weight: 1.0
+```
+
+The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
+
+##### Caveats: per-model resolution and modality limits
+
+Resolutions, video profiles, and audio durations configured here are passed through to the model server **as-is** with no model-aware validation. Real VLMs each impose their own limits on what they accept:
+
+- **Per-request media count** — vLLM exposes `--limit-mm-per-prompt` (e.g. `image=4,video=2,audio=2`). Generating more items per request than the server allows will fail at the wire.
+- **Image resolution** — vision encoders cap input pixels differently (Qwen2-VL `min_pixels`/`max_pixels`, LLaVA fixed 336/672, Pixtral tile caps, etc.). Above-cap images are typically downsized server-side, which means the per-modality `pixels` and `bytes` numbers in the report reflect what was *sent*, not what the model actually processed.
+- **Video frames** — most VLMs sample to a fixed `num_frames` budget (often 8/16/32). Sending more frames than the server samples wastes wire bytes without changing the workload the model sees.
+- **Audio duration** — most audio-capable models cap clips at 30s (Qwen2-Audio, Whisper-style chunking).
+- **Effective context length** — images and audio consume context tokens; large media plus a long text prompt can exceed `--max-model-len` and fail.
+
+There is no portable API across vLLM / SGLang / TGI to query these limits at runtime, so for now: consult your model's spec sheet, set resolutions/profiles/durations within the model's accepted range, and use the `failures` count in the lifecycle report to detect mismatches. A per-model capability registry that validates the multimodal config at load time is tracked as future work.
+
 ### Load Configuration
 
 Defines the benchmarking load pattern:

@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .base import RequestDataCollector
-from .local import LocalRequestDataCollector
-from .multiprocess import MultiprocessRequestDataCollector
+from .base import RequestMetricCollector
+from .local import LocalRequestMetricCollector
+from .multiprocess import MultiprocessRequestMetricCollector
 
 
 __all__ = [
-    "RequestDataCollector",
-    "LocalRequestDataCollector",
-    "MultiprocessRequestDataCollector",
+    "RequestMetricCollector",
+    "LocalRequestMetricCollector",
+    "MultiprocessRequestMetricCollector",
 ]

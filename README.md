@@ -31,6 +31,7 @@ It was founded as a part of the inference benchmarking and metrics standardizati
 - **Real-world Datasets**: Support for ShareGPT, CNN DailyMail, Infinity Instruct and Billsum.
 - **Synthetic & Random**: Configure exact input/output distributions.
 - **Advanced Scenarios**: Shared prefix and multi-turn chat conversations.
+- **Multimodal**: Synthetic image, video, and audio payloads with per-modality reporting. Resolutions/profiles/durations are passed through as-is; pick values within your model's accepted range. See [docs/config.md](docs/config.md#multimodal-data-generation).
 
 ### ⏱️ Flexible Load Generation
 - **Load Patterns**: Constant rate, Poisson arrival, and concurrent user simulation.

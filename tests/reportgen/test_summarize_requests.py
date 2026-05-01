@@ -1,11 +1,14 @@
 import pytest
 from inference_perf.reportgen.base import summarize_requests
 from inference_perf.apis.base import RequestLifecycleMetric, InferenceInfo, StreamedInferenceResponseInfo
+from inference_perf.payloads import Payload, Text
 
 
 def test_summarize_requests_tpot_calculation() -> None:
     info = InferenceInfo(
-        input_tokens=5, response_info=StreamedInferenceResponseInfo(output_tokens=10, output_token_times=[1.0, 2.0, 3.0])
+        payload=Payload(text=Text(input_tokens=5, output_tokens=0)),
+        input_tokens=5,
+        response_info=StreamedInferenceResponseInfo(output_tokens=10, output_token_times=[1.0, 2.0, 3.0]),
     )
 
     metric = RequestLifecycleMetric(
@@ -29,7 +32,9 @@ def test_summarize_requests_tpot_calculation() -> None:
 def test_summarize_requests_tpot_fallback() -> None:
     # Test fallback when output_tokens is not available or <= 1
     info = InferenceInfo(
-        input_tokens=5, response_info=StreamedInferenceResponseInfo(output_tokens=0, output_token_times=[1.0, 2.0, 3.0])
+        payload=Payload(text=Text(input_tokens=5, output_tokens=0)),
+        input_tokens=5,
+        response_info=StreamedInferenceResponseInfo(output_tokens=0, output_token_times=[1.0, 2.0, 3.0]),
     )
 
     metric = RequestLifecycleMetric(
@@ -55,6 +60,7 @@ def test_summarize_requests_with_chunks() -> None:
     mock_tokenizer.count_tokens.side_effect = lambda text: 2 if "hello" in text else (3 if "world" in text else 0)
 
     info = InferenceInfo(
+        payload=Payload(text=Text(input_tokens=5, output_tokens=0)),
         input_tokens=5,
         response_info=StreamedInferenceResponseInfo(
             response_chunks=['{"choices": [{"text": "hello"}]}', '{"choices": [{"text": "world"}]}'], chunk_times=[1.0, 2.0]
@@ -84,6 +90,7 @@ def test_summarize_requests_token_mismatch() -> None:
     mock_tokenizer.count_tokens.side_effect = lambda text: 2 if "hello" in text else (3 if "world" in text else 0)
 
     info = InferenceInfo(
+        payload=Payload(text=Text(input_tokens=5, output_tokens=0)),
         input_tokens=5,
         response_info=StreamedInferenceResponseInfo(
             response_chunks=[
@@ -113,6 +120,7 @@ def test_summarize_requests_multiple_tokens_same_timestamp() -> None:
     mock_tokenizer.count_tokens.side_effect = lambda text: 3 if "hello" in text else 0
 
     info = InferenceInfo(
+        payload=Payload(text=Text(input_tokens=5, output_tokens=0)),
         input_tokens=5,
         response_info=StreamedInferenceResponseInfo(response_chunks=['{"choices": [{"text": "hello"}]}'], chunk_times=[1.0]),
     )
