@@ -508,11 +508,44 @@ class GoodputConfig(BaseModel):
     constraints: Dict[str, float] = {}
 
 
+class BRV02StackComponentOverride(BaseModel):
+    """Manually-supplied stack component when K8s discovery isn't available.
+
+    Mirrors the BR0.2 scenario.stack[] entry shape; passed through verbatim by
+    ConfigStackCollector. See:
+    https://github.com/llm-d/llm-d-benchmark/blob/main/llmdbenchmark/analysis/benchmark_report/schema_v0_2.py
+    """
+
+    metadata: Dict[str, Any] = {}
+    standardized: Dict[str, Any] = {}
+    native: Dict[str, Any] = {}
+
+
+class BRV02KubernetesConfig(BaseModel):
+    namespace: Optional[str] = None
+    label_selectors: Dict[str, str] = {}
+    scrape_interval_seconds: int = 15
+
+
+class BRV02Config(BaseModel):
+    """Settings for emitting an llm-d-benchmark BR0.2 report alongside the
+    native inference-perf reports.
+    """
+
+    enabled: bool = False
+    experiment_id: Optional[str] = None
+    description: Optional[str] = None
+    keywords: List[str] = []
+    stack: Optional[List[BRV02StackComponentOverride]] = None
+    kubernetes: Optional[BRV02KubernetesConfig] = None
+
+
 class ReportConfig(BaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
     session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
     goodput: Optional[GoodputConfig] = None
+    br_v0_2: Optional[BRV02Config] = None
 
 
 class PrometheusClientConfig(BaseModel):
