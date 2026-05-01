@@ -1,0 +1,8 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target:
+      kind: LeaderWorkerSet
+    path: tpu7x-2x2x2.yaml

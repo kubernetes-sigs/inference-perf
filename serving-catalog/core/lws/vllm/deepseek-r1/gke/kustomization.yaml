@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../../components/gke/resources/gpu/8-H100
+
+patches:
+  - path: leaderworkerset.patch.yaml
+    target:
+      kind: LeaderWorkerSet
+    options:
+      allowNameChange: true
+  - target:
+      kind: Service
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: deepseek-r1-vllm-service
+
+configMapGenerator:
+- name: vllm-multihost-config
+  behavior: merge
+  literals:
+  - model_id="deepseek-ai/DeepSeek-R1"
+  - max_model_len="4096"

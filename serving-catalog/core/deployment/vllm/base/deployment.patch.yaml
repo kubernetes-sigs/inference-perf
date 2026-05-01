@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-deployment-blueprint
+spec:
+  selector:
+    matchLabels:
+      app: vllm-server
+      deployment: vllm-deployment-blueprint
+  template:
+    metadata:
+      labels:
+        app: vllm-server
+        deployment: vllm-deployment-blueprint
+    spec:
+      containers:
+      - name: inference-server
+        image: vllm/vllm-openai:latest
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        ports:
+          - containerPort: 8000
+            name: metrics
+        args:
+        - --model=$(MODEL_ID)
+        - --tensor-parallel-size=$(TENSOR_PARALLEL_SIZE)
+        env:
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: hf_api_token
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          failureThreshold: 60
+          periodSeconds: 10
+      volumes:
+      - name: dshm
+        emptyDir:
+            medium: Memory

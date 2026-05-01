@@ -1,0 +1,29 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+components:
+  - ../../../components/gke/resources/gpu/8-H100
+
+patches:
+  - path: leaderworkerset.patch.yaml
+    target:
+      kind: LeaderWorkerSet
+    options:
+      allowNameChange: true
+  - target:
+      kind: Service
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: llama3-1-405b-vllm-service
+
+configMapGenerator:
+- name: vllm-multihost-config
+  behavior: merge
+  literals:
+  - model_id="meta-llama/Meta-Llama-3.1-405B-Instruct"
+  - max_model_len="8192"
