@@ -13,140 +13,116 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
-from inference_perf.client.metricsclient.base import MetricsMetadata
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData
 
 
-class ModelServerPrometheusMetric:
-    def __init__(self, name: str, op: str, type: str, filters: List[str]) -> None:
-        self.name = name
+class Metric(ABC):
+    @abstractmethod
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        """Returns a list of tuples containing (target_attr, query)."""
+        pass
+
+
+class GaugeMetric(Metric):
+    def __init__(self, base_name: str, metric_name: str, filters: List[str]) -> None:
+        self.base_name = base_name
+        self.metric_name = metric_name
+        self.filters = ",".join(filters)
+
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        f = self.filters
+        m = self.metric_name
+        return [
+            (f"avg_{self.base_name}", f"avg_over_time({m}{{{f}}}[{duration:.0f}s])"),
+            (f"median_{self.base_name}", f"quantile_over_time(0.5, {m}{{{f}}}[{duration:.0f}s])"),
+            (f"p90_{self.base_name}", f"quantile_over_time(0.9, {m}{{{f}}}[{duration:.0f}s])"),
+            (f"p99_{self.base_name}", f"quantile_over_time(0.99, {m}{{{f}}}[{duration:.0f}s])"),
+        ]
+
+
+class CounterMetric(Metric):
+    def __init__(self, base_name: str, metric_name: str, filters: List[str]) -> None:
+        self.base_name = base_name
+        self.metric_name = metric_name
+        self.filters = ",".join(filters)
+
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        f = self.filters
+        m = self.metric_name
+        return [
+            (f"avg_{self.base_name}", f"sum(increase({m}{{{f}}}[{duration:.0f}s]))"),
+            (f"{self.base_name}_per_second", f"sum(rate({m}{{{f}}}[{duration:.0f}s]))"),
+        ]
+
+
+class RequestsMetric(Metric):
+    def __init__(self, metric_name: str, filters: List[str]) -> None:
+        self.metric_name = metric_name
+        self.filters = ",".join(filters)
+
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        f = self.filters
+        m = self.metric_name
+        return [
+            ("total_requests", f"sum(increase({m}{{{f}}}[{duration:.0f}s]))"),
+            ("requests_per_second", f"sum(rate({m}{{{f}}}[{duration:.0f}s]))"),
+        ]
+
+
+class HistogramMetric(Metric):
+    def __init__(self, base_name: str, metric_name: str, filters: List[str]) -> None:
+        self.base_name = base_name
+        self.metric_name = metric_name
+        self.filters = ",".join(filters)
+
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        f = self.filters
+        m = self.metric_name
+        return [
+            (
+                f"avg_{self.base_name}",
+                f"sum(rate({m}_sum{{{f}}}[{duration:.0f}s])) / (sum(rate({m}_count{{{f}}}[{duration:.0f}s])) > 0)",
+            ),
+            (f"median_{self.base_name}", f"histogram_quantile(0.5, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))"),
+            (f"p90_{self.base_name}", f"histogram_quantile(0.9, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))"),
+            (f"p99_{self.base_name}", f"histogram_quantile(0.99, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))"),
+            (f"{self.base_name}_per_second", f"sum(rate({m}_sum{{{f}}}[{duration:.0f}s]))"),
+        ]
+
+
+class CustomMetric(Metric):
+    def __init__(self, target_field: str, metric_name: str, op: str, type: str, filters: List[str]) -> None:
+        self.target_field = target_field
+        self.metric_name = metric_name
         self.op = op
         self.type = type
         self.filters = ",".join(filters)
 
+    def get_queries(self, duration: float) -> List[Tuple[str, str]]:
+        # If the metric name is wrapped in `{...}` (e.g. `{__name__=~"foo(_total)?"}`),
+        # merge the filters into the selector instead of appending a second `{...}` group.
+        m = self.metric_name
+        if m.startswith("{") and m.endswith("}"):
+            selector = f"{{{m[1:-1]},{self.filters}}}" if self.filters else m
+        else:
+            selector = f"{m}{{{self.filters}}}"
 
-# PrometheusMetricMetadata stores the mapping of metrics to their model server names and types
-# and the filters to be applied to them.
-# This is used to generate Prometheus query for the metrics.
-class PrometheusMetricMetadata(MetricsMetadata):
-    # Throughput
-    prompt_tokens_per_second: ModelServerPrometheusMetric
-    output_tokens_per_second: ModelServerPrometheusMetric
-    requests_per_second: ModelServerPrometheusMetric
+        query = ""
+        if self.type == "counter":
+            if self.op == "rate":
+                query = f"sum(rate({selector}[{duration:.0f}s]))"
+            elif self.op == "increase":
+                query = f"sum(increase({selector}[{duration:.0f}s]))"
 
-    # Latency
-    avg_request_latency: ModelServerPrometheusMetric
-    median_request_latency: ModelServerPrometheusMetric
-    p90_request_latency: ModelServerPrometheusMetric
-    p99_request_latency: ModelServerPrometheusMetric
-    avg_time_to_first_token: Optional[ModelServerPrometheusMetric]
-    median_time_to_first_token: Optional[ModelServerPrometheusMetric]
-    p90_time_to_first_token: Optional[ModelServerPrometheusMetric]
-    p99_time_to_first_token: Optional[ModelServerPrometheusMetric]
-    avg_time_per_output_token: Optional[ModelServerPrometheusMetric]
-    median_time_per_output_token: Optional[ModelServerPrometheusMetric]
-    p90_time_per_output_token: Optional[ModelServerPrometheusMetric]
-    p99_time_per_output_token: Optional[ModelServerPrometheusMetric]
-    avg_inter_token_latency: Optional[ModelServerPrometheusMetric]
-    median_inter_token_latency: Optional[ModelServerPrometheusMetric]
-    p90_inter_token_latency: Optional[ModelServerPrometheusMetric]
-    p99_inter_token_latency: Optional[ModelServerPrometheusMetric]
+        if query:
+            return [(self.target_field, query)]
+        return []
 
-    # Request
-    total_requests: ModelServerPrometheusMetric
-    avg_prompt_tokens: ModelServerPrometheusMetric
-    avg_output_tokens: ModelServerPrometheusMetric
-    avg_queue_length: ModelServerPrometheusMetric
 
-    # Usage
-    avg_kv_cache_usage: Optional[ModelServerPrometheusMetric]
-    median_kv_cache_usage: Optional[ModelServerPrometheusMetric]
-    p90_kv_cache_usage: Optional[ModelServerPrometheusMetric]
-    p99_kv_cache_usage: Optional[ModelServerPrometheusMetric]
-    num_preemptions_total: Optional[ModelServerPrometheusMetric]
-    num_requests_swapped: Optional[ModelServerPrometheusMetric]
-
-    # Prefix Cache
-    prefix_cache_hits: Optional[ModelServerPrometheusMetric]
-    prefix_cache_queries: Optional[ModelServerPrometheusMetric]
-
-    # Running Requests
-    avg_num_requests_running: Optional[ModelServerPrometheusMetric]
-
-    # Request Lifecycle Latency Breakdown
-    avg_request_queue_time: Optional[ModelServerPrometheusMetric]
-    median_request_queue_time: Optional[ModelServerPrometheusMetric]
-    p90_request_queue_time: Optional[ModelServerPrometheusMetric]
-    p99_request_queue_time: Optional[ModelServerPrometheusMetric]
-    avg_request_inference_time: Optional[ModelServerPrometheusMetric]
-    median_request_inference_time: Optional[ModelServerPrometheusMetric]
-    p90_request_inference_time: Optional[ModelServerPrometheusMetric]
-    p99_request_inference_time: Optional[ModelServerPrometheusMetric]
-    avg_request_prefill_time: Optional[ModelServerPrometheusMetric]
-    median_request_prefill_time: Optional[ModelServerPrometheusMetric]
-    p90_request_prefill_time: Optional[ModelServerPrometheusMetric]
-    p99_request_prefill_time: Optional[ModelServerPrometheusMetric]
-    avg_request_decode_time: Optional[ModelServerPrometheusMetric]
-    median_request_decode_time: Optional[ModelServerPrometheusMetric]
-    p90_request_decode_time: Optional[ModelServerPrometheusMetric]
-    p99_request_decode_time: Optional[ModelServerPrometheusMetric]
-
-    # Request Metadata
-    avg_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
-    median_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
-    p90_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
-    p99_request_prompt_tokens: Optional[ModelServerPrometheusMetric]
-    avg_request_generation_tokens: Optional[ModelServerPrometheusMetric]
-    median_request_generation_tokens: Optional[ModelServerPrometheusMetric]
-    p90_request_generation_tokens: Optional[ModelServerPrometheusMetric]
-    p99_request_generation_tokens: Optional[ModelServerPrometheusMetric]
-    avg_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
-    median_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
-    p90_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
-    p99_request_max_num_generation_tokens: Optional[ModelServerPrometheusMetric]
-    avg_request_params_n: Optional[ModelServerPrometheusMetric]
-    median_request_params_n: Optional[ModelServerPrometheusMetric]
-    p90_request_params_n: Optional[ModelServerPrometheusMetric]
-    p99_request_params_n: Optional[ModelServerPrometheusMetric]
-    avg_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
-    median_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
-    p90_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
-    p99_request_params_max_tokens: Optional[ModelServerPrometheusMetric]
-    request_success_count: Optional[ModelServerPrometheusMetric]
-
-    # Iteration Stats
-    avg_iteration_tokens: Optional[ModelServerPrometheusMetric]
-    median_iteration_tokens: Optional[ModelServerPrometheusMetric]
-    p90_iteration_tokens: Optional[ModelServerPrometheusMetric]
-    p99_iteration_tokens: Optional[ModelServerPrometheusMetric]
-
-    # Token Cache Stats
-    prompt_tokens_cached: Optional[ModelServerPrometheusMetric]
-    prompt_tokens_recomputed: Optional[ModelServerPrometheusMetric]
-    external_prefix_cache_hits: Optional[ModelServerPrometheusMetric]
-    external_prefix_cache_queries: Optional[ModelServerPrometheusMetric]
-    mm_cache_hits: Optional[ModelServerPrometheusMetric]
-    mm_cache_queries: Optional[ModelServerPrometheusMetric]
-    corrupted_requests: Optional[ModelServerPrometheusMetric]
-
-    # KV Block Metrics
-    avg_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
-    median_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
-    p90_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
-    p99_request_prefill_kv_computed_tokens: Optional[ModelServerPrometheusMetric]
-    avg_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
-    median_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
-    p90_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
-    p99_kv_block_idle_before_evict: Optional[ModelServerPrometheusMetric]
-    avg_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
-    median_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
-    p90_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
-    p99_kv_block_lifetime: Optional[ModelServerPrometheusMetric]
-    avg_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
-    median_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
-    p90_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
-    p99_kv_block_reuse_gap: Optional[ModelServerPrometheusMetric]
+class BaseMetrics:
+    def __init__(self, custom_metrics: Optional[List[Metric]] = None) -> None:
+        self.custom_metrics = custom_metrics or []
 
 
 class ModelServerClient(ABC):
@@ -172,7 +148,7 @@ class ModelServerClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> BaseMetrics:
         # assumption: all metrics clients have metrics exported in Prometheus format
         raise NotImplementedError
 
