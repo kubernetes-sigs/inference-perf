@@ -210,6 +210,18 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         turn_idx = round_num % bp.num_turns
         convo_num = round_num // bp.num_turns  # which conversation this slot is on
 
+        # Re-prime if the session was cleared (e.g. LoadGenerator calls
+        # LocalUserSession.clear_instances() between load stages). Without this,
+        # subsequent stages would dispatch with empty session_context, losing the
+        # system_prompt the conversation was built around.
+        expected_session_id = self.user_sessions[conv_idx].user_session_id
+        if expected_session_id not in LocalUserSession._instances:
+            self.user_sessions[conv_idx] = self._new_session(
+                user_session_id=expected_session_id,
+                context=bp.system_prompt,
+            )
+            logger.debug("Slot %d: re-primed cleared session %s", conv_idx, expected_session_id)
+
         # Closed-loop replenishment: when a conversation finishes all its turns,
         # reset the session so the slot immediately starts a fresh conversation.
         # This happens in the worker process (after fork), so each worker safely
