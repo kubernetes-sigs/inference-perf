@@ -29,8 +29,7 @@ load:
   type: trace_session_replay
   stages:
     - concurrent_sessions: 1  # Sequential execution
-  num_workers: 20
-  worker_max_concurrency: 10
+  worker_max_concurrency: 20
 
 server:
   type: vllm

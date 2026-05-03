@@ -5,7 +5,7 @@ api:
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    trace_directory: <PATH_TO_OTEL_TRACES>
+    hf_dataset_path: "lenadan/otel-test-snippet-jsonl"
 
     # Model configuration
     use_static_model: true
@@ -21,9 +21,8 @@ data:
 load:
   type: trace_session_replay
   stages:
-    - concurrent_sessions: 30
-  num_workers: 10
-  worker_max_concurrency: 30
+    - concurrent_sessions: 20
+  worker_max_concurrency: 10000
   base_seed: 42
 
 server:
@@ -33,7 +32,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-otel-simple-test"
+    path: "reports-exgentic-load-1"
 
 report:
   request_lifecycle:

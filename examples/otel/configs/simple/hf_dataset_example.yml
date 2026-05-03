@@ -28,7 +28,6 @@ load:
   type: trace_session_replay
   stages:
     - concurrent_sessions: 30
-  num_workers: 20
   worker_max_concurrency: 1000
 
 server:
@@ -38,7 +37,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-hf-dataset"
+    path: "reports-hf-dataset-example"
 
 report:
   request_lifecycle:

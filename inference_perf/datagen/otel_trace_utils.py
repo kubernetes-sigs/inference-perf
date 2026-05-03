@@ -217,7 +217,7 @@ def _format_tool_call(tool_call: Dict[str, Any]) -> str:
     Format a tool call as the LLM would have generated it.
 
     Uses special token format which is closest to what models actually generate.
-    
+
     Handles both "arguments" and "input" field names for compatibility with
     different API formats (OpenAI uses "arguments", some OTEL formats use "input").
     """
@@ -227,7 +227,7 @@ def _format_tool_call(tool_call: Dict[str, Any]) -> str:
 
     # If arguments is a dict, serialize it
     if isinstance(arguments, dict):
-        arguments = json.dumps(arguments, separators=(', ', ': '))
+        arguments = json.dumps(arguments, separators=(", ", ": "))
 
     # Format with special tokens (most accurate for token counting)
     return f"<|tool_call|>{function_name}<|tool_args|>{arguments}<|end|>"
@@ -236,7 +236,7 @@ def _format_tool_call(tool_call: Dict[str, Any]) -> str:
 def _format_tool_result(tool_result: Dict[str, Any]) -> str:
     """
     Format a tool result as it would appear in the message.
-    
+
     Handles tool result formatting consistently across different parts of the code.
     Supports both formats:
     - tool_result: {"tool_use_id": "...", "content": "...", "is_error": ...}

@@ -162,7 +162,7 @@ def _download_hf_dataset(dataset_path: str) -> tuple[Path, List[Path]]:
         trace_files = []
 
         for repo_file in repo_files:
-            local_path = hf_hub_download(dataset_path, repo_file, repo_type="dataset")
+            local_path = hf_hub_download(dataset_path, repo_file, repo_type="dataset", cache_dir=".hf_cache")
             with open(local_path) as f:
                 for line_idx, line in enumerate(f):
                     line = line.strip()

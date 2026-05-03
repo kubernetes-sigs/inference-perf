@@ -26,8 +26,7 @@ load:
   type: trace_session_replay  # Session-based replay
   stages:
     - concurrent_sessions: 1  # Sequential execution
-  num_workers: 1  # Single worker to avoid deadlocks with dependency blocking
-  worker_max_concurrency: 10
+  worker_max_concurrency: 1000
 
 server:
   type: vllm  # Use mock server for testing
@@ -36,7 +35,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-otel-graph-replay-mock"
+    path: "reports-graph-replay"
 
 report:
   request_lifecycle:

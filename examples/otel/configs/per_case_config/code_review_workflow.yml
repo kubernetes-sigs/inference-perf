@@ -9,12 +9,9 @@ data:
   otel_trace_replay:
     trace_files:
       - "examples/otel/test_traces/advanced/code_review_workflow.json"
-
     use_static_model: true
     static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
-
     default_max_tokens: 150
-
     include_errors: false
     skip_invalid_files: true
 
@@ -22,8 +19,7 @@ load:
   type: trace_session_replay
   stages:
     - concurrent_sessions: 1  # Sequential execution
-  num_workers: 20
-  worker_max_concurrency: 10
+  worker_max_concurrency: 20
 
 server:
   type: vllm
