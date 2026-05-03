@@ -317,3 +317,41 @@ class TestDistributionExtensions:
         rng2 = np.random.default_rng(99)
         result2 = generate_distribution(min=10, max=1000, mean=500, std_dev=100, total_count=50, dist_type="normal", rng=rng2)
         assert list(result1) == list(result2)
+
+
+class TestSlidingWindowTruncation:
+    def test_sliding_window_truncation(self) -> None:
+        from inference_perf.apis.user_session import LocalUserSession
+        mock_tokenizer = MagicMock()
+        # count_tokens returns 100 for system prompt and 100 for each turn
+        mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split()) * 10
+
+        system_prompt = "System Instruction" # length in words = 2 -> 20 tokens
+        session = LocalUserSession(
+            user_session_id="test_session",
+            context=system_prompt,
+            system_prompt=system_prompt,
+            tokenizer=mock_tokenizer,
+            max_model_len=50
+        )
+
+        # turn 1: context grows by 10 tokens
+        session.update_context(system_prompt + " Turn1")
+        assert session.history == ["Turn1"]
+        assert session.context == "System Instruction Turn1"
+
+        # turn 2: context grows by 10 tokens
+        session.update_context(session.context + " Turn2")
+        assert session.history == ["Turn1", "Turn2"]
+        assert session.context == "System Instruction Turn1 Turn2"
+
+        # turn 3: context grows by 10 tokens -> System (20) + 30 = 50 tokens
+        session.update_context(session.context + " Turn3")
+        assert session.history == ["Turn1", "Turn2", "Turn3"]
+        assert session.context == "System Instruction Turn1 Turn2 Turn3"
+
+        # turn 4: context exceeds 50 tokens. First turn ("Turn1") is dropped.
+        session.update_context(session.context + " Turn4")
+        assert session.history == ["Turn2", "Turn3", "Turn4"]
+        assert session.context == "System Instruction Turn2 Turn3 Turn4"
+

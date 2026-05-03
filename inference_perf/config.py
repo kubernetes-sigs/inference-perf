@@ -314,6 +314,7 @@ class ConversationReplayConfig(BaseModel):
             "mean/std_dev may be fractional."
         ),
     )
+    max_model_len: Optional[int] = Field(None, description="Maximum model context length in tokens")
 
 
 class SessionReplayConfig(BaseModel):

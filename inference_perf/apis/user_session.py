@@ -28,12 +28,19 @@ logger = logging.getLogger(__name__)
 class LocalUserSession:
     user_session_id: str
     context: str
+    system_prompt: str
+    max_model_len: Optional[int]
+    history: list[str]
 
     _instances: dict[str, "LocalUserSession"] = {}
 
-    def __init__(self, user_session_id: str, context: str = ""):
+    def __init__(self, user_session_id: str, context: str = "", system_prompt: str = "", tokenizer: Optional[CustomTokenizer] = None, max_model_len: Optional[int] = None):
         self.user_session_id = user_session_id
         self.context = context if context else ""
+        self.system_prompt = system_prompt
+        self.tokenizer = tokenizer
+        self.max_model_len = max_model_len
+        self.history = []
         self._current_round = 0
         self._in_flight: Optional[asyncio.Lock] = None
         self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
@@ -60,7 +67,6 @@ class LocalUserSession:
         assert self._in_flight is not None
 
         if not self._waiting_rounds.empty() or self._in_flight.locked():
-            # entering waiting queue
             future: asyncio.Future[bool] = asyncio.Future()
             self._waiting_rounds.put_nowait(future)
             await future
@@ -69,7 +75,27 @@ class LocalUserSession:
         return self.context
 
     def update_context(self, response: str) -> None:
-        self.context = response
+        if self.system_prompt and self.tokenizer and self.max_model_len:
+            history_context = " ".join(self.history) if self.history else ""
+            base_len = len(self.system_prompt)
+            if history_context:
+                base_len += len(history_context) + 1
+            turn_content = response[base_len:].strip()
+            if turn_content:
+                self.history.append(turn_content)
+
+            system_tokens = self.tokenizer.count_tokens(self.system_prompt)
+            
+            while self.history:
+                history_str = " ".join(self.history)
+                history_tokens = self.tokenizer.count_tokens(history_str)
+                if system_tokens + history_tokens <= self.max_model_len:
+                    break
+                self.history.pop(0)
+
+            self.context = self.system_prompt + " " + " ".join(self.history) if self.history else self.system_prompt
+        else:
+            self.context = response
 
         self._ensure_initialized()
         assert self._waiting_rounds is not None
