@@ -208,7 +208,7 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
             if "content" in x:
                 content = x["content"]
                 # Check if message also has tool_calls - convert to parts format
-                if "tool_calls" in x:
+                if "tool_calls" in x and x["tool_calls"] is not None:
                     # Transform message with content + tool_calls into parts format
                     message_with_parts = _convert_content_and_tool_calls_to_parts(x)
                     res.append(
