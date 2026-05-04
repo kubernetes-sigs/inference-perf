@@ -798,6 +798,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         self.sessions = sessions
         if not self.sessions:
             raise ValueError("No valid replay sessions found")
+
+        # Assign session_index to match position in list after shuffling/duplication
+        for i, session in enumerate(self.sessions):
+            session.session_index = i
+
         self._build_replay_schedule()
         logger.debug("Loaded %d sessions with %d total events", len(self.sessions), len(self.all_events))
 
@@ -840,10 +845,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             duplicate_count += 1
 
             # Create duplicate with unique ID
+            # Note: session_index will be reassigned in initialize_sessions() to match list position
             duplicate_session = ReplaySession(
                 session_id=f"{source_session.session_id}_dup{duplicate_count}",
                 source_id=source_session.source_id,
-                session_index=source_session.session_index + 10000 + duplicate_count,
+                session_index=-1,  # Placeholder, will be reassigned after duplication
                 graph=source_session.graph,
                 start_offset_ms=source_session.start_offset_ms,
             )
