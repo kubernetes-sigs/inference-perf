@@ -234,6 +234,19 @@ class TestConversationReplayDataGenerator:
         assert "conv_0" not in LocalUserSession._instances
         assert "conv_2" not in LocalUserSession._instances
 
+    def test_system_prompt_preserved_across_repeated_clears(self) -> None:
+        """Across multiple stage transitions, each re-prime must restore the
+        same system_prompt the blueprint was built with — not a fresh sample."""
+        api_config, data_config = _make_config(num_conversations=3)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        original_contexts = {bp.conversation_id: bp.system_prompt for bp in gen.blueprints}
+
+        for _ in range(4):
+            LocalUserSession.clear_instances()
+            for conv_idx in range(3):
+                gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx))
+                assert LocalUserSession._instances[f"conv_{conv_idx}"].context == original_contexts[conv_idx]
+
     def test_load_lazy_data_does_not_replace_live_session(self) -> None:
         """When the registry still holds the session (mid-stage), load_lazy_data
         must not overwrite it — that would clobber accumulated turn context."""
