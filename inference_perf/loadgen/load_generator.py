@@ -561,6 +561,7 @@ class LoadGenerator:
             if self.interrupt_sig:
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.info("Loadgen encountered SIGINT")
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -572,6 +573,7 @@ class LoadGenerator:
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -583,6 +585,7 @@ class LoadGenerator:
             if timeout is not None and time.perf_counter() - start_time >= timeout:
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -694,6 +697,7 @@ class LoadGenerator:
             end_time=time.time(),
             status=stage_status,
             concurrency_level=concurrent_sessions,
+            timeout=timeout,
         )
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
