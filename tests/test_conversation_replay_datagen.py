@@ -13,6 +13,8 @@
 # limitations under the License.
 """Tests for ConversationReplayDataGenerator."""
 
+from typing import Generator
+
 import pytest
 from unittest.mock import MagicMock
 import numpy as np
@@ -30,7 +32,16 @@ from inference_perf.datagen.conversation_replay_datagen import (
     _ConversationReplayAPIData,
 )
 from inference_perf.apis.base import LazyLoadInferenceAPIData
+from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.utils.distribution import generate_distribution
+
+
+@pytest.fixture(autouse=True)
+def _clear_user_session_registry() -> Generator[None, None, None]:
+    """Isolate LocalUserSession._instances across tests."""
+    LocalUserSession.clear_instances()
+    yield
+    LocalUserSession.clear_instances()
 
 
 def _make_mock_tokenizer(vocab_size: int = 32000) -> MagicMock:
@@ -199,6 +210,43 @@ class TestConversationReplayDataGenerator:
         result = gen.load_lazy_data(lazy)
         assert isinstance(result, _ConversationReplayAPIData)
         assert result.tool_call_latency_sec == 5.0
+
+    def test_load_lazy_data_reprimes_after_clear_instances(self) -> None:
+        """After LoadGenerator clears the session registry between stages,
+        load_lazy_data must re-register the session with its original
+        system_prompt so subsequent requests still send the full context."""
+        api_config, data_config = _make_config(num_conversations=3)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        original_contexts = {bp.conversation_id: bp.system_prompt for bp in gen.blueprints}
+        assert all(f"conv_{i}" in LocalUserSession._instances for i in range(3))
+
+        # Simulate LoadGenerator's between-stage cleanup (PR #459).
+        LocalUserSession.clear_instances()
+        assert LocalUserSession._instances == {}
+
+        # First request after the clear should re-prime the slot it touches.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1))
+
+        assert "conv_1" in LocalUserSession._instances
+        assert LocalUserSession._instances["conv_1"].context == original_contexts[1]
+        # Other slots are re-primed lazily on their own first request, not eagerly.
+        assert "conv_0" not in LocalUserSession._instances
+        assert "conv_2" not in LocalUserSession._instances
+
+    def test_load_lazy_data_does_not_replace_live_session(self) -> None:
+        """When the registry still holds the session (mid-stage), load_lazy_data
+        must not overwrite it — that would clobber accumulated turn context."""
+        api_config, data_config = _make_config(num_conversations=2)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        live_session = LocalUserSession._instances["conv_0"]
+        live_session.update_context("accumulated turn history")
+
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+
+        assert LocalUserSession._instances["conv_0"] is live_session
+        assert LocalUserSession._instances["conv_0"].context == "accumulated turn history"
 
     def test_tool_call_latency_lognormal_distribution(self) -> None:
         """Lognormal tool call latencies vary across turns."""
