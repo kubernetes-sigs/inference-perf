@@ -220,6 +220,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         payload = await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
 
         if self.expected_output_is_tool_call and self.tool_definitions:
+            payload["ignore_eos"] = False
+            # The recorded output_tokens might come from a different model/tokenizer.
+            # The replay model may need significantly more tokens to express the
+            # same tool call (different tokenizer, different tool-call preamble).
+            # Use a generous cap and let ignore_eos=False stop generation naturally.
+            payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+
             if "tool_choice" in payload:
                 logger.warning(
                     f"Event {self.event_id}: payload already has tool_choice={payload['tool_choice']!r}; "
