@@ -671,8 +671,12 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
-        # Drain in-flight requests on timeout (mirrors run_stage cleanup)
-        if stage_status == StageStatus.FAILED and cancel_signal is not None:
+        # Cancel in-flight tasks and drain stranded queue items.
+        # In the happy path this is a no-op (all items already processed).
+        # In the failure path, process_failure sends a completion notification
+        # immediately — before the worker picks up all items from the queue.
+        # Without this, request_queue.join() hangs on items that never got task_done().
+        if cancel_signal is not None:
             cancel_signal.set()
             await sleep(1)
             while active_requests_counter.value > 0:
