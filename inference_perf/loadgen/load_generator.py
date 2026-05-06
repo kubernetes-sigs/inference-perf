@@ -362,9 +362,10 @@ class LoadGenerator:
                 _ = queue.get_nowait()
                 queue.task_done()
             except Empty:
-                if queue.qsize() == 0:
-                    logger.debug("Drain finished")
-                    return
+                # No qsize() check: it raises NotImplementedError on macOS.
+                # Empty from get_nowait() is sufficient since producers are stopped before drain.
+                logger.debug("Drain finished")
+                return
 
     async def run_session_stage(
         self,
