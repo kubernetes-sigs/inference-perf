@@ -270,17 +270,20 @@ def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
     out = attrs.get("gen_ai.output.messages")
     if isinstance(out, str):
         try:
-            msgs = json.loads(out)
-            if len(msgs) > 1:
-                raise ValueError(f"Unexpected output messages fromat: expected a single message, got {len(msgs)} messages")
-            return ComplexReplayMessage(
-                role="assistant",
-                message_info=reconstruct_each_part_in_message_info(msgs[0]),
-                raw_reconstructed_text=reconstruct_llm_output(msgs[0]),
-            )
+            out = json.loads(out)
         except Exception as err:
             raise ValueError(f"Failed parsing {out}") from err
-    if isinstance(out, list) and out:
+
+    if isinstance(out, list):
+        if isinstance(out[0], dict):
+            if len(out) > 1:
+                raise ValueError(f"Unexpected output messages fromat: expected a single message, got {len(out)} messages")
+            return ComplexReplayMessage(
+                role="assistant",
+                message_info=reconstruct_each_part_in_message_info(out[0]),
+                raw_reconstructed_text=reconstruct_llm_output(out[0]),
+            )
+    elif isinstance(out, list) and out:
         return ReplayMessage(role="assistant", text=message_content_text(out[-1]))
     return None
 
