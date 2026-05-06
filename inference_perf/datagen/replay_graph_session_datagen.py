@@ -439,21 +439,31 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     )
                     result.extend(seg_msgs)
                 else:
+                    # Only take the first seg.message_count messages from the parent.
+                    # The shared segment represents a prefix of the parent's messages,
+                    # not necessarily all of them. This handles cases where the parent
+                    # has more messages than the shared prefix length.
+                    seg_msgs_from_parent = seg_msgs_from_parent[:seg.message_count]
+                    
                     logger.debug(
                         f"Registry get for event {self.event_id} from {seg.source_event_id} "
-                        f"shared segment num messages in parent event: {len(seg_msgs_from_parent)}"
+                        f"shared segment: using {len(seg_msgs_from_parent)} messages (prefix of parent's messages)"
                     )
-                    if len(seg_msgs_from_parent) != len(seg_msgs):
-                        logger.error(
+                    
+                    # Validate that we have the expected number of messages after slicing
+                    if len(seg_msgs_from_parent) != seg.message_count:
+                        logger.warning(
                             f"Event {self.event_id} shared segment from {seg.source_event_id} "
-                            f"had different number of messages in parent event: {len(seg_msgs_from_parent)}, "
-                            f"num messages in seg: {len(seg_msgs)}"
+                            f"expected {seg.message_count} messages but parent only has {len(seg_msgs_from_parent)}. "
+                            f"Using recorded messages as fallback."
                         )
-                    for msg in seg_msgs_from_parent:
-                        if isinstance(msg, ChatMessage):
-                            result.append({k: v for k, v in msg.model_dump().items() if v is not None})
-                        else:
-                            result.append(dict(msg))
+                        result.extend(seg_msgs)
+                    else:
+                        for msg in seg_msgs_from_parent:
+                            if isinstance(msg, ChatMessage):
+                                result.append({k: v for k, v in msg.model_dump().items() if v is not None})
+                            else:
+                                result.append(dict(msg))
             elif seg.type == "unique":
                 # Unique message - inject random session string if:
                 # 1. inject_random_session_id flag is enabled, OR
