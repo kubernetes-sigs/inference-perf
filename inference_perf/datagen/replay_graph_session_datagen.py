@@ -336,6 +336,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     role=m["role"],
                     content=m.get("content"),
                     tool_calls=m.get("tool_calls"),
+                    tool_call_id=m.get("tool_call_id"),
                 )
                 for m in substituted
             ]
@@ -497,7 +498,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 if tool_result_idx >= len(live_tool_calls):
                     break
                 msg = result[result_idx]
-                if msg.get("role") == "tool" and "tool_call_id" in msg:
+                if msg.get("role") == "tool":
                     live_id = live_tool_calls[tool_result_idx].get("id")
                     if live_id:
                         msg = dict(msg)  # copy before mutating — the dict may be shared
@@ -1101,10 +1102,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 tool_calls = msg.get("tool_calls")
+                tool_call_id = msg.get("tool_call_id")
             else:
                 role = getattr(msg, "role", "user")
                 content = getattr(msg, "text", "")
                 tool_calls = getattr(msg, "tool_calls", None)
+                tool_call_id = getattr(msg, "tool_call_id", None)
 
             if tool_calls is not None:
                 chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls))
@@ -1125,7 +1128,10 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
             content_str = str(content)
             chat_messages.append(ChatMessage(role=role, content=content_str))
-            original_messages.append({"role": role, "content": content_str})
+            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            if tool_call_id is not None:
+                orig_msg["tool_call_id"] = tool_call_id
+            original_messages.append(orig_msg)
 
         max_tokens = event.expected_output_tokens
         session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id

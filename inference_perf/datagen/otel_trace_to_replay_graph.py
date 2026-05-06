@@ -113,6 +113,24 @@ def message_tokens(msg: ReplayMessage) -> int:
     return estimate_tokens(message_content_text(msg))
 
 
+def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
+    """Convert a ReplayMessage to an OpenAI-compatible dict for the graph.
+
+    For ComplexReplayMessage with tool_call_response parts, extracts tool_call_id
+    so it survives into the replay runtime for ID rewriting.
+    """
+    if isinstance(x, ComplexReplayMessage):
+        info = x.message_info
+        parts = info.get("parts")
+        if parts and x.role == "tool":
+            tool_result_parts = [p for p in parts if p.get("type") == "tool_call_response"]
+            if tool_result_parts:
+                result_part = tool_result_parts[0]
+                return {"role": "tool", "content": result_part.get("result", ""), "tool_call_id": result_part.get("id", "")}
+
+    return {"role": x.role, "content": x.text}
+
+
 def messages_equal(a: ReplayMessage, b: ReplayMessage) -> bool:
     """Return True if two messages have the same role and content."""
     return a.role == b.role and message_content_text(a) == message_content_text(b)
@@ -1039,7 +1057,7 @@ def build_graph(
             call_id=rc.call_id,
             model=rc.model,
             messages=[
-                {"role": x.role, "content": x.text} for x in rc.messages
+                _replay_message_to_dict(x) for x in rc.messages
             ],  # convert to a list of dictionaries representing a message with role and content only.
             expected_output=(rc.out_message.text or "" if rc.out_message else ""),
             input_segments=segments,

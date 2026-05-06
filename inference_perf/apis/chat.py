@@ -113,6 +113,7 @@ class ChatMessage(BaseModel):
     role: str
     content: Optional[Union[str, list[dict[str, Any]]]] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
 
     @field_validator("tool_calls")
     @classmethod
@@ -128,6 +129,8 @@ class ChatMessage(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to an OpenAI-compatible message dict."""
         msg: Dict[str, Any] = {"role": self.role}
+        if self.tool_call_id is not None:
+            msg["tool_call_id"] = self.tool_call_id
         if self.tool_calls is not None:
             msg["tool_calls"] = self.tool_calls
             if self.content is not None:
