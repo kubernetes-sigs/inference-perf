@@ -126,11 +126,60 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> RequestBody:
         self._session_context = await self.user_session.get_context(self.target_round)
-        # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
-        self.prompt = self._session_context + " " + self.prompt
-        # TODO: The combined prompt (session context + current prompt) might exceed the model's
-        #       maximum sequence length. Implement truncation logic/strategy to prevent
-        #       errors/failures from the inference server.
+        
+        if self.user_session.tokenizer and self.user_session.max_model_len:
+            target_len = self.user_session.max_model_len - max_tokens - 50
+            hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
+            
+            system_prompt = self.user_session.system_prompt
+            history = list(self.user_session.history)
+            current_prompt = self.prompt
+            
+            def get_text(sys, hist, curr):
+                h_str = " ".join(hist)
+                parts = [sys]
+                if h_str:
+                    parts.append(h_str)
+                parts.append(curr)
+                return " ".join(parts)
+                
+            # Truncate history first (from left)
+            while history:
+                combined_text = get_text(system_prompt, history, current_prompt)
+                token_ids = hf_tokenizer.encode(combined_text)
+                if len(token_ids) <= target_len:
+                    break
+                history.pop(0)
+                
+            combined_text = get_text(system_prompt, history, current_prompt)
+            token_ids = hf_tokenizer.encode(combined_text)
+            
+            if len(token_ids) > target_len:
+                system_ids = hf_tokenizer.encode(system_prompt)
+                current_ids = hf_tokenizer.encode(current_prompt)
+                
+                available_for_system = target_len - len(current_ids)
+                
+                if available_for_system > 0:
+                    system_ids = system_ids[:available_for_system]
+                    system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
+                else:
+                    system_prompt = ""
+                    current_ids = current_ids[:target_len]
+                    current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
+                    
+                combined_text = get_text(system_prompt, [], current_prompt)
+                
+                if system_prompt != self.user_session.system_prompt:
+                    self.user_session.system_prompt = system_prompt
+                    
+            self.user_session.history = history
+            self.user_session.context = system_prompt + " " + " ".join(history) if history else system_prompt
+            
+            self.prompt = combined_text
+        else:
+            self.prompt = self._session_context + " " + self.prompt
+            
         return await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:
