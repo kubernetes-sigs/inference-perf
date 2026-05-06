@@ -180,3 +180,6 @@ reports-*/
 
 # HuggingFace cache
 .hf_cache/
+
+# VSCode settings (keep local configurations)
+.vscode/
