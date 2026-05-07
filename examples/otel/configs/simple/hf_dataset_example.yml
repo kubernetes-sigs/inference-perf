@@ -11,7 +11,7 @@ data:
   otel_trace_replay:
     # Load traces from HuggingFace dataset
     # The dataset will be automatically downloaded and cached locally
-    hf_dataset_path: "lenadan/otel-test-snippet-jsonl"
+    hf_dataset_path: "Exgentic/agent-llm-traces"
     
     # Model configuration
     use_static_model: true
