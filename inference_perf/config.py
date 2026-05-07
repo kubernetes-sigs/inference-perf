@@ -365,7 +365,14 @@ class OTelTraceReplayConfig(SessionReplayConfig):
 
     trace_directory: Optional[str] = Field(None, description="Directory containing OTel JSON trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific OTel JSON trace files")
-    hf_dataset_path: Optional[str] = Field(None, description="HuggingFace dataset path (e.g., 'username/dataset-name')")
+    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_trace_sources(self) -> "OTelTraceReplayConfig":

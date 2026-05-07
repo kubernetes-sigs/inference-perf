@@ -5,7 +5,11 @@ api:
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    hf_dataset_path: "lenadan/otel-test-snippet-jsonl"
+    hf_dataset_path: "Exgentic/agent-llm-traces"
+      # Optional: Provide HF dataset details in a nested way.
+      #path: "Exgentic/agent-llm-traces"
+      #revision: "v1"     # Optional: git revision (branch, tag, or commit hash)
+      #split: "train"       # Optional: dataset split (default: "train" if not specified)
 
     # Model configuration
     use_static_model: true
@@ -14,6 +18,8 @@ data:
     # Request settings
     default_max_tokens: 50
 
+    max_wait_ms: 15
+
     include_errors: false
     skip_invalid_files: true
 
@@ -21,8 +27,9 @@ data:
 load:
   type: trace_session_replay
   stages:
-    - concurrent_sessions: 20
-  worker_max_concurrency: 10000
+    - concurrent_sessions: 40
+  num_workers: 20
+  worker_max_concurrency: 1000
   base_seed: 42
 
 server:
@@ -32,7 +39,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-exgentic-load-1"
+    path: "reports-otel-exgentic-load-1"
 
 report:
   request_lifecycle:
