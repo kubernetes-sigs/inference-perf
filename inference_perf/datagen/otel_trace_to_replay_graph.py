@@ -273,7 +273,6 @@ def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
             out = json.loads(out)
         except Exception as err:
             raise ValueError(f"Failed parsing {out}") from err
-
     if isinstance(out, list):
         if isinstance(out[0], dict):
             if len(out) > 1:
@@ -283,8 +282,6 @@ def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
                 message_info=reconstruct_each_part_in_message_info(out[0]),
                 raw_reconstructed_text=reconstruct_llm_output(out[0]),
             )
-    elif isinstance(out, list) and out:
-        return ReplayMessage(role="assistant", text=message_content_text(out[-1]))
     return None
 
 
