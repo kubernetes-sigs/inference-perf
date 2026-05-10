@@ -131,7 +131,9 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.otel_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
 | `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
-| `--data.otel_trace_replay.hf_dataset_path` | str | HuggingFace dataset path (e.g., 'username/dataset-name') |
+| `--data.otel_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
+  - String: 'username/dataset-name'
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'} |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |

@@ -443,13 +443,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     # The shared segment represents a prefix of the parent's messages,
                     # not necessarily all of them. This handles cases where the parent
                     # has more messages than the shared prefix length.
-                    seg_msgs_from_parent = seg_msgs_from_parent[:seg.message_count]
-                    
+                    seg_msgs_from_parent = seg_msgs_from_parent[: seg.message_count]
+
                     logger.debug(
                         f"Registry get for event {self.event_id} from {seg.source_event_id} "
                         f"shared segment: using {len(seg_msgs_from_parent)} messages (prefix of parent's messages)"
                     )
-                    
+
                     # Validate that we have the expected number of messages after slicing
                     if len(seg_msgs_from_parent) != seg.message_count:
                         logger.warning(
