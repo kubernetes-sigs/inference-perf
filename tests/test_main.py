@@ -31,7 +31,7 @@ def test_main_cli_with_url_flag() -> None:
         patch("inference_perf.detector.detector.autofill_config") as mock_autofill,
         patch("inference_perf.main.InferencePerfRunner") as mock_runner_class,
         patch("inference_perf.main.vLLMModelServerClient"),
-        patch("inference_perf.main.MultiprocessRequestDataCollector"),
+        patch("inference_perf.main.MultiprocessRequestMetricCollector"),
         patch("inference_perf.main.ReportGenerator"),
     ):
         from inference_perf.config import Config, LoadConfig, ModelServerClientConfig, ModelServerType, StandardLoadStage
@@ -68,7 +68,7 @@ def test_main_cli_with_url_and_config_file() -> None:
         patch("inference_perf.detector.detector.autofill_config") as mock_autofill,
         patch("inference_perf.main.InferencePerfRunner") as mock_runner_class,
         patch("inference_perf.main.vLLMModelServerClient"),
-        patch("inference_perf.main.MultiprocessRequestDataCollector"),
+        patch("inference_perf.main.MultiprocessRequestMetricCollector"),
         patch("inference_perf.main.ReportGenerator"),
     ):
         mock_exists.return_value = True  # File exists
