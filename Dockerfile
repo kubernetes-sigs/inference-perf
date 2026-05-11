@@ -1,6 +1,10 @@
 # Build stage - install dependencies
 FROM python:3.12.11-alpine3.22 AS builder
 
+# PyAV (multimodal extra) has no musl wheel; compile from source needs the
+# ffmpeg headers + toolchain.
+RUN apk add --no-cache build-base ffmpeg-dev pkgconf
+
 # Install PDM
 RUN pip install --no-cache-dir pdm
 
@@ -18,6 +22,9 @@ RUN pdm install --prod --no-lock --no-editable && \
 
 # Runtime stage - minimal image
 FROM python:3.12.11-alpine3.22
+
+# PyAV links against libav* at runtime.
+RUN apk add --no-cache ffmpeg-libs
 
 WORKDIR /workspace
 

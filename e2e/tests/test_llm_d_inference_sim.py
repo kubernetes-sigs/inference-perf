@@ -205,16 +205,17 @@ async def test_chat_successful_run():
     assert requests_report, "Missing per-request report"
 
     for request in requests_report:
-        # Verify input tokens (from 'mock prompt i')
-        assert request["info"]["input_tokens"] > 0, "Input tokens should be greater than 0"
+        # Verify input tokens (from 'mock prompt i'). Lives on the typed metrics
+        # struct after the InferenceInfo refactor — see PR #450.
+        assert request["info"]["request_metrics"]["text"]["input_tokens"] > 0, "Input tokens should be greater than 0"
         # Verify output tokens (default max_completion_tokens is 30). The
-        # client-side per-chunk re-tokenization in response_info.output_tokens
+        # client-side per-chunk re-tokenization in response_metrics.output_tokens
         # is known to drift (HF tokenizer add_special_tokens=True default
         # injects BOS/EOS per call), so assert against the server's
         # authoritative count from stream_options.include_usage instead.
-        response_info = request["info"]["response_info"]
-        assert response_info is not None, "Missing response_info on successful streaming request"
-        server_usage = response_info["server_usage"]
+        response_metrics = request["info"]["response_metrics"]
+        assert response_metrics is not None, "Missing response_metrics on successful streaming request"
+        server_usage = response_metrics["server_usage"]
         assert server_usage is not None, "Missing server_usage; expected with stream_options.include_usage=true"
         completion_tokens = server_usage["completion_tokens"]
         assert completion_tokens == 30, f"Expected 30 output tokens, got {completion_tokens}"

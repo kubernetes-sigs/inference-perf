@@ -80,6 +80,67 @@ data:
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
+#### Multimodal Data Generation
+
+For VLMs, the `synthetic` and `shared_prefix` data types accept an optional `multimodal` block that produces images, videos, and/or audio alongside the text prompt:
+
+```yaml
+data:
+  type: synthetic
+  input_distribution: { ... }
+  output_distribution: { ... }
+  multimodal:
+    image:
+      count: { type: uniform, min: 1, max: 2, mean: 1.5 }  # items per request
+      insertion_point: 0.0                                  # 0=prefix, 1=suffix, or a Distribution
+      resolutions:                                          # AnyResolution or list of weighted resolutions
+        - resolution: "1080p"
+          weight: 0.8
+        - resolution: "4k"
+          weight: 0.2
+    video:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0
+      profiles:                                             # (resolution, frames) tuples
+        - profile: { resolution: "720p", frames: 32 }
+          weight: 1.0
+    audio:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 0.5
+      durations:
+        - duration: 5.0
+          weight: 1.0
+```
+
+The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
+
+##### Wire formats
+
+- **Images** are PNG by default. Set `image.representation: jpeg` for
+  JPEG-encoded payloads (smaller, lossy) — useful when the target VLM
+  expects JPEG or when you want wire-size closer to real client traffic.
+- **Videos** carry one `video.representation` value:
+  - `mp4` (default): one `video_url` block carrying an MP4 blob.
+  - `png_frames`: emit `frames` × PNG `image_url` blocks at one insertion
+    point. No server-side MP4 decode dependency; useful for prefix-cache
+    benchmarks.
+  - `jpeg_frames`: same as `png_frames` but with JPEG-encoded frames —
+    smaller wire payload, matches client pipelines that pre-extract and
+    JPEG-compress frames before sending to the model server.
+- **Audio** is 16-bit mono WAV at 16 kHz (not configurable today).
+
+##### Picking values
+
+Multimodal config is passed to the model server **as-is** with no model-aware validation, so the right starting point is the model's spec sheet.
+
+- **Per-request media count** — align with vLLM's `--limit-mm-per-prompt` (e.g. `image=4,video=2,audio=2`). Sending more items than the server allows fails at the wire and shows up in the lifecycle report's `failures` count.
+- **Image resolutions** — stay within the vision encoder's pixel cap (Qwen2-VL `min_pixels`/`max_pixels`, LLaVA fixed 336/672, Pixtral tile caps, etc.). Above-cap images get downsized server-side, which means reported `pixels`/`bytes` reflect what was *sent*, not what the model processed.
+- **Video frames** — most VLMs sample to a fixed `num_frames` budget (often 8/16/32). Sending more frames than the server samples wastes wire bytes without changing the workload the model sees. If the server doesn't accept `video_url` at all, switch to `representation: frames`.
+- **Audio durations** — most audio-capable models cap clips around 30 s (Qwen2-Audio, Whisper-style chunking). Longer clips fail or get truncated.
+- **Effective context length** — images and audio consume context tokens. Large media plus a long text prompt can exceed `--max-model-len` and fail.
+
+When in doubt: start small, watch the `failures` count in the report, and ramp up resolutions/counts/durations once the success path is solid. There is no portable API across vLLM / SGLang / TGI to query these limits at runtime; a per-model capability registry that validates the multimodal config at load time is tracked as future work.
+
 ### Load Configuration
 
 Defines the benchmarking load pattern:

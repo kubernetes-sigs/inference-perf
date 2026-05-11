@@ -13,7 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
-from inference_perf.client.metricsclient.base import MetricsMetadata
+from inference_perf.client.server_metrics.base import MetricsMetadata
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData
 

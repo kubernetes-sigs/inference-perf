@@ -1,0 +1,28 @@
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen2-Audio-7B-Instruct
+  base_url: http://qwen3-32b-vllm-service:8000
+data:
+  type: synthetic
+  input_distribution: { type: fixed, min: 32, max: 32, mean: 32 }
+  output_distribution: { type: fixed, min: 16, max: 16, mean: 16 }
+  multimodal:
+    audio:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 0.5
+      durations:
+        - duration: 5.0
+          weight: 1.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 10
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

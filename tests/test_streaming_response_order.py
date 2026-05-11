@@ -66,8 +66,8 @@ async def test_streaming_parser_receives_content() -> None:
 
     info = await data.process_response(cast(ClientResponse, response), config, tokenizer)
 
-    assert info.response_info is not None
-    assert info.response_info.output_tokens > 0, "Output tokens should be > 0 when streaming content is present"
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens > 0, "Output tokens should be > 0 when streaming content is present"
     assert response._iter_called, "Streaming iterator should have been called"
 
 
@@ -90,5 +90,5 @@ async def test_non_streaming_reads_body() -> None:
 
     info = await data.process_response(cast(ClientResponse, response), config, tokenizer)
 
-    assert info.response_info is not None
-    assert info.response_info.output_tokens == 2
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2

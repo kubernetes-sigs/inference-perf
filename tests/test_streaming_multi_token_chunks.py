@@ -33,7 +33,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis.base import (
     RequestLifecycleMetric,
-    StreamedInferenceResponseInfo,
+    StreamedResponseMetrics,
 )
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
@@ -92,22 +92,22 @@ async def test_multi_token_chunks_count_tokens_not_chunks() -> None:
 
     info = await data.process_response(cast(ClientResponse, response), config, tokenizer)
 
-    assert isinstance(info.response_info, StreamedInferenceResponseInfo)
-    assert info.response_info.server_usage == {"completion_tokens": 8}
-    assert len(info.response_info.response_chunks) == len(chunk_texts)
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.server_usage == {"completion_tokens": 8}
+    assert len(info.response_metrics.response_chunks) == len(chunk_texts)
 
     metric = RequestLifecycleMetric(
         scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="prompt", info=info, error=None
     )
     summarize_requests([metric], [50], tokenizer=tokenizer)
 
-    assert isinstance(metric.info.response_info, StreamedInferenceResponseInfo)
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
     # Sum of per-chunk tokens, NOT chunk count. This is the assertion that
     # would fail under the pre-#410 implementation.
-    assert metric.info.response_info.output_tokens == 8
-    assert metric.info.response_info.output_tokens != len(chunk_texts)
+    assert metric.info.response_metrics.output_tokens == 8
+    assert metric.info.response_metrics.output_tokens != len(chunk_texts)
     # Per-token timestamps expanded so TPOT/ITL distributions are accurate.
-    assert len(metric.info.response_info.output_token_times) == 8
+    assert len(metric.info.response_metrics.output_token_times) == 8
 
 
 @pytest.mark.asyncio
@@ -139,9 +139,9 @@ async def test_multi_token_chunks_match_server_usage() -> None:
     )
     result = summarize_requests([metric], [50], tokenizer=tokenizer)
 
-    assert isinstance(metric.info.response_info, StreamedInferenceResponseInfo)
-    assert metric.info.response_info.output_tokens == expected_total
-    assert metric.info.response_info.server_usage == {"completion_tokens": expected_total}
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+    assert metric.info.response_metrics.output_tokens == expected_total
+    assert metric.info.response_metrics.server_usage == {"completion_tokens": expected_total}
 
     # No mismatches between client tokenization and server usage when the
     # tokenizer matches; this is the normal-operation expectation.

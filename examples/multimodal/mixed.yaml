@@ -1,0 +1,54 @@
+# All three modalities in one request: image + video + audio.
+# Useful for end-to-end smoke testing on a multimodal-capable model.
+# Swap server.model_name for a model that supports all three modalities.
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: synthetic
+  input_distribution: { type: fixed, min: 32, max: 32, mean: 32 }
+  output_distribution: { type: fixed, min: 16, max: 16, mean: 16 }
+  multimodal:
+    image:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 0.0  # before the text
+      resolutions:
+        - resolution: "1080p"
+          weight: 1.0
+    video:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0  # after the text
+      # ``mp4`` (default): one ``video_url`` block carrying an MP4 blob.
+      # ``frames``: emit ``frames`` count of ``image_url`` PNG blocks instead.
+      representation: mp4
+      profiles:
+        - profile: { resolution: "720p", frames: 32 }
+          weight: 1.0
+    audio:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 0.5  # mid-prompt
+      durations:
+        - duration: 5.0
+          weight: 1.0
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 60
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
