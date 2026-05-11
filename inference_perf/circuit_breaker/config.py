@@ -30,6 +30,6 @@ class CircuitBreakerConfig(BaseModel):
     Declarative breaker configuration.
     """
 
-    name: str
-    metrics: MetricsSpec
-    triggers: List[TriggerSpec]
+    name: str = Field(..., description="Breaker identifier referenced from `load.circuit_breakers`.")
+    metrics: MetricsSpec = Field(..., description="Selects which metric stream this breaker observes.")
+    triggers: List[TriggerSpec] = Field(..., description="Trigger rules; any matching trigger trips the breaker.")
