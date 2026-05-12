@@ -11,49 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional
+"""Post-flight measurement records for audio instances on a request."""
+
+from typing import List
+
 from pydantic import BaseModel
 
 
-class Text(BaseModel):
-    input_tokens: int = 0
-
-
-class Image(BaseModel):
-    pixels: int = 0
-    bytes: int = 0
-    aspect_ratio: float = 0.0
-
-
-class Images(BaseModel):
-    count: int = 0
-    instances: List[Image] = []
-
-
-class Video(BaseModel):
-    pixels: int = 0
-    bytes: int = 0
-    aspect_ratio: float = 0.0
-    frames: int = 0
-
-
-class Videos(BaseModel):
-    count: int = 0
-    instances: List[Video] = []
-
-
 class Audio(BaseModel):
+    """Realized stats of one audio instance (per-instance, recorded post-flight)."""
+
     bytes: int = 0
     seconds: float = 0.0
 
 
 class Audios(BaseModel):
+    """Request-scoped container of all :class:`Audio` records on one request."""
+
     count: int = 0
     instances: List[Audio] = []
 
 
-class RequestMetrics(BaseModel):
-    text: Text
-    image: Optional[Images] = None
-    video: Optional[Videos] = None
-    audio: Optional[Audios] = None
+__all__ = ["Audio", "Audios"]

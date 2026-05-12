@@ -13,7 +13,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay) | Matches data.type in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, sharegpt4video) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
 | `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
@@ -171,6 +171,15 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.conversation_replay.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.tool_call_latency_sec.type in config |
 | `--data.conversation_replay.tool_call_latency_sec.variance` | float | Matches data.conversation_replay.tool_call_latency_sec.variance in config |
 | `--data.conversation_replay.tool_call_latency_sec.skew` | float | Matches data.conversation_replay.tool_call_latency_sec.skew in config |
+| `--data.sharegpt4video.token` | str | HuggingFace access token used to download the gated dataset. Falls back to ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` env vars when omitted. |
+| `--data.sharegpt4video.cache_dir` | str | Directory used for both the HuggingFace datasets cache and the extracted video files. Defaults to ``./sharegpt4video_cache`` under the process's current working directory. The loader logs the resolved absolute path at startup so users can pre-populate it. |
+| `--data.sharegpt4video.representation` | Enum (mp4, png_frames, jpeg_frames) | Frame wire encoding: ``png_frames`` (lossless) or ``jpeg_frames`` (smaller payload). ``mp4`` is not supported here — this loader is Frames-only for v1. |
+| `--data.sharegpt4video.target_resolution` | string | Frames are resized to this resolution before encoding. |
+| `--data.sharegpt4video.max_frames_per_request` | int | Cap on frames emitted per request; truncates the dataset's keyframe list. |
+| `--data.sharegpt4video.insertion_point` | float | Placement of the frame block within the caption text (0.0=start, 1.0=end). |
+| `--data.sharegpt4video.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
+| `--data.sharegpt4video.hf_data_files` | str | Optional ``data_files`` glob forwarded to ``load_dataset``. |
+| `--data.sharegpt4video.hf_split` | str | HuggingFace split to stream. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |
