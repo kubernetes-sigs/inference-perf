@@ -64,6 +64,26 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
     return result
 
 
+def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[str, float]:
+    prompt_tokens_total = 0.0
+    prompt_tokens_cached = 0.0
+
+    for metric in metrics:
+        response_metrics = metric.info.response_metrics
+        server_usage = response_metrics.server_usage if isinstance(response_metrics, StreamedResponseMetrics) else None
+        prompt_tokens = server_usage.get("prompt_tokens") if server_usage else metric.info.request_metrics.text.input_tokens
+        prompt_tokens_details = server_usage.get("prompt_tokens_details", {}) if server_usage else {}
+
+        prompt_tokens_total += safe_float(prompt_tokens)
+        prompt_tokens_cached += safe_float(prompt_tokens_details.get("cached_tokens"))
+
+    return {
+        "total": prompt_tokens_total,
+        "cached": prompt_tokens_cached,
+        "uncached": max(prompt_tokens_total - prompt_tokens_cached, 0.0),
+    }
+
+
 class ResponsesSummary(BaseModel):
     benchmark_time_seconds: float
     load_summary: dict[str, Any]
@@ -567,6 +587,7 @@ def summarize_requests(
             "seconds": summarize([safe_float(inst.seconds) for inst in all_audios], percentiles),
             "bytes": summarize([safe_float(inst.bytes) for inst in all_audios], percentiles),
         },
+        "prompt_tokens": summarize_prompt_token_usage(all_successful),
         "output_len": summarize(
             [
                 float(v)
