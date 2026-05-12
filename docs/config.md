@@ -1,5 +1,9 @@
 # Configuration Guide
 
+> Looking for an exhaustive field-by-field listing? See the auto-generated
+> [Configuration Reference](config-reference.md), which is regenerated from the
+> Pydantic schema on every PR.
+
 ## Table of Contents
 
 1. [Overview](#overview)

@@ -42,9 +42,11 @@ class ResponseFormat(BaseModel):
     See vLLM docs: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
     """
 
-    type: ResponseFormatType = ResponseFormatType.JSON_SCHEMA
-    name: str = "structured_output"  # Name for the json_schema
-    json_schema: Optional[dict[str, Any]] = None
+    type: ResponseFormatType = Field(ResponseFormatType.JSON_SCHEMA, description="Response-format variant to request.")
+    name: str = Field("structured_output", description="Schema name embedded in the json_schema payload.")
+    json_schema: Optional[dict[str, Any]] = Field(
+        None, description="JSON Schema describing the required output shape (for json_schema type)."
+    )
 
     def to_api_format(self) -> dict[str, Any]:
         """Convert to the format expected by vLLM/OpenAI API."""
@@ -61,13 +63,15 @@ class ResponseFormat(BaseModel):
 
 
 class APIConfig(BaseModel):
-    type: APIType = APIType.Completion
-    streaming: bool = False
-    headers: Optional[dict[str, str]] = None
-    slo_unit: Optional[str] = None
-    slo_tpot_header: Optional[str] = None
-    slo_ttft_header: Optional[str] = None
-    response_format: Optional[ResponseFormat] = None
+    type: APIType = Field(APIType.Completion, description="API type to exercise on the model server.")
+    streaming: bool = Field(False, description="Enable streaming so TTFT, ITL, and TPOT can be measured.")
+    headers: Optional[dict[str, str]] = Field(None, description="Custom HTTP headers attached to every request.")
+    slo_unit: Optional[str] = Field(None, description="Unit for SLO header values (e.g. 'ms', 's'). Defaults to 'ms'.")
+    slo_tpot_header: Optional[str] = Field(None, description="Header name carrying the per-request TPOT SLO.")
+    slo_ttft_header: Optional[str] = Field(None, description="Header name carrying the per-request TTFT SLO.")
+    response_format: Optional[ResponseFormat] = Field(
+        None, description="Structured-output schema sent via the response_format API parameter."
+    )
 
 
 class TraceFormat(Enum):
@@ -75,8 +79,8 @@ class TraceFormat(Enum):
 
 
 class TraceConfig(BaseModel):
-    file: str
-    format: TraceFormat = TraceFormat.AZURE_PUBLIC_DATASET
+    file: str = Field(..., description="Path to the trace file to replay.")
+    format: TraceFormat = Field(TraceFormat.AZURE_PUBLIC_DATASET, description="On-disk format of the trace file.")
 
 
 class DataGenType(Enum):
@@ -103,15 +107,18 @@ class DistributionType(str, Enum):
 
 # Represents the distribution for input prompts and output generations.
 class Distribution(BaseModel):
-    min: int = 10
-    max: int = 1024
-    mean: float = 512
-    std_dev: float = 200
-    total_count: Optional[int] = None
-    # New fields for configurable distribution types (default to normal for backward compat)
-    type: DistributionType = DistributionType.NORMAL
-    variance: Optional[float] = None
-    skew: float = 0.0  # Only used for skew_normal
+    min: int = Field(10, description="Minimum sampled value (tokens, items, etc.).")
+    max: int = Field(1024, description="Maximum sampled value.")
+    mean: float = Field(512, description="Distribution mean.")
+    std_dev: float = Field(200, description="Standard deviation. Mutually exclusive with `variance`.")
+    total_count: Optional[int] = Field(
+        None, description="Total number of samples to draw, when the distribution is materialized eagerly."
+    )
+    type: DistributionType = Field(DistributionType.NORMAL, description="Distribution family used to sample values.")
+    variance: Optional[float] = Field(
+        None, description="Variance. Mutually exclusive with `std_dev`; converted to std_dev when set."
+    )
+    skew: float = Field(0.0, description="Skew parameter; only used when type=skew_normal.")
 
     @model_validator(mode="after")
     def validate_distribution(self) -> "Distribution":
@@ -164,7 +171,7 @@ class VideoProfile(BaseModel):
 
 
 class WeightedVideoProfile(BaseModel):
-    profile: VideoProfile
+    profile: VideoProfile = Field(description="The video profile (resolution + frames) to sample.")
     weight: float = Field(default=1.0, description="Relative frequency of this exact video profile being selected.")
 
 
@@ -234,9 +241,9 @@ class SyntheticMultimodalDatagenConfig(BaseModel):
     when picking values. See docs/config.md ("Multimodal Data Generation").
     """
 
-    image: Optional[ImageDatagenConfig] = None
-    video: Optional[VideoDatagenConfig] = None
-    audio: Optional[AudioDatagenConfig] = None
+    image: Optional[ImageDatagenConfig] = Field(None, description="Image generation settings (omit to disable images).")
+    video: Optional[VideoDatagenConfig] = Field(None, description="Video generation settings (omit to disable video).")
+    audio: Optional[AudioDatagenConfig] = Field(None, description="Audio generation settings (omit to disable audio).")
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -247,26 +254,38 @@ class SharedPrefix(BaseModel):
         10,
         validation_alias=AliasChoices("num_unique_system_prompts", "num_groups"),
         serialization_alias="num_unique_system_prompts",
+        description="Number of distinct shared-prefix groups (one shared system prompt per group).",
     )
 
     num_prompts_per_group: int = Field(
         10,
         validation_alias=AliasChoices("num_users_per_system_prompt", "num_prompts_per_group"),
         serialization_alias="num_users_per_system_prompt",
+        description="Number of unique user prompts generated per shared-prefix group.",
     )
 
-    system_prompt_len: Union[int, Distribution] = 100
-    question_len: Union[int, Distribution] = 50
-    output_len: Union[int, Distribution] = 50
-    seed: Optional[int] = None
+    system_prompt_len: Union[int, Distribution] = Field(
+        100, description="Shared system-prompt length, as a fixed int or a Distribution."
+    )
+    question_len: Union[int, Distribution] = Field(50, description="Per-question length, as a fixed int or a Distribution.")
+    output_len: Union[int, Distribution] = Field(
+        50, description="Per-response output length, as a fixed int or a Distribution."
+    )
+    seed: Optional[int] = Field(None, description="Random seed for deterministic prompt generation.")
 
-    # Legacy distribution fields — kept for backward compatibility.
-    # Prefer using inline distribution syntax on question_len/output_len instead.
-    question_distribution: Optional[Distribution] = None
-    output_distribution: Optional[Distribution] = None
+    question_distribution: Optional[Distribution] = Field(
+        None,
+        description="Legacy: distribution for question lengths. Prefer the inline distribution form on `question_len`.",
+    )
+    output_distribution: Optional[Distribution] = Field(
+        None,
+        description="Legacy: distribution for output lengths. Prefer the inline distribution form on `output_len`.",
+    )
 
-    enable_multi_turn_chat: bool = False
-    multimodal: Optional[SyntheticMultimodalDatagenConfig] = None
+    enable_multi_turn_chat: bool = Field(False, description="When true, prompts within a group form multi-turn chat sessions.")
+    multimodal: Optional[SyntheticMultimodalDatagenConfig] = Field(
+        None, description="Optional multimodal payload generation alongside text prompts."
+    )
 
     @model_validator(mode="after")
     def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
@@ -358,25 +377,37 @@ class OTelTraceReplayConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    type: DataGenType = DataGenType.Mock
+    type: DataGenType = Field(
+        DataGenType.Mock, description="Which data generator to use; the sibling fields below apply only to specific types."
+    )
 
-    # Valid only for shareGPT type at this moment
-    path: Optional[str] = None  # path to the downloaded shareGPT dataset
+    path: Optional[str] = Field(
+        None,
+        description="Filesystem path to a dataset. Required for shareGPT, cnn_dailymail, billsum_conversations, and infinity_instruct.",
+    )
 
-    # Distributions are only supported for synthetic/random dataset at this moment
-    input_distribution: Optional[Distribution] = None
-    output_distribution: Optional[Distribution] = None
-    shared_prefix: Optional[SharedPrefix] = None
-    multimodal: Optional[SyntheticMultimodalDatagenConfig] = None
+    input_distribution: Optional[Distribution] = Field(
+        None, description="Input prompt length distribution. Used by synthetic/random datagens."
+    )
+    output_distribution: Optional[Distribution] = Field(
+        None, description="Output length distribution. Used by synthetic/random datagens."
+    )
+    shared_prefix: Optional[SharedPrefix] = Field(
+        None, description="Shared-prefix datagen configuration (when type=shared_prefix)."
+    )
+    multimodal: Optional[SyntheticMultimodalDatagenConfig] = Field(
+        None, description="Multimodal generation block paired with synthetic/shared_prefix text generation."
+    )
 
-    # Trace file is only supported for random dataset at this moment
-    trace: Optional[TraceConfig] = None
+    trace: Optional[TraceConfig] = Field(None, description="Trace file replayed by the random datagen (when type=random).")
 
-    # OTel trace replay configuration
-    otel_trace_replay: Optional[OTelTraceReplayConfig] = None
+    otel_trace_replay: Optional[OTelTraceReplayConfig] = Field(
+        None, description="OTel trace replay configuration (when type=otel_trace_replay)."
+    )
 
-    # Conversation replay configuration
-    conversation_replay: Optional[ConversationReplayConfig] = None
+    conversation_replay: Optional[ConversationReplayConfig] = Field(
+        None, description="Conversation replay configuration (when type=conversation_replay)."
+    )
 
 
 class ModelServerType(Enum):
@@ -514,32 +545,43 @@ class StageGenType(Enum):
 
 
 class SweepConfig(BaseModel):
-    type: StageGenType
-    num_requests: int = 2000
-    timeout: float = 60
-    num_stages: int = 5
-    stage_duration: int = 180
-    saturation_percentile: float = 95
+    type: StageGenType = Field(..., description="How rate steps between stages are spaced.")
+    num_requests: int = Field(2000, description="Total requests to issue across the sweep.")
+    timeout: float = Field(60, description="Per-stage timeout in seconds before saturation is declared.")
+    num_stages: int = Field(5, description="Number of stages in the sweep.")
+    stage_duration: int = Field(180, description="Duration of each stage in seconds.")
+    saturation_percentile: float = Field(95, description="Percentile latency used to detect saturation.")
 
 
 class MultiLoRAConfig(BaseModel):
-    name: str
-    split: float
+    name: str = Field(..., description="LoRA adapter name as registered with the model server.")
+    split: float = Field(..., description="Fraction of traffic routed to this adapter; all splits must sum to 1.0.")
 
 
 class LoadConfig(BaseModel):
-    type: LoadType = LoadType.CONSTANT
-    interval: float = 1.0
-    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = []
-    sweep: Optional[SweepConfig] = None
-    num_workers: int = max(1, cpu_count())  # type: ignore
-    worker_max_concurrency: int = 100
-    worker_max_tcp_connections: int = 2500
-    trace: Optional[TraceConfig] = None
-    circuit_breakers: List[str] = []
-    request_timeout: Optional[float] = None
-    lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
-    base_seed: int = Field(default_factory=lambda: int(time.time() * 1000))
+    type: LoadType = Field(LoadType.CONSTANT, description="Traffic-generation strategy.")
+    interval: float = Field(1.0, description="Inter-request interval in seconds for load types that pace by interval.")
+    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = Field(
+        default=[], description="Ordered list of load stages; stage subclass must match the chosen load type."
+    )
+    sweep: Optional[SweepConfig] = Field(
+        None, description="Auto-generated rate sweep (mutually exclusive with concurrent/trace_session_replay)."
+    )
+    num_workers: int = Field(default=max(1, cpu_count()), description="Number of worker processes used to drive load.")  # type: ignore
+    worker_max_concurrency: int = Field(100, description="Maximum concurrent in-flight requests per worker.")
+    worker_max_tcp_connections: int = Field(2500, description="TCP connection pool size per worker.")
+    trace: Optional[TraceConfig] = Field(None, description="Trace file replayed for trace-based load types.")
+    circuit_breakers: List[str] = Field(
+        default=[], description="Names of circuit breakers (defined under `circuit_breakers`) to enable."
+    )
+    request_timeout: Optional[float] = Field(None, description="Per-request timeout in seconds; None disables the timeout.")
+    lora_traffic_split: Optional[List[MultiLoRAConfig]] = Field(
+        None, description="Optional traffic split across LoRA adapters; splits must sum to 1.0."
+    )
+    base_seed: int = Field(
+        default_factory=lambda: int(time.time() * 1000),
+        description="Base seed shared across workers; defaults to wall-clock time on startup.",
+    )
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":
@@ -577,63 +619,93 @@ class LoadConfig(BaseModel):
 
 
 class StorageConfigBase(BaseModel):
-    path: str = f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    report_file_prefix: Optional[str] = None
+    path: str = Field(
+        default_factory=lambda: f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        description="Directory or object-store path where reports are written. Supports `{timestamp}` substitution.",
+    )
+    report_file_prefix: Optional[str] = Field(
+        None, description="Optional filename prefix for report files written to this destination."
+    )
 
 
 class GoogleCloudStorageConfig(StorageConfigBase):
-    bucket_name: str
+    bucket_name: str = Field(..., description="Target GCS bucket.")
 
 
 class SimpleStorageServiceConfig(StorageConfigBase):
-    bucket_name: str
-    endpoint_url: Optional[str] = None
-    region_name: Optional[str] = None
-    addressing_style: Optional[Literal["auto", "virtual", "path"]] = None
+    bucket_name: str = Field(..., description="Target S3-compatible bucket.")
+    endpoint_url: Optional[str] = Field(None, description="Override endpoint URL for S3-compatible services (e.g. MinIO).")
+    region_name: Optional[str] = Field(None, description="Region for the S3-compatible service.")
+    addressing_style: Optional[Literal["auto", "virtual", "path"]] = Field(
+        None, description="S3 addressing style (auto, virtual-hosted, or path-style)."
+    )
 
 
 class StorageConfig(BaseModel):
-    local_storage: StorageConfigBase = StorageConfigBase()
-    google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
-    simple_storage_service: Optional[SimpleStorageServiceConfig] = None
+    local_storage: StorageConfigBase = Field(
+        default_factory=StorageConfigBase, description="Local filesystem destination for reports."
+    )
+    google_cloud_storage: Optional[GoogleCloudStorageConfig] = Field(
+        None, description="Optional Google Cloud Storage destination."
+    )
+    simple_storage_service: Optional[SimpleStorageServiceConfig] = Field(
+        None, description="Optional S3-compatible storage destination."
+    )
 
 
 class RequestLifecycleMetricsReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = True
-    per_request: Optional[bool] = False
-    per_adapter: Optional[bool] = True
-    per_adapter_stage: Optional[bool] = False
-    percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
+    summary: Optional[bool] = Field(True, description="Emit an aggregate summary across all stages.")
+    per_stage: Optional[bool] = Field(True, description="Emit one report per load stage.")
+    per_request: Optional[bool] = Field(False, description="Emit one row per individual request (large output).")
+    per_adapter: Optional[bool] = Field(True, description="Emit one report per LoRA adapter.")
+    per_adapter_stage: Optional[bool] = Field(False, description="Emit one report per (adapter, stage) pair.")
+    percentiles: List[float] = Field(
+        default=[0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9],
+        description="Latency percentiles to compute and emit.",
+    )
 
 
 class PrometheusMetricsReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = False
+    summary: Optional[bool] = Field(True, description="Emit an aggregate Prometheus summary across all stages.")
+    per_stage: Optional[bool] = Field(False, description="Emit per-stage Prometheus reports.")
 
 
 class SessionLifecycleReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = True
-    per_session: Optional[bool] = False
+    summary: Optional[bool] = Field(True, description="Emit aggregate session metrics across all stages.")
+    per_stage: Optional[bool] = Field(True, description="Emit per-stage session metrics.")
+    per_session: Optional[bool] = Field(False, description="Emit one row per individual session (large output).")
 
 
 class GoodputConfig(BaseModel):
-    constraints: Dict[str, float] = {}
+    constraints: Dict[str, float] = Field(
+        default={}, description="Mapping of SLO metric name to threshold; requests meeting all thresholds count as good."
+    )
 
 
 class ReportConfig(BaseModel):
-    request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
-    prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
-    session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
-    goodput: Optional[GoodputConfig] = None
+    request_lifecycle: RequestLifecycleMetricsReportConfig = Field(
+        default_factory=RequestLifecycleMetricsReportConfig,
+        description="Request-lifecycle (latency/throughput) reporting options.",
+    )
+    prometheus: Optional[PrometheusMetricsReportConfig] = Field(
+        default_factory=PrometheusMetricsReportConfig, description="Prometheus-scraped metrics reporting options."
+    )
+    session_lifecycle: SessionLifecycleReportConfig = Field(
+        default_factory=SessionLifecycleReportConfig,
+        description="Session-lifecycle reporting options (for session-based load types).",
+    )
+    goodput: Optional[GoodputConfig] = Field(
+        None, description="Optional goodput evaluation; counts requests meeting all SLO constraints."
+    )
 
 
 class PrometheusClientConfig(BaseModel):
-    scrape_interval: int = 15
-    url: Optional[HttpUrl] = None
-    filters: List[str] = []
-    google_managed: bool = False
+    scrape_interval: int = Field(15, description="Prometheus scrape interval in seconds; used to align query windows.")
+    url: Optional[HttpUrl] = Field(None, description="Prometheus HTTP endpoint. Mutually exclusive with `google_managed`.")
+    filters: List[str] = Field(default=[], description="PromQL label filters applied to every query.")
+    google_managed: bool = Field(
+        False, description="Use Google Managed Prometheus instead of `url`. Mutually exclusive with `url`."
+    )
 
     @model_validator(mode="after")
     def check_exclusive_fields(self) -> "PrometheusClientConfig":
@@ -643,36 +715,50 @@ class PrometheusClientConfig(BaseModel):
 
 
 class MetricsClientConfig(BaseModel):
-    type: MetricsClientType
-    prometheus: Optional[PrometheusClientConfig] = None
+    type: MetricsClientType = Field(..., description="Metrics backend used to collect server-side metrics.")
+    prometheus: Optional[PrometheusClientConfig] = Field(
+        None, description="Prometheus client configuration (when type=prometheus)."
+    )
 
 
 class ModelServerClientConfig(BaseModel):
-    type: ModelServerType = ModelServerType.VLLM
-    model_name: Optional[str] = None
-    base_url: str
-    ignore_eos: bool = True
-    api_key: Optional[str] = None
-    cert_path: Optional[str] = None
-    key_path: Optional[str] = None
+    type: ModelServerType = Field(
+        ModelServerType.VLLM, description="Model server flavor; controls server-specific metric mappings."
+    )
+    model_name: Optional[str] = Field(
+        None, description="Model identifier sent on each request. May be auto-detected via /v1/models."
+    )
+    base_url: str = Field(..., description="Base URL of the model server, e.g. http://0.0.0.0:8000.")
+    ignore_eos: bool = Field(True, description="Ask the server to ignore EOS so output length is governed by max_tokens.")
+    api_key: Optional[str] = Field(None, description="Bearer token sent as Authorization header.")
+    cert_path: Optional[str] = Field(None, description="Path to a TLS client certificate (PEM) for mTLS.")
+    key_path: Optional[str] = Field(None, description="Path to a TLS client private key (PEM) for mTLS.")
 
 
 class CustomTokenizerConfig(BaseModel):
-    pretrained_model_name_or_path: Optional[str] = None
-    trust_remote_code: Optional[bool] = None
-    token: Optional[str] = None
+    pretrained_model_name_or_path: Optional[str] = Field(None, description="HuggingFace tokenizer name or local path.")
+    trust_remote_code: Optional[bool] = Field(
+        None, description="Forwarded to HuggingFace tokenizer loading; required by some custom tokenizers."
+    )
+    token: Optional[str] = Field(None, description="HuggingFace auth token used to download gated tokenizers.")
 
 
 class Config(BaseModel):
-    api: APIConfig = APIConfig()
-    data: DataConfig = DataConfig()
-    load: LoadConfig = LoadConfig()
-    metrics: Optional[MetricsClientConfig] = None
-    report: ReportConfig = ReportConfig()
-    storage: Optional[StorageConfig] = StorageConfig()
-    server: Optional[ModelServerClientConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
-    circuit_breakers: Optional[List[CircuitBreakerConfig]] = None
+    api: APIConfig = Field(default_factory=APIConfig, description="API-level request behavior (type, streaming, SLO headers).")
+    data: DataConfig = Field(default_factory=DataConfig, description="Workload data generation configuration.")
+    load: LoadConfig = Field(default_factory=LoadConfig, description="Load shaping and worker configuration.")
+    metrics: Optional[MetricsClientConfig] = Field(
+        None, description="Server-side metrics collection (e.g. Prometheus scrape)."
+    )
+    report: ReportConfig = Field(default_factory=ReportConfig, description="Reporting outputs to emit at the end of a run.")
+    storage: Optional[StorageConfig] = Field(default_factory=StorageConfig, description="Destinations for written reports.")
+    server: Optional[ModelServerClientConfig] = Field(None, description="Model server connection details.")
+    tokenizer: Optional[CustomTokenizerConfig] = Field(
+        None, description="Tokenizer used to compute token-level metrics offline."
+    )
+    circuit_breakers: Optional[List[CircuitBreakerConfig]] = Field(
+        None, description="Declarative circuit breakers that can stop the run on metric thresholds."
+    )
 
     @model_validator(mode="after")
     def validate_otel_trace_replay_load_type(self) -> "Config":
