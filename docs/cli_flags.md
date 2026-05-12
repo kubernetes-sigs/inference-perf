@@ -13,7 +13,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, sharegpt4video) | Matches data.type in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, sharegpt4video, mmmu) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
 | `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
@@ -180,6 +180,16 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.sharegpt4video.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
 | `--data.sharegpt4video.hf_data_files` | str | Optional ``data_files`` glob forwarded to ``load_dataset``. |
 | `--data.sharegpt4video.hf_split` | str | HuggingFace split to stream. |
+| `--data.mmmu.token` | str | HuggingFace access token used to download the gated dataset. Falls back to ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` env vars when omitted. |
+| `--data.mmmu.cache_dir` | str | HuggingFace datasets cache directory; defaults to the standard HF cache. |
+| `--data.mmmu.subjects` | JSON | MMMU subject configs to load (e.g. ``['Math', 'Physics', 'Computer_Science']``). Defaults to all 30 subjects; pin to a smaller list for faster init or more focused workloads. See https://huggingface.co/datasets/MMMU/MMMU for the full set. |
+| `--data.mmmu.representation` | Enum (png, jpeg) | Image wire encoding for emitted bytes: ``png`` (default, lossless — preserves diagrams and text-rendering at the cost of size) or ``jpeg`` (smaller payload, lossy). |
+| `--data.mmmu.target_resolution` | string | Optional resize target; if unset, images are sent at the source resolution as stored in the dataset. MMMU image sizes vary widely (~100 KB to several MB). |
+| `--data.mmmu.max_examples` | int | Cap on total examples loaded across all subjects. Default loads everything. |
+| `--data.mmmu.max_images_per_request` | int | Cap on images emitted per request. MMMU examples carry up to 7 images. |
+| `--data.mmmu.insertion_point` | float | Placement of the image block(s) within the question text (0.0=start, 1.0=end). |
+| `--data.mmmu.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
+| `--data.mmmu.hf_split` | str | HuggingFace split to load. MMMU offers 'dev' (small), 'validation', and 'test'. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |

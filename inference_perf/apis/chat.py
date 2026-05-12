@@ -24,7 +24,9 @@ from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
     PreEncodedFramesVideoSpec,
+    PreEncodedImageSpec,
     SyntheticFramesVideoSpec,
+    SyntheticImageSpec,
     SyntheticMp4VideoSpec,
 )
 from inference_perf.apis.streaming_parser import parse_sse_stream
@@ -134,14 +136,24 @@ class ChatCompletionAPIData(InferenceAPIData):
             return np.random.default_rng(hash(key_parts) & 0xFFFFFFFF)
 
         for i, img in enumerate(spec.images):
-            raw_bytes, data_url = _encode_image(
-                img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
-            )
+            # Dispatch on the polymorphic image spec subtype. Each branch emits one
+            # ``image_url`` block and contributes one realized ``Image`` record.
+            if isinstance(img, SyntheticImageSpec):
+                raw_bytes, data_url = _encode_image(
+                    img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
+                )
+                img_bytes = len(raw_bytes)
+            elif isinstance(img, PreEncodedImageSpec):
+                mime = "image/jpeg" if img.representation == ImageRepresentation.JPEG else "image/png"
+                data_url = f"data:{mime};base64,{base64.b64encode(img.image_bytes).decode('ascii')}"
+                img_bytes = len(img.image_bytes)
+            else:
+                raise TypeError(f"Unknown ImageSpec subclass: {type(img).__name__}")
             media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, img.insertion_point))
             image_instances.append(
                 Image(
                     pixels=img.width * img.height,
-                    bytes=len(raw_bytes),
+                    bytes=img_bytes,
                     aspect_ratio=img.width / img.height if img.height > 0 else 0.0,
                 )
             )

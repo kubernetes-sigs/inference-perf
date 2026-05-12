@@ -91,6 +91,7 @@ class DataGenType(Enum):
     OTelTraceReplay = "otel_trace_replay"
     ConversationReplay = "conversation_replay"
     ShareGPT4Video = "sharegpt4video"
+    MMMU = "mmmu"
 
 
 class DistributionType(str, Enum):
@@ -447,6 +448,74 @@ class ShareGPT4VideoConfig(GatedHFDatasetConfig):
         return self
 
 
+class MMMUConfig(GatedHFDatasetConfig):
+    """Configuration for the MMMU dataset loader.
+
+    MMMU (Massive Multi-discipline Multimodal Understanding,
+    https://mmmu-benchmark.github.io/) is a college-level VLM evaluation
+    benchmark spanning 30 subjects across 6 disciplines. The loader streams
+    examples from the gated HuggingFace mirror, extracts the embedded PIL
+    images, re-encodes them as PNG or JPEG, and emits chat-completion requests
+    with the question + options as text and the images attached as
+    :class:`PreEncodedImageSpec` blocks.
+
+    Unlike :class:`ShareGPT4VideoConfig`, MMMU is small enough to fit in memory
+    — init loads all configured subjects synchronously and ``load_lazy_data``
+    does an O(1) lookup. No background download thread.
+    """
+
+    cache_dir: Optional[str] = Field(
+        default=None,
+        description="HuggingFace datasets cache directory; defaults to the standard HF cache.",
+    )
+    subjects: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "MMMU subject configs to load (e.g. ``['Math', 'Physics', 'Computer_Science']``). "
+            "Defaults to all 30 subjects; pin to a smaller list for faster init or more focused workloads. "
+            "See https://huggingface.co/datasets/MMMU/MMMU for the full set."
+        ),
+    )
+    representation: ImageRepresentation = Field(
+        default=ImageRepresentation.PNG,
+        description=(
+            "Image wire encoding for emitted bytes: ``png`` (default, lossless — preserves diagrams and "
+            "text-rendering at the cost of size) or ``jpeg`` (smaller payload, lossy)."
+        ),
+    )
+    target_resolution: Optional[AnyResolution] = Field(
+        default=None,
+        description=(
+            "Optional resize target; if unset, images are sent at the source resolution as stored "
+            "in the dataset. MMMU image sizes vary widely (~100 KB to several MB)."
+        ),
+    )
+    max_examples: Optional[int] = Field(
+        default=None,
+        description="Cap on total examples loaded across all subjects. Default loads everything.",
+    )
+    max_images_per_request: int = Field(
+        default=7,
+        gt=0,
+        le=7,
+        description="Cap on images emitted per request. MMMU examples carry up to 7 images.",
+    )
+    insertion_point: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Placement of the image block(s) within the question text (0.0=start, 1.0=end).",
+    )
+    hf_dataset_name: str = Field(
+        default="MMMU/MMMU",
+        description="HuggingFace dataset identifier; override only when mirroring the dataset elsewhere.",
+    )
+    hf_split: str = Field(
+        default="validation",
+        description="HuggingFace split to load. MMMU offers 'dev' (small), 'validation', and 'test'.",
+    )
+
+
 class DataConfig(BaseModel):
     type: DataGenType = DataGenType.Mock
 
@@ -470,6 +539,10 @@ class DataConfig(BaseModel):
 
     sharegpt4video: Optional[ShareGPT4VideoConfig] = Field(
         None, description="ShareGPT4Video loader configuration (when type=sharegpt4video)."
+    )
+
+    mmmu: Optional[MMMUConfig] = Field(
+        None, description="MMMU loader configuration (when type=mmmu)."
     )
 
 
