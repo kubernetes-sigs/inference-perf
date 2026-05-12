@@ -237,3 +237,65 @@ async def test_sharegpt4video_against_sim() -> None:
     video_block = successes.get("video") or {}
     for field in ("frames", "pixels", "bytes", "aspect_ratio"):
         assert video_block.get(field), f"video.{field} missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+@pytest.mark.skipif(
+    not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
+    reason="HF token required (MMMU is gated)",
+)
+async def test_mmmu_against_sim() -> None:
+    """End-to-end run of the MMMU loader against the sim.
+
+    Skipped by default — requires a HuggingFace token with access to the gated
+    ``MMMU/MMMU`` dataset. No cache pre-population needed: MMMU is small enough
+    that the HF datasets library handles caching transparently. We pin to a
+    single subject (``Computer_Science``) and aggressively resize images so the
+    init load stays fast.
+    """
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+
+    async with LLMDInferenceSimRunner(model_name, port=18003) as sim:
+        result = await run_benchmark_minimal(
+            {
+                "data": {
+                    "type": "mmmu",
+                    "mmmu": {
+                        "subjects": ["Computer_Science"],
+                        "representation": "jpeg",
+                        "target_resolution": {"width": 64, "height": 64},
+                        "max_images_per_request": 2,
+                        "max_examples": 5,
+                        "insertion_point": 0.0,
+                        "hf_split": "validation",
+                    },
+                },
+                "load": {
+                    "type": "constant",
+                    "stages": [{"rate": 1, "duration": 5}],
+                    "num_workers": 1,
+                },
+                "api": {"type": "chat", "streaming": True},
+                "server": {
+                    "type": "vllm",
+                    "model_name": model_name,
+                    "base_url": f"http://{sim.host}:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {"pretrained_model_name_or_path": str(model_path)},
+                "report": {"request_lifecycle": {"summary": True, "per_stage": True, "per_request": True}},
+            }
+        )
+
+    assert result.success, f"mmmu benchmark failed:\n{result.stdout}"
+    summary = (result.reports or {}).get("summary_lifecycle_metrics.json")
+    assert summary, "missing summary_lifecycle_metrics.json"
+    successes = summary.get("successes") or {}
+    assert successes.get("count", 0) >= 1
+    throughput = successes.get("throughput") or {}
+    assert throughput.get("images_per_sec", 0) > 0
+    image_block = successes.get("image") or {}
+    for field in ("count", "pixels", "bytes", "aspect_ratio"):
+        assert image_block.get(field), f"image.{field} missing"

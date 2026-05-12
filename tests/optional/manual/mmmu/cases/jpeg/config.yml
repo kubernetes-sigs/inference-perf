@@ -1,0 +1,35 @@
+# MMMU real-dataset benchmark, JPEG wire format.
+#
+# Requires HF_TOKEN injected via the hf-secret (handled by e2e_test.sh and the
+# default deploy/manifests.yaml Job).
+#
+# Pin to a single subject for fast init; the loader otherwise streams all 30
+# subjects. MMMU images are small enough that no PVC mount is required.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://qwen3-32b-vllm-service:8000
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+data:
+  type: mmmu
+  mmmu:
+    subjects:
+      - Computer_Science
+    representation: jpeg
+    max_images_per_request: 4
+    insertion_point: 0.0
+    hf_split: validation
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 30
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
