@@ -43,6 +43,8 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     ConversationReplayDataGenerator,
+    ShareGPT4VideoDataGenerator,
+    MMMUDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -287,6 +289,8 @@ def main_cli() -> None:
                 DataGenType.BillsumConversations,
                 DataGenType.OTelTraceReplay,
                 DataGenType.ConversationReplay,
+                DataGenType.ShareGPT4Video,
+                DataGenType.MMMU,
             }
         ):
             if tokenizer is None:
@@ -331,6 +335,12 @@ def main_cli() -> None:
         if config.data.type == DataGenType.ConversationReplay and config.data.conversation_replay is None:
             raise Exception(f"{config.data.type.value} data generator requires 'conversation_replay' to be configured")
 
+        if config.data.type == DataGenType.ShareGPT4Video and config.data.sharegpt4video is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'sharegpt4video' to be configured")
+
+        if config.data.type == DataGenType.MMMU and config.data.mmmu is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'mmmu' to be configured")
+
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.CNNDailyMail:
@@ -354,6 +364,10 @@ def main_cli() -> None:
             datagen = OTelTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.ShareGPT4Video:
+            datagen = ShareGPT4VideoDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.MMMU:
+            datagen = MMMUDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

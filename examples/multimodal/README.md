@@ -12,6 +12,22 @@ video, and audio payloads.
   server-side MP4 decode.
 - **`mixed.yaml`** — All three modalities (image + video + audio) in one
   request. Useful for end-to-end smoke tests on a multimodal-capable model.
+- **`sharegpt4video.yaml`** — Real-dataset benchmark using the gated
+  HuggingFace ShareGPT4Video corpus. Streams captions + keyframe indices and
+  pulls source MP4 zips (15-21 GB each) from the HF dataset repo via a
+  background thread. The request hot path never blocks on the network — each
+  request samples from videos already on disk and the pool grows over time.
+  Extracts frames with PyAV and emits them in the Frames wire format (N
+  `image_url` blocks at one insertion point). Requires `HF_TOKEN`; set
+  `HF_HUB_ENABLE_HF_TRANSFER=1` for faster parallel downloads.
+- **`mmmu.yaml`** — Real-dataset benchmark using the gated HuggingFace MMMU
+  corpus (college-level VLM evaluation across 30 subjects). Streams examples
+  with embedded PIL images, re-encodes them, and emits chat-completion
+  requests with question + options text and 1–7 `image_url` blocks per
+  request. Document- and diagram-heavy workload; useful for exercising VLMs
+  on realistic visual inputs that the synthetic path doesn't cover. Pin to a
+  single subject (e.g. `Computer_Science`) for fast iteration or load all 30
+  for broader coverage. Requires `HF_TOKEN`.
 - **`shared_prefix.yaml`** — Shared-prefix benchmark with one cached image in
   the prefix and one fresh image per request. Exercises the model server's
   prefix-cache hit rate for image content. Uses

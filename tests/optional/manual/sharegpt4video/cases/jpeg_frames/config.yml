@@ -1,0 +1,35 @@
+# ShareGPT4Video real-dataset benchmark, JPEG_FRAMES wire format.
+#
+# Requires HF_TOKEN injected via the hf-secret (handled by e2e_test.sh and the
+# default deploy/manifests.yaml Job).
+#
+# Note: this case relies on the loader auto-downloading source MP4 zips from
+# the gated HF dataset repo into the container's working directory. Each zip
+# is 15-21 GB — for production cluster runs you'll want to mount a PVC at
+# the cache directory via a custom manifest.yaml in this case folder.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://qwen3-32b-vllm-service:8000
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+data:
+  type: sharegpt4video
+  sharegpt4video:
+    representation: jpeg_frames
+    target_resolution: "720p"
+    max_frames_per_request: 8
+    insertion_point: 0.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 30
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
