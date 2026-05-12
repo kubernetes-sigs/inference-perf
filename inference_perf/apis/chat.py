@@ -27,6 +27,7 @@ from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
     PreEncodedFramesVideoSpec,
+    PreEncodedImageSpec,
     SyntheticAudioSpec,
     SyntheticFramesVideoSpec,
     SyntheticImageSpec,
@@ -292,18 +293,23 @@ class ChatCompletionAPIData(InferenceAPIData):
             return np.random.default_rng(hash((cache_key,) + key_parts) & 0xFFFFFFFF)
 
         for i, img in enumerate(spec.images):
-            # Only synthetic image variants are wire-wired today; other
-            # provenance variants are in ``ImageSpecUnion`` but raise here
-            # until their materializer branches land. ``img.get_metrics()``
-            # already encodes the per-provenance measurement rule, so each
-            # future branch just needs to compute ``wire_bytes`` and call it.
-            if not isinstance(img, SyntheticImageSpec):
+            # Dispatch on the polymorphic image spec subtype. Each branch emits one
+            # ``image_url`` block and computes ``img_bytes``; metric construction is
+            # delegated to ``img.get_metrics(img_bytes)`` so each provenance owns
+            # its own measurement rule.
+            if isinstance(img, SyntheticImageSpec):
+                raw_bytes, data_url = _encode_image(
+                    img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
+                )
+                img_bytes = len(raw_bytes)
+            elif isinstance(img, PreEncodedImageSpec):
+                mime = "image/jpeg" if img.representation == ImageRepresentation.JPEG else "image/png"
+                data_url = f"data:{mime};base64,{base64.b64encode(img.image_bytes).decode('ascii')}"
+                img_bytes = len(img.image_bytes)
+            else:
                 raise TypeError(f"Unwired ImageSpec subclass: {type(img).__name__}")
-            raw_bytes, data_url = _encode_image(
-                img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
-            )
             media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, img.insertion_point))
-            image_instances.append(img.get_metrics(len(raw_bytes)))
+            image_instances.append(img.get_metrics(img_bytes))
 
         for vi, vid in enumerate(spec.videos):
             # Dispatch on the polymorphic spec subtype for wire emission.

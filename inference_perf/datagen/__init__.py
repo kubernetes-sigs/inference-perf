@@ -24,6 +24,7 @@ from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from .conversation_replay_datagen import ConversationReplayDataGenerator
 from .multimodal_datagen import MultimodalDataGenerator
 from .sharegpt4video_datagen import ShareGPT4VideoDataGenerator
+from .mmmu_datagen import MMMUDataGenerator
 
 __all__ = [
     "BaseGenerator",
@@ -42,4 +43,5 @@ __all__ = [
     "ConversationReplayDataGenerator",
     "MultimodalDataGenerator",
     "ShareGPT4VideoDataGenerator",
+    "MMMUDataGenerator",
 ]
