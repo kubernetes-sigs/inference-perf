@@ -17,11 +17,15 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.payloads.multimodal_spec import (
-    AudioInstanceSpec,
-    ImageInstanceSpec,
+from inference_perf.payloads import (
+    ImageRepresentation,
     MultimodalSpec,
-    VideoInstanceSpec,
+    SyntheticAudioSpec,
+    SyntheticFramesVideoSpec,
+    SyntheticImageSpec,
+    SyntheticMp4VideoSpec,
+    VideoRepresentation,
+    VideoSpecUnion,
 )
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -109,7 +113,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
             for _ in range(count):
                 w, h = sample_image_resolution(img_cfg, self.rng)
                 spec.images.append(
-                    ImageInstanceSpec(
+                    SyntheticImageSpec(
                         width=w,
                         height=h,
                         insertion_point=sample_insertion_point(img_cfg.insertion_point, self.rng),
@@ -124,15 +128,25 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
             for _ in range(count):
                 profile = sample_video_profile(vid_cfg, self.rng)
                 w, h = resolution_to_wh(profile.resolution)
-                spec.videos.append(
-                    VideoInstanceSpec(
+                insertion_point = sample_insertion_point(vid_cfg.insertion_point, self.rng)
+                video_spec: VideoSpecUnion
+                if vid_cfg.representation == VideoRepresentation.MP4:
+                    video_spec = SyntheticMp4VideoSpec(
+                        width=w, height=h, frames=profile.frames, insertion_point=insertion_point
+                    )
+                else:
+                    video_spec = SyntheticFramesVideoSpec(
                         width=w,
                         height=h,
                         frames=profile.frames,
-                        insertion_point=sample_insertion_point(vid_cfg.insertion_point, self.rng),
-                        representation=vid_cfg.representation,
+                        insertion_point=insertion_point,
+                        frame_representation=(
+                            ImageRepresentation.JPEG
+                            if vid_cfg.representation == VideoRepresentation.JPEG_FRAMES
+                            else ImageRepresentation.PNG
+                        ),
                     )
-                )
+                spec.videos.append(video_spec)
 
         aud_cfg = self.multimodal_config.audio
         if aud_cfg and aud_cfg.count:
@@ -140,7 +154,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
             count = int(sample_from_distribution(aud_count_dist, 1, self.rng)[0])
             for _ in range(count):
                 spec.audios.append(
-                    AudioInstanceSpec(
+                    SyntheticAudioSpec(
                         duration=sample_audio_duration(aud_cfg, self.rng),
                         insertion_point=sample_insertion_point(aud_cfg.insertion_point, self.rng),
                     )

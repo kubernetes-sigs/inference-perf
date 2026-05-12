@@ -15,7 +15,7 @@ from inference_perf.config import (
     DataGenType,
     Distribution,
 )
-from inference_perf.payloads.multimodal_spec import VideoRepresentation
+from inference_perf.payloads import VideoRepresentation
 from typing import cast
 from inference_perf.apis.base import LazyLoadInferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData

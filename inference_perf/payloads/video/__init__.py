@@ -1,0 +1,48 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Video modality.
+
+Both halves of one video's lifecycle live here:
+
+- ``spec/`` — pre-flight request specs (modality-primary / provenance-secondary,
+  discriminated union for variants).
+- ``metrics.py`` — post-flight measurement records.
+"""
+
+from .metrics import Video, Videos
+from .spec import (
+    LocalFileVideoSpec,
+    PreEncodedFramesVideoSpec,
+    RemoteVideoSpec,
+    SyntheticFramesVideoSpec,
+    SyntheticMp4VideoSpec,
+    VideoRepresentation,
+    VideoSpec,
+    VideoSpecUnion,
+)
+
+__all__ = [
+    # Specs
+    "LocalFileVideoSpec",
+    "PreEncodedFramesVideoSpec",
+    "RemoteVideoSpec",
+    "SyntheticFramesVideoSpec",
+    "SyntheticMp4VideoSpec",
+    "VideoRepresentation",
+    "VideoSpec",
+    "VideoSpecUnion",
+    # Metrics
+    "Video",
+    "Videos",
+]
