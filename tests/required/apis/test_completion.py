@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import pytest
+
+from inference_perf.apis import ChatCompletionAPIData, ChatMessage
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.config import APIType
 
@@ -49,7 +51,7 @@ async def test_chat_completion_api_data_with_tools() -> None:
         messages=[ChatMessage(role="user", content="What is the weather?")],
         tool_definitions=tool_defs,
     )
-    payload = await data.to_payload("test-model", 100, False, False)
+    payload = await data.to_request_body("test-model", 100, False, False)
     assert payload["tools"] == [
         {
             "type": "function",
@@ -72,7 +74,7 @@ async def test_chat_completion_api_data_with_tools() -> None:
 @pytest.mark.asyncio
 async def test_chat_completion_api_data_without_tools_has_no_tools_key() -> None:
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="Hello")])
-    payload = await data.to_payload("test-model", 100, False, False)
+    payload = await data.to_request_body("test-model", 100, False, False)
     assert "tools" not in payload
 
 
@@ -88,7 +90,7 @@ async def test_chat_message_with_tool_calls_serialized_correctly() -> None:
             ChatMessage(role="assistant", tool_calls=tool_calls),
         ]
     )
-    payload = await data.to_payload("test-model", 100, False, False)
+    payload = await data.to_request_body("test-model", 100, False, False)
     msgs = payload["messages"]
     assert msgs[0] == {"role": "user", "content": "What is the weather?"}
     assert msgs[1] == {"role": "assistant", "tool_calls": tool_calls}
@@ -99,5 +101,5 @@ async def test_chat_message_with_tool_calls_serialized_correctly() -> None:
 async def test_chat_message_content_none_treated_as_empty() -> None:
     """content=None should serialize as empty string (not 'None')."""
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content=None)])
-    payload = await data.to_payload("test-model", 100, False, False)
+    payload = await data.to_request_body("test-model", 100, False, False)
     assert payload["messages"][0] == {"role": "user", "content": ""}

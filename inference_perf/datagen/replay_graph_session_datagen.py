@@ -67,6 +67,20 @@ class SessionInferenceInfo(InferenceInfo):
     output_text: Optional[str] = None
     output_message: Optional[Dict[str, Any]] = None
 
+    def __init__(
+        self,
+        *,
+        request_metrics: Optional[RequestMetrics] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        **kwargs: Any,
+    ) -> None:
+        if request_metrics is None:
+            request_metrics = RequestMetrics(text=Text(input_tokens=input_tokens or 0))
+            if "response_metrics" not in kwargs:
+                kwargs["response_metrics"] = UnaryResponseMetrics(output_tokens=output_tokens or 0)
+        super().__init__(request_metrics=request_metrics, **kwargs)
+
 
 class WorkerSessionTracker:
     """Per-worker tracking of event completions and session failures."""
@@ -214,10 +228,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     inject_random_session_id: bool = False
     session_random_string: Optional[str] = None
 
-    async def to_payload(
+    async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> Dict[str, Any]:
-        payload = await super().to_payload(effective_model_name, max_tokens, ignore_eos, streaming)
+        payload = await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
         if self.expected_output_is_tool_call and self.tool_definitions:
             payload["ignore_eos"] = False
@@ -234,7 +248,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 )
             names = self.expected_output_tool_names or []
             # Build available set from self.tool_definitions (the raw list). The name
-            # field is set explicitly in to_payload and is NOT passed through
+            # field is set explicitly in to_request_body and is NOT passed through
             # _clean_parameters, so it survives schema cleaning unchanged.
             available = {t["name"] for t in self.tool_definitions if "name" in t}
             if len(names) == 1 and names[0] in available:

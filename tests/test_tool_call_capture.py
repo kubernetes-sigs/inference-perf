@@ -170,7 +170,7 @@ class TestSubstitutionWithToolCalls:
 
 
 class TestToolChoiceInjection:
-    """Tests for tool_choice injection in to_payload when expected output was a tool call."""
+    """Tests for tool_choice injection in to_request_body when expected output was a tool call."""
 
     def _make_api_data(
         self,
@@ -205,7 +205,7 @@ class TestToolChoiceInjection:
             }
         ]
         api_data = self._make_api_data(tool_defs, True, ["get_weather"])
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert payload["tool_choice"] == {"type": "function", "function": {"name": "get_weather"}}
 
     @pytest.mark.asyncio
@@ -225,7 +225,7 @@ class TestToolChoiceInjection:
             },
         ]
         api_data = self._make_api_data(tool_defs, True, ["get_weather", "get_time"])
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert payload["tool_choice"] == "required"
 
     @pytest.mark.asyncio
@@ -239,7 +239,7 @@ class TestToolChoiceInjection:
             }
         ]
         api_data = self._make_api_data(tool_defs, False, None)
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert "tool_choice" not in payload
 
     @pytest.mark.asyncio
@@ -247,7 +247,7 @@ class TestToolChoiceInjection:
         # Even if the recorded output was a tool call, don't set tool_choice when
         # there are no tool_definitions in the request (nothing to choose from).
         api_data = self._make_api_data(None, True, ["get_weather"])
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert "tool_choice" not in payload
 
     @pytest.mark.asyncio
@@ -265,7 +265,7 @@ class TestToolChoiceInjection:
             }
         ]
         api_data = self._make_api_data(tool_defs, True, ["some_other_tool_not_in_list"])
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert payload["tool_choice"] == "required"
 
 
@@ -510,7 +510,7 @@ class TestToolChoiceEmptyDefinitions:
             expected_output_is_tool_call=True,
             expected_output_tool_names=["some_tool"],
         )
-        payload = await api_data.to_payload("model", 100, False, False)
+        payload = await api_data.to_request_body("model", 100, False, False)
         assert "tool_choice" not in payload
 
 
