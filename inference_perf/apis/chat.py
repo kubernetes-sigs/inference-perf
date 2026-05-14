@@ -95,12 +95,13 @@ class ChatCompletionAPIData(InferenceAPIData):
     # group — required for prefix-cache benchmarks.
     prefix_text: Optional[str] = None
     prefix_multimodal_spec: Optional[MultimodalSpec] = None
-    # Folded into the deterministic seed when materializing
-    # ``prefix_multimodal_spec`` so that prefix specs with identical
-    # dimensions but different ``prefix_cache_key`` produce distinct bytes.
-    # Datagens that sample one prefix spec per shared-prefix group set this
-    # to the group id to keep within-group bytes stable while making across-
-    # group bytes diverge.
+    # Identifies which prefix-cache group this request belongs to. Two requests
+    # with the same prefix_multimodal_spec AND the same prefix_cache_key render
+    # byte-identical prefix media (so the server's prefix cache hits); requests
+    # with the same spec but different prefix_cache_key render different bytes
+    # (so distinct logical prefixes don't collide in the cache). Left None when
+    # there's only one prefix group, which preserves the old single-stream
+    # behavior. The shared_prefix datagen sets this to the group id.
     prefix_cache_key: Optional[int] = None
 
     # Realized per-instance metrics populated by ``to_request_body`` and read

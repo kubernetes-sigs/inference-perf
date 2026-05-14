@@ -126,6 +126,63 @@ async def test_shared_prefix_multimodal_prefix_bytes_stable_across_requests() ->
     assert prefix_block_1["image_url"]["url"] == prefix_block_2["image_url"]["url"]
 
 
+@pytest.mark.asyncio
+async def test_shared_prefix_multimodal_prefix_image_sets_partition_by_group() -> None:
+    """With 3 groups × 2 prompts/group, the 6 prompts must partition into
+    exactly 3 groups of 2, where:
+      - prompts within a group share the same prefix image set, and
+      - no group's prefix image set matches another group's.
+
+    Regression test for the bug where the deterministic seed lacked a per-group
+    component, causing every group to produce byte-identical prefix images.
+    """
+    num_groups = 3
+    num_prompts_per_group = 2
+    generator = _build_generator(num_groups=num_groups, num_prompts_per_group=num_prompts_per_group)
+
+    # Drain all 6 prompts. Each request carries one prefix image (deterministic
+    # per group, repeats across prompts in the group) and one payload image
+    # (sampled fresh per request, unique). Bucket by group_id (=
+    # ``prefix_cache_key``) and collect rendered image URLs.
+    iter_data = generator.get_data()
+    urls_by_group: dict[int, list[list[str]]] = {}
+    for _ in range(num_groups * num_prompts_per_group):
+        api_data = generator.load_lazy_data(cast(LazyLoadInferenceAPIData, next(iter_data)))
+        assert isinstance(api_data, ChatCompletionAPIData)
+        group_id = api_data.prefix_cache_key
+        assert group_id is not None
+
+        payload = await api_data.to_request_body(effective_model_name="t", max_tokens=10, ignore_eos=False, streaming=False)
+        urls = [c["image_url"]["url"] for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
+        urls_by_group.setdefault(group_id, []).append(urls)
+
+    # Partition shape: exactly num_groups groups, each with num_prompts_per_group prompts.
+    assert len(urls_by_group) == num_groups, (
+        f"expected {num_groups} distinct groups, got {len(urls_by_group)}: {sorted(urls_by_group)}"
+    )
+    for gid, url_lists in urls_by_group.items():
+        assert len(url_lists) == num_prompts_per_group, (
+            f"group {gid}: expected {num_prompts_per_group} prompts, got {len(url_lists)}"
+        )
+
+    # The prefix images for a group are the URLs that appear in every one of
+    # the group's requests (the payload-side image is fresh per request and
+    # won't repeat). Intersect URL sets across the group's requests to
+    # recover the prefix image set without depending on positional ordering.
+    prefix_image_set_by_group: dict[int, frozenset[str]] = {
+        gid: frozenset.intersection(*(frozenset(urls) for urls in url_lists)) for gid, url_lists in urls_by_group.items()
+    }
+    for gid, prefix_set in prefix_image_set_by_group.items():
+        assert prefix_set, f"group {gid}: no URL appears in every request — prefix image is not stable within the group"
+
+    # The prefix image set of any group must not match another group's set.
+    distinct_sets = set(prefix_image_set_by_group.values())
+    assert len(distinct_sets) == num_groups, (
+        f"expected {num_groups} distinct prefix image sets across groups, got {len(distinct_sets)}: "
+        f"{prefix_image_set_by_group}"
+    )
+
+
 def _build_generator_with_prefix_video(representation: VideoRepresentation) -> SharedPrefixDataGenerator:
     """Generator with one prefix-side video at the configured representation, no payload media."""
     shared_prefix_multimodal = SyntheticMultimodalDatagenConfig(
