@@ -76,6 +76,8 @@ from rich.progress import (
 )
 import signal
 
+from inference_perf.logger import get_console
+
 logger = logging.getLogger(__name__)
 
 
@@ -713,7 +715,7 @@ class LoadGenerator:
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[Progress] = None,
     ) -> None:
-        logger.debug("Stage %d - run started", stage_id)
+        logger.info("Stage %d - run started", stage_id)
 
         if timeout is not None and cancel_signal is None:
             raise Exception("run_stage timeout requires cancel_signal to be not None!")
@@ -810,9 +812,7 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=concurrency_level,
         )
-        logger.debug(
-            "Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id
-        )
+        logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
     async def preprocess(
         self,
@@ -976,6 +976,9 @@ class LoadGenerator:
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
+            console=get_console(),
+            redirect_stdout=True,
+            redirect_stderr=True,
         ) as progress:
             overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
             for stage_id, stage in enumerate(self.stages):
@@ -1056,6 +1059,9 @@ class LoadGenerator:
             MofNCompleteColumn(),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
+            console=get_console(),
+            redirect_stdout=True,
+            redirect_stderr=True,
         ) as progress:
             overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
 
