@@ -74,11 +74,18 @@ async def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir
 
 
 def _find_report_files(path: Path) -> Optional[List[Path]]:
-    """Return the json reports files under path (if any)."""
-    candidates = list(path.glob("**/*.json"))
+    """Return the JSON and YAML report files under path (if any)."""
+    candidates = list(path.glob("**/*.json")) + list(path.glob("**/*.yaml"))
     if not candidates:
         return None
     return candidates
+
+
+def _load_report(path: Path) -> Any:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".yaml":
+        return yaml.safe_load(text)
+    return json.loads(text)
 
 
 async def run_benchmark_minimal(
@@ -149,7 +156,7 @@ async def run_benchmark_minimal(
 
     # Attempt to read report.json (optional)
     report_path = _find_report_files(wd)
-    reports = {report.name: json.loads(report.read_text(encoding="utf-8")) for report in report_path} if report_path else None
+    reports = {report.name: _load_report(report) for report in report_path} if report_path else None
 
     return BenchmarkResult(
         success=success,
