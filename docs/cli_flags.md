@@ -212,6 +212,9 @@ These command line flags are automatically generated from the internal `Config` 
 | `--report.session_lifecycle.per_stage` | boolean | Matches report.session_lifecycle.per_stage in config |
 | `--report.session_lifecycle.per_session` | boolean | Matches report.session_lifecycle.per_session in config |
 | `--report.goodput.constraints` | JSON | Matches report.goodput.constraints in config |
+| `--report.br_v0_2.partial_report.local.path` | str | Matches report.br_v0_2.partial_report.local.path in config |
+| `--report.br_v0_2.partial_report.google_cloud_storage.bucket_name` | str | Matches report.br_v0_2.partial_report.google_cloud_storage.bucket_name in config |
+| `--report.br_v0_2.partial_report.google_cloud_storage.path` | str | Matches report.br_v0_2.partial_report.google_cloud_storage.path in config |
 | `--storage.local_storage.path` | str | Matches storage.local_storage.path in config |
 | `--storage.local_storage.report_file_prefix` | str | Matches storage.local_storage.report_file_prefix in config |
 | `--storage.google_cloud_storage.path` | str | Matches storage.google_cloud_storage.path in config |

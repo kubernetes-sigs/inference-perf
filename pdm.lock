@@ -227,23 +227,23 @@ files = [
 
 [[package]]
 name = "boto3"
-version = "1.43.1"
+version = "1.43.0"
 requires_python = ">=3.10"
 summary = "The AWS SDK for Python"
 groups = ["default"]
 dependencies = [
-    "botocore<1.44.0,>=1.43.1",
+    "botocore<1.44.0,>=1.43.0",
     "jmespath<2.0.0,>=0.7.1",
     "s3transfer<0.18.0,>=0.17.0",
 ]
 files = [
-    {file = "boto3-1.43.1-py3-none-any.whl", hash = "sha256:3840bf0345b9aefcc5915176a19d227f63cfba7778c65e6e52d61c6ea0a10fdc"},
-    {file = "boto3-1.43.1.tar.gz", hash = "sha256:9e4f85a7884797ff0f52c257094730ed228aaa07fa8134775ff8f86909cf4f2a"},
+    {file = "boto3-1.43.0-py3-none-any.whl", hash = "sha256:8ebe03754a4b73a5cb6ec2f14cca03ac33bd4760d0adea53da4724845130258b"},
+    {file = "boto3-1.43.0.tar.gz", hash = "sha256:80d44a943ef90aba7958ab31d30c155c198acc8a9581b5846b3878b2c8951086"},
 ]
 
 [[package]]
 name = "botocore"
-version = "1.43.1"
+version = "1.43.0"
 requires_python = ">=3.10"
 summary = "Low-level, data-driven core of boto 3."
 groups = ["default"]
@@ -253,8 +253,8 @@ dependencies = [
     "urllib3!=2.2.0,<3,>=1.25.4",
 ]
 files = [
-    {file = "botocore-1.43.1-py3-none-any.whl", hash = "sha256:955edc6a398b9c4100cf0d5a31433fdba3835500bf38c1ef171e6e75f4b477d2"},
-    {file = "botocore-1.43.1.tar.gz", hash = "sha256:270d6357d662550fdb84973ec247e02bece0b6283d90bf37319c7753515336e4"},
+    {file = "botocore-1.43.0-py3-none-any.whl", hash = "sha256:cc5b15eaec3c6eac05d8012cb5ef17ebe891beb88a16ca13c374bfaece1241e6"},
+    {file = "botocore-1.43.0.tar.gz", hash = "sha256:e933b31a2d644253e1d029d7d39e99ba41b87e29300534f189744cc438cdf928"},
 ]
 
 [[package]]
@@ -1036,7 +1036,7 @@ files = [
 
 [[package]]
 name = "google-auth"
-version = "2.50.0"
+version = "2.49.2"
 requires_python = ">=3.8"
 summary = "Google Authentication Library"
 groups = ["default"]
@@ -1045,8 +1045,8 @@ dependencies = [
     "pyasn1-modules>=0.2.1",
 ]
 files = [
-    {file = "google_auth-2.50.0-py3-none-any.whl", hash = "sha256:04382175e28b94f49694977f0a792688b59a668def1499e9d8de996dc9ce5b15"},
-    {file = "google_auth-2.50.0.tar.gz", hash = "sha256:f35eafb191195328e8ce10a7883970877e7aeb49c2bfaa54aa0e394316d353d0"},
+    {file = "google_auth-2.49.2-py3-none-any.whl", hash = "sha256:c2720924dfc82dedb962c9f52cabb2ab16714fd0a6a707e40561d217574ed6d5"},
+    {file = "google_auth-2.49.2.tar.gz", hash = "sha256:c1ae38500e73065dcae57355adb6278cf8b5c8e391994ae9cbadbcb9631ab409"},
 ]
 
 [[package]]
