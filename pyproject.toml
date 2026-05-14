@@ -169,6 +169,16 @@ module = [
 ]
 ignore_missing_imports = true
 
+# Vendored from llm-d/llm-d-benchmark — upstream owns the types and we resync
+# files unmodified, so we don't run --strict against them.
+[[tool.mypy.overrides]]
+module = [
+    "inference_perf.reportgen.br.v0_2.base",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2_components",
+]
+ignore_errors = true
+
 [tool.coverage.run]
 source = ["inference_perf"]
 omit = ["tests/*", "**/__init__.py", "scripts/*", "scripts/**/*"]
