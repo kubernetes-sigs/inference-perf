@@ -8,7 +8,9 @@ api:
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    trace_directory: "examples/otel/test_traces/simple"
+    trace_files:
+      - "examples/otel/test_traces/simple/simple_chain.json"
+      - "examples/otel/test_traces/simple/simple_chain_alt.json"
     use_static_model: true
     static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
 
@@ -26,8 +28,7 @@ load:
     - concurrent_sessions: 1
       num_sessions: 1   # Stage 1: second session from corpus
 
-  num_workers: 3
-  worker_max_concurrency: 10
+  worker_max_concurrency: 1000
 
 server:
   type: vllm
@@ -36,7 +37,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-otel-trace-replay-multi-stage"
+    path: "reports-multi-stage"
 
 report:
   request_lifecycle:

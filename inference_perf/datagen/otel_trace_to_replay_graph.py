@@ -113,6 +113,24 @@ def message_tokens(msg: ReplayMessage) -> int:
     return estimate_tokens(message_content_text(msg))
 
 
+def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
+    """Convert a ReplayMessage to an OpenAI-compatible dict for the graph.
+
+    For ComplexReplayMessage with tool_call_response parts, extracts tool_call_id
+    so it survives into the replay runtime for ID rewriting.
+    """
+    if isinstance(x, ComplexReplayMessage):
+        info = x.message_info
+        parts = info.get("parts")
+        if parts and x.role == "tool":
+            tool_result_parts = [p for p in parts if p.get("type") == "tool_call_response"]
+            if tool_result_parts:
+                result_part = tool_result_parts[0]
+                return {"role": "tool", "content": result_part.get("result", ""), "tool_call_id": result_part.get("id", "")}
+
+    return {"role": x.role, "content": x.text}
+
+
 def messages_equal(a: ReplayMessage, b: ReplayMessage) -> bool:
     """Return True if two messages have the same role and content."""
     return a.role == b.role and message_content_text(a) == message_content_text(b)
@@ -208,7 +226,7 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
             if "content" in x:
                 content = x["content"]
                 # Check if message also has tool_calls - convert to parts format
-                if "tool_calls" in x:
+                if "tool_calls" in x and x["tool_calls"] is not None:
                     # Transform message with content + tool_calls into parts format
                     message_with_parts = _convert_content_and_tool_calls_to_parts(x)
                     res.append(
@@ -252,18 +270,18 @@ def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
     out = attrs.get("gen_ai.output.messages")
     if isinstance(out, str):
         try:
-            msgs = json.loads(out)
-            if len(msgs) > 1:
-                raise ValueError(f"Unexpected output messages fromat: expected a single message, got {len(msgs)} messages")
-            return ComplexReplayMessage(
-                role="assistant",
-                message_info=reconstruct_each_part_in_message_info(msgs[0]),
-                raw_reconstructed_text=reconstruct_llm_output(msgs[0]),
-            )
+            out = json.loads(out)
         except Exception as err:
             raise ValueError(f"Failed parsing {out}") from err
-    if isinstance(out, list) and out:
-        return ReplayMessage(role="assistant", text=message_content_text(out[-1]))
+    if isinstance(out, list):
+        if isinstance(out[0], dict):
+            if len(out) > 1:
+                raise ValueError(f"Unexpected output messages fromat: expected a single message, got {len(out)} messages")
+            return ComplexReplayMessage(
+                role="assistant",
+                message_info=reconstruct_each_part_in_message_info(out[0]),
+                raw_reconstructed_text=reconstruct_llm_output(out[0]),
+            )
     return None
 
 
@@ -301,6 +319,7 @@ class RawCall:
     completion_tokens: Optional[int]  # from gen_ai.usage.completion_tokens
     temperature: Optional[float]
     max_tokens_recorded: Optional[int]
+    tool_definitions: Optional[List[Dict[str, Any]]] = None
 
 
 def filter_duplicate_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -377,6 +396,15 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
 
         if completion_tokens is not None:
             completion_tokens = int(completion_tokens)
+        tool_definitions_raw = attrs.get("gen_ai.tool.definitions")
+        tool_definitions: Optional[List[Dict[str, Any]]] = None
+        if isinstance(tool_definitions_raw, str):
+            try:
+                tool_definitions = json.loads(tool_definitions_raw)
+            except Exception:
+                logger.warning(f"Span {s.get('span_id')}: failed to parse gen_ai.tool.definitions as JSON, ignoring")
+        elif isinstance(tool_definitions_raw, list):
+            tool_definitions = tool_definitions_raw
         calls.append(
             RawCall(
                 call_id=s.get("span_id") or "",
@@ -390,6 +418,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 completion_tokens=completion_tokens,
                 temperature=attrs.get("gen_ai.request.temperature"),
                 max_tokens_recorded=attrs.get("gen_ai.request.max_tokens"),
+                tool_definitions=tool_definitions,
             )
         )
     return calls
@@ -436,7 +465,7 @@ def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dic
         return False
 
     # Extract all tool call IDs from b_messages
-    b_tool_call_ids = set()
+    b_tool_call_ids: set[str] = set()
     for msg in b_messages:
         # we message_info may contain parts to tool_calls.
         if isinstance(msg, ComplexReplayMessage):
@@ -451,6 +480,30 @@ def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dic
 
     # Check if all tool call IDs from a appear in b (order doesn't matter)
     return all(tc_id in b_tool_call_ids for tc_id in tool_call_ids)
+
+
+def _extract_tool_call_ids(msg: Any) -> set[str]:
+    """Return the set of tool-call IDs referenced in a single message.
+
+    Handles ComplexReplayMessage (parts or tool_calls format) and plain dicts
+    (OpenAI tool_calls format). Used by decompose_input to pre-compute per-message
+    ID sets once, avoiding repeated extraction in the inner pred loop.
+    """
+    ids: set[str] = set()
+    if isinstance(msg, ComplexReplayMessage):
+        if "tool_calls" in msg.message_info:
+            for tc in msg.message_info["tool_calls"]:
+                if tc.get("id"):
+                    ids.add(tc["id"])
+        elif "parts" in msg.message_info:
+            for part in msg.message_info["parts"]:
+                if part.get("type") == "tool_call" and part.get("id"):
+                    ids.add(part["id"])
+    elif isinstance(msg, dict):
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("id"):
+                ids.add(tc["id"])
+    return ids
 
 
 def get_causal_dep(
@@ -490,7 +543,17 @@ def get_causal_dep(
                     output_matches_for_substitutions[cache_key] = []
                 output_matches_for_substitutions[cache_key].append(msg_idx)
             return DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
-    # try matching parts
+    # Try matching by tool call IDs before falling back to multi-part text comparison.
+    # This handles the common case where the output is stored in OTel "parts"
+    # format but appears in the successor's input in OpenAI "tool_calls" format —
+    # the two representations look different as text but share the same IDs.
+    # Only attempt when there are actual tool-call parts with IDs to match against.
+    if isinstance(a.out_message, ComplexReplayMessage) and "parts" in a.out_message.message_info:
+        tool_parts_with_ids = [p for p in a.out_message.message_info["parts"] if p.get("type") == "tool_call" and p.get("id")]
+        if tool_parts_with_ids and _try_match_tool_call_ids(tool_parts_with_ids, b.messages):  # type: ignore[arg-type]
+            return DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED
+    # try matching parts (only relevant when there are multiple parts that expand
+    # into separate messages in the successor — single tool calls are covered above)
     if (
         isinstance(a.out_message, ComplexReplayMessage)
         and "parts" in a.out_message.message_info
@@ -499,10 +562,6 @@ def get_causal_dep(
         # this means this output message contains several parts, and will be interpreted as more than one message in the calls history
         parts = a.out_message.message_info["parts"]
         parts_text = a.out_message.message_info["parts_text"]
-
-        # First, try matching by tool call IDs
-        if _try_match_tool_call_ids(parts, b.messages):  # type: ignore[arg-type]
-            return DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED
 
         # Determine structure: check if first part is content (text) or tool_call
         first_part_is_content = parts[0]["type"] != "tool_call"
@@ -717,8 +776,12 @@ def decompose_input(
         )
         cursor = best_prefix_count
 
-    # Step 2: After the shared prefix, scan for injected outputs from predecessors
-    # Each predecessor's output may appear as an assistant message in the remaining messages
+    # Step 2: After the shared prefix, scan for injected outputs from predecessors.
+    # Each predecessor's output may appear as an assistant message in the remaining messages.
+    # Pre-compute the tool-call ID set for each message once so the inner pred loop
+    # doesn't repeat the extraction for every (pred, msg) pair.
+    msg_tool_id_sets: List[set[str]] = [_extract_tool_call_ids(m) for m in messages]
+
     while cursor < total_msgs:
         # Find the earliest remaining message that matches any predecessor's output
         best_out_pred_idx: int = -1
@@ -740,10 +803,20 @@ def decompose_input(
                             best_out_pred_idx = pred_idx
                         break
             else:
-                # Fallback: search for exact matches
+                # Fallback: search for exact matches or tool-call ID matches
                 pred_out = pred.out_message.text or ""
+                # Build tool-call ID set for this predecessor's output (for fallback ID matching).
+                pred_tool_ids: set[str] = set()
+                if isinstance(pred.out_message, ComplexReplayMessage) and "parts" in pred.out_message.message_info:
+                    pred_tool_ids = {
+                        p["id"] for p in pred.out_message.message_info["parts"] if p.get("type") == "tool_call" and p.get("id")
+                    }
                 for msg_idx in range(cursor, total_msgs):
-                    if output_matches_message(pred_out, messages[msg_idx]):
+                    matched = output_matches_message(pred_out, messages[msg_idx])
+                    # Fallback: match by tool-call IDs when text representations differ
+                    if not matched and pred_tool_ids:
+                        matched = bool(pred_tool_ids <= msg_tool_id_sets[msg_idx])
+                    if matched:
                         if msg_idx < best_out_msg_idx:
                             best_out_msg_idx = msg_idx
                             best_out_pred_idx = pred_idx
@@ -946,12 +1019,45 @@ def build_graph(
             else estimate_tokens(rc.out_message.text or "" if rc.out_message else "")
         )
 
+        # Detect whether the recorded output was a tool call and collect names.
+        # ComplexReplayMessage.message_info uses OTel "parts" format after
+        # reconstruct_each_part_in_message_info, or OpenAI "tool_calls" format
+        # when passed through _convert_content_and_tool_calls_to_parts.
+        expected_output_tool_names: List[str] = []
+        if isinstance(rc.out_message, ComplexReplayMessage):
+            info = rc.out_message.message_info
+            # OTel parts format: {"parts": [{"type": "tool_call", "name": ...}, ...]}
+            for part in info.get("parts", []):
+                if part.get("type") == "tool_call" and part.get("name"):
+                    expected_output_tool_names.append(part["name"])
+            # OpenAI tool_calls format: {"tool_calls": [{"function": {"name": ...}}, ...]}
+            if not expected_output_tool_names:
+                for tc in info.get("tool_calls", []):
+                    name = tc.get("function", {}).get("name") or tc.get("name")
+                    if name:
+                        expected_output_tool_names.append(name)
+
+        # If the recorded output was a tool call but no tool definitions were captured,
+        # we cannot inject tool_choice at replay time. Treat it as a plain-text output
+        # so substitution does not fail-fast when the live model returns text.
+        has_tool_definitions = bool(rc.tool_definitions)
+        effective_is_tool_call = bool(expected_output_tool_names) and has_tool_definitions
+        if bool(expected_output_tool_names) and not has_tool_definitions:
+            logger.warning(
+                f"Span {rc.call_id}: recorded output is a tool call "
+                f"({expected_output_tool_names}) but no tool definitions were captured "
+                f"in the span (gen_ai.tool.definitions missing). "
+                f"tool_choice cannot be forced at replay time, so the live model will "
+                f"return plain text. expected_output_is_tool_call is being set to False "
+                f"so that substitution treats the live response as plain text rather than "
+                f"failing the session chain with a dangling tool_call_id error."
+            )
+
         graph_call = GraphCall(
             call_id=rc.call_id,
             model=rc.model,
             messages=[
-                {"role": x.role, "content": x.text}  # type: ignore[misc]
-                for x in rc.messages
+                _replay_message_to_dict(x) for x in rc.messages
             ],  # convert to a list of dictionaries representing a message with role and content only.
             expected_output=(rc.out_message.text or "" if rc.out_message else ""),
             input_segments=segments,
@@ -959,6 +1065,9 @@ def build_graph(
             expected_output_tokens=expected_output_tokens,
             temperature=rc.temperature,
             max_tokens_recorded=rc.max_tokens_recorded,
+            tool_definitions=rc.tool_definitions,
+            expected_output_is_tool_call=effective_is_tool_call,
+            expected_output_tool_names=expected_output_tool_names or None,
         )
 
         # Compute wait_ms: gap between when the last predecessor ends and this call starts
@@ -1004,7 +1113,7 @@ def segment_to_dict(seg: InputSegment) -> Dict[str, Any]:
 
 
 def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
-    return {
+    d: Dict[str, Any] = {
         "call_id": gc.call_id,
         "model": gc.model,
         "total_input_tokens": gc.total_input_tokens,
@@ -1015,6 +1124,13 @@ def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
         "messages": gc.messages,
         "expected_output": gc.expected_output,
     }
+    if gc.tool_definitions is not None:
+        d["tool_definitions"] = gc.tool_definitions
+    if gc.expected_output_is_tool_call:
+        d["expected_output_is_tool_call"] = gc.expected_output_is_tool_call
+    if gc.expected_output_tool_names is not None:
+        d["expected_output_tool_names"] = gc.expected_output_tool_names
+    return d
 
 
 def graph_event_to_dict(event: GraphEvent) -> Dict[str, Any]:
@@ -1147,7 +1263,8 @@ def print_graph(graph: ReplayGraph) -> None:
         print("  ║")
 
         temp_str = f"  temperature={gc.temperature}" if gc.temperature is not None else ""
-        print(f"  ║   CALL {gc.call_id}   model={gc.model}{temp_str}")
+        tools_str = f"  tools={len(gc.tool_definitions)}" if gc.tool_definitions else ""
+        print(f"  ║   CALL {gc.call_id}   model={gc.model}{temp_str}{tools_str}")
         print(f"  ║     Input  ({gc.total_input_tokens} tokens, {len(gc.messages)} messages):")
         for seg, messages in map_input_seq_to_messages(gc):
             offset = "       "
@@ -1170,7 +1287,8 @@ def summarize_graph(graph: ReplayGraph) -> str:
             f"after [{', '.join(event.predecessor_event_ids)}] +{event.wait_ms}ms" if event.predecessor_event_ids else "ROOT"
         )
         seg_str = " ".join(_segment_label(s, m) for s, m in map_input_seq_to_messages(gc))
-        lines.append(f"[{eid}] {preds}  t={event.t_start_ms}-{event.t_end_ms}ms")
+        tools_str = f"  tools={len(gc.tool_definitions)}" if gc.tool_definitions else ""
+        lines.append(f"[{eid}] {preds}  t={event.t_start_ms}-{event.t_end_ms}ms{tools_str}")
         lines.append(f"    {gc.call_id}: [{seg_str}] -> O({gc.expected_output_tokens}t)")
     return "\n".join(lines)
 

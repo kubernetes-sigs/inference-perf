@@ -1,0 +1,46 @@
+# Example configuration for loading OTel traces from HuggingFace dataset
+# This demonstrates using the hf_dataset_path option to load traces from
+# the lenadan/otel-test-snippet dataset on HuggingFace Hub
+
+api:
+  type: chat
+  streaming: false
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    # Load traces from HuggingFace dataset
+    # The dataset will be automatically downloaded and cached locally
+    hf_dataset_path: "Exgentic/agent-llm-traces"
+    
+    # Model configuration
+    use_static_model: true
+    static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+    
+    # Request configuration
+    default_max_tokens: 200
+    
+    # Error handling
+    include_errors: false
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 30
+  worker_max_concurrency: 1000
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-hf-dataset-example"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: false
+    per_request: false

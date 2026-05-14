@@ -132,7 +132,7 @@ class TestHelperFunctions:
         assert '"x": 5' in result
 
         # Missing fields
-        assert "unknown_function" in _format_tool_call({"arguments": "{}"})
+        assert "unknown_tool" in _format_tool_call({"arguments": "{}"})
         assert "{}" in _format_tool_call({"name": "fn"})
 
 

@@ -362,9 +362,10 @@ class LoadGenerator:
                 _ = queue.get_nowait()
                 queue.task_done()
             except Empty:
-                if queue.qsize() == 0:
-                    logger.debug("Drain finished")
-                    return
+                # No qsize() check: it raises NotImplementedError on macOS.
+                # Empty from get_nowait() is sufficient since producers are stopped before drain.
+                logger.debug("Drain finished")
+                return
 
     async def run_session_stage(
         self,
@@ -561,6 +562,7 @@ class LoadGenerator:
             if self.interrupt_sig:
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.info("Loadgen encountered SIGINT")
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -572,6 +574,7 @@ class LoadGenerator:
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -583,6 +586,7 @@ class LoadGenerator:
             if timeout is not None and time.perf_counter() - start_time >= timeout:
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
+                    stage_task = None
                 logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
@@ -668,8 +672,12 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
-        # Drain in-flight requests on timeout (mirrors run_stage cleanup)
-        if stage_status == StageStatus.FAILED and cancel_signal is not None:
+        # Cancel in-flight tasks and drain stranded queue items.
+        # In the happy path this is a no-op (all items already processed).
+        # In the failure path, process_failure sends a completion notification
+        # immediately — before the worker picks up all items from the queue.
+        # Without this, request_queue.join() hangs on items that never got task_done().
+        if cancel_signal is not None:
             cancel_signal.set()
             await sleep(1)
             while active_requests_counter.value > 0:
@@ -694,6 +702,7 @@ class LoadGenerator:
             end_time=time.time(),
             status=stage_status,
             concurrency_level=concurrent_sessions,
+            timeout=timeout,
         )
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
@@ -965,7 +974,9 @@ class LoadGenerator:
                 if not has_open_ended and total_requested > total_sessions:
                     raise ValueError(
                         f"Stages request {total_requested} sessions total but corpus only has "
-                        f"{total_sessions}. Reduce num_sessions across stages or add more trace files."
+                        f"{total_sessions}. Reduce num_sessions across stages, add more trace files, "
+                        f"or set 'duplicate_sessions_target: {total_requested}' in data.otel_trace_replay config "
+                        f"to duplicate sessions to meet the total required across all stages."
                     )
 
         # Create progress context for all stages

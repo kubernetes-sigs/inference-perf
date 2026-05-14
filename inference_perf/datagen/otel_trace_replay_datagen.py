@@ -62,8 +62,8 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import List, Optional
-
+from typing import Any, Dict, List, Optional, Union
+from datasets import load_dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
@@ -124,6 +124,139 @@ def resolve_trace_files(trace_files: List[str]) -> List[Path]:
     return [Path(f) for f in all_files]
 
 
+def _validate_hf_dataset_schema(dataset: Any, dataset_path: str) -> None:
+    """Validate that the HuggingFace dataset has the expected schema for OTel traces.
+
+    Args:
+        dataset: The loaded HuggingFace dataset
+        dataset_path: Dataset identifier for error messages
+
+    Raises:
+        ValueError: If schema validation fails
+    """
+    # Expected schema for compatible datasets
+    # Official dataset: Exgentic/agent-llm-traces
+    # Custom datasets must follow this schema to be compatible
+    EXPECTED_SCHEMA = {
+        "harness": str,
+        "benchmark": str,
+        "models": list,
+        "session_id": str,
+        "spans": list,  # Critical field - must be present
+    }
+
+    if len(dataset) == 0:
+        raise ValueError(f"No data found in HuggingFace dataset '{dataset_path}'")
+
+    # Validate schema by checking the first record
+    first_record = dataset[0]
+    missing_fields = []
+    type_mismatches = []
+
+    for field_name, expected_type in EXPECTED_SCHEMA.items():
+        if field_name not in first_record:
+            missing_fields.append(field_name)
+        else:
+            actual_value = first_record[field_name]
+            # Check type (allow None values)
+            if actual_value is not None and not isinstance(actual_value, expected_type):
+                type_mismatches.append(
+                    f"  - '{field_name}': expected {expected_type.__name__}, got {type(actual_value).__name__}"
+                )
+
+    # Raise error if schema validation fails
+    if missing_fields or type_mismatches:
+        error_parts = [
+            f"Dataset schema validation failed for '{dataset_path}'.",
+            "Official supported dataset: 'Exgentic/agent-llm-traces'",
+            "Custom datasets must follow the same schema to be compatible.",
+        ]
+
+        if missing_fields:
+            error_parts.append(f"\nMissing required fields: {', '.join(missing_fields)}")
+
+        if type_mismatches:
+            error_parts.append("\nType mismatches:")
+            error_parts.extend(type_mismatches)
+
+        error_parts.append(f"\nExpected schema: {list(EXPECTED_SCHEMA.keys())}")
+        error_parts.append(f"Actual fields: {list(first_record.keys())}")
+
+        raise ValueError("\n".join(error_parts))
+
+    # Critical validation: ensure 'spans' field exists and is not empty in at least one record
+    if "spans" not in first_record:
+        raise ValueError(
+            f"Dataset '{dataset_path}' is missing the critical 'spans' field. This field is required for OTel trace replay."
+        )
+
+    logger.info(f"Schema validation passed for dataset '{dataset_path}'")
+
+
+def _download_hf_dataset(dataset_config: Union[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Load HuggingFace dataset and return trace data directly.
+
+    Args:
+        dataset_config: Either a string path (e.g., 'Exgentic/agent-llm-traces') or a dict with:
+            - path (required): HuggingFace dataset identifier
+            - Any other kwargs supported by datasets.load_dataset() (e.g., revision, split, etc.)
+            - If 'split' is not provided, defaults to 'train'
+
+    Returns:
+        List of trace data dictionaries (each row from the dataset)
+
+    Raises:
+        ValueError: If dataset cannot be downloaded, doesn't contain trace data, or schema is invalid
+    """
+    # Parse config - support both string and dict formats
+    if isinstance(dataset_config, str):
+        dataset_path = dataset_config
+        load_kwargs = {}  # No additional kwargs for string format
+    elif isinstance(dataset_config, dict):
+        dataset_path_value = dataset_config.get("path")
+        if not isinstance(dataset_path_value, str) or not dataset_path_value:
+            raise ValueError("'path' is required in hf_dataset_path dict configuration")
+
+        dataset_path = dataset_path_value
+
+        # Extract all kwargs except 'path'
+        load_kwargs = {k: v for k, v in dataset_config.items() if k != "path"}
+    else:
+        raise ValueError(f"hf_dataset_path must be a string or dict, got {type(dataset_config)}")
+
+    try:
+        logger.info(f"Loading HuggingFace dataset: {dataset_path} with {load_kwargs.items()}")
+
+        # Load dataset directly using datasets library with all provided kwargs
+        split = load_kwargs.pop("split", "train")  # default split is train
+        dataset = load_dataset(dataset_path, split=split, **load_kwargs)
+
+        # Validate dataset schema
+        _validate_hf_dataset_schema(dataset, dataset_path)
+
+        logger.info(f"Loaded {len(dataset)} trace records from dataset")
+
+        # Convert dataset to list of dictionaries
+        trace_data = [dict(row) for row in dataset]
+
+        return trace_data
+
+    except Exception as e:
+        error_msg = str(e)
+        if "gated dataset" in error_msg.lower() or "authenticated" in error_msg.lower():
+            raise ValueError(
+                f"Failed to load HuggingFace dataset '{dataset_path}': {e}\n\n"
+                f"This is a gated dataset that requires authentication. To access it:\n"
+                f"1. Create a HuggingFace account at https://huggingface.co/join\n"
+                f"2. Request access to the dataset at https://huggingface.co/datasets/{dataset_path}\n"
+                f"3. Generate an access token at https://huggingface.co/settings/tokens\n"
+                f"4. Login using: huggingface-cli login\n"
+                f"   Or set the HF_TOKEN environment variable with your token"
+            ) from e
+        else:
+            raise ValueError(f"Failed to load HuggingFace dataset '{dataset_path}': {e}") from e
+
+
 class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     """
     Data generator that replays LLM requests from OpenTelemetry trace files.
@@ -148,154 +281,168 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         base_seed: Optional[int] = None,
         num_workers: int = 1,
     ) -> None:
-        super().__init__(api_config, config, tokenizer, mp_manager=mp_manager, base_seed=base_seed, num_workers=num_workers)
-
         if not hasattr(config, "otel_trace_replay") or config.otel_trace_replay is None:
             raise ValueError("otel_trace_replay configuration is required for OTelTraceReplayDataGenerator")
 
         self.otel_config = config.otel_trace_replay
+
+        # Pass the replay config to the parent class
+        super().__init__(
+            api_config,
+            config,
+            tokenizer,
+            mp_manager=mp_manager,
+            base_seed=base_seed,
+            num_workers=num_workers,
+            replay_config=self.otel_config,
+        )
+
         self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
-        # Determine trace files to load
-        if self.otel_config.trace_directory:
-            self.trace_dir: Optional[Path] = Path(self.otel_config.trace_directory)
+        # Load trace data into uniform format (list of dicts with metadata)
+        trace_data_list: List[Dict[str, Any]] = []
 
-            if not self.trace_dir.exists():
-                raise ValueError(f"Trace directory does not exist: {self.trace_dir}")
-            if not self.trace_dir.is_dir():
-                raise ValueError(f"Trace directory path is not a directory: {self.trace_dir}")
+        trace_dir_str = self.otel_config.trace_directory
+        if trace_dir_str:
+            trace_dir = Path(trace_dir_str)
+
+            if not trace_dir.exists():
+                raise ValueError(f"Trace directory does not exist: {trace_dir}")
+            if not trace_dir.is_dir():
+                raise ValueError(f"Trace directory path is not a directory: {trace_dir}")
 
             # Load all JSON files from directory
-            self.trace_files_list = sorted(self.trace_dir.glob("*.json"))
-            if not self.trace_files_list:
-                raise ValueError(f"No JSON files found in {self.trace_dir}")
+            trace_files = sorted(trace_dir.glob("*.json"))
+            if not trace_files:
+                raise ValueError(f"No JSON files found in {trace_dir}")
+
+            for trace_file in trace_files:
+                try:
+                    data = json.loads(trace_file.read_text(encoding="utf-8"))
+                    trace_data_list.append(
+                        {
+                            "data": data,
+                            "source_name": trace_file.name,
+                            "source_id": str(trace_file),
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load {trace_file}: {e}")
+                    if not self.otel_config.skip_invalid_files:
+                        raise
 
         elif self.otel_config.trace_files:
             # Multiple files mode
-            self.trace_files_list = resolve_trace_files(self.otel_config.trace_files)
-            self.trace_dir = None
+            trace_files = resolve_trace_files(self.otel_config.trace_files)
 
             # Validate all files exist and are JSON
-            for trace_file in self.trace_files_list:
+            for trace_file in trace_files:
                 if not trace_file.exists():
                     raise ValueError(f"Trace file does not exist: {trace_file}")
                 if not trace_file.is_file():
                     raise ValueError(f"Trace file path is not a file: {trace_file}")
                 if trace_file.suffix != ".json":
                     raise ValueError(f"Trace file must be a JSON file: {trace_file}")
-        else:
-            raise ValueError("Either trace_directory or trace_files must be provided in otel_trace_replay config")
 
+                try:
+                    data = json.loads(trace_file.read_text(encoding="utf-8"))
+                    trace_data_list.append(
+                        {
+                            "data": data,
+                            "source_name": trace_file.name,
+                            "source_id": str(trace_file),
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to load {trace_file}: {e}")
+                    if not self.otel_config.skip_invalid_files:
+                        raise
+
+        elif self.otel_config.hf_dataset_path:
+            # HuggingFace dataset mode - load data directly without saving to disk
+            logger.info(f"Loading traces from HuggingFace dataset: {self.otel_config.hf_dataset_path}")
+            hf_data = _download_hf_dataset(self.otel_config.hf_dataset_path)
+
+            for idx, data in enumerate(hf_data):
+                trace_data_list.append(
+                    {
+                        "data": data,
+                        "source_name": f"hf_record_{idx}",
+                        "source_id": f"hf_dataset_record_{idx}",
+                    }
+                )
+
+            logger.info(f"Loaded {len(trace_data_list)} trace records from HuggingFace dataset")
+
+        else:
+            raise ValueError(
+                "Either trace_directory, trace_files, or hf_dataset_path must be provided in otel_trace_replay config"
+            )
+
+        self.trace_data_list = trace_data_list
         sessions = self._load_trace_files()
         self.initialize_sessions(sessions)
 
     def _load_trace_files(self) -> List[ReplaySession]:
-        """Load and process OTel JSON files."""
-        logger.info(f"Loading {len(self.trace_files_list)} trace files")
+        """Process loaded trace data into sessions."""
+        logger.info(f"Processing {len(self.trace_data_list)} trace records")
         sessions: List[ReplaySession] = []
 
-        for file_index, trace_file in enumerate(self.trace_files_list):
+        for trace_index, trace_info in enumerate(self.trace_data_list):
             try:
-                session = self._process_trace_file(trace_file, file_index)
+                session = self._process_trace_data(trace_info, trace_index)
                 if session:
                     sessions.append(session)
                     event_count = len(session.graph.events)
-                    logger.info(f"Loaded session {session.session_id} from {trace_file.name} with {event_count} events")
+                    logger.info(
+                        f"Loaded session {session.session_id} from {trace_info['source_name']} with {event_count} events"
+                    )
             except Exception as e:
-                logger.error(f"Failed to process trace file {trace_file}: {e}")
+                logger.error(f"Failed to process trace {trace_info['source_name']}: {e}")
                 if not self.otel_config.skip_invalid_files:
                     raise
 
         random.seed(self.base_seed)
         random.shuffle(sessions)
         logger.info(f"Randomized session order using seed: {self.base_seed}")
+
         return sessions
 
-    def _duplicate_sessions_if_needed(self) -> None:
-        """Duplicate sessions to ensure we have enough for high-concurrency testing.
-
-        This is useful when the trace corpus is smaller than needed for stress testing.
-        Sessions are duplicated with unique IDs to avoid conflicts.
-        Target: 300 sessions (enough for most test scenarios)
-        """
-        target_sessions = 300
-        current_count = len(self.sessions)
-
-        if current_count >= target_sessions:
-            logger.info(f"Session corpus sufficient: {current_count} sessions available (target: {target_sessions})")
-            return
-
-        # Calculate how many duplicates we need
-        duplicates_needed = target_sessions - current_count
-        logger.warning(
-            f"Session corpus small: {current_count} sessions available. "
-            f"Duplicating to reach {target_sessions} sessions for stress testing."
-        )
-
-        # Duplicate sessions in round-robin fashion
-        original_sessions = list(self.sessions)
-        duplicate_count = 0
-        session_idx = 0
-
-        while len(self.sessions) < target_sessions:
-            # Get next session to duplicate (round-robin)
-            source_session = original_sessions[session_idx % len(original_sessions)]
-            session_idx += 1
-            duplicate_count += 1
-
-            # Create duplicate with unique ID
-            duplicate_session = ReplaySession(
-                session_id=f"{source_session.session_id}_dup{duplicate_count}",
-                source_id=source_session.source_id,
-                session_index=source_session.session_index + 10000 + duplicate_count,
-                graph=source_session.graph,
-                start_offset_ms=source_session.start_offset_ms,
-            )
-
-            self.sessions.append(duplicate_session)
-
-        logger.info(f"Duplicated {duplicates_needed} sessions. Total sessions now: {len(self.sessions)}")
-
-    def _process_trace_file(self, trace_file: Path, file_index: int) -> Optional[ReplaySession]:
-        """Process a single OTel JSON trace file into a ReplayGraph session."""
-        try:
-            data = json.loads(trace_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in {trace_file}: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error reading trace file {trace_file}: {e}")
-            return None
+    def _process_trace_data(self, trace_info: Dict[str, Any], trace_index: int) -> Optional[ReplaySession]:
+        """Process a single trace data dict into a ReplayGraph session."""
+        data = trace_info["data"]
+        source_id = trace_info["source_id"]
+        source_name = trace_info["source_name"]
 
         spans = data.get("spans") or []
         if not spans:
-            logger.warning(f"No spans found in {trace_file}")
+            logger.warning(f"No spans found in {source_name}")
             return None
 
         try:
             raw_calls = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
             if not raw_calls:
-                logger.warning(f"No LLM calls found in {trace_file}")
+                logger.warning(f"No LLM calls found in {source_name}")
                 return None
 
             graph = build_graph(
                 raw_calls,
-                source_file=str(trace_file),
+                source_file=source_id,
             )
         except Exception as e:
-            logger.error(f"Error building graph from {trace_file}: {e}")
+            logger.error(f"Error building graph from {source_name}: {e}")
             return None
 
-        # Use trace_id from first call as session_id, but make it unique by adding file_index
-        # to handle cases where multiple files have the same trace_id
-        base_session_id = raw_calls[0].trace_id or f"session_{file_index}"
-        session_id = f"file{file_index}_{base_session_id}"
+        # Use trace_id from first call as session_id, but make it unique by adding trace_index
+        # to handle cases where multiple sources have the same trace_id
+        base_session_id = raw_calls[0].trace_id or f"session_{trace_index}"
+        session_id = f"trace{trace_index}_{base_session_id}"
 
         return ReplaySession(
             session_id=session_id,
-            source_id=str(trace_file),
-            session_index=file_index,
+            source_id=source_id,
+            session_index=trace_index,
             graph=graph,
         )

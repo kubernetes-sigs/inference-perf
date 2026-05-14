@@ -316,11 +316,8 @@ class ConversationReplayConfig(BaseModel):
     )
 
 
-class OTelTraceReplayConfig(BaseModel):
-    """Configuration for OTel trace replay data generator."""
-
-    trace_directory: Optional[str] = Field(None, description="Directory containing OTel JSON trace files")
-    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific OTel JSON trace files")
+class SessionReplayConfig(BaseModel):
+    """Base configuration for session replay data generators."""
 
     # Model configuration
     use_static_model: bool = Field(False, description="Use a single static model for all requests")
@@ -330,30 +327,70 @@ class OTelTraceReplayConfig(BaseModel):
     # Request configuration
     default_max_tokens: int = Field(1000, gt=0, description="Default max_tokens if not specified in trace")
 
+    # KV-cache invalidation
+    inject_random_session_id: bool = Field(
+        False, description="Inject random string into unique segments to invalidate KV-cache between sessions"
+    )
+
+    # Session duplication
+    duplicate_sessions_target: Optional[int] = Field(
+        None,
+        gt=0,
+        description="Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs.",
+    )
+
+    # Timing
+    max_wait_ms: int = Field(
+        15000,
+        ge=0,
+        description="Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace.",
+    )
+
     # Error handling
     include_errors: bool = Field(True, description="Include spans with error status")
     skip_invalid_files: bool = Field(False, description="Skip invalid trace files instead of failing")
 
     @model_validator(mode="after")
-    def validate_static_model(self) -> "OTelTraceReplayConfig":
-        # Validate that exactly one of trace_directory or trace_files is provided
-        sources_provided = sum(
-            [
-                self.trace_directory is not None,
-                self.trace_files is not None,
-            ]
-        )
-
-        if sources_provided == 0:
-            raise ValueError("Either trace_directory or trace_files must be provided")
-        if sources_provided > 1:
-            raise ValueError("Cannot specify both trace_directory and trace_files; choose one")
-
+    def validate_static_model(self) -> "SessionReplayConfig":
         # Validate static model configuration
         if self.use_static_model and not self.static_model_name:
             raise ValueError("static_model_name is required when use_static_model=True")
         if not self.use_static_model and self.static_model_name and not self.model_mapping:
             raise ValueError("Either use_static_model must be True or model_mapping must be provided")
+        return self
+
+
+class OTelTraceReplayConfig(SessionReplayConfig):
+    """Configuration for OTel trace replay data generator."""
+
+    trace_directory: Optional[str] = Field(None, description="Directory containing OTel JSON trace files")
+    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific OTel JSON trace files")
+    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_trace_sources(self) -> "OTelTraceReplayConfig":
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
+        sources_provided = sum(
+            [
+                self.trace_directory is not None,
+                self.trace_files is not None,
+                self.hf_dataset_path is not None,
+            ]
+        )
+
+        if sources_provided == 0:
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+        if sources_provided > 1:
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
         return self
 
 

@@ -22,7 +22,6 @@ load:
   stages:
     - concurrent_sessions: 10  # Run 10 conversations concurrently
       num_sessions: 50         # Process all 100 traces
-  num_workers: 20
   worker_max_concurrency: 1000
 
 server:

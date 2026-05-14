@@ -49,9 +49,10 @@ class RequestQueue(Generic[T]):
                     _ = queue.get_nowait()
                     queue.task_done()
                 except Empty:
-                    if queue.qsize() == 0:
-                        logger.debug("Drain finished")
-                        break
+                    # No qsize() check: it raises NotImplementedError on macOS.
+                    # Empty from get_nowait() is sufficient since producers are stopped before drain.
+                    logger.debug("Drain finished")
+                    break
 
     def put(self, item: T, channel_id: int = -1) -> None:
         """

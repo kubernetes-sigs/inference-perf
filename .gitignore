@@ -177,3 +177,9 @@ cython_debug/
 
 # Test Reports (directories)
 reports-*/
+
+# HuggingFace cache
+.hf_cache/
+
+# VSCode settings (keep local configurations)
+.vscode/

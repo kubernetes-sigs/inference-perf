@@ -120,14 +120,20 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
 | `--data.trace.file` | str | Matches data.trace.file in config |
 | `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
-| `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
-| `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
 | `--data.otel_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
+| `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
+| `--data.otel_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
 | `--data.otel_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.otel_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
+| `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
+| `--data.otel_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
+  - String: 'username/dataset-name'
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'} |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |

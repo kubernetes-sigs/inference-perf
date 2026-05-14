@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
-from inference_perf.client.server_metrics.base import ModelServerMetrics
+from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
@@ -739,6 +739,7 @@ class ReportGenerator:
                 session_metrics,
                 report_config.session_lifecycle,
                 percentiles,
+                runtime_parameters,
             )
             lifecycle_reports.extend(session_reports)
 
@@ -817,6 +818,7 @@ class ReportGenerator:
         session_metrics: List[SessionLifecycleMetric],
         report_config: SessionLifecycleReportConfig,
         percentiles: List[float],
+        runtime_parameters: PerfRuntimeParameters,
     ) -> List[ReportFile]:
         """Generate session-level lifecycle reports."""
         reports: List[ReportFile] = []
@@ -837,10 +839,41 @@ class ReportGenerator:
             for m in session_metrics:
                 stage_buckets[m.stage_id].append(m)
             for stage_id, stage_metrics in stage_buckets.items():
+                # Get stage runtime info and build metadata
+                stage_info = runtime_parameters.stages.get(stage_id)
+                stage_summary = self.summarize_sessions(stage_metrics, percentiles)
+
+                if stage_info:
+                    # Determine status string
+                    if stage_info.status == StageStatus.COMPLETED:
+                        status_str = "COMPLETED"
+                    elif stage_info.status == StageStatus.FAILED:
+                        # Check if failure was due to timeout by comparing actual duration
+                        actual_duration = stage_info.end_time - stage_info.start_time
+                        if stage_info.timeout is not None and actual_duration >= stage_info.timeout:
+                            status_str = "TIMED_OUT"
+                        else:
+                            status_str = "FAILED"
+                    else:
+                        status_str = "FAILED"
+
+                    # Build stage metadata
+                    stage_metadata = {
+                        "stage_id": stage_id,
+                        "status": status_str,
+                        "timeout_configured": stage_info.timeout,
+                        "actual_duration": stage_info.end_time - stage_info.start_time,
+                        "concurrent_sessions": stage_info.concurrency_level,
+                        "session_rate": stage_info.rate if stage_info.rate > 0 else None,
+                    }
+
+                    # Insert stage_metadata as first key
+                    stage_summary = {"stage_metadata": stage_metadata, **stage_summary}
+
                 reports.append(
                     ReportFile(
                         name=f"stage_{stage_id}_session_lifecycle_metrics",
-                        contents=self.summarize_sessions(stage_metrics, percentiles),
+                        contents=stage_summary,
                     )
                 )
 

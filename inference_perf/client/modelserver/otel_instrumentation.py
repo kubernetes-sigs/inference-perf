@@ -339,9 +339,17 @@ class OTelInstrumentation:
                     # Text completion - gen_ai.prompt as string
                     span.set_attribute("gen_ai.prompt", response_info["input_prompt"])
 
-                # Output text (gen_ai.output.text)
+                # Tool definitions sent with the request (gen_ai.tool.definitions)
+                if "tool_definitions" in response_info:
+                    span.set_attribute("gen_ai.tool.definitions", response_info["tool_definitions"])
+
+                # Output text (gen_ai.output.text) — plain text only
                 if "output_text" in response_info:
                     span.set_attribute("gen_ai.output.text", response_info["output_text"])
+
+                # Full output message when tool calls are present (gen_ai.output.message)
+                if "output_message" in response_info:
+                    span.set_attribute("gen_ai.output.message", response_info["output_message"])
 
                 # Response ID (custom attribute)
                 if "response_id" in response_info:

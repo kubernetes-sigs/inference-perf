@@ -5,25 +5,29 @@ api:
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    trace_directory: <PATH_TO_OTEL_TRACES>
+    hf_dataset_path: "Exgentic/agent-llm-traces"
+      # Optional: Provide HF dataset details in a nested way.
+      #path: "Exgentic/agent-llm-traces"
+      #revision: "v1"     # Optional: git revision (branch, tag, or commit hash)
+      #split: "train"       # Optional: dataset split (default: "train" if not specified)
 
     # Model configuration
     use_static_model: true
     static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
-
-    # Request settings
-    default_max_tokens: 50
-
+    # max_wait_ms: 100 # Defaults to 15,000 ms. Uncomment to cap the maximum wait time between session events.
+                       # The wait time is based on the duration observed in the original trace, such as
+                       # the time spent executing a tool between LLM calls.
     include_errors: false
     skip_invalid_files: true
-
 
 load:
   type: trace_session_replay
   stages:
-    - concurrent_sessions: 30
-  num_workers: 10
-  worker_max_concurrency: 30
+    - concurrent_sessions: 10 # number of concurrent sessions to replay in this stage
+      num_sessions: 100 # Total number of sessions to replay in this stage, out of the 1,781 available
+                        # in the dataset. To replay more than 1,781 sessions, use duplicate_sessions_target
+                        # to duplicate existing sessions until the desired target is reached.
+  worker_max_concurrency: 8000
   base_seed: 42
 
 server:
@@ -33,7 +37,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-otel-simple-test"
+    path: "reports-otel-exgentic-load-1"
 
 report:
   request_lifecycle:

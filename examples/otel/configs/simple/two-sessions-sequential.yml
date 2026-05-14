@@ -30,7 +30,6 @@ load:
   stages:
     - concurrent_sessions: 1  # Sequential execution (one session at a time)
 
-  num_workers: 3
   worker_max_concurrency: 10
 
 server:
@@ -40,7 +39,7 @@ server:
 
 storage:
   local_storage:
-    path: "reports-otel-trace-replay-session"
+    path: "reports-two-sessions-sequential"
 
 report:
   request_lifecycle:
