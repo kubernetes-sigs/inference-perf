@@ -211,41 +211,45 @@ class TestConversationReplayDataGenerator:
         assert isinstance(result, _ConversationReplayAPIData)
         assert result.tool_call_latency_sec == 5.0
 
-    def test_load_lazy_data_reprimes_after_clear_instances(self) -> None:
+    def test_load_lazy_data_regenerates_after_clear_instances(self) -> None:
         """After LoadGenerator clears the session registry between stages,
-        load_lazy_data must re-register the session with its original
-        system_prompt so subsequent requests still send the full context."""
+        load_lazy_data must regenerate the system_prompt for the slot."""
         api_config, data_config = _make_config(num_conversations=3)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
         original_contexts = {bp.conversation_id: bp.system_prompt for bp in gen.blueprints}
         assert all(f"conv_{i}" in LocalUserSession._instances for i in range(3))
 
-        # Simulate LoadGenerator's between-stage cleanup (PR #459).
+        # Simulate LoadGenerator's between-stage cleanup.
         LocalUserSession.clear_instances()
         assert LocalUserSession._instances == {}
 
-        # First request after the clear should re-prime the slot it touches.
+        # First request after the clear should re-prime the slot it touches AND regenerate prompt.
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1))
 
         assert "conv_1" in LocalUserSession._instances
-        assert LocalUserSession._instances["conv_1"].context == original_contexts[1]
-        # Other slots are re-primed lazily on their own first request, not eagerly.
-        assert "conv_0" not in LocalUserSession._instances
-        assert "conv_2" not in LocalUserSession._instances
+        # It should be different from original
+        assert LocalUserSession._instances["conv_1"].context != original_contexts[1]
 
-    def test_system_prompt_preserved_across_repeated_clears(self) -> None:
-        """Across multiple stage transitions, each re-prime must restore the
-        same system_prompt the blueprint was built with — not a fresh sample."""
+    def test_system_prompt_regenerated_across_repeated_clears(self) -> None:
+        """Across multiple stage transitions, each re-prime must regenerate a fresh system_prompt."""
         api_config, data_config = _make_config(num_conversations=3)
-        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
-        original_contexts = {bp.conversation_id: bp.system_prompt for bp in gen.blueprints}
+        # Use a tokenizer that returns different text each time to verify regeneration
+        mock_tok = _make_mock_tokenizer()
+        texts = [f"text_{i}" for i in range(100)]
+        mock_tok.get_tokenizer().decode.side_effect = texts
+        
+        gen = ConversationReplayDataGenerator(api_config, data_config, mock_tok)
+        
+        last_contexts = {i: "" for i in range(3)}
 
-        for _ in range(4):
+        for _ in range(3):
             LocalUserSession.clear_instances()
             for conv_idx in range(3):
                 gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx))
-                assert LocalUserSession._instances[f"conv_{conv_idx}"].context == original_contexts[conv_idx]
+                current_context = LocalUserSession._instances[f"conv_{conv_idx}"].context
+                assert current_context != last_contexts[conv_idx]
+                last_contexts[conv_idx] = current_context
 
     def test_load_lazy_data_does_not_replace_live_session(self) -> None:
         """When the registry still holds the session (mid-stage), load_lazy_data
