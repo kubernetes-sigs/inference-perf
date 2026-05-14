@@ -95,6 +95,13 @@ class ChatCompletionAPIData(InferenceAPIData):
     # group — required for prefix-cache benchmarks.
     prefix_text: Optional[str] = None
     prefix_multimodal_spec: Optional[MultimodalSpec] = None
+    # Folded into the deterministic seed when materializing
+    # ``prefix_multimodal_spec`` so that prefix specs with identical
+    # dimensions but different ``prefix_cache_key`` produce distinct bytes.
+    # Datagens that sample one prefix spec per shared-prefix group set this
+    # to the group id to keep within-group bytes stable while making across-
+    # group bytes diverge.
+    prefix_cache_key: Optional[int] = None
 
     # Realized per-instance metrics populated by ``to_request_body`` and read
     # by ``process_response`` to build ``RequestMetrics``. Aggregates across
@@ -108,13 +115,15 @@ class ChatCompletionAPIData(InferenceAPIData):
         text_str: str,
         spec: MultimodalSpec,
         deterministic: bool,
+        cache_key: Optional[int] = None,
     ) -> Tuple[list[dict[str, Any]], list[Image], list[Video], list[Audio]]:
         """Materialize bytes from ``spec`` and weave into ``text_str``.
 
         Returns ``(content_list, images, videos, audios)``. Pure (no mutation
         of class state). ``deterministic=True`` seeds RNGs per-instance from
-        spec content, yielding identical bytes for identical specs across
-        calls — required for prefix-cache benchmarks.
+        spec content + ``cache_key``, yielding identical bytes for identical
+        (spec, cache_key) pairs across calls — required for prefix-cache
+        benchmarks. ``cache_key`` is ignored when ``deterministic=False``.
         """
         media_items: list[Tuple[dict[str, Any], float]] = []
         image_instances: list[Image] = []
@@ -125,7 +134,7 @@ class ChatCompletionAPIData(InferenceAPIData):
         def _rng_for(*key_parts: object) -> np.random.Generator:
             if not deterministic:
                 return fresh_rng
-            return np.random.default_rng(hash(key_parts) & 0xFFFFFFFF)
+            return np.random.default_rng(hash((cache_key,) + key_parts) & 0xFFFFFFFF)
 
         for i, img in enumerate(spec.images):
             raw_bytes, data_url = _encode_image(
@@ -211,7 +220,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             prefix_text = self.prefix_text or ""
             if self.prefix_multimodal_spec is not None:
                 prefix_content, p_imgs, p_vids, p_auds = self._materialize_multimodal_content(
-                    prefix_text, self.prefix_multimodal_spec, deterministic=True
+                    prefix_text, self.prefix_multimodal_spec, deterministic=True, cache_key=self.prefix_cache_key
                 )
                 all_images.extend(p_imgs)
                 all_videos.extend(p_vids)
