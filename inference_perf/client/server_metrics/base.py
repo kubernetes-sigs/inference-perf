@@ -11,10 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, TYPE_CHECKING
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from inference_perf.client.modelserver.base import Metric, BaseMetrics
 
 
 # Base class for accumulating metrics objects on
@@ -41,7 +45,11 @@ class StageRuntimeInfo(BaseModel):
 
 class PerfRuntimeParameters:
     def __init__(
-        self, start_time: float, duration: float, model_server_metrics: MetricsMetadata, stages: dict[int, StageRuntimeInfo]
+        self,
+        start_time: float,
+        duration: float,
+        model_server_metrics: MetricsMetadata | list[Metric] | BaseMetrics,
+        stages: dict[int, StageRuntimeInfo],
     ) -> None:
         self.start_time = start_time
         self.duration = duration

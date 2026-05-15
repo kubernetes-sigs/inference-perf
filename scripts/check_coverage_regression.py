@@ -95,7 +95,9 @@ def generate_baseline(output_path: Path):
 def generate_current(output_path: Path):
     """Generates coverage for the current branch/environment."""
     print("--- Generating current coverage ---")
-    cmd = f"pdm run pytest --cov=inference_perf --cov-report=json:{output_path.absolute()} tests/"
+    # Use the current python executable to run pytest directly
+    # This avoids issues with nested 'pdm run' calls and ensures we use the same environment
+    cmd = f"PYTHONPATH=.:api/generated/python {sys.executable} -m pytest --cov=inference_perf --cov-report=json:{output_path.absolute()} tests/"
     run_command(cmd)
     print(f"✅ Current report generated: {output_path.name}")
 

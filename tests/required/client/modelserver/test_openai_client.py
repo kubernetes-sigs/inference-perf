@@ -15,7 +15,8 @@ import pytest
 import asyncio
 import aiohttp
 from unittest.mock import AsyncMock, MagicMock
-from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
+from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
+from inference_perf.client.modelserver.base import Metric
 from inference_perf.apis import ErrorResponseInfo, InferenceInfo
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -27,6 +28,7 @@ def mock_client() -> MagicMock:
     client.api_config = MagicMock()
     client.api_config.headers = {}
     client.api_config.response_format = None
+    client.api_config.streaming = False
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None
@@ -102,3 +104,77 @@ async def test_process_request_general_exception(mock_client: MagicMock, mock_da
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert isinstance(metric.error, ErrorResponseInfo)
     assert metric.error.error_type == "ValueError"
+
+
+def test_openai_metrics_get_all_metrics() -> None:
+    """Test get_all_metrics deduplicates and collects from lists."""
+
+    class FakeMetric(Metric):
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def get_queries(self, duration: float) -> list[tuple[str, str]]:
+            return []
+
+    m1 = FakeMetric("m1")
+    m2 = FakeMetric("m2")
+    m3 = FakeMetric("m3")
+    m4 = FakeMetric("m4")
+
+    metrics = OpenAIMetrics(
+        prompt_tokens=m1,
+        output_tokens=m2,
+        requests=m3,
+        request_latency=m1,  # Duplicate
+        queue_length=m2,  # Duplicate
+        time_per_output_token=m3,  # Duplicate
+        custom_metrics=[m1, m4],
+    )
+
+    all_metrics = metrics.get_all_metrics()
+
+    # Should contain m1, m2, m3, m4 (deduplicated)
+    assert len(all_metrics) == 4
+    assert m1 in all_metrics
+    assert m2 in all_metrics
+    assert m3 in all_metrics
+    assert m4 in all_metrics
+
+
+@pytest.mark.asyncio
+async def test_process_request_success(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """Test process_request with HTTP 200 success."""
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    # Mock the response
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.text = AsyncMock(return_value="success_response_text")
+
+    # Mock data.process_response
+    expected_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
+    mock_data.process_response.return_value = expected_info
+
+    # Mock the post context
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    # Verify process_response was called
+    mock_data.process_response.assert_called_once_with(
+        response=mock_response,
+        config=mock_client.api_config,
+        tokenizer=mock_client.tokenizer,
+        lora_adapter=None,
+    )
+
+    # Verify metric was recorded
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.info == expected_info
+    assert metric.response_data == "success_response_text"
+    assert metric.error is None
