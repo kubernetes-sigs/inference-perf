@@ -1,0 +1,29 @@
+# Kustomize lacks easy support for strategic patch merge for CRDs
+# Leader
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/nodeSelector
+  value:
+    cloud.google.com/gke-accelerator: nvidia-h100-80gb
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/resources
+  value:
+    limits:
+      nvidia.com/gpu: "8"
+      memory: 1770Gi
+      ephemeral-storage: 800Gi
+    requests:
+      ephemeral-storage: 800Gi
+      cpu: 125
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/-
+  value: 
+    name: TENSOR_PARALLEL_SIZE
+    value: "8"
+
+# Worker
+- op: copy
+  from: /spec/leaderWorkerTemplate/leaderTemplate/spec/nodeSelector
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/nodeSelector
+- op: copy
+  from: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/resources
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/resources

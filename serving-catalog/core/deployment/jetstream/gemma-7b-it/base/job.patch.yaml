@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Job
+metadata:
+  name: gemma-7b-it-jetstream-data-loader
+  labels:
+    app: gemma-7b-it-jetstream-data-loader
+spec:
+  template:
+    metadata:
+      labels:
+        app: gemma-7b-it-jetstream-data-loader
+    spec:
+      containers:
+      - name: inference-checkpoint
+        args:
+        - -b=$BUCKET_NAME
+        - -m=google/gemma/maxtext/7b-it/2

@@ -1,0 +1,11 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../../base
+
+patches:
+  - path: hpa.patch.yaml
+    target:
+      kind: HorizontalPodAutoscaler

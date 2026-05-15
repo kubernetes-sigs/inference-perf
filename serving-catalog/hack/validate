@@ -1,0 +1,12 @@
+#!/bin/bash
+
+for base in $(find . -type d -wholename '*/base'); do
+    kustomize build $base > /dev/null 2>&1 || echo "Failed to build $base"
+done
+
+providers=("gke")
+for provider in "${providers[@]}"; do
+    for kustomization in $(find . -type d -wholename "*/${provider}" | grep -v components); do
+        kustomize build $kustomization | kubectl apply --dry-run=server --validate=true -f - || echo "Failed to validate kustomization: " $kustomization
+    done
+done
