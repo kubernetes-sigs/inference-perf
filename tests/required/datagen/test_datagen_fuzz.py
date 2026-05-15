@@ -104,12 +104,8 @@ def test_datagen_length_fuzz(gen_type: DataGenType) -> None:
             assert actual_len == expected_len, f"Failed for {gen_type}, expected {expected_len}, got {actual_len}"
 
 
-# Regression for kubernetes-sigs/inference-perf#490: with a real BPE tokenizer,
-# `shared_prefix` with tiny question lengths used to wedge the convergence loop
-# at target_len+1 because the prefix/suffix boundary inflated the count by one
-# and the adjustment step couldn't shrink past a 1-token suffix. The mock
-# tokenizer used in the test above counts by whitespace so it can't surface
-# this — exercise gpt2 here to cover the boundary case.
+# Regression for #490: real BPE tokenizer + small q_len. Mock tokenizer above
+# tokenizes by whitespace so it cannot expose BPE boundary effects.
 @pytest.mark.parametrize("question_len_min", [1, 2, 3])
 def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) -> None:
     tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
@@ -126,9 +122,6 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
 
     gen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
 
-    # Every generated prompt must tokenize to exactly system_prompt_len + sampled q_len.
-    # We don't know the per-prompt sampled q_len, but we know prefix is constant per group
-    # and full length should be in the valid sampled range.
     for prompt, prefix in zip(gen.prompts, gen.prefix_texts, strict=True):
         prefix_count = tokenizer.count_tokens(prefix)
         full_count = tokenizer.count_tokens(prompt)
@@ -136,7 +129,6 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
         assert prefix_count == 100, f"prefix tokenized to {prefix_count}, expected 100"
         assert question_len_min <= q_count <= 20, f"question length {q_count} outside [{question_len_min}, 20]"
 
-    # Also confirm get_data() returns the right shape via load_lazy_data.
     n = 5
     seen = 0
     for lazy in gen.get_data():
@@ -148,13 +140,9 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
             break
 
 
-# Prefix-cache invariant: the BPE-tokenized form of every prompt in a group
-# must agree on its first len(encode(prefix)) tokens. If the suffix's first
-# token were drawn from the full vocab it could merge across the boundary and
-# shift the prefix's tokenization — pinning to word-start tokens prevents
-# that. Exercise gpt2 (the same tokenizer that surfaces the off-by-one count
-# bug under boundary merges) so a regression in the pinning logic would also
-# fail here.
+# Prefix-cache invariant: every prompt in a group must tokenize to the same
+# first len(encode(prefix)) tokens. Pinning the suffix's first token to a
+# word-start token is what enforces this.
 def test_shared_prefix_server_tokens_stable_across_group() -> None:
     tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
     hf = tokenizer.get_tokenizer()
@@ -176,8 +164,6 @@ def test_shared_prefix_server_tokens_stable_across_group() -> None:
 
     for gid, entries in by_group.items():
         canonical_prefix = entries[0][1]
-        # Server-side tokenization length we care about. Use add_special_tokens=False
-        # so the comparison is over the prefix content itself, not the BOS prefix.
         canonical_prefix_ids = hf(canonical_prefix, add_special_tokens=False).input_ids
         n_prefix = len(canonical_prefix_ids)
         assert n_prefix > 0

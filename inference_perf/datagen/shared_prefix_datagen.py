@@ -72,11 +72,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for SharedPrefixDataGenerator but was not initialized.")
 
         self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
-        # Pinning the first suffix token to a word-start token keeps the
-        # prefix/suffix BPE boundary stable: the composed prompt's count is
-        # exact AND the prefix's server-side tokenization is identical across
-        # requests in a group (prefix-cache hits remain reliable). See
-        # build_word_start_token_ids for the full rationale.
         self.word_start_token_ids = build_word_start_token_ids(self.tokenizer, self.valid_token_ids)
 
         if self.shared_prefix is None:
@@ -196,13 +191,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         return random_token_ids(self.rng, self.valid_token_ids, length)
 
     def _sample_suffix_ids(self, length: int) -> List[int]:
-        """Sample ``length`` token IDs intended to be appended after a prefix.
-
-        The first token is drawn from the word-start subset so the
-        prefix/suffix BPE boundary cannot merge into surrounding tokens —
-        this is what guarantees both exact composed length and prefix-cache
-        stability (see ``build_word_start_token_ids``).
-        """
+        """Sample suffix IDs with a word-start first token (see build_word_start_token_ids)."""
         if length <= 0:
             return []
         first = [int(self.rng.choice(self.word_start_token_ids))]
@@ -228,11 +217,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         for group_id in range(self.num_groups):
             sys_prompt_len = self.system_prompt_lens_per_group[group_id]
-            # Generate the prefix and keep its token IDs so each prompt can be
-            # built by concatenating tokens, not strings. String concat
-            # ("prefix" + " " + "suffix") re-tokenizes across the BPE boundary
-            # and can shift the count by ±1 token — see #490. Token-level
-            # concat sidesteps the boundary entirely.
             shared_prefix_text, shared_prefix_ids = self._generate_exact_length_text(sys_prompt_len)
 
             if self.prefix_multimodal:

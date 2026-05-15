@@ -63,23 +63,13 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
 
 
 def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
-    """Subset of valid_token_ids whose decoded form starts with whitespace.
+    """Token IDs whose decoded form starts with whitespace.
 
-    Pinning the first token of a generated suffix to this subset guarantees
-    the BPE/SentencePiece tokenizer treats the prefix and suffix as separate
-    word segments — no merge across the boundary. This preserves two
-    invariants simultaneously when composing prompts as
-    ``decode(prefix_ids + suffix_ids)``:
-
-      1. The full prompt retokenizes to exactly ``len(prefix_ids) +
-         len(suffix_ids)`` (no boundary inflation that would otherwise cause
-         off-by-one length mismatches — see #490).
-      2. The first ``len(prefix_ids)`` server-side tokens are stable across
-         different suffixes within the same group, so prefix-cache hits are
-         reliable.
-
-    If the tokenizer has no word-start tokens (unusual — major BPE and
-    SentencePiece tokenizers all do), falls back to ``valid_token_ids``.
+    Used to pin the first token of a suffix when appending it to a prefix:
+    a whitespace-prefixed token prevents BPE merges across the boundary,
+    so ``len(decode(prefix_ids + suffix_ids))`` retokenizes exactly and the
+    prefix's server-side tokens stay stable. Falls back to the full vocab
+    when no such tokens exist.
     """
     hf_tokenizer = tokenizer.get_tokenizer()
     word_starts: List[int] = []
@@ -98,27 +88,12 @@ def converge_to_exact_length_text(
     initial_tokens: List[int],
     adjust_tokens_fn: Callable[[List[int], int, int], List[int]],
 ) -> Tuple[str, List[int]]:
-    """Generates a string that tokenizes to exactly target_len.
+    """Generate text tokenizing to exactly target_len; return (text, ids).
 
-    Args:
-        tokenizer: The custom tokenizer.
-        target_len: The target token length.
-        initial_tokens: The initial list of token IDs to start with.
-        adjust_tokens_fn: A callback function to adjust the token list when the
-          length doesn't match. It takes (current_tokens, current_len,
-          target_len) and returns new_tokens.
-
-    Returns:
-        A tuple of (decoded_text, token_ids). The token_ids are the underlying
-        ids that produced ``decoded_text``; callers that want to compose this
-        text with another generated chunk should concatenate the ids and
-        decode once, rather than concatenating decoded strings (which
-        re-tokenizes across the boundary and can shift the count).
-
-    Raises:
-        ValueError: If we cannot land on exactly `target_len` within the
-          iteration budget. Usually a configuration mismatch where the
-          tokenizer differs from the one the model server is running.
+    ``adjust_tokens_fn`` takes ``(current_tokens, current_len, target_len)``
+    and returns new tokens. The returned ids let callers compose with another
+    chunk at the token level instead of by string concat (which would
+    re-tokenize across the boundary).
     """
     if target_len <= 0:
         return "", []
@@ -153,11 +128,7 @@ def generate_random_exact_length_text(
     tokenizer: CustomTokenizer,
     target_len: int,
 ) -> Tuple[str, List[int]]:
-    """Generate random text that tokenizes to exactly target_len.
-
-    Returns ``(text, token_ids)`` — see ``converge_to_exact_length_text`` for
-    why both are exposed.
-    """
+    """Generate random text tokenizing to exactly target_len; return (text, ids)."""
     if target_len <= 0:
         return "", []
 
