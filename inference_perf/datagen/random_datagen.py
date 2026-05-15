@@ -93,7 +93,8 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Generates a string that tokenizes to exactly target_len."""
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generating exact length prompts.")
-        return generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len)
+        text, _ = generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len)
+        return text
 
     def get_request_count(self) -> int:
         return min(len(self.input_lengths), len(self.output_lengths))

@@ -1,14 +1,16 @@
 import pytest
 from unittest.mock import MagicMock
 import numpy as np
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, DataConfig, Distribution, DataGenType
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
+from inference_perf.apis.user_session import UserSessionCompletionAPIData
 from inference_perf.datagen.random_datagen import RandomDataGenerator
 from inference_perf.datagen.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.config import SharedPrefix
 from inference_perf.datagen.base import DataGenerator, LazyLoadDataMixin
 from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
@@ -100,3 +102,47 @@ def test_datagen_length_fuzz(gen_type: DataGenType) -> None:
 
             print(f"Type: {gen_type}, Expected: {expected_len}, Actual: {actual_len}")
             assert actual_len == expected_len, f"Failed for {gen_type}, expected {expected_len}, got {actual_len}"
+
+
+# Regression for kubernetes-sigs/inference-perf#490: with a real BPE tokenizer,
+# `shared_prefix` with tiny question lengths used to wedge the convergence loop
+# at target_len+1 because the prefix/suffix boundary inflated the count by one
+# and the adjustment step couldn't shrink past a 1-token suffix. The mock
+# tokenizer used in the test above counts by whitespace so it can't surface
+# this — exercise gpt2 here to cover the boundary case.
+@pytest.mark.parametrize("question_len_min", [1, 2, 3])
+def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+    api_config = APIConfig(type=APIType.Completion)
+    shared_prefix_cfg = SharedPrefix(
+        num_groups=3,
+        num_prompts_per_group=50,
+        system_prompt_len=100,
+        question_distribution=Distribution(mean=float(question_len_min + 2), std_dev=2.0, min=question_len_min, max=20),
+        output_distribution=Distribution(mean=10.0, std_dev=1.0, min=1, max=20),
+        enable_multi_turn_chat=True,
+    )
+    data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)
+
+    gen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+
+    # Every generated prompt must tokenize to exactly system_prompt_len + sampled q_len.
+    # We don't know the per-prompt sampled q_len, but we know prefix is constant per group
+    # and full length should be in the valid sampled range.
+    for prompt, prefix in zip(gen.prompts, gen.prefix_texts, strict=True):
+        prefix_count = tokenizer.count_tokens(prefix)
+        full_count = tokenizer.count_tokens(prompt)
+        q_count = full_count - prefix_count
+        assert prefix_count == 100, f"prefix tokenized to {prefix_count}, expected 100"
+        assert question_len_min <= q_count <= 20, f"question length {q_count} outside [{question_len_min}, 20]"
+
+    # Also confirm get_data() returns the right shape via load_lazy_data.
+    n = 5
+    seen = 0
+    for lazy in gen.get_data():
+        if isinstance(lazy, LazyLoadInferenceAPIData):
+            p = gen.load_lazy_data(lazy)
+            assert isinstance(p, UserSessionCompletionAPIData)
+        seen += 1
+        if seen >= n:
+            break
