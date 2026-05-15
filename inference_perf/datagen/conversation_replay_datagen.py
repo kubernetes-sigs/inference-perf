@@ -266,7 +266,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             context=context,
             system_prompt=system_prompt,
             tokenizer=self.tokenizer,
-            max_model_len=self.max_model_len
+            max_model_len=self.max_model_len,
         )
         LocalUserSession._instances[user_session_id] = session
         return session

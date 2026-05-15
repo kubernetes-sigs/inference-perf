@@ -259,27 +259,17 @@ class TestUserSessionTruncation:
         tok = _mock_tokenizer()
         hf = tok.get_tokenizer.return_value
         hf.encode = MagicMock(side_effect=lambda text: [1] * tok.count_tokens(text))
-        
-        session = LocalUserSession(
-            user_session_id="sess_1",
-            system_prompt="tok_5",
-            tokenizer=tok,
-            max_model_len=70
-        )
+
+        session = LocalUserSession(user_session_id="sess_1", system_prompt="tok_5", tokenizer=tok, max_model_len=70)
         LocalUserSession._instances["sess_1"] = session
-        
+
         session.history = ["tok_5", "tok_5"]
         session.context = "tok_5 tok_5 tok_5"
-        
-        data = UserSessionCompletionAPIData(
-            user_session_id="sess_1",
-            target_round=1,
-            prompt="tok_10",
-            max_tokens=0
-        )
-        
+
+        data = UserSessionCompletionAPIData(user_session_id="sess_1", target_round=1, prompt="tok_10", max_tokens=0)
+
         payload = await data.to_payload("model", 0, False, False)
-        
+
         assert session.history == ["tok_5"]
         assert payload["prompt"] == "tok_5 tok_5 tok_10"
 
@@ -288,26 +278,16 @@ class TestUserSessionTruncation:
         tok = _mock_tokenizer()
         hf = tok.get_tokenizer.return_value
         hf.encode = MagicMock(side_effect=lambda text: [1] * tok.count_tokens(text))
-        
-        session = LocalUserSession(
-            user_session_id="sess_2",
-            system_prompt="tok_15",
-            tokenizer=tok,
-            max_model_len=70
-        )
+
+        session = LocalUserSession(user_session_id="sess_2", system_prompt="tok_15", tokenizer=tok, max_model_len=70)
         LocalUserSession._instances["sess_2"] = session
-        
+
         session.history = []
         session.context = "tok_15"
-        
-        data = UserSessionCompletionAPIData(
-            user_session_id="sess_2",
-            target_round=0,
-            prompt="tok_10",
-            max_tokens=0
-        )
-        
+
+        data = UserSessionCompletionAPIData(user_session_id="sess_2", target_round=0, prompt="tok_10", max_tokens=0)
+
         payload = await data.to_payload("model", 0, False, False)
-        
+
         assert session.system_prompt == "tok_10"
         assert payload["prompt"] == "tok_10 tok_10"

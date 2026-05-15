@@ -322,17 +322,18 @@ class TestDistributionExtensions:
 class TestSlidingWindowTruncation:
     def test_sliding_window_truncation(self) -> None:
         from inference_perf.apis.user_session import LocalUserSession
+
         mock_tokenizer = MagicMock()
         # count_tokens returns 100 for system prompt and 100 for each turn
         mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split()) * 10
 
-        system_prompt = "System Instruction" # length in words = 2 -> 20 tokens
+        system_prompt = "System Instruction"  # length in words = 2 -> 20 tokens
         session = LocalUserSession(
             user_session_id="test_session",
             context=system_prompt,
             system_prompt=system_prompt,
             tokenizer=mock_tokenizer,
-            max_model_len=50
+            max_model_len=50,
         )
 
         # turn 1: context grows by 10 tokens
@@ -354,4 +355,3 @@ class TestSlidingWindowTruncation:
         session.update_context(session.context + " Turn4")
         assert session.history == ["Turn2", "Turn3", "Turn4"]
         assert session.context == "System Instruction Turn2 Turn3 Turn4"
-
