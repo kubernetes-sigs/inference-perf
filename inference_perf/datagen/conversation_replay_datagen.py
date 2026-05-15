@@ -176,6 +176,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Seeded RNG for deterministic generation
         self.rng = np.random.default_rng(self.cr_config.seed)
+        self.max_model_len = self.cr_config.max_model_len or 225000
 
         # Build conversation blueprints
         self.blueprints: List[ConversationBlueprint] = []
@@ -225,25 +226,13 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         # Closed-loop replenishment: when a conversation finishes all its turns,
         # reset the session so the slot immediately starts a fresh conversation.
-        # This happens in the worker process (after fork), so each worker safely
-        # manages its own copy of the session for its assigned slots.
         if turn_idx == 0 and round_num > 0:
             self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=f"slot_{conv_idx}_convo_{convo_num}",
                 context=bp.system_prompt,
+                system_prompt=bp.system_prompt,
             )
             logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
-        elif len(self.user_sessions[conv_idx].context) > 2_700_000:
-            # Safety reset: context is approaching max_model_len.
-            # Random Qwen3 tokens decode to ~12 chars/token on average, so
-            # 225K tokens ≈ 2.7M chars. Reset to fresh context rather than
-            # letting vLLM reject the request due to exceeding max_model_len.
-            self.user_sessions[conv_idx] = self._new_session(
-                user_session_id=f"slot_{conv_idx}_convo_{convo_num}_reset",
-                context=bp.system_prompt,
-            )
-            turn_idx = 0
-            logger.warning("Slot %d: safety context reset (context >2.7M chars)", conv_idx)
 
         latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
         return _ConversationReplayAPIData(
@@ -271,13 +260,14 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     # -- Internal ---------------------------------------------------------
 
-    @staticmethod
-    def _new_session(user_session_id: str, context: str) -> LocalUserSession:
-        """Create a LocalUserSession and register it in the class-level registry
-        so that UserSessionCompletionAPIData.user_session (which looks up via
-        ``LocalUserSession.get_instance``) resolves to it.
-        """
-        session = LocalUserSession(user_session_id=user_session_id, context=context)
+    def _new_session(self, user_session_id: str, context: str, system_prompt: str = "") -> LocalUserSession:
+        session = LocalUserSession(
+            user_session_id=user_session_id,
+            context=context,
+            system_prompt=system_prompt,
+            tokenizer=self.tokenizer,
+            max_model_len=self.max_model_len,
+        )
         LocalUserSession._instances[user_session_id] = session
         return session
 
@@ -377,5 +367,6 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self._new_session(
                     user_session_id=f"conv_{conv_id}",
                     context=system_prompt,
+                    system_prompt=system_prompt,
                 )
             )

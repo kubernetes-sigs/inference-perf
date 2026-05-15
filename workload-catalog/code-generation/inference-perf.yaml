@@ -1,42 +1,44 @@
 load:
   type: concurrent
+  num_workers: 8
+  worker_max_concurrency: 1000
   stages:
-  - num_requests: 120
-    concurrency_level: 4
-  - num_requests: 120
-    concurrency_level: 8
-  - num_requests: 120
-    concurrency_level: 12
-  - num_requests: 120
-    concurrency_level: 16
-  - num_requests: 120
+  - num_requests: 100
+    concurrency_level: 5
+  - num_requests: 200
+    concurrency_level: 10
+  - num_requests: 400
     concurrency_level: 20
-  num_workers: 1
+  - num_requests: 600
+    concurrency_level: 30
+  - num_requests: 800
+    concurrency_level: 40
 api:
   type: completion
   streaming: true
 server:
   type: vllm
-  model_name: google/gemma-3-1b-it
+  model_name: Qwen/Qwen3-Coder-480B-A35B-Instruct
   base_url: http://localhost:8000
 data:
   type: conversation_replay
   conversation_replay:
     seed: 42
-    num_conversations: 20
+    max_model_len: 262144 # Update based on the model's context length
+    num_conversations: 40
     shared_system_prompt_len: 3000
     dynamic_system_prompt_len:
-      type: uniform
-      min: 15000
-      max: 120000
-      mean: 55000
-      std_dev: 25000
+      type: lognormal
+      min: 10000
+      max: 990000
+      mean: 160000
+      std_dev: 233600
     turns_per_conversation:
-      type: normal
-      min: 2
-      max: 20
-      mean: 6
-      std_dev: 3.5
+      type: lognormal
+      min: 1
+      max: 3000
+      mean: 540
+      std_dev: 48600
     input_tokens_per_turn:
       type: lognormal
       min: 100
@@ -46,12 +48,12 @@ data:
     output_tokens_per_turn:
       type: lognormal
       min: 50
-      max: 4000
-      mean: 800
-      std_dev: 600
+      max: 10000
+      mean: 425
+      std_dev: 825
     tool_call_latency_sec:
       type: lognormal
-      min: 15
-      max: 120
-      mean: 45
-      std_dev: 25
+      min: 1
+      max: 100
+      mean: 15
+      std_dev: 55

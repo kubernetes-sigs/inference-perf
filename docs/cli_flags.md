@@ -177,6 +177,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.conversation_replay.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.tool_call_latency_sec.type in config |
 | `--data.conversation_replay.tool_call_latency_sec.variance` | float | Matches data.conversation_replay.tool_call_latency_sec.variance in config |
 | `--data.conversation_replay.tool_call_latency_sec.skew` | float | Matches data.conversation_replay.tool_call_latency_sec.skew in config |
+| `--data.conversation_replay.max_model_len` | int | Maximum model context length in tokens |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |

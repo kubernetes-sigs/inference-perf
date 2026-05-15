@@ -28,12 +28,26 @@ logger = logging.getLogger(__name__)
 class LocalUserSession:
     user_session_id: str
     context: str
+    system_prompt: str
+    max_model_len: Optional[int]
+    history: list[str]
 
     _instances: dict[str, "LocalUserSession"] = {}
 
-    def __init__(self, user_session_id: str, context: str = ""):
+    def __init__(
+        self,
+        user_session_id: str,
+        context: str = "",
+        system_prompt: str = "",
+        tokenizer: Optional[CustomTokenizer] = None,
+        max_model_len: Optional[int] = None,
+    ):
         self.user_session_id = user_session_id
         self.context = context if context else ""
+        self.system_prompt = system_prompt
+        self.tokenizer = tokenizer
+        self.max_model_len = max_model_len
+        self.history = []
         self._current_round = 0
         self._in_flight: Optional[asyncio.Lock] = None
         self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
@@ -60,7 +74,6 @@ class LocalUserSession:
         assert self._in_flight is not None
 
         if not self._waiting_rounds.empty() or self._in_flight.locked():
-            # entering waiting queue
             future: asyncio.Future[bool] = asyncio.Future()
             self._waiting_rounds.put_nowait(future)
             await future
@@ -69,7 +82,36 @@ class LocalUserSession:
         return self.context
 
     def update_context(self, response: str) -> None:
-        self.context = response
+        if self.system_prompt and self.tokenizer and self.max_model_len:
+            history_context = " ".join(self.history) if self.history else ""
+            base_len = len(self.system_prompt)
+            if history_context:
+                base_len += len(history_context) + 1
+            turn_content = response[base_len:].strip()
+            if turn_content:
+                self.history.append(turn_content)
+
+            history_str = " ".join(self.history)
+            system_tokens = self.tokenizer.count_tokens(self.system_prompt)
+            history_tokens = self.tokenizer.count_tokens(history_str)
+
+            if system_tokens + history_tokens > self.max_model_len:
+                while self.history:
+                    history_str = " ".join(self.history)
+                    history_tokens = self.tokenizer.count_tokens(history_str)
+                    if system_tokens + history_tokens <= self.max_model_len:
+                        break
+                    self.history.pop(0)
+
+            self.context = (
+                self.system_prompt + " " + " ".join(self.history)
+                if self.history and self.system_prompt
+                else " ".join(self.history)
+                if self.history
+                else self.system_prompt
+            )
+        else:
+            self.context = response
 
         self._ensure_initialized()
         assert self._waiting_rounds is not None
@@ -100,11 +142,71 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> RequestBody:
         self._session_context = await self.user_session.get_context(self.target_round)
-        # TODO: Currently, only prompt style (concat messages) support. Adding support for messages style payload.
-        self.prompt = self._session_context + " " + self.prompt
-        # TODO: The combined prompt (session context + current prompt) might exceed the model's
-        #       maximum sequence length. Implement truncation logic/strategy to prevent
-        #       errors/failures from the inference server.
+
+        if self.user_session.tokenizer and self.user_session.max_model_len:
+            # 200 token buffer to ensure we stay under model's context length regardless of any tokenization variations
+            target_len = self.user_session.max_model_len - max_tokens - 200
+            hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
+
+            system_prompt = self.user_session.system_prompt
+            history = list(self.user_session.history)
+            current_prompt = self.prompt
+
+            def get_text(sys: str, hist: list[str], curr: str) -> str:
+                parts = []
+                if sys:
+                    parts.append(sys)
+                if hist:
+                    parts.append(" ".join(hist))
+                if curr:
+                    parts.append(curr)
+                return " ".join(parts)
+
+            combined_text = get_text(system_prompt, history, current_prompt)
+            token_ids = hf_tokenizer.encode(combined_text)
+
+            if len(token_ids) > target_len:
+                # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
+                # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
+                # system prompt + history context as long as possible.
+                while history and len(token_ids) > target_len:
+                    history.pop(0)
+                    combined_text = get_text(system_prompt, history, current_prompt)
+                    token_ids = hf_tokenizer.encode(combined_text)
+
+                # If history is empty and it still exceeds target_len, truncate system/current prompt
+                if len(token_ids) > target_len:
+                    system_ids = hf_tokenizer.encode(system_prompt)
+                    current_ids = hf_tokenizer.encode(current_prompt)
+
+                    available_for_system = target_len - len(current_ids)
+
+                    if available_for_system > 0:
+                        system_ids = system_ids[:available_for_system]
+                        system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
+                    else:
+                        system_prompt = ""
+                        current_ids = current_ids[:target_len]
+                        current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
+
+                    combined_text = get_text(system_prompt, [], current_prompt)
+
+                    if system_prompt != self.user_session.system_prompt:
+                        self.user_session.system_prompt = system_prompt
+
+            self.user_session.history = history
+            self.user_session.context = (
+                system_prompt + " " + " ".join(history)
+                if history and system_prompt
+                else " ".join(history)
+                if history
+                else system_prompt
+            )
+
+            self.prompt = combined_text
+        else:
+            self.prompt = self._session_context + " " + self.prompt
+
         return await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:
