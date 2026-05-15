@@ -135,7 +135,8 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         self._session_context = await self.user_session.get_context(self.target_round)
 
         if self.user_session.tokenizer and self.user_session.max_model_len:
-            target_len = self.user_session.max_model_len - max_tokens - 50
+            # 200 token buffer to ensure we stay under model's context length regardless of any tokenization variations
+            target_len = self.user_session.max_model_len - max_tokens - 200
             hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
 
             system_prompt = self.user_session.system_prompt
@@ -150,7 +151,9 @@ class UserSessionCompletionAPIData(CompletionAPIData):
                 parts.append(curr)
                 return " ".join(parts)
 
-            # Truncate history first (from left)
+            # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
+            # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
+            # system prompt + history context as long as possible.
             while history:
                 combined_text = get_text(system_prompt, history, current_prompt)
                 token_ids = hf_tokenizer.encode(combined_text)
