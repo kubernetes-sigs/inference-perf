@@ -146,3 +146,44 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
         seen += 1
         if seen >= n:
             break
+
+
+# Prefix-cache invariant: the BPE-tokenized form of every prompt in a group
+# must agree on its first len(encode(prefix)) tokens. If the suffix's first
+# token were drawn from the full vocab it could merge across the boundary and
+# shift the prefix's tokenization — pinning to word-start tokens prevents
+# that. Exercise gpt2 (the same tokenizer that surfaces the off-by-one count
+# bug under boundary merges) so a regression in the pinning logic would also
+# fail here.
+def test_shared_prefix_server_tokens_stable_across_group() -> None:
+    tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+    hf = tokenizer.get_tokenizer()
+    api_config = APIConfig(type=APIType.Completion)
+    shared_prefix_cfg = SharedPrefix(
+        num_groups=3,
+        num_prompts_per_group=30,
+        system_prompt_len=100,
+        question_distribution=Distribution(mean=5.0, std_dev=2.0, min=1, max=15),
+        output_distribution=Distribution(mean=10.0, std_dev=1.0, min=1, max=20),
+        enable_multi_turn_chat=True,
+    )
+    data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)
+    gen = SharedPrefixDataGenerator(api_config, data_config, tokenizer)
+
+    by_group: dict[int, list[tuple[str, str]]] = {}
+    for prompt, prefix, gid in zip(gen.prompts, gen.prefix_texts, gen.prompt_groups, strict=True):
+        by_group.setdefault(gid, []).append((prompt, prefix))
+
+    for gid, entries in by_group.items():
+        canonical_prefix = entries[0][1]
+        # Server-side tokenization length we care about. Use add_special_tokens=False
+        # so the comparison is over the prefix content itself, not the BOS prefix.
+        canonical_prefix_ids = hf(canonical_prefix, add_special_tokens=False).input_ids
+        n_prefix = len(canonical_prefix_ids)
+        assert n_prefix > 0
+
+        first_n = {tuple(hf(prompt, add_special_tokens=False).input_ids[:n_prefix]) for prompt, _ in entries}
+        assert len(first_n) == 1, (
+            f"group {gid}: prefix tokenization differs across {len(entries)} prompts; "
+            f"got {len(first_n)} distinct token-prefix sequences"
+        )

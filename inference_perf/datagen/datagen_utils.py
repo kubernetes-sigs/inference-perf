@@ -62,6 +62,36 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
     return rng.choice(valid_token_ids, size=length).tolist()  # type: ignore[no-any-return]
 
 
+def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
+    """Subset of valid_token_ids whose decoded form starts with whitespace.
+
+    Pinning the first token of a generated suffix to this subset guarantees
+    the BPE/SentencePiece tokenizer treats the prefix and suffix as separate
+    word segments — no merge across the boundary. This preserves two
+    invariants simultaneously when composing prompts as
+    ``decode(prefix_ids + suffix_ids)``:
+
+      1. The full prompt retokenizes to exactly ``len(prefix_ids) +
+         len(suffix_ids)`` (no boundary inflation that would otherwise cause
+         off-by-one length mismatches — see #490).
+      2. The first ``len(prefix_ids)`` server-side tokens are stable across
+         different suffixes within the same group, so prefix-cache hits are
+         reliable.
+
+    If the tokenizer has no word-start tokens (unusual — major BPE and
+    SentencePiece tokenizers all do), falls back to ``valid_token_ids``.
+    """
+    hf_tokenizer = tokenizer.get_tokenizer()
+    word_starts: List[int] = []
+    for tid in valid_token_ids:
+        decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
+        if decoded and decoded[0].isspace():
+            word_starts.append(int(tid))
+    if not word_starts:
+        return valid_token_ids
+    return np.array(word_starts, dtype=np.int64)
+
+
 def converge_to_exact_length_text(
     tokenizer: CustomTokenizer,
     target_len: int,
