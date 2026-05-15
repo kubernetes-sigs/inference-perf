@@ -155,6 +155,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 messages=[ChatMessage(role="user", content=question_text)],
                 prefix_text=prefix_text or None,
                 prefix_multimodal_spec=self.prefix_specs_by_group.get(group_id),
+                prefix_cache_key=group_id if self.prefix_multimodal else None,
                 multimodal_spec=self._sample_payload_spec(),
                 max_tokens=output_len,
             )
@@ -209,8 +210,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             if self.prefix_multimodal:
                 # Sample the prefix-side spec once per group. Bytes are
                 # materialized at request time in chat.py with deterministic
-                # per-instance seeding so requests in this group produce
-                # identical wire bytes (server prefix-cache hits).
+                # per-instance seeding (seeded by group_id via
+                # ``ChatCompletionAPIData.prefix_cache_key``), so requests in
+                # this group produce identical wire bytes (server prefix-cache
+                # hits) while across-group bytes diverge.
                 self.prefix_specs_by_group[group_id] = _sample_spec(self.prefix_multimodal, self.rng)
 
             for prompt_id in range(self.num_prompts_per_group):
