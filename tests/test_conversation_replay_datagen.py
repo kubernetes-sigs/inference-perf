@@ -287,6 +287,96 @@ class TestConversationReplayDataGenerator:
             # All within bounds
             assert all(1 <= lat <= 30 for lat in bp.turn_tool_call_latencies)
 
+    def test_reproducibility_across_runs_with_stages(self) -> None:
+        """Verify that two independent runs with the same seed generate
+        the same system prompt for the same stage."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=2,
+            shared_system_prompt_len=50,
+            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
+            input_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        
+        def make_deterministic_mock_tok():
+            mock_tok = MagicMock()
+            hf_tok = MagicMock()
+            hf_tok.vocab_size = 32000
+            hf_tok.decode.side_effect = lambda ids, **kwargs: f"decoded_{ids}"
+            mock_tok.get_tokenizer.return_value = hf_tok
+            return mock_tok
+
+        # Run 1
+        gen1 = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
+        # Stage 0
+        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
+        context1_stage0 = LocalUserSession._instances["conv_0"].context
+        
+        LocalUserSession.clear_instances()
+        
+        # Stage 1
+        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
+        context1_stage1 = LocalUserSession._instances["conv_0"].context
+
+        # Isolate Run 2
+        LocalUserSession.clear_instances()
+
+        # Run 2
+        gen2 = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
+        # Stage 0
+        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
+        context2_stage0 = LocalUserSession._instances["conv_0"].context
+        
+        LocalUserSession.clear_instances()
+        
+        # Stage 1
+        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
+        context2_stage1 = LocalUserSession._instances["conv_0"].context
+
+        # Verify reproducibility across runs for Stage 0
+        assert context1_stage0 == context2_stage0
+        
+        # Verify reproducibility across runs for Stage 1
+        assert context1_stage1 == context2_stage1
+        
+        # Verify that prompts are DIFFERENT across stages within Run 2
+        assert context2_stage0 != context2_stage1
+
+    def test_shared_system_prompt_within_stage(self) -> None:
+        """Verify that different conversations in the same stage have the same system prompt."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=2,
+            shared_system_prompt_len=50,
+            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
+            input_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        
+        def make_deterministic_mock_tok():
+            mock_tok = MagicMock()
+            hf_tok = MagicMock()
+            hf_tok.vocab_size = 32000
+            hf_tok.decode.side_effect = lambda ids, **kwargs: f"decoded_{ids}"
+            mock_tok.get_tokenizer.return_value = hf_tok
+            return mock_tok
+
+        gen = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
+        
+        # Stage 0
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_idx=0))
+        
+        context_conv0 = LocalUserSession._instances["conv_0"].context
+        context_conv1 = LocalUserSession._instances["conv_1"].context
+        
+        assert context_conv0 == context_conv1
+
 
 class TestDistributionExtensions:
     def test_lognormal_distribution(self) -> None:

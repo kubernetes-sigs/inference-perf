@@ -18,7 +18,7 @@ from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
-from inference_perf.apis import InferenceAPIData
+from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.client.modelserver.otel_instrumentation import get_otel_instrumentation
@@ -218,6 +218,7 @@ class Worker(mp.Process):
 
                 try:
                     stage_id, request, request_time, lora_adapter = item
+                    request.stage_idx = stage_id
                     request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 except Exception as e:
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
@@ -1081,6 +1082,7 @@ class LoadGenerator:
                     for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                         if progress and stage_task:
                             progress.update(stage_task, completed=count + 1)
+                        data.stage_idx = stage_id
                         request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                         lora_adapter = self._get_lora_adapter()
                         if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
