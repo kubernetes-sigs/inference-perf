@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-from typing import Dict, Generator, List, Optional, Union
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -38,7 +38,13 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.distribution import sample_from_distribution
 
 from .base import DataGenerator, LazyLoadDataMixin
-from .datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
+from .datagen_utils import (
+    build_word_start_token_ids,
+    converge_to_exact_length_text,
+    generate_random_exact_length_text,
+    init_vocab_sampling,
+    random_token_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for SharedPrefixDataGenerator but was not initialized.")
 
         self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
+        self.word_start_token_ids = build_word_start_token_ids(self.tokenizer, self.valid_token_ids)
 
         if self.shared_prefix is None:
             raise ValueError("Shared Prefix config is required for SharedPrefixDataGenerator")
@@ -185,15 +192,45 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Generates a list of random token IDs of a specified length."""
         return random_token_ids(self.rng, self.valid_token_ids, length)
 
-    def _generate_exact_length_text(self, target_len: int, prefix_text: str = "") -> str:
-        """Generates a string that tokenizes to exactly target_len, optionally prefixed.
+    def _sample_suffix_ids(self, length: int) -> List[int]:
+        """Sample suffix IDs decoding to exactly ``length`` tokens, first token word-start.
 
-        If prefix_text is provided, the TOTAL length including prefix will be target_len.
-        Returns the full combined text if prefix_text is provided, else just the generated text.
+        The first token is word-start so the suffix decodes with a leading whitespace
+        character, preventing BPE merges across the prefix/suffix boundary. The
+        convergence loop then settles the rest of the suffix to the exact count
+        regardless of random-token roundtrip drift.
         """
+        if length <= 0:
+            return []
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for sampling suffix IDs.")
+        initial = [int(self.rng.choice(self.word_start_token_ids))]
+        if length > 1:
+            initial += random_token_ids(self.rng, self.valid_token_ids, length - 1)
+
+        def adjust(current: List[int], current_len: int, target_len: int) -> List[int]:
+            if current_len < target_len:
+                current.extend(random_token_ids(self.rng, self.valid_token_ids, target_len - current_len))
+                return current
+            diff = current_len - target_len
+            # Preserve the word-start first token so the boundary stays stable.
+            if diff < len(current) - 1:
+                return current[:-diff]
+            return current[:1]
+
+        _, ids = converge_to_exact_length_text(
+            tokenizer=self.tokenizer,
+            target_len=length,
+            initial_tokens=initial,
+            adjust_tokens_fn=adjust,
+        )
+        return ids
+
+    def _generate_exact_length_text(self, target_len: int) -> Tuple[str, List[int]]:
+        """Generates a string + its underlying token IDs, tokenizing to exactly target_len."""
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generating exact length prompts.")
-        return generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len, prefix_text)
+        return generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len)
 
     def _generate_prompts(self) -> None:
         """Pre-generates all per-group prefix texts/specs and per-prompt question texts."""
@@ -203,9 +240,11 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.shared_prefix is None:
             raise ValueError("Shared prefix is not available for generating prompts.")
 
+        hf_tokenizer = self.tokenizer.get_tokenizer()
+
         for group_id in range(self.num_groups):
             sys_prompt_len = self.system_prompt_lens_per_group[group_id]
-            shared_prefix_text = self._generate_exact_length_text(sys_prompt_len)
+            shared_prefix_text, shared_prefix_ids = self._generate_exact_length_text(sys_prompt_len)
 
             if self.prefix_multimodal:
                 # Sample the prefix-side spec once per group. Bytes are
@@ -218,11 +257,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
             for prompt_id in range(self.num_prompts_per_group):
                 q_len = self.question_len_list_per_group[group_id][prompt_id]
-                target_total_len = sys_prompt_len + q_len
-
-                # #383's exact-length helper: returns full prefix+question text
-                # whose tokenized length equals target_total_len.
-                full_text = self._generate_exact_length_text(target_total_len, prefix_text=shared_prefix_text)
+                suffix_ids = self._sample_suffix_ids(q_len)
+                full_text = hf_tokenizer.decode(shared_prefix_ids + suffix_ids, skip_special_tokens=True)
 
                 self.prompts.append(full_text)
                 self.prefix_texts.append(shared_prefix_text)
