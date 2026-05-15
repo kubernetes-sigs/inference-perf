@@ -40,6 +40,7 @@ from inference_perf.utils.distribution import sample_from_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 from .datagen_utils import (
     build_word_start_token_ids,
+    converge_to_exact_length_text,
     generate_random_exact_length_text,
     init_vocab_sampling,
     random_token_ids,
@@ -191,13 +192,38 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         return random_token_ids(self.rng, self.valid_token_ids, length)
 
     def _sample_suffix_ids(self, length: int) -> List[int]:
-        """Sample suffix IDs with a word-start first token (see build_word_start_token_ids)."""
+        """Sample suffix IDs decoding to exactly ``length`` tokens, first token word-start.
+
+        The first token is word-start so the suffix decodes with a leading whitespace
+        character, preventing BPE merges across the prefix/suffix boundary. The
+        convergence loop then settles the rest of the suffix to the exact count
+        regardless of random-token roundtrip drift.
+        """
         if length <= 0:
             return []
-        first = [int(self.rng.choice(self.word_start_token_ids))]
-        if length == 1:
-            return first
-        return first + random_token_ids(self.rng, self.valid_token_ids, length - 1)
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer is required for sampling suffix IDs.")
+        initial = [int(self.rng.choice(self.word_start_token_ids))]
+        if length > 1:
+            initial += random_token_ids(self.rng, self.valid_token_ids, length - 1)
+
+        def adjust(current: List[int], current_len: int, target_len: int) -> List[int]:
+            if current_len < target_len:
+                current.extend(random_token_ids(self.rng, self.valid_token_ids, target_len - current_len))
+                return current
+            diff = current_len - target_len
+            # Preserve the word-start first token so the boundary stays stable.
+            if diff < len(current) - 1:
+                return current[:-diff]
+            return current[:1]
+
+        _, ids = converge_to_exact_length_text(
+            tokenizer=self.tokenizer,
+            target_len=length,
+            initial_tokens=initial,
+            adjust_tokens_fn=adjust,
+        )
+        return ids
 
     def _generate_exact_length_text(self, target_len: int) -> Tuple[str, List[int]]:
         """Generates a string + its underlying token IDs, tokenizing to exactly target_len."""
