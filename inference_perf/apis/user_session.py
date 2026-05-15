@@ -91,16 +91,25 @@ class LocalUserSession:
             if turn_content:
                 self.history.append(turn_content)
 
+            history_str = " ".join(self.history)
             system_tokens = self.tokenizer.count_tokens(self.system_prompt)
+            history_tokens = self.tokenizer.count_tokens(history_str)
 
-            while self.history:
-                history_str = " ".join(self.history)
-                history_tokens = self.tokenizer.count_tokens(history_str)
-                if system_tokens + history_tokens <= self.max_model_len:
-                    break
-                self.history.pop(0)
+            if system_tokens + history_tokens > self.max_model_len:
+                while self.history:
+                    history_str = " ".join(self.history)
+                    history_tokens = self.tokenizer.count_tokens(history_str)
+                    if system_tokens + history_tokens <= self.max_model_len:
+                        break
+                    self.history.pop(0)
 
-            self.context = self.system_prompt + " " + " ".join(self.history) if self.history else self.system_prompt
+            self.context = (
+                self.system_prompt + " " + " ".join(self.history)
+                if self.history and self.system_prompt
+                else " ".join(self.history)
+                if self.history
+                else self.system_prompt
+            )
         else:
             self.context = response
 
@@ -144,52 +153,60 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             def get_text(sys: str, hist: list[str], curr: str) -> str:
-                h_str = " ".join(hist)
-                parts = [sys]
-                if h_str:
-                    parts.append(h_str)
-                parts.append(curr)
+                parts = []
+                if sys:
+                    parts.append(sys)
+                if hist:
+                    parts.append(" ".join(hist))
+                if curr:
+                    parts.append(curr)
                 return " ".join(parts)
-
-            # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
-            # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
-            # system prompt + history context as long as possible.
-            while history:
-                combined_text = get_text(system_prompt, history, current_prompt)
-                token_ids = hf_tokenizer.encode(combined_text)
-                if len(token_ids) <= target_len:
-                    break
-                history.pop(0)
 
             combined_text = get_text(system_prompt, history, current_prompt)
             token_ids = hf_tokenizer.encode(combined_text)
 
             if len(token_ids) > target_len:
-                system_ids = hf_tokenizer.encode(system_prompt)
-                current_ids = hf_tokenizer.encode(current_prompt)
+                # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
+                # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
+                # system prompt + history context as long as possible.
+                while history and len(token_ids) > target_len:
+                    history.pop(0)
+                    combined_text = get_text(system_prompt, history, current_prompt)
+                    token_ids = hf_tokenizer.encode(combined_text)
 
-                available_for_system = target_len - len(current_ids)
+                # If history is empty and it still exceeds target_len, truncate system/current prompt
+                if len(token_ids) > target_len:
+                    system_ids = hf_tokenizer.encode(system_prompt)
+                    current_ids = hf_tokenizer.encode(current_prompt)
 
-                if available_for_system > 0:
-                    system_ids = system_ids[:available_for_system]
-                    system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
-                else:
-                    system_prompt = ""
-                    current_ids = current_ids[:target_len]
-                    current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
+                    available_for_system = target_len - len(current_ids)
 
-                combined_text = get_text(system_prompt, [], current_prompt)
+                    if available_for_system > 0:
+                        system_ids = system_ids[:available_for_system]
+                        system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
+                    else:
+                        system_prompt = ""
+                        current_ids = current_ids[:target_len]
+                        current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
 
-                if system_prompt != self.user_session.system_prompt:
-                    self.user_session.system_prompt = system_prompt
+                    combined_text = get_text(system_prompt, [], current_prompt)
+
+                    if system_prompt != self.user_session.system_prompt:
+                        self.user_session.system_prompt = system_prompt
 
             self.user_session.history = history
-            self.user_session.context = system_prompt + " " + " ".join(history) if history else system_prompt
+            self.user_session.context = (
+                system_prompt + " " + " ".join(history)
+                if history and system_prompt
+                else " ".join(history)
+                if history
+                else system_prompt
+            )
 
             self.prompt = combined_text
         else:
             self.prompt = self._session_context + " " + self.prompt
-            
+
         return await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
     def update_inference_info(self, inference_info: InferenceInfo) -> None:

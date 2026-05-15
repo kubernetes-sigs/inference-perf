@@ -47,6 +47,7 @@ def _clear_user_session_registry() -> Generator[None, None, None]:
 def _make_mock_tokenizer(vocab_size: int = 32000) -> MagicMock:
     """Create a mock tokenizer with the expected interface."""
     mock_tokenizer = MagicMock()
+    mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split()) * 10 if text.strip() else 0
     hf_tok = MagicMock()
     hf_tok.vocab_size = vocab_size
     hf_tok.decode.return_value = "mock decoded text"
@@ -254,12 +255,13 @@ class TestConversationReplayDataGenerator:
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
         live_session = LocalUserSession._instances["conv_0"]
-        live_session.update_context("accumulated turn history")
+        expected_context = f"{live_session.system_prompt} accumulated turn history"
+        live_session.update_context(expected_context)
 
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
 
         assert LocalUserSession._instances["conv_0"] is live_session
-        assert LocalUserSession._instances["conv_0"].context == "accumulated turn history"
+        assert LocalUserSession._instances["conv_0"].context == expected_context
 
     def test_tool_call_latency_lognormal_distribution(self) -> None:
         """Lognormal tool call latencies vary across turns."""
