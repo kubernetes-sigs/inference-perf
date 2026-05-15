@@ -221,10 +221,10 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         if expected_session_id not in LocalUserSession._instances:
             # Regenerate the entire system prompt for this stage using a derived stable seed.
             seed_str = f"{self.cr_config.seed}_stage_{data.stage_idx}"
-            hash_digest = hashlib.sha256(seed_str.encode('utf-8')).digest()
-            derived_seed = int.from_bytes(hash_digest[:4], byteorder='little')
+            hash_digest = hashlib.sha256(seed_str.encode("utf-8")).digest()
+            derived_seed = int.from_bytes(hash_digest[:4], byteorder="little")
             local_rng = np.random.default_rng(derived_seed)
-            
+
             bp.system_prompt = self._generate_random_token_text(bp.system_prompt_tokens, rng=local_rng)
             self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=expected_session_id,

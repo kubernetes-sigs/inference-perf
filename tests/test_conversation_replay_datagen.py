@@ -238,9 +238,9 @@ class TestConversationReplayDataGenerator:
         mock_tok = _make_mock_tokenizer()
         texts = [f"text_{i}" for i in range(100)]
         mock_tok.get_tokenizer().decode.side_effect = texts
-        
+
         gen = ConversationReplayDataGenerator(api_config, data_config, mock_tok)
-        
+
         last_contexts = {i: "" for i in range(3)}
 
         for _ in range(3):
@@ -300,8 +300,8 @@ class TestConversationReplayDataGenerator:
             output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
-        
-        def make_deterministic_mock_tok():
+
+        def make_deterministic_mock_tok() -> MagicMock:
             mock_tok = MagicMock()
             hf_tok = MagicMock()
             hf_tok.vocab_size = 32000
@@ -314,9 +314,9 @@ class TestConversationReplayDataGenerator:
         # Stage 0
         gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
         context1_stage0 = LocalUserSession._instances["conv_0"].context
-        
+
         LocalUserSession.clear_instances()
-        
+
         # Stage 1
         gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
         context1_stage1 = LocalUserSession._instances["conv_0"].context
@@ -329,19 +329,19 @@ class TestConversationReplayDataGenerator:
         # Stage 0
         gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
         context2_stage0 = LocalUserSession._instances["conv_0"].context
-        
+
         LocalUserSession.clear_instances()
-        
+
         # Stage 1
         gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
         context2_stage1 = LocalUserSession._instances["conv_0"].context
 
         # Verify reproducibility across runs for Stage 0
         assert context1_stage0 == context2_stage0
-        
+
         # Verify reproducibility across runs for Stage 1
         assert context1_stage1 == context2_stage1
-        
+
         # Verify that prompts are DIFFERENT across stages within Run 2
         assert context2_stage0 != context2_stage1
 
@@ -357,8 +357,8 @@ class TestConversationReplayDataGenerator:
             output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
-        
-        def make_deterministic_mock_tok():
+
+        def make_deterministic_mock_tok() -> MagicMock:
             mock_tok = MagicMock()
             hf_tok = MagicMock()
             hf_tok.vocab_size = 32000
@@ -367,14 +367,14 @@ class TestConversationReplayDataGenerator:
             return mock_tok
 
         gen = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
-        
+
         # Stage 0
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
         gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_idx=0))
-        
+
         context_conv0 = LocalUserSession._instances["conv_0"].context
         context_conv1 = LocalUserSession._instances["conv_1"].context
-        
+
         assert context_conv0 == context_conv1
 
 
