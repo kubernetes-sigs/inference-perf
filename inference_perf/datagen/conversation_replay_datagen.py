@@ -37,6 +37,7 @@ of one run) to avoid context accumulating across concurrency levels.
 """
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Generator, List, Optional
@@ -126,6 +127,7 @@ class ConversationBlueprint:
     conversation_id: int
     num_turns: int
     system_prompt: str
+    system_prompt_tokens: int
     turn_prompts: List[str] = field(default_factory=list)
     turn_output_lens: List[int] = field(default_factory=list)
     turn_tool_call_latencies: List[float] = field(default_factory=list)
@@ -218,11 +220,18 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         # system_prompt the conversation was built around.
         expected_session_id = self.user_sessions[conv_idx].user_session_id
         if expected_session_id not in LocalUserSession._instances:
+            # Regenerate the entire system prompt for this stage using a derived stable seed.
+            seed_str = f"{self.cr_config.seed}_stage_{data.stage_idx}"
+            hash_digest = hashlib.sha256(seed_str.encode("utf-8")).digest()
+            derived_seed = int.from_bytes(hash_digest[:4], byteorder="little")
+            local_rng = np.random.default_rng(derived_seed)
+
+            bp.system_prompt = self._generate_random_token_text(bp.system_prompt_tokens, rng=local_rng)
             self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=expected_session_id,
                 context=bp.system_prompt,
             )
-            logger.debug("Slot %d: re-primed cleared session %s", conv_idx, expected_session_id)
+            logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
 
         # Closed-loop replenishment: when a conversation finishes all its turns,
         # reset the session so the slot immediately starts a fresh conversation.
@@ -276,13 +285,14 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         arr = sample_from_distribution(dist, count, rng=self.rng)
         return [int(v) for v in arr]
 
-    def _generate_random_token_text(self, num_tokens: int) -> str:
+    def _generate_random_token_text(self, num_tokens: int, rng: Optional[np.random.Generator] = None) -> str:
         """Generate random text that is approximately ``num_tokens`` long."""
         if num_tokens <= 0:
             return ""
         assert self.tokenizer is not None
         hf_tokenizer = self.tokenizer.get_tokenizer()
-        token_ids = self.rng.integers(0, self.vocab_size, size=num_tokens).tolist()
+        use_rng = rng if rng is not None else self.rng
+        token_ids = use_rng.integers(0, self.vocab_size, size=num_tokens).tolist()
         return str(hf_tokenizer.decode(token_ids, skip_special_tokens=True))
 
     def _build_conversations(self) -> None:
@@ -356,6 +366,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 conversation_id=conv_id,
                 num_turns=num_turns,
                 system_prompt=system_prompt,
+                system_prompt_tokens=cfg.shared_system_prompt_len + dynamic_lens[conv_id],
                 turn_prompts=turn_prompts,
                 turn_output_lens=turn_output_lens_list,
                 turn_tool_call_latencies=turn_tool_latencies,
