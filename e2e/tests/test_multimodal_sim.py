@@ -27,6 +27,7 @@ require GPU hardware.
 If `llm-d-inference-sim` is not on PATH these tests skip automatically.
 """
 
+import os
 from typing import Any, Dict
 
 import pytest
@@ -171,3 +172,68 @@ async def test_multimodal_synthetic_against_sim(case_id: str, multimodal: Dict[s
     if "audio" in expected_modalities:
         for field in ("seconds", "bytes"):
             assert successes["audio"].get(field), f"audio.{field} missing for case {case_id}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
+@pytest.mark.skipif(
+    not os.environ.get("SHAREGPT4VIDEO_CACHE_DIR"),
+    reason="SHAREGPT4VIDEO_CACHE_DIR not set; pre-populated video cache required for sharegpt4video e2e",
+)
+@pytest.mark.skipif(
+    not (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")),
+    reason="HF token required (ShareGPT4Video is gated)",
+)
+async def test_sharegpt4video_against_sim() -> None:
+    """End-to-end run of the ShareGPT4Video loader against the sim.
+
+    Skipped by default — requires (1) a pre-populated cache at
+    ``$SHAREGPT4VIDEO_CACHE_DIR`` containing extracted MP4s under ``videos/``
+    and (2) a HuggingFace token with access to the gated dataset. We disable
+    auto-download in this test (``prefetch_fraction=0.0``) to keep the run
+    fast and deterministic.
+    """
+    model_name = TEST_MODEL_NAME
+    model_path = extract_tarball(TEST_MODEL_TARBALL)
+    cache_dir = os.environ["SHAREGPT4VIDEO_CACHE_DIR"]
+
+    async with LLMDInferenceSimRunner(model_name, port=18002) as sim:
+        result = await run_benchmark_minimal(
+            {
+                "data": {
+                    "type": "sharegpt4video",
+                    "sharegpt4video": {
+                        "cache_dir": cache_dir,
+                        "representation": "jpeg_frames",
+                        "target_resolution": {"width": 64, "height": 64},
+                        "max_frames_per_request": 4,
+                        "insertion_point": 0.0,
+                    },
+                },
+                "load": {
+                    "type": "constant",
+                    "stages": [{"rate": 1, "duration": 5}],
+                    "num_workers": 1,
+                },
+                "api": {"type": "chat", "streaming": True},
+                "server": {
+                    "type": "vllm",
+                    "model_name": model_name,
+                    "base_url": f"http://{sim.host}:{sim.port}",
+                    "ignore_eos": True,
+                },
+                "tokenizer": {"pretrained_model_name_or_path": str(model_path)},
+                "report": {"request_lifecycle": {"summary": True, "per_stage": True, "per_request": True}},
+            }
+        )
+
+    assert result.success, f"sharegpt4video benchmark failed:\n{result.stdout}"
+    summary = (result.reports or {}).get("summary_lifecycle_metrics.json")
+    assert summary, "missing summary_lifecycle_metrics.json"
+    successes = summary.get("successes") or {}
+    assert successes.get("count", 0) >= 1
+    throughput = successes.get("throughput") or {}
+    assert throughput.get("videos_per_sec", 0) > 0
+    video_block = successes.get("video") or {}
+    for field in ("frames", "pixels", "bytes", "aspect_ratio"):
+        assert video_block.get(field), f"video.{field} missing"
