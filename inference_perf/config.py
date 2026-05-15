@@ -660,11 +660,57 @@ class GoodputConfig(BaseModel):
     constraints: Dict[str, float] = {}
 
 
+class BRV02PartialReportLocalSource(BaseModel):
+    """Local-filesystem partial-report source."""
+
+    path: str
+
+
+class BRV02PartialReportGCSSource(BaseModel):
+    """GCS partial-report source. Authenticated via Application Default
+    Credentials, matching how the rest of inference-perf talks to GCS."""
+
+    bucket_name: str
+    path: str
+
+
+class BRV02PartialReportSource(BaseModel):
+    """Pointer to a partial BR0.2 report that inference-perf will fill the
+    performance results into. Exactly one of ``local`` or
+    ``google_cloud_storage`` must be set."""
+
+    local: Optional[BRV02PartialReportLocalSource] = None
+    google_cloud_storage: Optional[BRV02PartialReportGCSSource] = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "BRV02PartialReportSource":
+        set_count = sum(1 for v in (self.local, self.google_cloud_storage) if v is not None)
+        if set_count != 1:
+            raise ValueError("BRV02PartialReportSource: exactly one of 'local' or 'google_cloud_storage' must be set")
+        return self
+
+
+class BRV02Config(BaseModel):
+    """Settings for emitting an llm-d-benchmark BR0.2 report.
+
+    The user supplies a partially-filled BR0.2 report (stack/run/scenario
+    metadata, anything except performance measurements); inference-perf fills
+    the ``results`` section from the actual run and emits the merged report
+    alongside the native inference-perf reports.
+
+    No partial report → no BR0.2 emission. Loading or validating the partial
+    fails the run before any work is done.
+    """
+
+    partial_report: BRV02PartialReportSource
+
+
 class ReportConfig(BaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
     session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
     goodput: Optional[GoodputConfig] = None
+    br_v0_2: Optional[BRV02Config] = None
 
 
 class PrometheusClientConfig(BaseModel):

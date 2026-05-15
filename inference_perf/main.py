@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
+
+import yaml
 from inference_perf.analysis.analyze import analyze_reports
 from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
@@ -402,8 +405,6 @@ def main_cli() -> None:
     perfrunner.save_reports(reports=reports)
 
     # Print report contents to stdout with markers
-    import json
-
     for report in reports:
         if report.name == "summary_lifecycle_metrics":
             print("=== START_SUMMARY ===")
@@ -415,6 +416,14 @@ def main_cli() -> None:
                 print(f"=== START_STAGE_{stage_id} ===")
                 print(json.dumps(report.contents, indent=2))
                 print(f"=== END_STAGE_{stage_id} ===")
+            except Exception:
+                pass
+        elif report.name.startswith("stage_") and report.name.endswith("_benchmark_report_v0_2"):
+            try:
+                stage_id = report.name.split("_")[1]
+                print(f"=== START_BR_V0_2_STAGE_{stage_id} ===")
+                print(yaml.safe_dump(report.contents, sort_keys=False, default_flow_style=False))
+                print(f"=== END_BR_V0_2_STAGE_{stage_id} ===")
             except Exception:
                 pass
 

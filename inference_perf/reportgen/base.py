@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import json
+import uuid
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -37,6 +38,12 @@ from inference_perf.config import (
     GoodputConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.reportgen.br.v0_2 import (
+    build_results,
+    load_partial_report,
+    merge_results,
+    validate_partial_report,
+)
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -607,6 +614,13 @@ class ReportGenerator:
         self.config = config
         self.datagen = datagen
         self.session_metrics_collector: Optional[SessionMetricsCollector] = None
+        # Fail fast: if BR0.2 emission is configured, load + validate the
+        # partial report now so the run aborts before any work is done when
+        # the partial is missing, malformed, or contains performance fields.
+        self._br_v0_2_partial: Optional[Dict[str, Any]] = None
+        if config.report.br_v0_2 is not None:
+            partial = load_partial_report(config.report.br_v0_2.partial_report)
+            self._br_v0_2_partial = validate_partial_report(partial)
 
     def get_metrics_collector(self) -> RequestMetricCollector:
         """
@@ -730,6 +744,29 @@ class ReportGenerator:
 
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+
+        if self._br_v0_2_partial is not None and request_metrics:
+            # Bucket request metrics by stage and emit one merged BR0.2 report
+            # per stage. The validated partial is reused across stages; only
+            # the inference-perf-filled ``results`` differs per stage.
+            br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None:
+                    br_stage_buckets[metric.stage_id].append(metric)
+            for br_stage_id, stage_metrics in br_stage_buckets.items():
+                results = build_results(stage_metrics, tokenizer)
+                br_dict = merge_results(
+                    self._br_v0_2_partial,
+                    results,
+                    run_uid_fallback=f"inference-perf-stage-{br_stage_id}-{uuid.uuid4().hex[:8]}",
+                )
+                lifecycle_reports.append(
+                    ReportFile(
+                        name=f"stage_{br_stage_id}_benchmark_report_v0_2",
+                        file_type="yaml",
+                        contents=br_dict,
+                    )
+                )
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
