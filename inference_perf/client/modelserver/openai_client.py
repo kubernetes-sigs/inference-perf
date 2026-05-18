@@ -190,6 +190,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
         end_time: float,
     ) -> None:
         """Record OTEL metrics for the request."""
+        if not self.client.otel.enabled or span is None:
+            return
+
         if info:
             inner = info.response_metrics
             otel_response_info: Dict[str, Any] = {
@@ -217,37 +220,74 @@ class openAIModelServerClientSession(ModelServerClientSession):
             # Extract input and output following GenAI semantic conventions
             try:
                 # Extract input based on request type
-                if hasattr(data, "messages"):
+                messages = getattr(data, "messages", None)
+                if messages is not None:
                     # Serialize each message, preserving tool_calls when present.
-                    input_messages = [msg.to_dict() for msg in data.messages]
+                    input_messages = [msg.to_dict() for msg in messages]
                     otel_response_info["input_messages"] = json.dumps(input_messages)
 
                     # Record tool definitions so they appear in Jaeger alongside the request.
-                    if hasattr(data, "tool_definitions") and data.tool_definitions:
-                        otel_response_info["tool_definitions"] = json.dumps(data.tool_definitions)
-                elif hasattr(data, "prompt"):
-                    # Text completion - store as prompt string (gen_ai.prompt)
-                    otel_response_info["input_prompt"] = data.prompt
+                    tool_definitions = getattr(data, "tool_definitions", None)
+                    if tool_definitions:
+                        otel_response_info["tool_definitions"] = json.dumps(tool_definitions)
+                else:
+                    prompt = getattr(data, "prompt", None)
+                    if prompt is not None:
+                        # Text completion - store as prompt string (gen_ai.prompt)
+                        otel_response_info["input_prompt"] = prompt
 
                 # Extract output text (gen_ai.output.text)
                 if response and response.status == 200 and response_content:
-                    response_json = json.loads(response_content)
-                    choices = response_json.get("choices", [])
-                    if choices:
-                        if "message" in choices[0]:
-                            # Chat completion response
-                            msg_out = choices[0].get("message", {})
-                            output_text = msg_out.get("content") or ""
-                            if msg_out.get("tool_calls"):
-                                # Store the full message under a dedicated key so
-                                # gen_ai.output.text stays as plain text only.
-                                otel_response_info["output_message"] = json.dumps(msg_out)
-                            else:
+                    response_json = None
+                    stripped_response = response_content.strip()
+
+                    if stripped_response.startswith("data:"):
+                        sse_payloads = []
+                        for line in stripped_response.splitlines():
+                            line = line.strip()
+                            if not line or not line.startswith("data:"):
+                                continue
+
+                            payload = line[len("data:") :].strip()
+                            if not payload or payload == "[DONE]":
+                                continue
+
+                            try:
+                                sse_payloads.append(json.loads(payload))
+                            except json.JSONDecodeError:
+                                continue
+
+                        if sse_payloads:
+                            response_json = sse_payloads[-1]
+                            # Concatenate all content deltas for full output text
+                            full_text = "".join(
+                                p.get("choices", [{}])[0].get("delta", {}).get("content", "") for p in sse_payloads
+                            )
+                            if full_text:
+                                otel_response_info["output_text"] = full_text
+                            # Check last chunk for tool_calls
+                            last_delta = sse_payloads[-1].get("choices", [{}])[0].get("delta", {})
+                            if last_delta.get("tool_calls"):
+                                otel_response_info["output_message"] = json.dumps(last_delta)
+                    else:
+                        response_json = json.loads(response_content)
+
+                    if response_json and not stripped_response.startswith("data:"):
+                        choices = response_json.get("choices", [])
+                        if choices:
+                            choice = choices[0]
+                            if "message" in choice:
+                                # Chat completion response
+                                msg_out = choice.get("message", {})
+                                output_text = msg_out.get("content") or ""
+                                if msg_out.get("tool_calls"):
+                                    otel_response_info["output_message"] = json.dumps(msg_out)
+                                else:
+                                    otel_response_info["output_text"] = output_text
+                            elif "text" in choice:
+                                # Text completion response
+                                output_text = choice.get("text", "")
                                 otel_response_info["output_text"] = output_text
-                        elif "text" in choices[0]:
-                            # Text completion response
-                            output_text = choices[0].get("text", "")
-                            otel_response_info["output_text"] = output_text
             except Exception as e:
                 logger.warning(f"Failed to extract messages for OTEL: {e}")
 
