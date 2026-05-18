@@ -23,6 +23,7 @@ from inference_perf.config.datagen.replay import (
     OTelTraceReplayConfig,
     TraceConfig,
 )
+from inference_perf.config.datagen.sharegpt4video import ShareGPT4VideoConfig
 
 
 class DataGenType(Enum):
@@ -36,6 +37,7 @@ class DataGenType(Enum):
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
     ConversationReplay = "conversation_replay"
+    ShareGPT4Video = "sharegpt4video"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -102,3 +104,7 @@ class DataConfig(BaseModel):
 
     # Conversation replay configuration
     conversation_replay: Optional[ConversationReplayConfig] = None
+
+    sharegpt4video: Optional[ShareGPT4VideoConfig] = Field(
+        None, description="ShareGPT4Video loader configuration (when type=sharegpt4video)."
+    )

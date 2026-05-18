@@ -37,6 +37,10 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
     TraceFormat,
 )
+from inference_perf.config.datagen.sharegpt4video import (
+    GatedHFDatasetConfig,
+    ShareGPT4VideoConfig,
+)
 
 __all__ = [
     "AnyResolution",
@@ -44,12 +48,14 @@ __all__ = [
     "ConversationReplayConfig",
     "DataConfig",
     "DataGenType",
+    "GatedHFDatasetConfig",
     "ImageDatagenConfig",
     "MediaDatagenConfig",
     "OTelTraceReplayConfig",
     "Resolution",
     "ResolutionPreset",
     "SessionReplayConfig",
+    "ShareGPT4VideoConfig",
     "SharedPrefix",
     "SyntheticMultimodalDatagenConfig",
     "TraceConfig",
