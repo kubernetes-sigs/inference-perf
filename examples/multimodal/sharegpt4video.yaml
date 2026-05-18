@@ -1,0 +1,49 @@
+# ShareGPT4Video real-dataset benchmark. Streams the gated HuggingFace
+# ShareGPT4Video dataset and emits requests using the Frames wire format
+# (multiple ``image_url`` blocks at one insertion point) — compatible with
+# VLMs that don't accept ``video_url`` natively.
+#
+# Auto-download: source MP4 zips (15-21 GB each) are fetched from the HF
+# dataset repo into ``cache_dir`` by a background thread. The request hot path
+# never blocks on the network — requests sample from videos already on disk
+# and the pool grows over time. Init blocks only until the first zip is
+# extracted so there's always a non-empty pool at load-start.
+#
+# The loader logs the resolved cache path conspicuously at startup so you can
+# pre-populate it if you'd rather skip auto-download. Set
+# HF_HUB_ENABLE_HF_TRANSFER=1 for faster parallel downloads.
+#
+# Requires: HF_TOKEN with access to the gated dataset.
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: sharegpt4video
+  sharegpt4video:
+    # cache_dir: ./sharegpt4video_cache    # default; abs path is logged at startup
+    representation: jpeg_frames            # jpeg_frames | png_frames
+    target_resolution: "720p"
+    max_frames_per_request: 16             # matches typical VLM frame budgets
+    insertion_point: 0.0
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 60
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
