@@ -146,7 +146,7 @@ async def test_multimodal_datagen_video() -> None:
 @pytest.mark.asyncio
 async def test_multimodal_datagen_image_jpeg_representation() -> None:
     """``image.representation: jpeg`` emits ``data:image/jpeg`` data URLs on the wire."""
-    from inference_perf.payloads.multimodal_spec import ImageRepresentation
+    from inference_perf.payloads import ImageRepresentation
 
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
@@ -175,7 +175,7 @@ async def test_multimodal_datagen_image_jpeg_representation() -> None:
 @pytest.mark.asyncio
 async def test_multimodal_datagen_video_jpeg_frames() -> None:
     """``representation: jpeg_frames`` emits JPEG-encoded frame blocks."""
-    from inference_perf.payloads.multimodal_spec import VideoRepresentation
+    from inference_perf.payloads import VideoRepresentation
 
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
@@ -200,7 +200,7 @@ async def test_multimodal_datagen_video_jpeg_frames() -> None:
 @pytest.mark.asyncio
 async def test_multimodal_datagen_video_png_frames() -> None:
     """`representation: png_frames` emits N image_url blocks but reports as one Video."""
-    from inference_perf.payloads.multimodal_spec import VideoRepresentation
+    from inference_perf.payloads import VideoRepresentation
 
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
@@ -216,10 +216,14 @@ async def test_multimodal_datagen_video_png_frames() -> None:
     gen = MultimodalDataGenerator(api_config, data_config, _make_mock_tokenizer())
     item = _load_first(gen)
 
+    from inference_perf.payloads import ImageRepresentation, SyntheticFramesVideoSpec
+
     assert item.multimodal_spec is not None
     assert len(item.multimodal_spec.videos) == 1
-    expected_frames = item.multimodal_spec.videos[0].frames
-    assert item.multimodal_spec.videos[0].representation == VideoRepresentation.PNG_FRAMES
+    vid = item.multimodal_spec.videos[0]
+    assert isinstance(vid, SyntheticFramesVideoSpec)
+    expected_frames = vid.frames
+    assert vid.frame_representation == ImageRepresentation.PNG
 
     payload = await item.to_request_body(effective_model_name="gpt-video", max_tokens=100, ignore_eos=False, streaming=False)
     content = payload["messages"][0]["content"]

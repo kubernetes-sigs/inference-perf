@@ -23,7 +23,15 @@ from aiohttp import ClientResponse
 from pydantic import BaseModel, field_validator
 
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
-from inference_perf.payloads.multimodal_spec import ImageRepresentation, MultimodalSpec, VideoRepresentation
+from inference_perf.payloads import (
+    ImageRepresentation,
+    MultimodalSpec,
+    PreEncodedFramesVideoSpec,
+    SyntheticAudioSpec,
+    SyntheticFramesVideoSpec,
+    SyntheticImageSpec,
+    SyntheticMp4VideoSpec,
+)
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
@@ -284,21 +292,26 @@ class ChatCompletionAPIData(InferenceAPIData):
             return np.random.default_rng(hash((cache_key,) + key_parts) & 0xFFFFFFFF)
 
         for i, img in enumerate(spec.images):
+            # Only synthetic image variants are wire-wired today; other
+            # provenance variants are in ``ImageSpecUnion`` but raise here
+            # until their materializer branches land. ``img.get_metrics()``
+            # already encodes the per-provenance measurement rule, so each
+            # future branch just needs to compute ``wire_bytes`` and call it.
+            if not isinstance(img, SyntheticImageSpec):
+                raise TypeError(f"Unwired ImageSpec subclass: {type(img).__name__}")
             raw_bytes, data_url = _encode_image(
                 img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
             )
             media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, img.insertion_point))
-            image_instances.append(
-                Image(
-                    pixels=img.width * img.height,
-                    bytes=len(raw_bytes),
-                    aspect_ratio=img.width / img.height if img.height > 0 else 0.0,
-                )
-            )
+            image_instances.append(img.get_metrics(len(raw_bytes)))
 
         for vi, vid in enumerate(spec.videos):
-            aspect = vid.width / vid.height if vid.height > 0 else 0.0
-            if vid.representation == VideoRepresentation.MP4:
+            # Dispatch on the polymorphic spec subtype for wire emission.
+            # Metric construction is delegated to ``vid.get_metrics(total_bytes)``
+            # so each provenance owns its own measurement rule (synthetic and
+            # pre-encoded report real pixel/byte/frame counts; remote/local
+            # stubs would return zero-or-declared-dims per their own contract).
+            if isinstance(vid, SyntheticMp4VideoSpec):
                 if deterministic:
                     # Deterministic mode bypasses the pool — pool sampling is
                     # non-deterministic, and this path is rare (prefix-side
@@ -312,33 +325,39 @@ class ChatCompletionAPIData(InferenceAPIData):
                 data_url = f"data:video/mp4;base64,{base64.b64encode(mp4_bytes).decode('ascii')}"
                 media_items.append(({"type": "video_url", "video_url": {"url": data_url}}, vid.insertion_point))
                 total_bytes = len(mp4_bytes)
-            else:
-                # PNG_FRAMES or JPEG_FRAMES — emit one image_url block per frame.
-                frame_fmt = (
-                    ImageRepresentation.JPEG
-                    if vid.representation == VideoRepresentation.JPEG_FRAMES
-                    else ImageRepresentation.PNG
-                )
+            elif isinstance(vid, SyntheticFramesVideoSpec):
                 total_bytes = 0
                 for f in range(vid.frames):
                     raw_bytes, data_url = _encode_image(
-                        vid.width, vid.height, frame_fmt, _rng_for("vid_frame", vi, f, vid.width, vid.height)
+                        vid.width, vid.height, vid.frame_representation, _rng_for("vid_frame", vi, f, vid.width, vid.height)
                     )
                     media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, vid.insertion_point))
                     total_bytes += len(raw_bytes)
-            video_instances.append(
-                Video(pixels=vid.width * vid.height, bytes=total_bytes, aspect_ratio=aspect, frames=vid.frames)
-            )
+            elif isinstance(vid, PreEncodedFramesVideoSpec):
+                mime = "image/jpeg" if vid.frame_representation == ImageRepresentation.JPEG else "image/png"
+                total_bytes = 0
+                for frame_bytes in vid.frames_bytes:
+                    data_url = f"data:{mime};base64,{base64.b64encode(frame_bytes).decode('ascii')}"
+                    media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, vid.insertion_point))
+                    total_bytes += len(frame_bytes)
+            else:
+                raise TypeError(f"Unwired VideoSpec subclass: {type(vid).__name__}")
+            video_instances.append(vid.get_metrics(total_bytes))
 
         for aud in spec.audios:
-            # WAV generation is deterministic by duration (silent samples), so no
-            # RNG is involved.
+            # Only synthetic audio variants are wire-wired today; pre-encoded,
+            # remote, and local-file are in ``AudioSpecUnion`` but raise here
+            # until their materializer branches land.
+            if not isinstance(aud, SyntheticAudioSpec):
+                raise TypeError(f"Unwired AudioSpec subclass: {type(aud).__name__}")
+            # WAV generation is deterministic by duration (silent samples), so
+            # no RNG is involved.
             wav_bytes = generate_wav_bytes(aud.duration)
             b64_audio = base64.b64encode(wav_bytes).decode("ascii")
             media_items.append(
                 ({"type": "input_audio", "input_audio": {"data": b64_audio, "format": "wav"}}, aud.insertion_point)
             )
-            audio_instances.append(Audio(bytes=len(wav_bytes), seconds=aud.duration))
+            audio_instances.append(aud.get_metrics(len(wav_bytes)))
 
         return assemble_content(text_str, media_items), image_instances, video_instances, audio_instances
 
