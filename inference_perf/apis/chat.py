@@ -13,6 +13,9 @@
 # limitations under the License.
 
 import base64
+import logging
+import os
+import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -37,6 +40,52 @@ from inference_perf.payloads import (
     Videos,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+logger = logging.getLogger(__name__)
+
+# Heartbeat for multimodal byte materialization. Image / video / audio bytes
+# are rendered lazily in workers during to_request_body, and on large runs the
+# cumulative cost is the dominant pre-server-call latency. The heartbeat
+# surfaces a per-worker cumulative count so the run does not look hung.
+_MULTIMODAL_PROGRESS_LOG_INTERVAL_SEC = 10.0
+_multimodal_materialized_requests: int = 0
+_multimodal_materialized_images: int = 0
+_multimodal_materialized_videos: int = 0
+_multimodal_materialized_audios: int = 0
+_multimodal_materialized_video_frames: int = 0
+_last_multimodal_progress_log_time: Optional[float] = None
+
+
+def _log_multimodal_progress(images: int, videos: int, audios: int, video_frames: int) -> None:
+    """Update per-process counters and emit a heartbeat at most every interval."""
+    global _multimodal_materialized_requests
+    global _multimodal_materialized_images
+    global _multimodal_materialized_videos
+    global _multimodal_materialized_audios
+    global _multimodal_materialized_video_frames
+    global _last_multimodal_progress_log_time
+
+    _multimodal_materialized_requests += 1
+    _multimodal_materialized_images += images
+    _multimodal_materialized_videos += videos
+    _multimodal_materialized_audios += audios
+    _multimodal_materialized_video_frames += video_frames
+
+    now = time.monotonic()
+    if (
+        _last_multimodal_progress_log_time is None
+        or (now - _last_multimodal_progress_log_time) >= _MULTIMODAL_PROGRESS_LOG_INTERVAL_SEC
+    ):
+        logger.info(
+            "Multimodal datagen progress: materialized %d requests (images=%d, videos=%d, video_frames=%d, audios=%d) (worker pid=%d)",
+            _multimodal_materialized_requests,
+            _multimodal_materialized_images,
+            _multimodal_materialized_videos,
+            _multimodal_materialized_video_frames,
+            _multimodal_materialized_audios,
+            os.getpid(),
+        )
+        _last_multimodal_progress_log_time = now
 
 
 # Fields allowed by the OpenAI/vLLM JSON Schema validator for tool parameters.
@@ -353,6 +402,13 @@ class ChatCompletionAPIData(InferenceAPIData):
         self.realized_images = Images(count=len(all_images), instances=all_images) if all_images else None
         self.realized_videos = Videos(count=len(all_videos), instances=all_videos) if all_videos else None
         self.realized_audios = Audios(count=len(all_audios), instances=all_audios) if all_audios else None
+
+        _log_multimodal_progress(
+            images=len(all_images),
+            videos=len(all_videos),
+            audios=len(all_audios),
+            video_frames=sum(v.frames for v in all_videos),
+        )
 
         return combined
 

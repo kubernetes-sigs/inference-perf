@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
+import time
 from typing import Generator, List, Optional
 
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
@@ -22,6 +24,12 @@ from .base import DataGenerator, LazyLoadDataMixin
 from .datagen_utils import converge_to_exact_length_text
 
 logger = logging.getLogger(__name__)
+
+# Heartbeat interval for synthetic datagen progress logs. Synthetic prompt
+# materialization happens lazily in worker processes; on large runs with slow
+# tokenizers this can take tens of minutes with no other observable signal,
+# making the run look hung from outside.
+_PROGRESS_LOG_INTERVAL_SEC = 10.0
 
 
 class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
@@ -50,6 +58,13 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         )
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self.token_ids: list[int] = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
+
+        # Per-process counters for the progress heartbeat emitted from
+        # load_lazy_data. Each worker process tracks its own count and
+        # log timestamp; aggregating across workers is not worth the
+        # plumbing for a tactical visibility fix.
+        self._materialized_count: int = 0
+        self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]
@@ -105,12 +120,24 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.api_config.type == APIType.Completion:
             length = self.input_lengths[n]
             prompt_text = self._generate_exact_length_text(length)
+            self._log_progress()
             return CompletionAPIData(
                 prompt=prompt_text,
                 max_tokens=self.output_lengths[n],
             )
         else:
             raise Exception("Unsupported API type")
+
+    def _log_progress(self) -> None:
+        self._materialized_count += 1
+        now = time.monotonic()
+        if self._last_progress_log_time is None or (now - self._last_progress_log_time) >= _PROGRESS_LOG_INTERVAL_SEC:
+            logger.info(
+                "Synthetic datagen progress: materialized %d prompts (worker pid=%d)",
+                self._materialized_count,
+                os.getpid(),
+            )
+            self._last_progress_log_time = now
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.tokenizer is None:

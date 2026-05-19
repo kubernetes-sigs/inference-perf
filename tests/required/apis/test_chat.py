@@ -11,12 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from unittest.mock import MagicMock
+import logging
+from typing import Any, Iterator
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIType
+from inference_perf.payloads.multimodal_spec import (
+    AudioInstanceSpec,
+    ImageInstanceSpec,
+    MultimodalSpec,
+    VideoInstanceSpec,
+)
 
 
 @pytest.mark.asyncio
@@ -55,3 +64,68 @@ def test_count_prompt_tokens_without_prefix_text_unchanged() -> None:
 
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="five tokens in this prompt")])
     assert data._count_prompt_tokens(tokenizer) == 5
+
+
+def _reset_multimodal_progress_state() -> None:
+    """Zero the module-level multimodal heartbeat counters between tests."""
+    chat_module._multimodal_materialized_requests = 0
+    chat_module._multimodal_materialized_images = 0
+    chat_module._multimodal_materialized_videos = 0
+    chat_module._multimodal_materialized_audios = 0
+    chat_module._multimodal_materialized_video_frames = 0
+    chat_module._last_multimodal_progress_log_time = None
+
+
+def _make_multimodal_request(images: int = 1, audios: int = 0, videos: int = 0) -> ChatCompletionAPIData:
+    spec = MultimodalSpec(
+        images=[ImageInstanceSpec(width=8, height=8, insertion_point=0.0) for _ in range(images)],
+        videos=[VideoInstanceSpec(width=8, height=8, frames=2, insertion_point=0.0) for _ in range(videos)],
+        audios=[AudioInstanceSpec(duration=0.1, insertion_point=0.0) for _ in range(audios)],
+    )
+    return ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="hi")],
+        multimodal_spec=spec,
+    )
+
+
+@pytest.mark.asyncio
+async def test_multimodal_heartbeat_fires_on_interval(caplog: Any) -> None:
+    """Each materialized multimodal request advances counters; a heartbeat fires once per interval."""
+    _reset_multimodal_progress_state()
+
+    # Drive monotonic forward by the configured interval on every call so each
+    # to_request_body crosses the heartbeat boundary.
+    fake_time: Iterator[float] = iter(
+        (i * chat_module._MULTIMODAL_PROGRESS_LOG_INTERVAL_SEC for i in range(1, 100))
+    )
+
+    caplog.set_level(logging.INFO, logger=chat_module.__name__)
+    with patch("inference_perf.apis.chat.time.monotonic", side_effect=lambda: next(fake_time)):
+        for _ in range(3):
+            await _make_multimodal_request(images=2, audios=1).to_request_body("m", 10, False, False)
+
+    progress = [r.message for r in caplog.records if "Multimodal datagen progress" in r.message]
+    assert len(progress) == 3
+    assert "materialized 3 requests" in progress[-1]
+    assert "images=6" in progress[-1]
+    assert "audios=3" in progress[-1]
+
+
+@pytest.mark.asyncio
+async def test_multimodal_heartbeat_skips_within_interval() -> None:
+    """Sub-interval materializations advance counters but only log once."""
+    _reset_multimodal_progress_state()
+
+    base_time = 1_000_000.0
+    fake_time = iter([base_time, base_time + 0.1, base_time + 0.2, base_time + 0.3])
+
+    with (
+        patch.object(chat_module, "logger") as mock_logger,
+        patch("inference_perf.apis.chat.time.monotonic", side_effect=lambda: next(fake_time)),
+    ):
+        for _ in range(4):
+            await _make_multimodal_request(images=1).to_request_body("m", 10, False, False)
+
+    assert mock_logger.info.call_count == 1
+    assert chat_module._multimodal_materialized_requests == 4
+    assert chat_module._multimodal_materialized_images == 4

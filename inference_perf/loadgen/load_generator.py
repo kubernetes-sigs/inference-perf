@@ -120,6 +120,11 @@ class Worker(mp.Process):
         self.skip = False
         self.base_seed = base_seed
         self.stage_barrier = stage_barrier
+        # Snapshot the parent's effective root log level so the worker
+        # interpreter (which under forkserver/spawn does not inherit the
+        # parent's basicConfig) can configure its own handler to surface
+        # logs at the same level the user asked for.
+        self._log_level = logging.getLogger().getEffectiveLevel()
 
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
@@ -260,6 +265,15 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        # forkserver/spawn workers start from a fresh interpreter without the
+        # parent's logging.basicConfig, so logger.info() calls are silently
+        # dropped by the lastResort handler (WARNING+). Install a minimal
+        # handler at the parent-configured level so worker-side logs surface.
+        logging.basicConfig(
+            level=self._log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+
         # Seed with current time + worker id to ensure unique random sequences per worker
         seed = (self.base_seed + self.id) % 2**32
         np.random.seed(seed)
