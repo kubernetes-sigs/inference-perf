@@ -72,7 +72,7 @@ def test_synthetic_datagen_logs_progress_on_interval(caplog: Any) -> None:
     fake_time: Iterator[float] = iter((i * synthetic_datagen._PROGRESS_LOG_INTERVAL_SEC for i in range(1, 100)))
 
     caplog.set_level(logging.INFO, logger=synthetic_datagen.__name__)
-    with patch.object(synthetic_datagen.time, "monotonic", side_effect=lambda: next(fake_time)):
+    with patch("inference_perf.datagen.synthetic_datagen.time.monotonic", side_effect=lambda: next(fake_time)):
         for i in range(3):
             generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
 
@@ -96,7 +96,7 @@ def test_synthetic_datagen_skips_progress_log_within_interval() -> None:
 
     with (
         patch.object(synthetic_datagen, "logger") as mock_logger,
-        patch.object(synthetic_datagen.time, "monotonic", side_effect=lambda: next(fake_time)),
+        patch("inference_perf.datagen.synthetic_datagen.time.monotonic", side_effect=lambda: next(fake_time)),
     ):
         for i in range(4):
             generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
