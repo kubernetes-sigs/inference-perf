@@ -71,7 +71,7 @@ def test_synthetic_datagen_logs_progress_on_interval(caplog: Any) -> None:
     # so every call crosses the heartbeat boundary.
     fake_time: Iterator[float] = iter((i * synthetic_datagen._PROGRESS_LOG_INTERVAL_SEC for i in range(1, 100)))
 
-    caplog.set_level(logging.WARNING, logger=synthetic_datagen.__name__)
+    caplog.set_level(logging.INFO, logger=synthetic_datagen.__name__)
     with patch.object(synthetic_datagen.time, "monotonic", side_effect=lambda: next(fake_time)):
         for i in range(3):
             generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
@@ -103,4 +103,4 @@ def test_synthetic_datagen_skips_progress_log_within_interval() -> None:
 
     # First call sets the baseline timestamp and logs; subsequent sub-interval
     # calls should be silent.
-    assert mock_logger.warning.call_count == 1
+    assert mock_logger.info.call_count == 1

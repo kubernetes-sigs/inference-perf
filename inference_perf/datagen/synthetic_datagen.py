@@ -132,12 +132,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._materialized_count += 1
         now = time.monotonic()
         if self._last_progress_log_time is None or (now - self._last_progress_log_time) >= _PROGRESS_LOG_INTERVAL_SEC:
-            # Use warning() so the heartbeat surfaces in worker processes even
-            # when the worker interpreter has no logging config inherited from
-            # the parent (the default forkserver / spawn start method on
-            # Python 3.14 does not propagate basicConfig). Python's lastResort
-            # handler prints WARNING+ to stderr with no setup required.
-            logger.warning(
+            logger.info(
                 "Synthetic datagen progress: materialized %d prompts (worker pid=%d)",
                 self._materialized_count,
                 os.getpid(),
