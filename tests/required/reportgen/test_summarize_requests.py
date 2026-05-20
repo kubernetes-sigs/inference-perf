@@ -128,3 +128,29 @@ def test_summarize_requests_multiple_tokens_same_timestamp() -> None:
 
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
     assert metric.info.response_metrics.output_token_times == [1.0, 1.0, 1.0]
+
+
+def test_summarize_requests_surfaces_prompt_cache_usage() -> None:
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=2,
+            server_usage={
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 6},
+            },
+        ),
+    )
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="test_request", info=info, error=None
+    )
+
+    result = summarize_requests([metric], [50])
+
+    assert result.successes["prompt_tokens"] == {
+        "total": 10.0,
+        "cached": 6.0,
+        "uncached": 4.0,
+    }
