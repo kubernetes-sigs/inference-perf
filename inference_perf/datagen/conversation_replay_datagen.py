@@ -235,9 +235,17 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             logger.debug("Slot %d starting conversation %d", conv_idx, convo_num)
 
         latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
+        # Force min_tokens == max_tokens so every turn emits exactly the
+        # sampled output length, regardless of which stop_token_ids the
+        # model's generation_config defines. Without this, cross-model
+        # throughput comparisons are invalid: chat-template stop tokens
+        # (e.g. Qwen <|im_end|>, Llama <|eot_id|>) terminate generation
+        # early in spite of ignore_eos=True, which only suppresses the
+        # primary EOS.
         return _ConversationReplayAPIData(
             prompt=bp.turn_prompts[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
+            min_tokens=bp.turn_output_lens[turn_idx],
             user_session_id=self.user_sessions[conv_idx].user_session_id,
             target_round=round_num,
             tool_call_latency_sec=latency,

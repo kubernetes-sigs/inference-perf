@@ -26,6 +26,13 @@ from inference_perf.apis.streaming_parser import parse_sse_stream
 class CompletionAPIData(InferenceAPIData):
     prompt: str
     max_tokens: int = 0
+    # vLLM extension. When set, the server is forced to generate at least
+    # this many tokens before honoring EOS or any stop_token_ids. Critical
+    # for deterministic output length across model families whose
+    # generation_config.eos_token_id lists differ — `ignore_eos` alone only
+    # suppresses the primary EOS, leaving chat-template stop tokens (e.g.
+    # <|im_end|>) to terminate generation early.
+    min_tokens: Optional[int] = None
     model_response: str = ""
 
     def get_api_type(self) -> APIType:
@@ -39,7 +46,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> RequestBody:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-        return {
+        body: RequestBody = {
             "model": effective_model_name,
             "prompt": self.prompt,
             "max_tokens": self.max_tokens,
@@ -47,6 +54,9 @@ class CompletionAPIData(InferenceAPIData):
             "stream": streaming,
             **({"stream_options": {"include_usage": True}} if streaming else {}),
         }
+        if self.min_tokens is not None:
+            body["min_tokens"] = self.min_tokens
+        return body
 
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
