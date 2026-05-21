@@ -32,9 +32,23 @@ from inference_perf.config import (
     ImageDatagenConfig,
     Resolution,
     ResolutionPreset,
+    SyntheticMultimodalDatagenConfig,
     VideoDatagenConfig,
     VideoProfile,
 )
+from inference_perf.payloads import (
+    ImageRepresentation,
+    MultimodalSpec,
+    SyntheticAudioSpec,
+    SyntheticFramesVideoSpec,
+    SyntheticImageSpec,
+    SyntheticMp4VideoSpec,
+    VideoRepresentation,
+    VideoSpecUnion,
+)
+from inference_perf.payloads.audio import pool as audio_pool_mod
+from inference_perf.payloads.image import pool as image_pool_mod
+from inference_perf.payloads.video import pool as video_pool_mod
 from inference_perf.utils.numeric.distribution import sample_from_distribution
 
 
@@ -112,3 +126,161 @@ def sample_insertion_point(
     if isinstance(config_insertion_point, float):
         return config_insertion_point
     return float(sample_from_distribution(config_insertion_point, 1, rng)[0])
+
+
+def configure_payload_pools(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator) -> None:
+    """Build and register per-modality payload pools from a multimodal config.
+
+    Idempotent within a process: each call replaces any previously registered
+    pool for the same modality. Only invoked for the payload-side config —
+    prefix-side bytes always bypass the pool to preserve prefix-cache
+    determinism per group.
+    """
+    if cfg.image and cfg.image.pool and cfg.image.count:
+        img_cfg = cfg.image
+        img_pool_cfg = cfg.image.pool
+
+        def _img_sampler() -> Tuple[int, int]:
+            return sample_image_resolution(img_cfg, rng)
+
+        image_pool_mod.set_pool(image_pool_mod.ImagePool(img_pool_cfg.size, _img_sampler, img_cfg.representation, rng))
+    else:
+        image_pool_mod.set_pool(None)
+
+    if cfg.video and cfg.video.pool and cfg.video.count:
+        vid_cfg = cfg.video
+        vid_pool_cfg = cfg.video.pool
+
+        def _vid_sampler() -> Tuple[int, int, int]:
+            profile = sample_video_profile(vid_cfg, rng)
+            w, h = resolution_to_wh(profile.resolution)
+            return w, h, profile.frames
+
+        video_pool_mod.set_pool(video_pool_mod.VideoPool(vid_pool_cfg.size, _vid_sampler, vid_cfg.representation, rng))
+    else:
+        video_pool_mod.set_pool(None)
+
+    if cfg.audio and cfg.audio.pool and cfg.audio.count:
+        aud_cfg = cfg.audio
+        aud_pool_cfg = cfg.audio.pool
+
+        def _aud_sampler() -> float:
+            return sample_audio_duration(aud_cfg, rng)
+
+        audio_pool_mod.set_pool(audio_pool_mod.AudioPool(aud_pool_cfg.size, _aud_sampler))
+    else:
+        audio_pool_mod.set_pool(None)
+
+
+def reset_payload_pools() -> None:
+    """Clear every modality's payload pool. Intended for tests."""
+    image_pool_mod.reset_pool()
+    video_pool_mod.reset_pool()
+    audio_pool_mod.reset_pool()
+
+
+def sample_spec_from_config(
+    cfg: SyntheticMultimodalDatagenConfig,
+    rng: np.random.Generator,
+    use_pool: bool,
+) -> MultimodalSpec:
+    """Sample a ``MultimodalSpec`` for one request.
+
+    When ``use_pool`` is True and a modality has a registered eager pool,
+    items for that modality carry a ``pool_index`` and inherit their
+    dimensions / frames / duration from the corresponding pool entry. When
+    False (prefix-side) or when no pool is registered, items are drawn from
+    the modality's distribution exactly as before — the legacy code path.
+    """
+    spec = MultimodalSpec()
+
+    img_cfg = cfg.image
+    if img_cfg and img_cfg.count:
+        count = int(sample_from_distribution(img_cfg.count, 1, rng)[0])
+        img_pool = image_pool_mod.get_pool() if use_pool else None
+        for _ in range(count):
+            ipt = sample_insertion_point(img_cfg.insertion_point, rng)
+            if img_pool is not None:
+                idx = int(rng.integers(0, img_pool.size))
+                img_entry = img_pool.get(idx)
+                spec.images.append(
+                    SyntheticImageSpec(
+                        width=img_entry.width,
+                        height=img_entry.height,
+                        insertion_point=ipt,
+                        representation=img_cfg.representation,
+                        pool_index=idx,
+                    )
+                )
+            else:
+                w, h = sample_image_resolution(img_cfg, rng)
+                spec.images.append(
+                    SyntheticImageSpec(width=w, height=h, insertion_point=ipt, representation=img_cfg.representation)
+                )
+
+    vid_cfg = cfg.video
+    if vid_cfg and vid_cfg.count:
+        count = int(sample_from_distribution(vid_cfg.count, 1, rng)[0])
+        vid_pool = video_pool_mod.get_pool() if use_pool else None
+        for _ in range(count):
+            ipt = sample_insertion_point(vid_cfg.insertion_point, rng)
+            if vid_pool is not None:
+                idx = int(rng.integers(0, vid_pool.size))
+                vid_entry = vid_pool.get(idx)
+                video_spec_pool: VideoSpecUnion
+                if vid_cfg.representation == VideoRepresentation.MP4:
+                    video_spec_pool = SyntheticMp4VideoSpec(
+                        width=vid_entry.width,
+                        height=vid_entry.height,
+                        frames=vid_entry.frames,
+                        insertion_point=ipt,
+                        pool_index=idx,
+                    )
+                else:
+                    video_spec_pool = SyntheticFramesVideoSpec(
+                        width=vid_entry.width,
+                        height=vid_entry.height,
+                        frames=vid_entry.frames,
+                        insertion_point=ipt,
+                        frame_representation=(
+                            ImageRepresentation.JPEG
+                            if vid_cfg.representation == VideoRepresentation.JPEG_FRAMES
+                            else ImageRepresentation.PNG
+                        ),
+                        pool_index=idx,
+                    )
+                spec.videos.append(video_spec_pool)
+            else:
+                profile = sample_video_profile(vid_cfg, rng)
+                w, h = resolution_to_wh(profile.resolution)
+                video_spec_fresh: VideoSpecUnion
+                if vid_cfg.representation == VideoRepresentation.MP4:
+                    video_spec_fresh = SyntheticMp4VideoSpec(width=w, height=h, frames=profile.frames, insertion_point=ipt)
+                else:
+                    video_spec_fresh = SyntheticFramesVideoSpec(
+                        width=w,
+                        height=h,
+                        frames=profile.frames,
+                        insertion_point=ipt,
+                        frame_representation=(
+                            ImageRepresentation.JPEG
+                            if vid_cfg.representation == VideoRepresentation.JPEG_FRAMES
+                            else ImageRepresentation.PNG
+                        ),
+                    )
+                spec.videos.append(video_spec_fresh)
+
+    aud_cfg = cfg.audio
+    if aud_cfg and aud_cfg.count:
+        count = int(sample_from_distribution(aud_cfg.count, 1, rng)[0])
+        aud_pool = audio_pool_mod.get_pool() if use_pool else None
+        for _ in range(count):
+            ipt = sample_insertion_point(aud_cfg.insertion_point, rng)
+            if aud_pool is not None:
+                idx = int(rng.integers(0, aud_pool.size))
+                aud_entry = aud_pool.get(idx)
+                spec.audios.append(SyntheticAudioSpec(duration=aud_entry.duration, insertion_point=ipt, pool_index=idx))
+            else:
+                spec.audios.append(SyntheticAudioSpec(duration=sample_audio_duration(aud_cfg, rng), insertion_point=ipt))
+
+    return spec

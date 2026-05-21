@@ -48,7 +48,7 @@ from inference_perf.payloads import (
     SyntheticMp4VideoSpec,
 )
 
-_IMAGE_VARIANTS = [
+_IMAGE_VARIANTS: list[tuple[Dict[str, Any], Type[BaseModel]]] = [
     ({"kind": "synthetic", "width": 16, "height": 16, "insertion_point": 0.0}, SyntheticImageSpec),
     (
         {"kind": "pre_encoded", "width": 16, "height": 16, "insertion_point": 0.0, "image_bytes": b"X"},
@@ -58,7 +58,7 @@ _IMAGE_VARIANTS = [
     ({"kind": "local_file", "width": 16, "height": 16, "insertion_point": 0.0, "path": "/x"}, LocalFileImageSpec),
 ]
 
-_AUDIO_VARIANTS = [
+_AUDIO_VARIANTS: list[tuple[Dict[str, Any], Type[BaseModel]]] = [
     ({"kind": "synthetic", "duration": 1.0, "insertion_point": 0.0}, SyntheticAudioSpec),
     (
         {"kind": "pre_encoded", "duration": 1.0, "insertion_point": 0.0, "audio_bytes": b"X"},
@@ -68,7 +68,7 @@ _AUDIO_VARIANTS = [
     ({"kind": "local_file", "duration": 1.0, "insertion_point": 0.0, "path": "/x"}, LocalFileAudioSpec),
 ]
 
-_VIDEO_VARIANTS = [
+_VIDEO_VARIANTS: list[tuple[Dict[str, Any], Type[BaseModel]]] = [
     (
         {"kind": "synthetic_mp4", "width": 32, "height": 32, "frames": 4, "insertion_point": 0.0},
         SyntheticMp4VideoSpec,

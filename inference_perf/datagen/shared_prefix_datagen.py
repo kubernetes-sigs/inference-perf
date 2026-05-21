@@ -21,23 +21,8 @@ from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SyntheticMultimodalDatagenConfig
-from inference_perf.datagen.multimodal_sampling import (
-    resolution_to_wh,
-    sample_audio_duration,
-    sample_image_resolution,
-    sample_insertion_point,
-    sample_video_profile,
-)
-from inference_perf.payloads import (
-    ImageRepresentation,
-    MultimodalSpec,
-    SyntheticAudioSpec,
-    SyntheticFramesVideoSpec,
-    SyntheticImageSpec,
-    SyntheticMp4VideoSpec,
-    VideoRepresentation,
-    VideoSpecUnion,
-)
+from inference_perf.datagen.multimodal_sampling import configure_payload_pools, sample_spec_from_config
+from inference_perf.payloads import MultimodalSpec
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution
 
@@ -91,6 +76,12 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.prefix_multimodal: Optional[SyntheticMultimodalDatagenConfig] = self.shared_prefix.multimodal
         self.payload_multimodal: Optional[SyntheticMultimodalDatagenConfig] = config.multimodal
+
+        # Eagerly materialize per-modality payload pools when configured.
+        # Only payload-side: prefix-side bytes flow through chat.py's seeded
+        # deterministic path so prefix-cache hits per group are preserved.
+        if self.payload_multimodal is not None:
+            configure_payload_pools(self.payload_multimodal, self.rng)
 
         # Resolve all parameters to Distribution
         system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
@@ -148,7 +139,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Sample a fresh payload-side multimodal spec for one request."""
         if not self.payload_multimodal:
             return None
-        return _sample_spec(self.payload_multimodal, self.rng)
+        return sample_spec_from_config(self.payload_multimodal, self.rng, use_pool=True)
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         i = data.data_index % len(self.prompts)
@@ -257,7 +248,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 # ``ChatCompletionAPIData.prefix_cache_key``), so requests in
                 # this group produce identical wire bytes (server prefix-cache
                 # hits) while across-group bytes diverge.
-                self.prefix_specs_by_group[group_id] = _sample_spec(self.prefix_multimodal, self.rng)
+                self.prefix_specs_by_group[group_id] = sample_spec_from_config(
+                    self.prefix_multimodal, self.rng, use_pool=False
+                )
 
             for prompt_id in range(self.num_prompts_per_group):
                 q_len = self.question_len_list_per_group[group_id][prompt_id]
@@ -294,63 +287,3 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.flat_output_lens = [self.flat_output_lens[i] for i in indices]
         if self.enable_multi_turn_chat:
             self.user_sessions = [self.user_sessions[i] for i in indices]
-
-
-def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator) -> MultimodalSpec:
-    """Sample a ``MultimodalSpec`` from a multimodal config block.
-
-    Shared between prefix-side (sampled once per group at init) and
-    payload-side (sampled fresh per request).
-    """
-    spec = MultimodalSpec()
-
-    img_cfg = cfg.image
-    if img_cfg and img_cfg.count:
-        count = int(sample_from_distribution(img_cfg.count, 1, rng)[0])
-        for _ in range(count):
-            w, h = sample_image_resolution(img_cfg, rng)
-            spec.images.append(
-                SyntheticImageSpec(
-                    width=w,
-                    height=h,
-                    insertion_point=sample_insertion_point(img_cfg.insertion_point, rng),
-                    representation=img_cfg.representation,
-                )
-            )
-
-    vid_cfg = cfg.video
-    if vid_cfg and vid_cfg.count:
-        count = int(sample_from_distribution(vid_cfg.count, 1, rng)[0])
-        for _ in range(count):
-            profile = sample_video_profile(vid_cfg, rng)
-            w, h = resolution_to_wh(profile.resolution)
-            insertion_point = sample_insertion_point(vid_cfg.insertion_point, rng)
-            video_spec: VideoSpecUnion
-            if vid_cfg.representation == VideoRepresentation.MP4:
-                video_spec = SyntheticMp4VideoSpec(width=w, height=h, frames=profile.frames, insertion_point=insertion_point)
-            else:
-                video_spec = SyntheticFramesVideoSpec(
-                    width=w,
-                    height=h,
-                    frames=profile.frames,
-                    insertion_point=insertion_point,
-                    frame_representation=(
-                        ImageRepresentation.JPEG
-                        if vid_cfg.representation == VideoRepresentation.JPEG_FRAMES
-                        else ImageRepresentation.PNG
-                    ),
-                )
-            spec.videos.append(video_spec)
-
-    aud_cfg = cfg.audio
-    if aud_cfg and aud_cfg.count:
-        count = int(sample_from_distribution(aud_cfg.count, 1, rng)[0])
-        for _ in range(count):
-            spec.audios.append(
-                SyntheticAudioSpec(
-                    duration=sample_audio_duration(aud_cfg, rng),
-                    insertion_point=sample_insertion_point(aud_cfg.insertion_point, rng),
-                )
-            )
-
-    return spec

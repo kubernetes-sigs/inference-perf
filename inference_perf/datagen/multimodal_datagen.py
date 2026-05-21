@@ -17,26 +17,11 @@ import numpy as np
 
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.payloads import (
-    ImageRepresentation,
-    MultimodalSpec,
-    SyntheticAudioSpec,
-    SyntheticFramesVideoSpec,
-    SyntheticImageSpec,
-    SyntheticMp4VideoSpec,
-    VideoRepresentation,
-    VideoSpecUnion,
-)
+from inference_perf.payloads import MultimodalSpec
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution
-from inference_perf.datagen.multimodal_sampling import (
-    resolution_to_wh,
-    sample_audio_duration,
-    sample_image_resolution,
-    sample_insertion_point,
-    sample_video_profile,
-)
+from inference_perf.datagen.multimodal_sampling import configure_payload_pools, sample_spec_from_config
 
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -88,6 +73,11 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.vocab_size <= 0:
             raise ValueError(f"Tokenizer vocabulary size must be positive, got {self.vocab_size}.")
 
+        # Eagerly materialize per-modality payload pools when configured.
+        # Subsequent ``_build_spec`` calls stamp ``pool_index`` on synthetic
+        # specs in place of fresh resolution / profile / duration samples.
+        configure_payload_pools(self.multimodal_config, self.rng)
+
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat]
 
@@ -110,63 +100,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         return str(self.tokenizer.get_tokenizer().decode(token_ids, skip_special_tokens=True))
 
     def _build_spec(self) -> MultimodalSpec:
-        spec = MultimodalSpec()
-
-        img_cfg = self.multimodal_config.image
-        if img_cfg and img_cfg.count:
-            img_count_dist = img_cfg.count
-            count = int(sample_from_distribution(img_count_dist, 1, self.rng)[0])
-            for _ in range(count):
-                w, h = sample_image_resolution(img_cfg, self.rng)
-                spec.images.append(
-                    SyntheticImageSpec(
-                        width=w,
-                        height=h,
-                        insertion_point=sample_insertion_point(img_cfg.insertion_point, self.rng),
-                        representation=img_cfg.representation,
-                    )
-                )
-
-        vid_cfg = self.multimodal_config.video
-        if vid_cfg and vid_cfg.count:
-            vid_count_dist = vid_cfg.count
-            count = int(sample_from_distribution(vid_count_dist, 1, self.rng)[0])
-            for _ in range(count):
-                profile = sample_video_profile(vid_cfg, self.rng)
-                w, h = resolution_to_wh(profile.resolution)
-                insertion_point = sample_insertion_point(vid_cfg.insertion_point, self.rng)
-                video_spec: VideoSpecUnion
-                if vid_cfg.representation == VideoRepresentation.MP4:
-                    video_spec = SyntheticMp4VideoSpec(
-                        width=w, height=h, frames=profile.frames, insertion_point=insertion_point
-                    )
-                else:
-                    video_spec = SyntheticFramesVideoSpec(
-                        width=w,
-                        height=h,
-                        frames=profile.frames,
-                        insertion_point=insertion_point,
-                        frame_representation=(
-                            ImageRepresentation.JPEG
-                            if vid_cfg.representation == VideoRepresentation.JPEG_FRAMES
-                            else ImageRepresentation.PNG
-                        ),
-                    )
-                spec.videos.append(video_spec)
-
-        aud_cfg = self.multimodal_config.audio
-        if aud_cfg and aud_cfg.count:
-            aud_count_dist = aud_cfg.count
-            count = int(sample_from_distribution(aud_count_dist, 1, self.rng)[0])
-            for _ in range(count):
-                spec.audios.append(
-                    SyntheticAudioSpec(
-                        duration=sample_audio_duration(aud_cfg, self.rng),
-                        insertion_point=sample_insertion_point(aud_cfg.insertion_point, self.rng),
-                    )
-                )
-
-        return spec
+        return sample_spec_from_config(self.multimodal_config, self.rng, use_pool=True)
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         if self.tokenizer is None:

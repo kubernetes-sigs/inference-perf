@@ -66,6 +66,33 @@ class WeightedDuration(BaseModel):
 
 
 # --- Modality-Specific Request Configs ---
+class MediaPoolConfig(BaseModel):
+    """Bounded distinct-media pool for cross-request reuse on synthetic specs.
+
+    When set on a modality, datagen pre-renders ``size`` distinct media blobs
+    at config time by drawing from the modality's existing distribution
+    (``resolutions`` / ``profiles`` / ``durations``). Each payload-side
+    synthetic request then samples one item from this pool instead of
+    re-rendering, so the modality's wire bytes across requests collapse to
+    exactly ``size`` distinct values. Lets you measure server-side
+    multimodal cache, dedup, and encoder-cache behavior under realistic
+    finite-corpus workloads.
+
+    Pool sampling is uniform; weighted / Zipf sampling lands in a follow-up.
+    Prefix-side bytes always bypass the pool so prefix-cache benchmarks
+    stay deterministic per group. Omitting ``pool`` keeps today's behavior
+    (fresh bytes per request for image/audio; the implicit per-profile MP4
+    bucket in ``mediagen.pool`` for video).
+    """
+
+    size: int = Field(
+        description=(
+            "Total number of distinct media items materialized once at pool init and reused across requests. Must be >= 1."
+        ),
+        ge=1,
+    )
+
+
 class MediaDatagenConfig(BaseModel):
     count: Optional[Distribution] = Field(
         default=None, description="Distribution of the number of media items to generate per request."
@@ -73,6 +100,10 @@ class MediaDatagenConfig(BaseModel):
     insertion_point: Optional[Union[float, Distribution]] = Field(
         default=None,
         description="Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from.",
+    )
+    pool: Optional[MediaPoolConfig] = Field(
+        default=None,
+        description=("Optional bounded pool of distinct pre-rendered items for this modality. See ``MediaPoolConfig``."),
     )
 
 

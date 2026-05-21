@@ -13,7 +13,7 @@
 # limitations under the License.
 """Synthetic frame-sequence video spec — N ``image_url`` blocks, generated per frame."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from ...image import ImageRepresentation
 from ..metrics import Video
@@ -30,6 +30,9 @@ class SyntheticFramesVideoSpec(VideoSpec):
 
     kind: Literal["synthetic_frames"] = "synthetic_frames"
     frame_representation: ImageRepresentation = ImageRepresentation.PNG
+    # Pool index into the per-process :class:`~inference_perf.payloads.video.pool.VideoPool`;
+    # see :class:`SyntheticMp4VideoSpec.pool_index` for the contract.
+    pool_index: Optional[int] = None
 
     def get_metrics(self, wire_bytes: int) -> Video:
         # We generated every frame from declared geometry — every field is
