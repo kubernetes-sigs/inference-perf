@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Runtime observability surfaces for inference-perf.
+"""Metric exposition surfaces (Prometheus, pushgateway, etc.) for inference-perf."""
 
-This package emits structured signals *about* a benchmark run (progress, errors,
-stage state, latency distributions). It is distinct from
-``inference_perf.client.server_metrics``, which *consumes* metrics from the
-model server under test.
-"""
+from .prometheus import PrometheusMetricsServer
+
+__all__ = ["PrometheusMetricsServer"]
