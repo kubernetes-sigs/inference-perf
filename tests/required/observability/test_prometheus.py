@@ -14,6 +14,7 @@
 
 import time
 import urllib.request
+from typing import Iterator
 
 import pytest
 
@@ -22,7 +23,7 @@ from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
 
 
 @pytest.fixture
-def server():
+def server() -> Iterator[PrometheusMetricsServer]:
     s = PrometheusMetricsServer(port=0)
     s.start()
     yield s
@@ -31,7 +32,8 @@ def server():
 
 def _scrape(port: int) -> str:
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=2) as resp:
-        return resp.read().decode()
+        body: bytes = resp.read()
+    return body.decode()
 
 
 def _parse_elapsed(body: str) -> float:
