@@ -218,7 +218,6 @@ class Worker(mp.Process):
 
                 try:
                     stage_id, request, request_time, lora_adapter = item
-                    request.stage_idx = stage_id
                     request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 except Exception as e:
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
@@ -529,9 +528,10 @@ class LoadGenerator:
                 if worker_id >= 0:
                     worker_id = worker_id % active_workers
 
-                # Stamp session_id and OTEL context so workers can use them
+                # Stamp session_id, OTEL context, and stage_id so workers/generators can use them
                 lazy_data.session_id = session_id
                 lazy_data.otel_context = context_dict  # Embed OTEL context in data
+                lazy_data.stage_id = stage_id
 
                 event_time = time.perf_counter()
                 queue_data = RequestQueueData(stage_id, lazy_data, event_time, lora_adapter)
@@ -748,6 +748,7 @@ class LoadGenerator:
 
         for _ in range(num_requests):
             request_data = next(data_generator)
+            request_data.stage_id = stage_id
             lora_adapter = self._get_lora_adapter()
             worker_id = request_data.preferred_worker_id
             if worker_id >= 0:
@@ -1082,7 +1083,7 @@ class LoadGenerator:
                     for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
                         if progress and stage_task:
                             progress.update(stage_task, completed=count + 1)
-                        data.stage_idx = stage_id
+                        data.stage_id = stage_id
                         request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                         lora_adapter = self._get_lora_adapter()
                         if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):

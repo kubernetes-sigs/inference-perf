@@ -13,7 +13,7 @@
 # limitations under the License.
 """Tests for ConversationReplayDataGenerator."""
 
-from typing import Generator
+from typing import Any, Generator
 
 import pytest
 from unittest.mock import MagicMock
@@ -49,8 +49,8 @@ def _make_mock_tokenizer(vocab_size: int = 32000) -> MagicMock:
     mock_tokenizer = MagicMock()
     hf_tok = MagicMock()
     hf_tok.vocab_size = vocab_size
-    hf_tok.decode.return_value = "mock decoded text"
-    hf_tok.batch_decode.return_value = ["mock decoded text"]
+    hf_tok.decode.side_effect = lambda ids, **kwargs: f"decoded_{ids}"
+    hf_tok.batch_decode.side_effect = lambda list_ids, **kwargs: [f"decoded_{ids}" for ids in list_ids]
     mock_tokenizer.get_tokenizer.return_value = hf_tok
     return mock_tokenizer
 
@@ -225,7 +225,7 @@ class TestConversationReplayDataGenerator:
         assert LocalUserSession._instances == {}
 
         # First request after the clear should re-prime the slot it touches AND regenerate prompt.
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=1))
 
         assert "conv_1" in LocalUserSession._instances
         # It should be different from original
@@ -243,10 +243,10 @@ class TestConversationReplayDataGenerator:
 
         last_contexts = {i: "" for i in range(3)}
 
-        for _ in range(3):
+        for stage_idx in range(3):
             LocalUserSession.clear_instances()
             for conv_idx in range(3):
-                gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx))
+                gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx, stage_id=stage_idx))
                 current_context = LocalUserSession._instances[f"conv_{conv_idx}"].context
                 assert current_context != last_contexts[conv_idx]
                 last_contexts[conv_idx] = current_context
@@ -312,13 +312,13 @@ class TestConversationReplayDataGenerator:
         # Run 1
         gen1 = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
         # Stage 0
-        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
+        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
         context1_stage0 = LocalUserSession._instances["conv_0"].context
 
         LocalUserSession.clear_instances()
 
         # Stage 1
-        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
+        gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_id=1))
         context1_stage1 = LocalUserSession._instances["conv_0"].context
 
         # Isolate Run 2
@@ -327,13 +327,13 @@ class TestConversationReplayDataGenerator:
         # Run 2
         gen2 = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
         # Stage 0
-        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
+        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
         context2_stage0 = LocalUserSession._instances["conv_0"].context
 
         LocalUserSession.clear_instances()
 
         # Stage 1
-        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_idx=1))
+        gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0, stage_id=1))
         context2_stage1 = LocalUserSession._instances["conv_0"].context
 
         # Verify reproducibility across runs for Stage 0
@@ -369,15 +369,93 @@ class TestConversationReplayDataGenerator:
         gen = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
 
         # Stage 0
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_idx=0))
-        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_idx=0))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=0))
 
-        context_conv0 = LocalUserSession._instances["conv_0"].context
-        context_conv1 = LocalUserSession._instances["conv_1"].context
+        context_conv0_s0 = LocalUserSession._instances["conv_0"].context
+        context_conv1_s0 = LocalUserSession._instances["conv_1"].context
+        assert context_conv0_s0 == context_conv1_s0
 
-        assert context_conv0 == context_conv1
+        # Transition to Stage 1
+        LocalUserSession.clear_instances()
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=1))
 
+        context_conv0_s1 = LocalUserSession._instances["conv_0"].context
+        context_conv1_s1 = LocalUserSession._instances["conv_1"].context
+        
+        # Verify they are still identical in Stage 1
+        assert context_conv0_s1 == context_conv1_s1
+        # Verify Stage 1 prompt is different from Stage 0 prompt
+        assert context_conv0_s1 != context_conv0_s0
 
+    def test_unique_system_prompt_within_stage_after_clear(self) -> None:
+        """Verify that different conversations with dynamic_system_prompt_len get unique system prompts after stage clear."""
+        api_config, data_config = _make_config(num_conversations=2)
+        def make_deterministic_mock_tok() -> MagicMock:
+            mock_tok = MagicMock()
+            hf_tok = MagicMock()
+            hf_tok.vocab_size = 32000
+            hf_tok.decode.side_effect = lambda ids, **kwargs: f"decoded_{ids}"
+            mock_tok.get_tokenizer.return_value = hf_tok
+            return mock_tok
+
+        gen = ConversationReplayDataGenerator(api_config, data_config, make_deterministic_mock_tok())
+
+        # Stage 0 runtime priming
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=0))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=0))
+
+        context_conv0_s0 = LocalUserSession._instances["conv_0"].context
+        context_conv1_s0 = LocalUserSession._instances["conv_1"].context
+        assert context_conv0_s0 != context_conv1_s0
+
+        # Simulate stage transition by clearing instances and moving to Stage 1
+        LocalUserSession.clear_instances()
+
+        # Load lazy data for both conversations for Stage 1
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=1))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=1))
+
+        context_conv0_s1 = LocalUserSession._instances["conv_0"].context
+        context_conv1_s1 = LocalUserSession._instances["conv_1"].context
+
+        # 1. The system prompts in Stage 1 should still be different from each other
+        assert context_conv0_s1 != context_conv1_s1
+        
+        # 2. Stage 1 prompts should also be different from their Stage 0 versions (new stage prefix)
+        assert context_conv0_s1 != context_conv0_s0
+        assert context_conv1_s1 != context_conv1_s0
+
+    def test_shared_system_prompt_cached_per_stage(self) -> None:
+        """Verify that the shared system prompt is only generated once per stage and cached."""
+        api_config, data_config = _make_config(num_conversations=2)
+        mock_tok = _make_mock_tokenizer()
+
+        # Track how many times decode is called.
+        decode_count = 0
+
+        def counting_decode(ids: Any, **kwargs: Any) -> str:
+            nonlocal decode_count
+            decode_count += 1
+            return f"decoded_{ids}"
+
+        mock_tok.get_tokenizer().decode.side_effect = counting_decode
+
+        gen = ConversationReplayDataGenerator(api_config, data_config, mock_tok)
+
+        # Reset decode count after initialization
+        decode_count = 0
+
+        # Simulate stage transition
+        LocalUserSession.clear_instances()
+
+        # Retrieve two sessions in the same stage
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0, stage_id=5))
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=1, stage_id=5))
+
+        # Decode should have been called exactly once for the shared prompt across both slot re-primes.
+        assert decode_count == 1
 class TestDistributionExtensions:
     def test_lognormal_distribution(self) -> None:
         rng = np.random.default_rng(42)
