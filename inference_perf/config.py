@@ -23,7 +23,7 @@ import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from inference_perf.circuit_breaker import CircuitBreakerConfig
-from inference_perf.payloads.multimodal_spec import ImageRepresentation, VideoRepresentation
+from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 
 
 class APIType(Enum):

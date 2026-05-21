@@ -7,7 +7,7 @@ was actually measured). These are the structural contracts shared between
 requests and parses responses into metrics), and `reportgen/` (which consumes
 the metrics).
 
-The naming follows the convention:
+The naming convention:
 
 - **`Spec`** — the *plan*. Sampled by datagen pre-flight; describes what we
   intend to send.
@@ -24,48 +24,111 @@ The lowercased word "payload" still appears in `apis/chat.py` as the natural
 counterpart to "prefix" in shared-prefix benchmarks (prefix-side vs
 payload-side content).
 
-## Files
+## Layout
 
-### `payload.py` — post-flight measurement records
+Modality is the primary organizing axis. Each per-modality subpackage
+co-locates the spec types and the metric types for that modality, mirroring
+the field-for-field correspondence between the two top-level aggregators:
 
-Realized stats of what was *actually sent*, recorded after the request runs
-and attached to `InferenceInfo.request_metrics` for the lifecycle metrics +
-reports.
+```
+__init__.py        MultimodalSpec + RequestMetrics + RequestBody + re-exports
+image/
+  spec/            ImageSpec, ImageRepresentation, +
+                   SyntheticImageSpec, PreEncodedImageSpec (stub),
+                   RemoteImageSpec (stub), LocalFileImageSpec (stub)
+  metrics.py       Image, Images
+audio/
+  spec/            AudioSpec, + SyntheticAudioSpec,
+                   PreEncodedAudioSpec (stub), RemoteAudioSpec (stub),
+                   LocalFileAudioSpec (stub)
+  metrics.py       Audio, Audios
+video/
+  spec/            VideoSpec + VideoRepresentation,
+                   SyntheticMp4VideoSpec, SyntheticFramesVideoSpec,
+                   PreEncodedFramesVideoSpec, RemoteVideoSpec (stub),
+                   LocalFileVideoSpec (stub), VideoSpecUnion
+  metrics.py       Video, Videos
+text/
+  metrics.py       Text     (no spec; text-side request fields live
+                             on InferenceAPIData subclasses)
+```
 
-- `Text` — input token count for what we sent. Output-side counts live on
-  `*ResponseMetrics`, not here — `RequestMetrics` is sent-side only.
-- `Image`, `Video`, `Audio` — per-instance realized stats (pixels, byte size,
-  aspect ratio, frame count, duration).
-- `Images`, `Videos`, `Audios` — request-scoped containers (count + per-instance
-  list).
-- `RequestMetrics` — the top-level wrapper combining text + optional
-  per-modality containers. Lives on `InferenceInfo.metrics`.
+The two aggregators line up:
 
-The response-side counterpart — `UnaryResponseMetrics` / `StreamedResponseMetrics`
-on `InferenceInfo.response_metrics` — is defined in `inference_perf.apis.base`
-because it's coupled to streaming semantics (chunk timings, server usage).
+```python
+class MultimodalSpec(BaseModel):       class RequestMetrics(BaseModel):
+    images: List[SyntheticImageSpec]       text: Text
+    videos: List[VideoSpecUnion]           image: Optional[Images]
+    audios: List[SyntheticAudioSpec]       video: Optional[Videos]
+                                           audio: Optional[Audios]
+```
 
-### `multimodal_spec.py` — pre-flight request specs
+## Provenance axis (spec side only)
 
-What we plan to send, sampled by datagen and consumed by an API
-implementation's `to_request_body`. Carries dimensions, profiles, durations,
-and insertion points — but **never raw bytes**: bytes are materialized at
-request-build time and don't live on the lifecycle metric.
+Each modality's `spec/` subpackage is further factored
+**modality-primary / provenance-secondary**:
 
-- `ImageInstanceSpec`, `VideoInstanceSpec`, `AudioInstanceSpec` — per-instance
-  spec for one image/video/audio attachment.
-- `MultimodalSpec` — request-scoped container of all the per-instance specs.
+- **Synthetic** — bytes generated at materialization time from geometry hints.
+- **Pre-encoded** — bytes supplied by an upstream dataset loader (e.g.
+  ShareGPT4Video frames).
+- **Remote** — URL referenced; the server fetches the bytes. `bytes=0` on the
+  realized metric.
+- **Local file** — bytes read from a disk path at materialization time. Same
+  wire shape as pre-encoded; deferred read.
 
-## Why both live here
+Only synthetic specs are wired into the materializer today (plus
+`PreEncodedFramesVideoSpec` for the ShareGPT4Video loader). Remote and local
+specs are typed stubs awaiting their materializer branches; their files exist
+so future wire-up doesn't require restructuring.
 
-`RequestMetrics` and `MultimodalSpec` are typed data contracts shared across
+### Where wire-format choices live
+
+For images and frame-based videos, the wire encoding (PNG vs JPEG) is a
+`representation: ImageRepresentation` field on the Spec — a *value*, not a
+*type*. Subclassing along the encoding axis would create classes that share
+all fields and all behavior except a single string, so we keep encoding as a
+field and reserve subclassing for axes that genuinely change fields or
+materializer paths.
+
+`VideoRepresentation` (`mp4` / `png_frames` / `jpeg_frames`) is the
+user-facing wire-format enum used by config (`VideoDatagenConfig`,
+`ShareGPT4VideoConfig`). Datagen translates a chosen `VideoRepresentation`
+into the appropriate Spec subclass plus an `ImageRepresentation`
+`frame_representation` field; Spec classes themselves don't carry
+`VideoRepresentation`.
+
+## Lifecycle
+
+1. **Datagen samples** a `MultimodalSpec` and attaches it to the API data
+   object (`ChatCompletionAPIData.multimodal_spec`).
+2. **The materializer** ([`apis/chat.py`](../apis/chat.py)) reads the Spec,
+   produces wire bytes, **and** records realized
+   `Image` / `Video` / `Audio` records.
+3. **`process_response`** wraps those records in `Images` / `Videos` /
+   `Audios` containers and assembles a `RequestMetrics` (also carrying
+   `Text` token counts).
+4. **Reportgen** aggregates `RequestMetrics` across all requests for the
+   summary tables.
+
+The response-side counterpart — `UnaryResponseMetrics` /
+`StreamedResponseMetrics` on `InferenceInfo.response_metrics` — is defined in
+`inference_perf.apis.base` because it's coupled to streaming semantics
+(chunk timings, server usage).
+
+## Why both halves live here
+
+`MultimodalSpec` and `RequestMetrics` are typed data contracts shared across
 `datagen/`, `apis/`, and `reportgen/` — so they sit together rather than
-hiding inside one of them.
+hiding inside one of them. Within each modality's directory, the spec and
+metric files sit next to each other because the materializer's spec→metric
+mapping per modality is the only place they touch; co-locating them makes
+that mapping visually obvious.
 
-Note: the two are not perfectly symmetric. `RequestMetrics` is request-scoped
-(text + per-modality realized stats), while `MultimodalSpec` only carries
-the multimodal portion of the plan — the text-side request fields (prompt,
-max_tokens, model, messages) live on `InferenceAPIData` subclasses
-(`ChatCompletionAPIData`, `CompletionAPIData`). A future cleanup could pull
-those onto a unified request-scoped spec; until then `MultimodalSpec` is
-named for the slice it actually covers.
+Note: the two aggregators are not perfectly symmetric. `RequestMetrics`
+carries text + per-modality realized stats, while `MultimodalSpec` only
+carries the multimodal portion of the plan — text-side request fields
+(prompt, max_tokens, model, messages) live on `InferenceAPIData` subclasses
+(`ChatCompletionAPIData`, `CompletionAPIData`). The `text/` directory exists
+for structural consistency and currently holds only the post-flight `Text`
+metric record; there is no `text/spec/` because there are no text-side
+specs to put there.
