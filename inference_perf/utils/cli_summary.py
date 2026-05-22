@@ -28,6 +28,14 @@ def extract_stage_id(report_name: str) -> Optional[int]:
     return None
 
 
+def extract_session_stage_id(report_name: str) -> Optional[int]:
+    """Extract stage ID from session report name (e.g. 'stage_0_session_lifecycle_metrics')."""
+    match = re.match(r"stage_(\d+)_session_lifecycle_metrics", report_name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def print_summary_table(reports: List[ReportFile]) -> None:
     """Print a summary table of all stages to stdout using rich."""
     stage_reports: Dict[int, Dict[str, Any]] = {}
@@ -270,3 +278,150 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     console.print(latency_table)
     console.print(speed_table)
     console.print(token_table)
+
+    # Print session-level metrics if available
+    print_session_summary_tables(reports)
+
+
+def print_session_summary_tables(reports: List[ReportFile]) -> None:
+    """Print session-level summary tables for session-based data generators."""
+    session_reports: Dict[int, Dict[str, Any]] = {}
+
+    # Extract session lifecycle metrics reports
+    for report in reports:
+        stage_id = extract_session_stage_id(report.name)
+        if stage_id is not None:
+            session_reports[stage_id] = report.contents
+
+    if not session_reports:
+        # No session metrics found, skip
+        return
+
+    # Sort stages by ID
+    sorted_stages = sorted(session_reports.keys())
+
+    console = Console()
+
+    # Table 1: Session Summary
+    session_summary_table = Table(
+        title="[bold magenta]Session Summary[/bold magenta]", show_header=True, header_style="bold cyan"
+    )
+    session_summary_table.add_column("Stage", justify="right")
+    session_summary_table.add_column("Sessions/s", justify="right")
+    session_summary_table.add_column("Total Sessions", justify="right")
+    session_summary_table.add_column("Succeeded", justify="right")
+    session_summary_table.add_column("Failed", justify="right")
+    session_summary_table.add_column("Error %", justify="right")
+    session_summary_table.add_column("Total Events", justify="right")
+    session_summary_table.add_column("Events Completed", justify="right")
+    session_summary_table.add_column("Events Cancelled", justify="right")
+
+    # Table 2: Session Duration & Events
+    session_duration_table = Table(
+        title="[bold magenta]Session Duration & Events[/bold magenta]", show_header=True, header_style="bold cyan"
+    )
+    session_duration_table.add_column("Stage", justify="right")
+    session_duration_table.add_column("Duration Mean (s)", justify="right")
+    session_duration_table.add_column("Duration Med (s)", justify="right")
+    session_duration_table.add_column("Duration P90 (s)", justify="right")
+    session_duration_table.add_column("Events Mean", justify="right")
+    session_duration_table.add_column("Events Med", justify="right")
+    session_duration_table.add_column("Events P90", justify="right")
+
+    # Table 3: Session Token Totals
+    session_tokens_table = Table(
+        title="[bold magenta]Session Token Totals (per session)[/bold magenta]", show_header=True, header_style="bold cyan"
+    )
+    session_tokens_table.add_column("Stage", justify="right")
+    session_tokens_table.add_column("In Tok/Sess Mean", justify="right")
+    session_tokens_table.add_column("In Tok/Sess Med", justify="right")
+    session_tokens_table.add_column("In Tok/Sess P90", justify="right")
+    session_tokens_table.add_column("Out Tok/Sess Mean", justify="right")
+    session_tokens_table.add_column("Out Tok/Sess Med", justify="right")
+    session_tokens_table.add_column("Out Tok/Sess P90", justify="right")
+
+    for stage_id in sorted_stages:
+        contents = session_reports[stage_id]
+
+        # Extract session summary metrics
+        num_sessions = contents.get("num_sessions", 0)
+        num_sessions_succeeded = contents.get("num_sessions_succeeded", 0)
+        num_sessions_failed = contents.get("num_sessions_failed", 0)
+        total_events = contents.get("total_events", 0)
+        total_events_completed = contents.get("total_events_completed", 0)
+        total_events_cancelled = contents.get("total_events_cancelled", 0)
+        sessions_per_second = contents.get("sessions_per_second", 0.0)
+
+        # Color code succeeded/failed sessions
+        succeeded_str = f"[green]{num_sessions_succeeded}[/]"
+        failed_color = "red" if num_sessions_failed > 0 else "green"
+        failed_str = f"[{failed_color}]{num_sessions_failed}[/]"
+
+        # Session error rate
+        session_error_rate = num_sessions_failed / num_sessions if num_sessions > 0 else 0.0
+        session_error_pct = session_error_rate * 100.0
+        error_color = "red" if session_error_rate > 0.05 else ("yellow" if session_error_rate > 0 else "green")
+        error_str = f"[{error_color}]{session_error_pct:.1f}%[/]"
+
+        # Populate Table 1
+        session_summary_table.add_row(
+            str(stage_id),
+            f"{sessions_per_second:.2f}",
+            str(num_sessions),
+            succeeded_str,
+            failed_str,
+            error_str,
+            str(total_events),
+            str(total_events_completed),
+            str(total_events_cancelled),
+        )
+
+        # Extract session duration metrics
+        session_duration = contents.get("session_duration_sec", {})
+        duration_mean = session_duration.get("mean", 0.0)
+        duration_median = session_duration.get("median", 0.0)
+        duration_p90 = session_duration.get("p90", 0.0)
+
+        # Extract events per session metrics
+        num_events = contents.get("num_events", {})
+        events_mean = num_events.get("mean", 0.0)
+        events_median = num_events.get("median", 0.0)
+        events_p90 = num_events.get("p90", 0.0)
+
+        # Populate Table 2
+        session_duration_table.add_row(
+            str(stage_id),
+            f"{duration_mean:.2f}",
+            f"{duration_median:.2f}",
+            f"{duration_p90:.2f}",
+            f"{events_mean:.1f}",
+            f"{events_median:.1f}",
+            f"{events_p90:.1f}",
+        )
+
+        # Extract token metrics
+        total_input_tokens = contents.get("total_input_tokens", {})
+        input_mean = total_input_tokens.get("mean", 0.0)
+        input_median = total_input_tokens.get("median", 0.0)
+        input_p90 = total_input_tokens.get("p90", 0.0)
+
+        total_output_tokens = contents.get("total_output_tokens", {})
+        output_mean = total_output_tokens.get("mean", 0.0)
+        output_median = total_output_tokens.get("median", 0.0)
+        output_p90 = total_output_tokens.get("p90", 0.0)
+
+        # Populate Table 3
+        session_tokens_table.add_row(
+            str(stage_id),
+            f"{input_mean:.1f}",
+            f"{input_median:.1f}",
+            f"{input_p90:.1f}",
+            f"{output_mean:.1f}",
+            f"{output_median:.1f}",
+            f"{output_p90:.1f}",
+        )
+
+    # Print all session tables
+    console.print(session_summary_table)
+    console.print(session_duration_table)
+    console.print(session_tokens_table)
