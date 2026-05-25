@@ -238,7 +238,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     if stripped_response.startswith("data:"):
                         output_parts = []
                         reasoning_parts = []
-                        last_delta = {}
+                        tool_call_parts = []
                         for line in stripped_response.splitlines():
                             line = line.strip()
                             if not line or not line.startswith("data:"):
@@ -253,18 +253,20 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             choices = chunk.get("choices", [])
                             if not choices:
                                 continue
-                            last_delta = choices[0].get("delta", {})
-                            if last_delta.get("content"):
-                                output_parts.append(last_delta["content"])
-                            if last_delta.get("reasoning_content"):
-                                reasoning_parts.append(last_delta["reasoning_content"])
+                            delta = choices[0].get("delta", {})
+                            if delta.get("content"):
+                                output_parts.append(delta["content"])
+                            if delta.get("reasoning_content"):
+                                reasoning_parts.append(delta["reasoning_content"])
+                            if delta.get("tool_calls"):
+                                tool_call_parts.append(delta)
 
                         if output_parts:
                             otel_response_info["output_text"] = "".join(output_parts)
                         if reasoning_parts:
                             otel_response_info["reasoning_text"] = "".join(reasoning_parts)
-                        if last_delta.get("tool_calls"):
-                            otel_response_info["output_message"] = json.dumps(last_delta)
+                        if tool_call_parts:
+                            otel_response_info["output_message"] = json.dumps(tool_call_parts)
                 elif response and response.status == 200 and response_content:
                     response_json = json.loads(response_content)
                     choices = response_json.get("choices", [])
