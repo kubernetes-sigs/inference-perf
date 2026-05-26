@@ -62,48 +62,43 @@ def random_token_ids(rng: np.random.Generator, valid_token_ids: np.ndarray, leng
     return rng.choice(valid_token_ids, size=length).tolist()  # type: ignore[no-any-return]
 
 
+def build_word_start_token_ids(tokenizer: CustomTokenizer, valid_token_ids: np.ndarray) -> np.ndarray:
+    """Token IDs whose decoded form starts with whitespace.
+
+    Used to pin the first token of a suffix when appending it to a prefix:
+    a whitespace-prefixed token prevents BPE merges across the boundary,
+    so ``len(decode(prefix_ids + suffix_ids))`` retokenizes exactly and the
+    prefix's server-side tokens stay stable. Falls back to the full vocab
+    when no such tokens exist.
+    """
+    hf_tokenizer = tokenizer.get_tokenizer()
+    word_starts: List[int] = []
+    for tid in valid_token_ids:
+        decoded = hf_tokenizer.decode([int(tid)], skip_special_tokens=True)
+        if decoded and decoded[0].isspace():
+            word_starts.append(int(tid))
+    if not word_starts:
+        return valid_token_ids
+    return np.array(word_starts, dtype=np.int64)
+
+
 def converge_to_exact_length_text(
     tokenizer: CustomTokenizer,
     target_len: int,
-    prefix_text: str,
     initial_tokens: List[int],
     adjust_tokens_fn: Callable[[List[int], int, int], List[int]],
-) -> str:
-    """Generates a string that tokenizes to exactly target_len, optionally prefixed.
+) -> Tuple[str, List[int]]:
+    """Generate text tokenizing to exactly target_len; return (text, ids).
 
-    Args:
-        tokenizer: The custom tokenizer.
-        target_len: The target token length.
-        prefix_text: Optional prefix to include in the length calculation.
-        initial_tokens: The initial list of token IDs to start with.
-        adjust_tokens_fn: A callback function to adjust the token list when the
-          length doesn't match. It takes (current_tokens, current_len,
-          target_len) and returns new_tokens.
-
-    Raises:
-        ValueError: If we cannot land on exactly `target_len` within the
-          iteration budget. Most often this happens when the tokenizer's BPE
-          merges around the prefix/suffix boundary keep flipping the count by
-          more than one token per adjustment, or when the requested length is
-          near the tokenizer's vocabulary edge cases (e.g. very small
-          target_len with a tokenizer that always prepends a BOS). Mitigation:
-          try a slightly different `target_len`, verify the tokenizer config
-          matches the model server's, or pre-tokenize the prefix once and
-          adjust around it instead of regenerating each iteration.
+    ``adjust_tokens_fn`` takes ``(current_tokens, current_len, target_len)``
+    and returns new tokens. The returned ids let callers compose with another
+    chunk at the token level instead of by string concat (which would
+    re-tokenize across the boundary).
     """
     if target_len <= 0:
-        return ""
+        return "", []
 
     hf_tokenizer = tokenizer.get_tokenizer()
-
-    prefix_len = 0
-    if prefix_text:
-        prefix_len = tokenizer.count_tokens(prefix_text)
-        assert prefix_len < target_len, (
-            f"target_len ({target_len}) must be > prefix_len ({prefix_len}). "
-            f"This helper generates suffix tokens such that prefix_len + suffix_len == target_len; "
-            f"the caller is responsible for choosing target_len with room for a non-empty suffix."
-        )
 
     current_tokens = initial_tokens
 
@@ -112,23 +107,18 @@ def converge_to_exact_length_text(
     for _ in range(max_iterations):
         text = hf_tokenizer.decode(current_tokens, skip_special_tokens=True)
 
-        full_text = prefix_text + " " + text if prefix_text else text
-
-        current_len = tokenizer.count_tokens(full_text)
+        current_len = tokenizer.count_tokens(text)
 
         if current_len == target_len:
-            return full_text if prefix_text else text
+            return text, current_tokens
 
         last_len = current_len
         current_tokens = adjust_tokens_fn(current_tokens, current_len, target_len)
 
     raise ValueError(
         f"Could not generate a prompt of exactly {target_len} tokens after {max_iterations} "
-        f"attempts (got {last_len}). This is usually a configuration mismatch — try one of: "
-        f"(1) increase or decrease the requested length by a few tokens in your data config "
-        f"(e.g. data.input_distribution.mean / .std_dev, or data.shared_prefix.system_prompt_len "
-        f"/ .question_len); (2) ensure tokenizer.pretrained_model_name_or_path matches the model "
-        f"the server is running."
+        f"attempts (got {last_len}). This usually means tokenizer.pretrained_model_name_or_path "
+        f"does not match the model the server is running."
     )
 
 
@@ -137,41 +127,25 @@ def generate_random_exact_length_text(
     valid_token_ids: np.ndarray,
     tokenizer: CustomTokenizer,
     target_len: int,
-    prefix_text: str = "",
-) -> str:
-    """Generate text that tokenizes to exactly target_len, optionally with a prefix.
-
-    Combines random token sampling with the convergence loop in
-    `generate_exact_length_text`. When prefix_text is provided the TOTAL length
-    including prefix will be target_len; the returned string is the full
-    combined text. Otherwise just the generated suffix is returned.
-    """
+) -> Tuple[str, List[int]]:
+    """Generate random text tokenizing to exactly target_len; return (text, ids)."""
     if target_len <= 0:
-        return ""
+        return "", []
 
-    prefix_len = 0
-    if prefix_text:
-        prefix_len = tokenizer.count_tokens(prefix_text)
-        assert prefix_len < target_len, (
-            f"target_len ({target_len}) must be > prefix_len ({prefix_len}). "
-            f"This helper generates suffix tokens such that prefix_len + suffix_len == target_len; "
-            f"the caller is responsible for choosing target_len with room for a non-empty suffix."
-        )
-
-    initial_tokens = random_token_ids(rng, valid_token_ids, target_len - prefix_len)
+    initial_tokens = random_token_ids(rng, valid_token_ids, target_len)
 
     def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
         if current_len < target_len:
             current_tokens.extend(random_token_ids(rng, valid_token_ids, target_len - current_len))
-        else:
-            diff = current_len - target_len
-            current_tokens = current_tokens[:-diff] if len(current_tokens) > diff else current_tokens[:1]
-        return current_tokens
+            return current_tokens
+        diff = current_len - target_len
+        if diff < len(current_tokens):
+            return current_tokens[:-diff]
+        return []
 
     return converge_to_exact_length_text(
         tokenizer=tokenizer,
         target_len=target_len,
-        prefix_text=prefix_text,
         initial_tokens=initial_tokens,
         adjust_tokens_fn=adjust_tokens,
     )

@@ -88,13 +88,13 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             slice_to_use = min(current_slice_len, len(self.token_ids))
             return self.token_ids[:slice_to_use]
 
-        return converge_to_exact_length_text(
+        text, _ = converge_to_exact_length_text(
             tokenizer=self.tokenizer,
             target_len=target_len,
-            prefix_text="",
             initial_tokens=initial_tokens,
             adjust_tokens_fn=adjust_tokens,
         )
+        return text
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         n = data.data_index
