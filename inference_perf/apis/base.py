@@ -119,6 +119,10 @@ class InferenceAPIData(BaseModel):
         """Called after every request completes (real or mock). Override to add post-completion side effects."""
         pass
 
+    async def on_completion_async(self, info: InferenceInfo) -> None:
+        """Asynchronous callback called after request has been processed and connection is closed."""
+        pass
+
     async def process_failure(
         self,
         response: Optional[ClientResponse],

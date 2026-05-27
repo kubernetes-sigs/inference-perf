@@ -31,6 +31,7 @@ class LocalUserSession:
     system_prompt: str
     max_model_len: Optional[int]
     history: list[str]
+    history_tokens: list[int]
 
     _instances: dict[str, "LocalUserSession"] = {}
 
@@ -48,6 +49,7 @@ class LocalUserSession:
         self.tokenizer = tokenizer
         self.max_model_len = max_model_len
         self.history = []
+        self.history_tokens = []
         self._current_round = 0
         self._in_flight: Optional[asyncio.Lock] = None
         self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
@@ -81,7 +83,7 @@ class LocalUserSession:
         self._current_round += 1
         return self.context
 
-    def update_context(self, response: str) -> None:
+    def update_context(self, response: str, response_len: Optional[int] = None) -> None:
         if self.system_prompt and self.tokenizer and self.max_model_len:
             history_context = " ".join(self.history) if self.history else ""
             base_len = len(self.system_prompt)
@@ -90,18 +92,19 @@ class LocalUserSession:
             turn_content = response[base_len:].strip()
             if turn_content:
                 self.history.append(turn_content)
+                if response_len is not None:
+                    self.history_tokens.append(response_len)
+                else:
+                    self.history_tokens.append(self.tokenizer.count_tokens(turn_content))
 
-            history_str = " ".join(self.history)
             system_tokens = self.tokenizer.count_tokens(self.system_prompt)
-            history_tokens = self.tokenizer.count_tokens(history_str)
+            total_tokens = system_tokens + sum(self.history_tokens)
 
-            if system_tokens + history_tokens > self.max_model_len:
-                while self.history:
-                    history_str = " ".join(self.history)
-                    history_tokens = self.tokenizer.count_tokens(history_str)
-                    if system_tokens + history_tokens <= self.max_model_len:
-                        break
+            if total_tokens > self.max_model_len:
+                while self.history and total_tokens > self.max_model_len:
                     self.history.pop(0)
+                    popped_len = self.history_tokens.pop(0)
+                    total_tokens -= popped_len
 
             self.context = (
                 self.system_prompt + " " + " ".join(self.history)
@@ -133,6 +136,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     user_session_id: str = Field(exclude=True)
     target_round: int
+    prompt_len: Optional[int] = None
 
     @property
     def user_session(self) -> LocalUserSession:
@@ -150,32 +154,32 @@ class UserSessionCompletionAPIData(CompletionAPIData):
 
             system_prompt = self.user_session.system_prompt
             history = list(self.user_session.history)
+            history_tokens = list(self.user_session.history_tokens)
+            if len(history_tokens) != len(history):
+                history_tokens = [self.user_session.tokenizer.count_tokens(h) for h in history]
+                self.user_session.history_tokens = list(history_tokens)
             current_prompt = self.prompt
 
-            def get_text(sys: str, hist: list[str], curr: str) -> str:
-                parts = []
-                if sys:
-                    parts.append(sys)
-                if hist:
-                    parts.append(" ".join(hist))
-                if curr:
-                    parts.append(curr)
-                return " ".join(parts)
+            system_tokens = self.user_session.tokenizer.count_tokens(system_prompt)
+            
+            if self.prompt_len is not None:
+                current_prompt_tokens = self.prompt_len
+            else:
+                current_prompt_tokens = self.user_session.tokenizer.count_tokens(current_prompt)
 
-            combined_text = get_text(system_prompt, history, current_prompt)
-            token_ids = hf_tokenizer.encode(combined_text)
+            total_len = system_tokens + sum(history_tokens) + current_prompt_tokens
 
-            if len(token_ids) > target_len:
+            if total_len > target_len:
                 # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
                 # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
                 # system prompt + history context as long as possible.
-                while history and len(token_ids) > target_len:
+                while history and total_len > target_len:
                     history.pop(0)
-                    combined_text = get_text(system_prompt, history, current_prompt)
-                    token_ids = hf_tokenizer.encode(combined_text)
+                    popped_len = history_tokens.pop(0)
+                    total_len -= popped_len
 
                 # If history is empty and it still exceeds target_len, truncate system/current prompt
-                if len(token_ids) > target_len:
+                if total_len > target_len:
                     system_ids = hf_tokenizer.encode(system_prompt)
                     current_ids = hf_tokenizer.encode(current_prompt)
 
@@ -189,12 +193,42 @@ class UserSessionCompletionAPIData(CompletionAPIData):
                         current_ids = current_ids[:target_len]
                         current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
 
-                    combined_text = get_text(system_prompt, [], current_prompt)
+                    combined_text = (
+                        system_prompt + " " + current_prompt
+                        if system_prompt
+                        else current_prompt
+                    )
 
                     if system_prompt != self.user_session.system_prompt:
                         self.user_session.system_prompt = system_prompt
+                        self.user_session.history_tokens = []
+                else:
+                    def get_text(sys: str, hist: list[str], curr: str) -> str:
+                        parts = []
+                        if sys:
+                            parts.append(sys)
+                        if hist:
+                            parts.append(" ".join(hist))
+                        if curr:
+                            parts.append(curr)
+                        return " ".join(parts)
+
+                    combined_text = get_text(system_prompt, history, current_prompt)
+            else:
+                def get_text(sys: str, hist: list[str], curr: str) -> str:
+                    parts = []
+                    if sys:
+                        parts.append(sys)
+                    if hist:
+                        parts.append(" ".join(hist))
+                    if curr:
+                        parts.append(curr)
+                    return " ".join(parts)
+
+                combined_text = get_text(system_prompt, history, current_prompt)
 
             self.user_session.history = history
+            self.user_session.history_tokens = history_tokens
             self.user_session.context = (
                 system_prompt + " " + " ".join(history)
                 if history and system_prompt
@@ -218,7 +252,11 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     ) -> InferenceInfo:
         inference_info = await super().process_response(response, config, tokenizer)
         self.update_inference_info(inference_info)
-        self.user_session.update_context(self.prompt + " " + self.model_response)
+        total_turn_tokens = (
+            inference_info.request_metrics.text.input_tokens +
+            (inference_info.response_metrics.output_tokens if inference_info.response_metrics else 0)
+        )
+        self.user_session.update_context(self.prompt + " " + self.model_response, response_len=total_turn_tokens)
         return inference_info
 
     async def process_failure(
@@ -232,7 +270,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         # no response returned, use context from the last round
         inference_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
         self.update_inference_info(inference_info)
-        self.user_session.update_context(self._session_context)
+        self.user_session.update_context(self._session_context, response_len=None)
         return inference_info
 
 

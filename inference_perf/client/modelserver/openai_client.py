@@ -464,5 +464,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
 
+        # Post-completion hook executed after connection is closed
+        res = data.on_completion_async(metric.info)
+        import inspect
+        if inspect.isawaitable(res):
+            await res
+
     async def close(self) -> None:
         await self.session.close()

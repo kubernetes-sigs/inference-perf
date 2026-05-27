@@ -87,22 +87,31 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
         tokenizer: CustomTokenizer,
         lora_adapter: Optional[str] = None,
     ) -> InferenceInfo:
-        # Run the base completion response handler (sets self.model_response,
-        # records timing metrics) WITHOUT yet releasing the session lock.
-        # We call CompletionAPIData directly to skip UserSessionCompletionAPIData's
-        # update_context call so we can inject the sleep in between.
+        # Run the base completion response handler to populate raw metrics
+        # WITHOUT releasing the session lock or sleeping.
         inference_info = await CompletionAPIData.process_response(self, response, config, tokenizer, lora_adapter)
         self.update_inference_info(inference_info)
+        return inference_info
+
+    async def on_completion_async(self, info: InferenceInfo) -> None:
+        # Only execute session context update and sleep on success (where response_metrics are populated)
+        if not info or not info.response_metrics:
+            return
 
         # Simulate tool execution latency while holding the session lock.
-        # The next turn of this conversation cannot start until the sleep
-        # completes; other conversations' turns run freely during the wait.
+        # This is now executed safely after the HTTP connection is closed.
         if self.tool_call_latency_sec > 0:
             await asyncio.sleep(self.tool_call_latency_sec)
 
         # Release the session lock by updating context (allows next turn).
-        self.user_session.update_context(self.prompt + " " + self.model_response)
-        return inference_info
+        total_turn_tokens = (
+            info.request_metrics.text.input_tokens +
+            info.response_metrics.output_tokens
+        )
+        self.user_session.update_context(
+            self.prompt + " " + self.model_response,
+            response_len=total_turn_tokens
+        )
 
     async def process_failure(
         self,
@@ -112,10 +121,10 @@ class _ConversationReplayAPIData(UserSessionCompletionAPIData):
         exception: Exception,
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
-        # On failure, release the lock without sleeping (no tool was called).
+        # On failure, release the lock immediately (no tool was called).
         inference_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
         self.update_inference_info(inference_info)
-        self.user_session.update_context(self._session_context)
+        self.user_session.update_context(self._session_context, response_len=None)
         return inference_info
 
 
@@ -127,6 +136,7 @@ class ConversationBlueprint:
     num_turns: int
     system_prompt: str
     turn_prompts: List[str] = field(default_factory=list)
+    turn_input_lens: List[int] = field(default_factory=list)
     turn_output_lens: List[int] = field(default_factory=list)
     turn_tool_call_latencies: List[float] = field(default_factory=list)
 
@@ -237,6 +247,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         latency = bp.turn_tool_call_latencies[turn_idx] if bp.turn_tool_call_latencies else 0.0
         return _ConversationReplayAPIData(
             prompt=bp.turn_prompts[turn_idx],
+            prompt_len=bp.turn_input_lens[turn_idx],
             max_tokens=bp.turn_output_lens[turn_idx],
             user_session_id=self.user_sessions[conv_idx].user_session_id,
             target_round=round_num,
@@ -357,6 +368,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 num_turns=num_turns,
                 system_prompt=system_prompt,
                 turn_prompts=turn_prompts,
+                turn_input_lens=turn_input_lens,
                 turn_output_lens=turn_output_lens_list,
                 turn_tool_call_latencies=turn_tool_latencies,
             )
