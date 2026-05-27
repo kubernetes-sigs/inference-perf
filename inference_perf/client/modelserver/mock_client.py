@@ -25,6 +25,7 @@ from inference_perf.apis import (
 from inference_perf.payloads import RequestMetrics, Text
 from .base import ModelServerClient, ModelServerPrometheusMetric, PrometheusMetricMetadata
 import asyncio
+import inspect
 import time
 import logging
 
@@ -60,18 +61,18 @@ class MockModelServerClient(ModelServerClient):
 
                 info = InferenceInfo(
                     request_metrics=RequestMetrics(text=Text(input_tokens=0)),
+                    response_metrics=UnaryResponseMetrics(output_tokens=0),
                     lora_adapter=lora_adapter,
                 )
                 data.on_completion(info)
+                res = data.on_completion_async(info)
+                if inspect.isawaitable(res):
+                    await res
                 self.metrics_collector.record_metric(
                     RequestLifecycleMetric(
                         stage_id=stage_id,
                         request_data=str(await data.to_request_body(effective_model_name, 3, False, False)),
-                        info=InferenceInfo(
-                            request_metrics=RequestMetrics(text=Text(input_tokens=0)),
-                            response_metrics=UnaryResponseMetrics(output_tokens=0),
-                            lora_adapter=lora_adapter,
-                        ),
+                        info=info,
                         error=None,
                         start_time=start,
                         end_time=time.perf_counter(),
