@@ -25,6 +25,18 @@ from inference_perf.config import APIConfig
 logger = logging.getLogger(__name__)
 
 
+def join_conversation_context(system_prompt: str, history: list[str], current_prompt: str = "") -> str:
+    """Assembles a full context string from system prompt, conversation history, and an optional current prompt."""
+    parts = []
+    if system_prompt:
+        parts.append(system_prompt)
+    if history:
+        parts.append(" ".join(history))
+    if current_prompt:
+        parts.append(current_prompt)
+    return " ".join(parts)
+
+
 class LocalUserSession:
     user_session_id: str
     context: str
@@ -84,11 +96,20 @@ class LocalUserSession:
         return self.context
 
     def update_context(self, response: str, response_len: Optional[int] = None) -> None:
+        """
+        Updates the session's conversation history and context with the new turn's content.
+
+        This function extracts the newly added prompt/response from the full response string,
+        appends it to history, updates the cached history token lengths, and applies a sliding
+        window truncation if the total tokens exceed max_model_len. Finally, it releases
+        the session's concurrency lock to allow the next turn of this user to begin.
+        """
         if self.system_prompt and self.tokenizer and self.max_model_len:
             history_context = " ".join(self.history) if self.history else ""
             base_len = len(self.system_prompt)
             if history_context:
                 base_len += len(history_context) + 1
+            # Extract the content added in this turn by discarding previous system prompt & history
             turn_content = response[base_len:].strip()
             if turn_content:
                 self.history.append(turn_content)
@@ -100,19 +121,14 @@ class LocalUserSession:
             system_tokens = self.tokenizer.count_tokens(self.system_prompt)
             total_tokens = system_tokens + sum(self.history_tokens)
 
+            # Drop older turns from history if the aggregated context length exceeds limits
             if total_tokens > self.max_model_len:
                 while self.history and total_tokens > self.max_model_len:
                     self.history.pop(0)
                     popped_len = self.history_tokens.pop(0)
                     total_tokens -= popped_len
 
-            self.context = (
-                self.system_prompt + " " + " ".join(self.history)
-                if self.history and self.system_prompt
-                else " ".join(self.history)
-                if self.history
-                else self.system_prompt
-            )
+            self.context = join_conversation_context(self.system_prompt, self.history)
         else:
             self.context = response
 
@@ -145,6 +161,17 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> RequestBody:
+        """
+        Constructs the API request payload while managing multi-turn chat history.
+
+        This function:
+        1. Acquires the user session concurrency lock to ensure sequential execution of chat rounds.
+        2. Evaluates context limitations using the session's maximum token capacity.
+        3. Performs a lightweight history pruning (sliding window) if context bounds are exceeded.
+        4. In extreme cases (e.g. single prompt exceeds context bounds), performs character-level
+           truncation of the system instruction and prompt to avoid model context failures.
+        5. Combines the active system prompt, history, and active turn prompt into the final request payload.
+        """
         self._session_context = await self.user_session.get_context(self.target_round)
 
         if self.user_session.tokenizer and self.user_session.max_model_len:
@@ -161,82 +188,50 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             system_tokens = self.user_session.tokenizer.count_tokens(system_prompt)
-            
-            if self.prompt_len is not None:
-                current_prompt_tokens = self.prompt_len
-            else:
-                current_prompt_tokens = self.user_session.tokenizer.count_tokens(current_prompt)
+            current_prompt_tokens = (
+                self.prompt_len
+                if self.prompt_len is not None
+                else self.user_session.tokenizer.count_tokens(current_prompt)
+            )
 
             total_len = system_tokens + sum(history_tokens) + current_prompt_tokens
 
+            # Truncation logic: remove messages from history (oldest first) until the context fits
             if total_len > target_len:
-                # Truncation logic: remove messages from history (oldest) until the combined text fits within the target length
-                # This ensures we send the most recent messages to the model while also keeping the system prompt and shared
-                # system prompt + history context as long as possible.
                 while history and total_len > target_len:
                     history.pop(0)
                     popped_len = history_tokens.pop(0)
                     total_len -= popped_len
 
-                # If history is empty and it still exceeds target_len, truncate system/current prompt
-                if total_len > target_len:
-                    system_ids = hf_tokenizer.encode(system_prompt)
-                    current_ids = hf_tokenizer.encode(current_prompt)
+            # If history is fully truncated and still exceeds target_len, truncate system/current prompt
+            if total_len > target_len:
+                system_ids = hf_tokenizer.encode(system_prompt)
+                current_ids = hf_tokenizer.encode(current_prompt)
 
-                    available_for_system = target_len - len(current_ids)
-
-                    if available_for_system > 0:
-                        system_ids = system_ids[:available_for_system]
-                        system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
-                    else:
-                        system_prompt = ""
-                        current_ids = current_ids[:target_len]
-                        current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
-
-                    combined_text = (
-                        system_prompt + " " + current_prompt
-                        if system_prompt
-                        else current_prompt
-                    )
-
-                    if system_prompt != self.user_session.system_prompt:
-                        self.user_session.system_prompt = system_prompt
-                        self.user_session.history_tokens = []
+                available_for_system = target_len - len(current_ids)
+                if available_for_system > 0:
+                    system_ids = system_ids[:available_for_system]
+                    system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
                 else:
-                    def get_text(sys: str, hist: list[str], curr: str) -> str:
-                        parts = []
-                        if sys:
-                            parts.append(sys)
-                        if hist:
-                            parts.append(" ".join(hist))
-                        if curr:
-                            parts.append(curr)
-                        return " ".join(parts)
+                    system_prompt = ""
+                    current_ids = current_ids[:target_len]
+                    current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
 
-                    combined_text = get_text(system_prompt, history, current_prompt)
+                if system_prompt != self.user_session.system_prompt:
+                    self.user_session.system_prompt = system_prompt
+                    self.user_session.history_tokens = []
+
+                combined_text = (
+                    system_prompt + " " + current_prompt
+                    if system_prompt
+                    else current_prompt
+                )
             else:
-                def get_text(sys: str, hist: list[str], curr: str) -> str:
-                    parts = []
-                    if sys:
-                        parts.append(sys)
-                    if hist:
-                        parts.append(" ".join(hist))
-                    if curr:
-                        parts.append(curr)
-                    return " ".join(parts)
-
-                combined_text = get_text(system_prompt, history, current_prompt)
+                combined_text = join_conversation_context(system_prompt, history, current_prompt)
 
             self.user_session.history = history
             self.user_session.history_tokens = history_tokens
-            self.user_session.context = (
-                system_prompt + " " + " ".join(history)
-                if history and system_prompt
-                else " ".join(history)
-                if history
-                else system_prompt
-            )
-
+            self.user_session.context = join_conversation_context(system_prompt, history, "")
             self.prompt = combined_text
         else:
             self.prompt = self._session_context + " " + self.prompt
