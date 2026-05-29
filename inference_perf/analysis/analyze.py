@@ -58,7 +58,7 @@ def _generate_multi_plot(
         return
 
     fig, axes = plt.subplots(1, num_charts, figsize=(7 * num_charts, 6), squeeze=False)
-    fig.suptitle(suptitle, fontsize=18)
+    fig.suptitle(suptitle, fontsize=22)
 
     for charts_to_generate in chartset_to_generate:
         if not charts_to_generate:
@@ -71,9 +71,10 @@ def _generate_multi_plot(
             y_values = [x[1] for x in data]
 
             ax.plot(qps_values, y_values, marker="o", linestyle="-")
-            ax.set_title(chart_info["title"], fontsize=16)
-            ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=14)
-            ax.set_ylabel(chart_info["ylabel"], fontsize=14)
+            ax.set_title(chart_info["title"], fontsize=20)
+            ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=16)
+            ax.set_ylabel(chart_info["ylabel"], fontsize=16)
+            ax.tick_params(axis='both', labelsize=14)
             if not names:
                 ax.legend([f"Report {idx + 1}" for idx in range(len(chartset_to_generate))])
             else:
@@ -96,7 +97,7 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
 
     num_charts = len(charts_to_generate)
     fig, axes = plt.subplots(1, num_charts, figsize=(7 * num_charts, 6), squeeze=False)
-    fig.suptitle(suptitle, fontsize=18)
+    fig.suptitle(suptitle, fontsize=22)
 
     for i, chart_info in enumerate(charts_to_generate):
         ax = axes[0, i]
@@ -105,9 +106,10 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
         y_values = [x[1] for x in data]
 
         ax.plot(qps_values, y_values, marker="o", linestyle="-")
-        ax.set_title(chart_info["title"], fontsize=16)
-        ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=14)
-        ax.set_ylabel(chart_info["ylabel"], fontsize=14)
+        ax.set_title(chart_info["title"], fontsize=20)
+        ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=16)
+        ax.set_ylabel(chart_info["ylabel"], fontsize=16)
+        ax.tick_params(axis='both', labelsize=14)
         ax.grid(True)
 
     fig.tight_layout(rect=(0, 0.03, 1, 0.95))
