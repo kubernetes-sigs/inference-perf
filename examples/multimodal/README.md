@@ -1,12 +1,16 @@
 # Multimodal Benchmarking
 
 Examples for benchmarking VLMs and audio-capable models with synthetic image,
-video, and audio payloads.
+video, and audio payloads, plus a real-dataset image workload.
 
 ## Files
 
-- **`image.yaml`** — Visual-QA-style workload: text prompt with N images per
-  request. Typical first config to try for an image-capable VLM.
+- **`image.yaml`** — Visual-QA-style workload: text prompt with N synthetic
+  images per request. Typical first config to try for an image-capable VLM.
+- **`visionarena.yaml`**: same shape as `image.yaml` but sourced from the
+  real `lmarena-ai/VisionArena-Chat` dataset (real prompts and images, no
+  HuggingFace token required) instead of synthetic payloads. Use it when you
+  want representative image sizes and prompts rather than generated ones.
 - **`video_mp4.yaml`** — Video benchmark using the `mp4` wire format
   (one `video_url` block per request). Measures the full pipeline including
   server-side MP4 decode.

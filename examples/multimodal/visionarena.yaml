@@ -1,0 +1,41 @@
+# Real-dataset image benchmark: streams prompt+image pairs from the public
+# lmarena-ai/VisionArena-Chat dataset instead of generating synthetic images.
+# No HuggingFace token is required (the dataset is public). Swap
+# server.model_name for an image-capable VLM (Qwen2-VL, Qwen3-VL, LLaVA, ...).
+
+api:
+  type: chat
+  streaming: true
+
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://localhost:8000
+
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+
+data:
+  type: visionarena
+  visionarena:
+    # Stream this many usable rows into an in-memory pool at startup, then
+    # cycle through them. Raise for more request diversity, lower to bound
+    # memory (the images are the heavy part).
+    num_rows: 500
+    # VisionArena-Chat is single-image; cap kept at 1.
+    max_images_per_request: 1
+    # Place the image at the start of the prompt (0.0). Use 1.0 for suffix
+    # placement, or a Distribution to vary placement per request.
+    insertion_point: 0.0
+
+load:
+  type: constant
+  stages:
+    - rate: 1.0
+      duration: 60
+  num_workers: 1
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

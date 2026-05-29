@@ -1,0 +1,31 @@
+# VisionArena-Chat real-dataset benchmark.
+#
+# Streams real image+prompt pairs from the public lmarena-ai/VisionArena-Chat
+# dataset. No HF_TOKEN is required (the dataset is public). Each request uses
+# the first user turn as the prompt and attaches that row's image as a
+# pre-encoded image block.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-VL-8B-Instruct
+  base_url: http://qwen3-32b-vllm-service:8000
+tokenizer:
+  pretrained_model_name_or_path: Qwen/Qwen3-VL-8B-Instruct
+data:
+  type: visionarena
+  visionarena:
+    num_rows: 500
+    max_images_per_request: 1
+    insertion_point: 0.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 30
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true

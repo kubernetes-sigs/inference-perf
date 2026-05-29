@@ -27,10 +27,18 @@ class ImageRepresentation(str, Enum):
     """Wire encoding for image bytes (standalone images and per-frame video).
 
     Some VLMs accept either; some prefer JPEG for size, some PNG for fidelity.
+    WEBP is passthrough-only (real dataset bytes); synthetic generation emits
+    just PNG/JPEG.
     """
 
     PNG = "png"
     JPEG = "jpeg"
+    WEBP = "webp"
+
+    @property
+    def mime_type(self) -> str:
+        """The ``image/*`` MIME type for this encoding, for ``data:`` URLs."""
+        return f"image/{self.value}"
 
 
 class ImageSpec(MediaSpec[Image]):

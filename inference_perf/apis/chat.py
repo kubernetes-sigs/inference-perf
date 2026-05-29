@@ -27,6 +27,7 @@ from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
     PreEncodedFramesVideoSpec,
+    PreEncodedImageSpec,
     SyntheticAudioSpec,
     SyntheticFramesVideoSpec,
     SyntheticImageSpec,
@@ -292,18 +293,24 @@ class ChatCompletionAPIData(InferenceAPIData):
             return np.random.default_rng(hash((cache_key,) + key_parts) & 0xFFFFFFFF)
 
         for i, img in enumerate(spec.images):
-            # Only synthetic image variants are wire-wired today; other
-            # provenance variants are in ``ImageSpecUnion`` but raise here
-            # until their materializer branches land. ``img.get_metrics()``
-            # already encodes the per-provenance measurement rule, so each
-            # future branch just needs to compute ``wire_bytes`` and call it.
-            if not isinstance(img, SyntheticImageSpec):
+            # Dispatch on the polymorphic image spec subtype for wire emission.
+            # ``img.get_metrics(wire_bytes)`` already encodes the per-provenance
+            # measurement rule, so each branch just computes ``wire_bytes`` and
+            # calls it. Provenance variants still missing a branch raise below.
+            if isinstance(img, SyntheticImageSpec):
+                raw_bytes, data_url = _encode_image(
+                    img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
+                )
+                wire_bytes = len(raw_bytes)
+            elif isinstance(img, PreEncodedImageSpec):
+                # Bytes are already encoded by the dataset loader; just base64-wrap
+                # them, picking the data-URL mime type from the declared representation.
+                data_url = f"data:{img.representation.mime_type};base64,{base64.b64encode(img.image_bytes).decode('ascii')}"
+                wire_bytes = len(img.image_bytes)
+            else:
                 raise TypeError(f"Unwired ImageSpec subclass: {type(img).__name__}")
-            raw_bytes, data_url = _encode_image(
-                img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
-            )
             media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, img.insertion_point))
-            image_instances.append(img.get_metrics(len(raw_bytes)))
+            image_instances.append(img.get_metrics(wire_bytes))
 
         for vi, vid in enumerate(spec.videos):
             # Dispatch on the polymorphic spec subtype for wire emission.
@@ -334,7 +341,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                     media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, vid.insertion_point))
                     total_bytes += len(raw_bytes)
             elif isinstance(vid, PreEncodedFramesVideoSpec):
-                mime = "image/jpeg" if vid.frame_representation == ImageRepresentation.JPEG else "image/png"
+                mime = vid.frame_representation.mime_type
                 total_bytes = 0
                 for frame_bytes in vid.frames_bytes:
                     data_url = f"data:{mime};base64,{base64.b64encode(frame_bytes).decode('ascii')}"

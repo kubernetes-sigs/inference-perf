@@ -25,6 +25,7 @@ from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
     PreEncodedFramesVideoSpec,
+    PreEncodedImageSpec,
     SyntheticAudioSpec,
     SyntheticFramesVideoSpec,
     SyntheticImageSpec,
@@ -190,3 +191,74 @@ async def test_materialize_pre_encoded_frames_video_jpeg_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_materialize_pre_encoded_image() -> None:
+    """``PreEncodedImageSpec`` is the image-side dataset-loader provenance:
+    bytes supplied by the loader are emitted verbatim (base64-wrapped, no
+    re-encoding) as a single ``image_url`` block, mime-typed by
+    ``representation``, and the realized ``Image`` metric reports the input
+    byte count and declared geometry."""
+    raw = b"PRE_ENCODED_PNG_IMAGE_BYTES"
+    image_spec = PreEncodedImageSpec(
+        width=200,
+        height=100,
+        insertion_point=0.0,
+        representation=ImageRepresentation.PNG,
+        image_bytes=raw,
+    )
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="describe this image")],
+        multimodal_spec=MultimodalSpec(images=[image_spec]),
+    )
+
+    payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=100, ignore_eos=False, streaming=False)
+    image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"] == f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
+
+    assert data.realized_images is not None and data.realized_images.count == 1
+    metric = data.realized_images.instances[0]
+    assert metric.bytes == len(raw)
+    assert metric.pixels == 200 * 100
+
+
+@pytest.mark.asyncio
+async def test_materialize_pre_encoded_image_jpeg_mime() -> None:
+    """``representation=JPEG`` switches the data-URL mime to ``image/jpeg``."""
+    image_spec = PreEncodedImageSpec(
+        width=32,
+        height=32,
+        insertion_point=0.0,
+        representation=ImageRepresentation.JPEG,
+        image_bytes=b"JPEG_BYTES",
+    )
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="x")],
+        multimodal_spec=MultimodalSpec(images=[image_spec]),
+    )
+
+    payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
+    image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_materialize_pre_encoded_image_webp_mime() -> None:
+    """``representation=WEBP`` switches the data-URL mime to ``image/webp``."""
+    image_spec = PreEncodedImageSpec(
+        width=32,
+        height=32,
+        insertion_point=0.0,
+        representation=ImageRepresentation.WEBP,
+        image_bytes=b"WEBP_BYTES",
+    )
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="x")],
+        multimodal_spec=MultimodalSpec(images=[image_spec]),
+    )
+
+    payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
+    image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
