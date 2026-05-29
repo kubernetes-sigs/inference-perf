@@ -97,7 +97,7 @@ The main contribution of `inference-perf` is to provide a standardized model-ser
 
 ### Latency
 
-- Time per request (e2e request latency)  
+- Time per request (e2e Request Latency)
 - Time to first token (TTFT)  
 - Time per output token (TPOT)  
 - Normalized time per output token (NTPOT)
@@ -110,7 +110,7 @@ Price-performance metrics below are not directly reported by inference-perf but 
 - Price per million input tokens  
 - Throughput per dollar
 
-The above metrics can also be plotted into charts using the analyze command in the tool at various request rates (QPS) to understand how the latency and throughput scales with the load as shown in the below charts. 
+The above metrics can also be plotted into charts using the analyze command in the tool at various request rates (QPS) to understand how the latency and throughput scales with the load. The charts below demonstrate benchmarks run on the llama3.1-8b model with NVIDIA H100 GPUs on vLLM version v0.11.0. Further details of the benchmark run and other similar examples can be found in the demos section of the source repository [@inference-perf-demos].
 
 ![Throughput vs QPS](assets/throughput_vs_qps.png)
 
