@@ -74,7 +74,7 @@ def _generate_multi_plot(
             ax.set_title(chart_info["title"], fontsize=20)
             ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=16)
             ax.set_ylabel(chart_info["ylabel"], fontsize=16)
-            ax.tick_params(axis='both', labelsize=14)
+            ax.tick_params(axis="both", labelsize=14)
             if not names:
                 ax.legend([f"Report {idx + 1}" for idx in range(len(chartset_to_generate))])
             else:
@@ -109,7 +109,7 @@ def _generate_plot(charts_to_generate: List[Dict[str, Any]], suptitle: str, outp
         ax.set_title(chart_info["title"], fontsize=20)
         ax.set_xlabel(chart_info.get("xlabel", "QPS (requested rate)"), fontsize=16)
         ax.set_ylabel(chart_info["ylabel"], fontsize=16)
-        ax.tick_params(axis='both', labelsize=14)
+        ax.tick_params(axis="both", labelsize=14)
         ax.grid(True)
 
     fig.tight_layout(rect=(0, 0.03, 1, 0.95))
