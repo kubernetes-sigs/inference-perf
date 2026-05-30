@@ -20,7 +20,6 @@ import tempfile
 import yaml
 import signal
 import logging
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Union
@@ -122,13 +121,24 @@ async def run_benchmark_minimal(
     )
     logger.debug("inference-perf started!")
 
+    async def read_stdout():
+        stdout_lines = []
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            line = line_bytes.decode()
+            print(f"| {line}", end="", flush=True)
+            stdout_lines.append(line)
+        return "".join(stdout_lines)
+
     stdout = ""
     timed_out = False
     return_code = -1
     try:
-        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-        stdout = stdout_bytes.decode()
-        logger.info(f"benchmark status {proc.returncode}, output:\n{textwrap.indent(stdout, '  | ')}")
+        stdout = await asyncio.wait_for(read_stdout(), timeout=timeout_sec)
+        await proc.wait()  # Wait for process to exit to populate returncode
+        logger.info(f"benchmark status {proc.returncode}, output captured")
         assert proc.returncode is not None
         return_code = proc.returncode
     except asyncio.exceptions.TimeoutError:

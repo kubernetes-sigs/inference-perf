@@ -16,5 +16,8 @@ RUN nix develop path:///workspace -c pdm sync -d
 COPY inference_perf ./inference_perf
 COPY e2e ./e2e
 
+# Install the project itself after copying source code.
+RUN nix develop path:///workspace -c pdm sync -d
+
 ENTRYPOINT ["nix", "develop", "path:///workspace", "-c"]
 CMD ["pdm", "run", "test:e2e"]
