@@ -62,7 +62,7 @@ class ResponseFormat(BaseModel):
 
 class APIConfig(BaseModel):
     type: APIType = APIType.Completion
-    streaming: bool = False
+    streaming: bool = True
     headers: Optional[dict[str, str]] = None
     slo_unit: Optional[str] = None
     slo_tpot_header: Optional[str] = None
