@@ -105,7 +105,7 @@ Explore detailed documentation for specific topics:
 
 We welcome contributions! Please join us:
 
-- **Slack**: [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf) channel in Kubernetes workspace.
+- **Slack**: [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf) channel in [Kubernetes workspace](https://slack.k8s.io/).
 - **Community Meeting**: Weekly on Thursdays alternating between 09:00 and 11:30 PDT.
 - **Code of Conduct**: Governed by the [Kubernetes Code of Conduct](code-of-conduct.md).
 
