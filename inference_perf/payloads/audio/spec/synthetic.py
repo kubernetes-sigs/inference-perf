@@ -13,7 +13,7 @@
 # limitations under the License.
 """Synthetic audio spec — bytes generated at materialization time."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from ..metrics import Audio
 from .base import AudioSpec
@@ -23,6 +23,9 @@ class SyntheticAudioSpec(AudioSpec):
     """Audio whose bytes are synthesized from ``duration`` (silent WAV)."""
 
     kind: Literal["synthetic"] = "synthetic"
+    # Pool index into the per-process :class:`~inference_perf.payloads.audio.pool.AudioPool`;
+    # see :class:`SyntheticImageSpec.pool_index` for the contract.
+    pool_index: Optional[int] = None
 
     def get_metrics(self, wire_bytes: int) -> Audio:
         # WAV synthesized from ``duration`` — both fields are measurements.

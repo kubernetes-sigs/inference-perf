@@ -36,6 +36,9 @@ from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
 from inference_perf.mediagen.synthesis import generate_jpeg_bytes, generate_mp4_bytes, generate_png_bytes, generate_wav_bytes
+from inference_perf.payloads.audio import pool as audio_pool_mod
+from inference_perf.payloads.image import pool as image_pool_mod
+from inference_perf.payloads.video import pool as video_pool_mod
 from inference_perf.payloads import (
     Audio,
     Audios,
@@ -291,6 +294,11 @@ class ChatCompletionAPIData(InferenceAPIData):
                 return fresh_rng
             return np.random.default_rng(hash((cache_key,) + key_parts) & 0xFFFFFFFF)
 
+        # Per-modality bounded pools are only consulted on the payload-side
+        # path (``deterministic=False``). Prefix-side specs always re-encode
+        # with a seeded RNG so prefix bytes stay byte-identical across
+        # requests in the same group.
+        image_pool = image_pool_mod.get_pool() if not deterministic else None
         for i, img in enumerate(spec.images):
             # Only synthetic image variants are wire-wired today; other
             # provenance variants are in ``ImageSpecUnion`` but raise here
@@ -299,12 +307,19 @@ class ChatCompletionAPIData(InferenceAPIData):
             # future branch just needs to compute ``wire_bytes`` and call it.
             if not isinstance(img, SyntheticImageSpec):
                 raise TypeError(f"Unwired ImageSpec subclass: {type(img).__name__}")
-            raw_bytes, data_url = _encode_image(
-                img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
-            )
+            if image_pool is not None and img.pool_index is not None:
+                entry = image_pool.get(img.pool_index)
+                data_url = entry.data_url
+                wire_bytes = len(entry.raw_bytes)
+            else:
+                raw_bytes, data_url = _encode_image(
+                    img.width, img.height, img.representation, _rng_for("img", i, img.width, img.height)
+                )
+                wire_bytes = len(raw_bytes)
             media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, img.insertion_point))
-            image_instances.append(img.get_metrics(len(raw_bytes)))
+            image_instances.append(img.get_metrics(wire_bytes))
 
+        video_pool = video_pool_mod.get_pool() if not deterministic else None
         for vi, vid in enumerate(spec.videos):
             # Dispatch on the polymorphic spec subtype for wire emission.
             # Metric construction is delegated to ``vid.get_metrics(total_bytes)``
@@ -312,27 +327,41 @@ class ChatCompletionAPIData(InferenceAPIData):
             # pre-encoded report real pixel/byte/frame counts; remote/local
             # stubs would return zero-or-declared-dims per their own contract).
             if isinstance(vid, SyntheticMp4VideoSpec):
-                if deterministic:
-                    # Deterministic mode bypasses the pool — pool sampling is
-                    # non-deterministic, and this path is rare (prefix-side
-                    # videos in shared-prefix benchmarks) so per-init encode
-                    # cost is acceptable.
-                    mp4_bytes = generate_mp4_bytes(
-                        vid.width, vid.height, vid.frames, _rng_for("vid_mp4", vi, vid.width, vid.height, vid.frames)
+                if video_pool is not None and vid.pool_index is not None:
+                    entry = video_pool.get(vid.pool_index)
+                    media_items.append(
+                        ({"type": "video_url", "video_url": {"url": entry.frame_urls[0]}}, vid.insertion_point)
                     )
+                    total_bytes = len(entry.frame_blobs[0])
                 else:
-                    mp4_bytes = get_video_pool().get(vid.width, vid.height, vid.frames)
-                data_url = f"data:video/mp4;base64,{base64.b64encode(mp4_bytes).decode('ascii')}"
-                media_items.append(({"type": "video_url", "video_url": {"url": data_url}}, vid.insertion_point))
-                total_bytes = len(mp4_bytes)
+                    if deterministic:
+                        # Deterministic mode bypasses the pool — pool sampling is
+                        # non-deterministic, and this path is rare (prefix-side
+                        # videos in shared-prefix benchmarks) so per-init encode
+                        # cost is acceptable.
+                        mp4_bytes = generate_mp4_bytes(
+                            vid.width, vid.height, vid.frames, _rng_for("vid_mp4", vi, vid.width, vid.height, vid.frames)
+                        )
+                    else:
+                        mp4_bytes = get_video_pool().get(vid.width, vid.height, vid.frames)
+                    data_url = f"data:video/mp4;base64,{base64.b64encode(mp4_bytes).decode('ascii')}"
+                    media_items.append(({"type": "video_url", "video_url": {"url": data_url}}, vid.insertion_point))
+                    total_bytes = len(mp4_bytes)
             elif isinstance(vid, SyntheticFramesVideoSpec):
-                total_bytes = 0
-                for f in range(vid.frames):
-                    raw_bytes, data_url = _encode_image(
-                        vid.width, vid.height, vid.frame_representation, _rng_for("vid_frame", vi, f, vid.width, vid.height)
-                    )
-                    media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, vid.insertion_point))
-                    total_bytes += len(raw_bytes)
+                if video_pool is not None and vid.pool_index is not None:
+                    entry = video_pool.get(vid.pool_index)
+                    total_bytes = 0
+                    for url, blob in zip(entry.frame_urls, entry.frame_blobs):
+                        media_items.append(({"type": "image_url", "image_url": {"url": url}}, vid.insertion_point))
+                        total_bytes += len(blob)
+                else:
+                    total_bytes = 0
+                    for f in range(vid.frames):
+                        raw_bytes, data_url = _encode_image(
+                            vid.width, vid.height, vid.frame_representation, _rng_for("vid_frame", vi, f, vid.width, vid.height)
+                        )
+                        media_items.append(({"type": "image_url", "image_url": {"url": data_url}}, vid.insertion_point))
+                        total_bytes += len(raw_bytes)
             elif isinstance(vid, PreEncodedFramesVideoSpec):
                 mime = "image/jpeg" if vid.frame_representation == ImageRepresentation.JPEG else "image/png"
                 total_bytes = 0
@@ -344,20 +373,27 @@ class ChatCompletionAPIData(InferenceAPIData):
                 raise TypeError(f"Unwired VideoSpec subclass: {type(vid).__name__}")
             video_instances.append(vid.get_metrics(total_bytes))
 
+        audio_pool = audio_pool_mod.get_pool() if not deterministic else None
         for aud in spec.audios:
             # Only synthetic audio variants are wire-wired today; pre-encoded,
             # remote, and local-file are in ``AudioSpecUnion`` but raise here
             # until their materializer branches land.
             if not isinstance(aud, SyntheticAudioSpec):
                 raise TypeError(f"Unwired AudioSpec subclass: {type(aud).__name__}")
-            # WAV generation is deterministic by duration (silent samples), so
-            # no RNG is involved.
-            wav_bytes = generate_wav_bytes(aud.duration)
-            b64_audio = base64.b64encode(wav_bytes).decode("ascii")
+            if audio_pool is not None and aud.pool_index is not None:
+                entry = audio_pool.get(aud.pool_index)
+                wire_bytes = len(entry.raw_bytes)
+                b64_audio = entry.b64_data
+            else:
+                # WAV generation is deterministic by duration (silent samples),
+                # so no RNG is involved.
+                wav_bytes = generate_wav_bytes(aud.duration)
+                wire_bytes = len(wav_bytes)
+                b64_audio = base64.b64encode(wav_bytes).decode("ascii")
             media_items.append(
                 ({"type": "input_audio", "input_audio": {"data": b64_audio, "format": "wav"}}, aud.insertion_point)
             )
-            audio_instances.append(aud.get_metrics(len(wav_bytes)))
+            audio_instances.append(aud.get_metrics(wire_bytes))
 
         return assemble_content(text_str, media_items), image_instances, video_instances, audio_instances
 

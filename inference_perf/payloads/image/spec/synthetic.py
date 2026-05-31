@@ -13,7 +13,7 @@
 # limitations under the License.
 """Synthetic image spec — bytes generated at materialization time."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from ..metrics import Image
 from .base import ImageSpec
@@ -23,6 +23,14 @@ class SyntheticImageSpec(ImageSpec):
     """Image whose bytes are synthesized from ``(width, height, representation)``."""
 
     kind: Literal["synthetic"] = "synthetic"
+    # When set, the materializer fetches pre-rendered bytes from the
+    # per-process :class:`~inference_perf.payloads.image.pool.ImagePool` at
+    # this index instead of encoding fresh bytes. ``width`` / ``height``
+    # mirror the pool entry's geometry so :meth:`get_metrics` stays an
+    # exact measurement without a pool round-trip. Only meaningful for
+    # payload-side specs — prefix-side specs always leave this ``None``
+    # so prefix-cache benchmarks keep their deterministic-by-seed bytes.
+    pool_index: Optional[int] = None
 
     def get_metrics(self, wire_bytes: int) -> Image:
         # We generated the bytes from our own declared geometry — every

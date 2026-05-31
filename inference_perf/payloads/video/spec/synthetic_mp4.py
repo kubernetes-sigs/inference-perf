@@ -13,7 +13,7 @@
 # limitations under the License.
 """Synthetic MP4 video spec — one ``video_url`` block carrying an MP4 blob."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from ..metrics import Video
 from .base import VideoSpec
@@ -23,6 +23,11 @@ class SyntheticMp4VideoSpec(VideoSpec):
     """MP4-container video synthesized at materialization time from geometry."""
 
     kind: Literal["synthetic_mp4"] = "synthetic_mp4"
+    # When set, payload-side materialization fetches the pre-rendered MP4
+    # blob from the per-process :class:`~inference_perf.payloads.video.pool.VideoPool`
+    # at this index. See the corresponding field on :class:`SyntheticImageSpec`
+    # for the full contract; the same prefix-bypass rule applies.
+    pool_index: Optional[int] = None
 
     def get_metrics(self, wire_bytes: int) -> Video:
         # We synthesized the MP4 from our own declared geometry/frames —
