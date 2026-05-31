@@ -110,7 +110,7 @@ Any distribution field may be omitted; sensible per-field defaults are used when
 
 ## Distribution types
 
-Distribution fields use the shared [`Distribution`](../inference_perf/config.py) config, so the
+Distribution fields use the shared [`Distribution`](../inference_perf/config/config.py) config, so the
 same `type`, `min`, `max`, `mean`, `std_dev` schema works here and in other data generators.
 Supported `type` values:
 
