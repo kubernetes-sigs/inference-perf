@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -152,6 +152,15 @@ class openAIModelServerClient(ModelServerClient):
         except Exception as e:
             logger.error(f"Got exception retrieving supported models {e}")
             return []
+
+
+def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, str]) -> None:
+    for k, v in source.items():
+        k_lower = k.lower()
+        matching_keys = [exist_k for exist_k in target.keys() if exist_k.lower() == k_lower]
+        for mk in matching_keys:
+            del target[mk]
+        target[k] = v
 
 
 class openAIModelServerClientSession(ModelServerClientSession):
@@ -321,7 +330,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             headers["Authorization"] = f"Bearer {self.client.api_key}"
 
         if self.client.api_config.headers:
-            headers.update(self.client.api_config.headers)
+            _update_headers_case_insensitive(headers, self.client.api_config.headers)
+
+        if data.headers:
+            _update_headers_case_insensitive(headers, data.headers)
 
         if data.session_id and self.client.api_config.session_id_header_key:
             headers[self.client.api_config.session_id_header_key] = data.session_id
@@ -461,12 +473,17 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 lora_adapter=lora_adapter,
             )
 
+        if not info:
+            info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
+        if data.labels:
+            info.labels = data.labels
+
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
-            info=info if info else InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))),
+            info=info,
             error=error,
             start_time=start,
             end_time=end_time,
@@ -487,19 +504,34 @@ class openAIModelServerClientSession(ModelServerClientSession):
             default_tpot_header = f"x-slo-tpot-{slo_unit}"
             ttft_header = getattr(self.client.api_config, "slo_ttft_header", None) or default_ttft_header
             tpot_header = getattr(self.client.api_config, "slo_tpot_header", None) or default_tpot_header
+
+            combined_headers = {}
             if self.client.api_config.headers:
-                ttft_threshold = self.client.api_config.headers.get(ttft_header)
-                tpot_threshold = self.client.api_config.headers.get(tpot_header)
+                for k, v in self.client.api_config.headers.items():
+                    combined_headers[k.lower()] = v
+            if data.headers:
+                for k, v in data.headers.items():
+                    combined_headers[k.lower()] = v
+
+            if combined_headers:
+                ttft_threshold = combined_headers.get(ttft_header.lower())
+                tpot_threshold = combined_headers.get(tpot_header.lower())
 
                 unit = slo_unit.lower()
                 unit_to_s = {"s": 1.0, "ms": 0.001, "us": 0.000001}
                 factor = unit_to_s.get(unit, 1.0)
 
-                if ttft_threshold is not None:
-                    metric.ttft_slo_sec = float(ttft_threshold) * factor
+                if ttft_threshold is not None and ttft_threshold != "default":
+                    try:
+                        metric.ttft_slo_sec = float(ttft_threshold) * factor
+                    except ValueError:
+                        logger.warning(f"Invalid TTFT SLO value: {ttft_threshold}")
 
-                if tpot_threshold is not None:
-                    metric.tpot_slo_sec = float(tpot_threshold) * factor
+                if tpot_threshold is not None and tpot_threshold != "default":
+                    try:
+                        metric.tpot_slo_sec = float(tpot_threshold) * factor
+                    except ValueError:
+                        logger.warning(f"Invalid TPOT SLO value: {tpot_threshold}")
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)

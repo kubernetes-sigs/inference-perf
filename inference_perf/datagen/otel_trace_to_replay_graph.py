@@ -5,7 +5,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -53,7 +53,7 @@ import argparse
 import json
 import logging
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -320,6 +320,7 @@ class RawCall:
     temperature: Optional[float]
     max_tokens_recorded: Optional[int]
     tool_definitions: Optional[List[Dict[str, Any]]] = None
+    extra_attributes: Dict[str, Any] = field(default_factory=dict)
 
 
 def filter_duplicate_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -405,6 +406,18 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 logger.warning(f"Span {s.get('span_id')}: failed to parse gen_ai.tool.definitions as JSON, ignoring")
         elif isinstance(tool_definitions_raw, list):
             tool_definitions = tool_definitions_raw
+
+        # Filter out known large standard GenAI attributes
+        excluded_keys = {
+            "gen_ai.input.messages",
+            "gen_ai.output.messages",
+            "gen_ai.tool.definitions",
+            "gen_ai.output.text",
+            "gen_ai.completion",
+            "gen_ai.output",
+        }
+        extra_attrs = {k: v for k, v in attrs.items() if k not in excluded_keys}
+
         calls.append(
             RawCall(
                 call_id=s.get("span_id") or "",
@@ -419,6 +432,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 temperature=attrs.get("gen_ai.request.temperature"),
                 max_tokens_recorded=attrs.get("gen_ai.request.max_tokens"),
                 tool_definitions=tool_definitions,
+                extra_attributes=extra_attrs,
             )
         )
     return calls
@@ -426,6 +440,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
 
 # ---------------------------------------------------------------------------
 # Causal dependency detection (message-level)
+# ---------------------------------------------------------------------------
 
 
 class DEPENDENCY_TYPE(Enum):
@@ -1068,6 +1083,7 @@ def build_graph(
             tool_definitions=rc.tool_definitions,
             expected_output_is_tool_call=effective_is_tool_call,
             expected_output_tool_names=expected_output_tool_names or None,
+            attributes=rc.extra_attributes or None,
         )
 
         # Compute wait_ms: gap between when the last predecessor ends and this call starts
@@ -1130,6 +1146,8 @@ def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
         d["expected_output_is_tool_call"] = gc.expected_output_is_tool_call
     if gc.expected_output_tool_names is not None:
         d["expected_output_tool_names"] = gc.expected_output_tool_names
+    if gc.attributes is not None:
+        d["attributes"] = gc.attributes
     return d
 
 
