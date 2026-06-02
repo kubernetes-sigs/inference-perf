@@ -326,6 +326,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if self.client.api_config.headers:
             headers.update(self.client.api_config.headers)
 
+        if data.session_id and self.client.api_config.session_id_header_key:
+            headers[self.client.api_config.session_id_header_key] = data.session_id
+
         request_data = json.dumps(payload)
 
         # Determine operation name based on API type

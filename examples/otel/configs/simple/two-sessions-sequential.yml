@@ -4,6 +4,7 @@
 api:
   type: chat
   streaming: false
+  session_id_header_key: "x-session-id"
 
 data:
   type: otel_trace_replay
