@@ -62,8 +62,8 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from datasets import load_dataset
+from typing import Any, Callable, Dict, List, Optional, Union, cast
+from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
@@ -124,77 +124,145 @@ def resolve_trace_files(trace_files: List[str]) -> List[Path]:
     return [Path(f) for f in all_files]
 
 
-def _validate_hf_dataset_schema(dataset: Any, dataset_path: str) -> None:
-    """Validate that the HuggingFace dataset has the expected schema for OTel traces.
+def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
+    """Validate that a dataset has the required schema for OTel trace replay.
 
     Args:
-        dataset: The loaded HuggingFace dataset
+        dataset: The loaded dataset (HuggingFace Dataset or Dataset.from_list)
         dataset_path: Dataset identifier for error messages
 
     Raises:
         ValueError: If schema validation fails
     """
-    # Expected schema for compatible datasets
-    # Official dataset: Exgentic/agent-llm-traces
-    # Custom datasets must follow this schema to be compatible
-    EXPECTED_SCHEMA = {
-        "harness": str,
-        "benchmark": str,
-        "models": list,
-        "session_id": str,
-        "spans": list,  # Critical field - must be present
-    }
-
     if len(dataset) == 0:
         raise ValueError(f"No data found in HuggingFace dataset '{dataset_path}'")
 
-    # Validate schema by checking the first record
-    first_record = dataset[0]
-    missing_fields = []
-    type_mismatches = []
-
-    for field_name, expected_type in EXPECTED_SCHEMA.items():
-        if field_name not in first_record:
-            missing_fields.append(field_name)
-        else:
-            actual_value = first_record[field_name]
-            # Check type (allow None values)
-            if actual_value is not None and not isinstance(actual_value, expected_type):
-                type_mismatches.append(
-                    f"  - '{field_name}': expected {expected_type.__name__}, got {type(actual_value).__name__}"
-                )
-
-    # Raise error if schema validation fails
-    if missing_fields or type_mismatches:
-        error_parts = [
-            f"Dataset schema validation failed for '{dataset_path}'.",
-            "Official supported dataset: 'Exgentic/agent-llm-traces'",
-            "Custom datasets must follow the same schema to be compatible.",
-        ]
-
-        if missing_fields:
-            error_parts.append(f"\nMissing required fields: {', '.join(missing_fields)}")
-
-        if type_mismatches:
-            error_parts.append("\nType mismatches:")
-            error_parts.extend(type_mismatches)
-
-        error_parts.append(f"\nExpected schema: {list(EXPECTED_SCHEMA.keys())}")
-        error_parts.append(f"Actual fields: {list(first_record.keys())}")
-
-        raise ValueError("\n".join(error_parts))
-
-    # Critical validation: ensure 'spans' field exists and is not empty in at least one record
-    if "spans" not in first_record:
-        raise ValueError(
-            f"Dataset '{dataset_path}' is missing the critical 'spans' field. This field is required for OTel trace replay."
-        )
+    if "spans" not in dataset[0]:
+        raise ValueError(f"Dataset '{dataset_path}' is missing the required 'spans' field.")
 
     logger.info(f"Schema validation passed for dataset '{dataset_path}'")
 
 
-def _download_hf_dataset(dataset_config: Union[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Load HuggingFace dataset and return trace data directly.
+def _normalize_file_trace(data: Dict[str, Any], source_name: str, source_path: str) -> Dict[str, Any]:
+    """Normalize a local OTel JSON trace to align with the HF dataset schema.
+
+    Local files have:  trace_id, span_count, collected_at, spans
+    HF records have:   harness, benchmark, models, session_id, source_id, max_tokens, total_tokens, spans
+
+    - session_id: derived from trace_id, or filename stem as fallback
+    - source_id: full file path, used for traceability in metrics and graph serialization
+    - harness/benchmark: set to "unknown" (no equivalent in local files)
+    - models: extracted from gen_ai.request.model span attributes (deduplicated)
+    - max_tokens: max tokens (input+output) in a single span — used to verify the target model's context window is large enough to replay the trace
+    - total_tokens: sum of tokens (input+output) across all spans
+
+    Args:
+        data: Raw trace data loaded from a local JSON file
+        source_name: Filename, used to derive a fallback session_id
+        source_path: Full file path, stored as source_id for traceability
+
+    Returns:
+        A new dict with HF-schema fields added (existing fields preserved)
+    """
+    normalized = dict(data)
+
+    if "session_id" not in normalized:
+        normalized["session_id"] = normalized.get("trace_id") or Path(source_name).stem
+
+    normalized["source_id"] = source_path
+
+    if "harness" not in normalized:
+        normalized["harness"] = "unknown"
+
+    if "benchmark" not in normalized:
+        normalized["benchmark"] = "unknown"
+
+    if "models" not in normalized:
+        normalized["models"] = list(
+            {
+                model
+                for span in normalized.get("spans", [])
+                if (model := span.get("attributes", {}).get("gen_ai.request.model"))
+            }
+        )
+
+    if "max_tokens" not in normalized or "total_tokens" not in normalized:
+        max_tokens = 0
+        total_tokens = 0
+        for span in normalized.get("spans", []):
+            input_tokens = span.get("attributes", {}).get("gen_ai.usage.input_tokens", 0)
+            output_tokens = span.get("attributes", {}).get("gen_ai.usage.output_tokens", 0)
+            span_tokens = input_tokens + output_tokens
+            if span_tokens > max_tokens:
+                max_tokens = span_tokens
+            total_tokens += span_tokens
+        if "max_tokens" not in normalized:
+            normalized["max_tokens"] = max_tokens
+        if "total_tokens" not in normalized:
+            normalized["total_tokens"] = total_tokens
+
+    return normalized
+
+
+def _compile_filter(filter_expr: Optional[str]) -> Optional[Callable[..., Any]]:
+    """Compile a filter expression once for reuse.
+
+    Args:
+        filter_expr: Lambda expression string to evaluate (e.g., "lambda x: x['benchmark'] == 'gsm8k'"),
+                    or None for no filtering
+
+    Returns:
+        Compiled filter function, or None if no filter expression provided
+
+    Raises:
+        ValueError: If filter expression is malformed or not callable
+
+    Security Note:
+        This uses eval() on user-provided input. This is acceptable for a local benchmarking tool
+        where the operator controls the configuration, but the filter expression should be treated
+        as trusted input only. Do not expose this to untrusted users.
+    """
+    if not filter_expr:
+        return None
+    try:
+        filter_func = eval(filter_expr)
+        if not callable(filter_func):
+            raise ValueError(f"Filter expression must be a callable (lambda), got: {type(filter_func).__name__}")
+        return cast(Callable[..., Any], filter_func)
+    except SyntaxError as e:
+        raise ValueError(f"Invalid filter expression syntax '{filter_expr}': {e}") from e
+    except Exception as e:
+        raise ValueError(f"Failed to compile filter expression '{filter_expr}': {e}") from e
+
+
+def _load_trace_file(
+    trace_file: Path,
+    skip_invalid: bool,
+) -> Optional[Dict[str, Any]]:
+    """Load a single JSON trace file. Returns None on error if skip_invalid is set."""
+    try:
+        return cast(Dict[str, Any], json.loads(trace_file.read_text(encoding="utf-8")))
+    except Exception as e:
+        logger.error(f"Failed to load {trace_file}: {e}")
+        if not skip_invalid:
+            raise
+        return None
+
+
+def _load_files_to_dataset(files: List[Path], skip_invalid: bool) -> Dataset:
+    """Load a list of trace files, normalize them, and return as a Dataset."""
+    rows = []
+    for trace_file in files:
+        data = _load_trace_file(trace_file, skip_invalid)
+        if data is not None:
+            rows.append(_normalize_file_trace(data, trace_file.name, str(trace_file)))
+    return Dataset.from_list(rows)
+
+
+def _download_hf_dataset(
+    dataset_config: Union[str, Dict[str, Any]],
+) -> Dataset:
+    """Load HuggingFace dataset and return it as a Dataset.
 
     Args:
         dataset_config: Either a string path (e.g., 'Exgentic/agent-llm-traces') or a dict with:
@@ -203,43 +271,36 @@ def _download_hf_dataset(dataset_config: Union[str, Dict[str, Any]]) -> List[Dic
             - If 'split' is not provided, defaults to 'train'
 
     Returns:
-        List of trace data dictionaries (each row from the dataset)
+        Dataset with trace records
 
     Raises:
         ValueError: If dataset cannot be downloaded, doesn't contain trace data, or schema is invalid
     """
-    # Parse config - support both string and dict formats
     if isinstance(dataset_config, str):
         dataset_path = dataset_config
-        load_kwargs = {}  # No additional kwargs for string format
+        load_kwargs: Dict[str, Any] = {}
     elif isinstance(dataset_config, dict):
         dataset_path_value = dataset_config.get("path")
         if not isinstance(dataset_path_value, str) or not dataset_path_value:
             raise ValueError("'path' is required in hf_dataset_path dict configuration")
 
         dataset_path = dataset_path_value
-
-        # Extract all kwargs except 'path'
-        load_kwargs = {k: v for k, v in dataset_config.items() if k != "path"}
+        if "filter" in dataset_config:
+            logger.warning("'filter' in hf_dataset_path dict is ignored; use the top-level 'filter' field instead")
+        load_kwargs = {k: v for k, v in dataset_config.items() if k not in ("path", "filter")}
     else:
         raise ValueError(f"hf_dataset_path must be a string or dict, got {type(dataset_config)}")
 
+    load_kwargs = dict(load_kwargs)  # copy before mutating
     try:
         logger.info(f"Loading HuggingFace dataset: {dataset_path} with {load_kwargs.items()}")
 
-        # Load dataset directly using datasets library with all provided kwargs
-        split = load_kwargs.pop("split", "train")  # default split is train
+        split = load_kwargs.pop("split", "train")
         dataset = load_dataset(dataset_path, split=split, **load_kwargs)
 
-        # Validate dataset schema
-        _validate_hf_dataset_schema(dataset, dataset_path)
-
-        logger.info(f"Loaded {len(dataset)} trace records from dataset")
-
-        # Convert dataset to list of dictionaries
-        trace_data = [dict(row) for row in dataset]
-
-        return trace_data
+        _validate_dataset_schema(dataset, dataset_path)
+        logger.info(f"Loaded {len(dataset)} trace records from HuggingFace dataset")
+        return dataset
 
     except Exception as e:
         error_msg = str(e)
@@ -301,43 +362,28 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
-        # Load trace data into uniform format (list of dicts with metadata)
-        trace_data_list: List[Dict[str, Any]] = []
+        filter_func = _compile_filter(self.otel_config.filter)
+        if filter_func:
+            logger.info(f"Using filter expression: {self.otel_config.filter}")
 
-        trace_dir_str = self.otel_config.trace_directory
-        if trace_dir_str:
-            trace_dir = Path(trace_dir_str)
-
+        # Step 1: load all records into a Dataset with uniform HF schema
+        if self.otel_config.trace_directory:
+            trace_dir = Path(self.otel_config.trace_directory)
             if not trace_dir.exists():
                 raise ValueError(f"Trace directory does not exist: {trace_dir}")
             if not trace_dir.is_dir():
                 raise ValueError(f"Trace directory path is not a directory: {trace_dir}")
 
-            # Load all JSON files from directory
             trace_files = sorted(trace_dir.glob("*.json"))
             if not trace_files:
                 raise ValueError(f"No JSON files found in {trace_dir}")
 
-            for trace_file in trace_files:
-                try:
-                    data = json.loads(trace_file.read_text(encoding="utf-8"))
-                    trace_data_list.append(
-                        {
-                            "data": data,
-                            "source_name": trace_file.name,
-                            "source_id": str(trace_file),
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to load {trace_file}: {e}")
-                    if not self.otel_config.skip_invalid_files:
-                        raise
+            dataset: Dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
+            _validate_dataset_schema(dataset, self.otel_config.trace_directory)
 
         elif self.otel_config.trace_files:
-            # Multiple files mode
             trace_files = resolve_trace_files(self.otel_config.trace_files)
 
-            # Validate all files exist and are JSON
             for trace_file in trace_files:
                 if not trace_file.exists():
                     raise ValueError(f"Trace file does not exist: {trace_file}")
@@ -346,39 +392,36 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 if trace_file.suffix != ".json":
                     raise ValueError(f"Trace file must be a JSON file: {trace_file}")
 
-                try:
-                    data = json.loads(trace_file.read_text(encoding="utf-8"))
-                    trace_data_list.append(
-                        {
-                            "data": data,
-                            "source_name": trace_file.name,
-                            "source_id": str(trace_file),
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to load {trace_file}: {e}")
-                    if not self.otel_config.skip_invalid_files:
-                        raise
+            dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
+            _validate_dataset_schema(dataset, str(self.otel_config.trace_files))
 
         elif self.otel_config.hf_dataset_path:
-            # HuggingFace dataset mode - load data directly without saving to disk
-            logger.info(f"Loading traces from HuggingFace dataset: {self.otel_config.hf_dataset_path}")
-            hf_data = _download_hf_dataset(self.otel_config.hf_dataset_path)
-
-            for idx, data in enumerate(hf_data):
-                trace_data_list.append(
-                    {
-                        "data": data,
-                        "source_name": f"hf_record_{idx}",
-                        "source_id": f"hf_dataset_record_{idx}",
-                    }
-                )
-
-            logger.info(f"Loaded {len(trace_data_list)} trace records from HuggingFace dataset")
+            dataset = _download_hf_dataset(self.otel_config.hf_dataset_path)
 
         else:
             raise ValueError(
                 "Either trace_directory, trace_files, or hf_dataset_path must be provided in otel_trace_replay config"
+            )
+
+        logger.info(f"Loaded {len(dataset)} records")
+
+        # Step 2: apply filter once across all sources
+        if filter_func:
+            original_size = len(dataset)
+            dataset = dataset.filter(filter_func)
+            logger.info(f"Filter applied: {original_size} -> {len(dataset)} records")
+
+        # Convert to list-of-dicts for downstream processing
+        trace_data_list: List[Dict[str, Any]] = []
+        for idx, row in enumerate(dataset):
+            row_dict = cast(Dict[str, Any], dict(row))
+            session_id = row_dict.get("session_id", f"record_{idx}")
+            trace_data_list.append(
+                {
+                    "data": row_dict,
+                    "source_name": session_id,
+                    "source_id": row_dict.get("source_id", session_id),
+                }
             )
 
         self.trace_data_list = trace_data_list

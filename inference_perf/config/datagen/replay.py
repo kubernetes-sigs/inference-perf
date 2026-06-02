@@ -116,7 +116,16 @@ class OTelTraceReplayConfig(SessionReplayConfig):
         description=(
             "HuggingFace dataset path. Can be:\n"
             "  - String: 'username/dataset-name'\n"
-            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
+            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
+        ),
+    )
+    filter: Optional[str] = Field(
+        None,
+        description=(
+            "Lambda expression to filter trace records. Applied uniformly to all data sources.\n"
+            "Example: \"lambda x: x['benchmark'] == 'gsm8k'\" or \"lambda x: 'spans' in x and len(x['spans']) > 5\"\n"
+            "Security: Filter expressions use eval() and should only contain trusted input."
         ),
     )
 
