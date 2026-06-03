@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, TypeVar
 from pydantic import BaseModel
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData
@@ -62,6 +62,14 @@ class Metric(ABC, Generic[R]):
     def parse(self, results: List[float]) -> R:
         """Convert the ordered query results into a typed result object."""
         ...
+
+    def collect(self, execute: Callable[[str], float], duration: float) -> R:
+        """Run this metric's queries via execute and parse them into its typed result.
+
+        Keeps query execution and parsing together on the metric so callers never
+        need to know the query/result shape of a particular metric type.
+        """
+        return self.parse([execute(query) for query in self.get_queries(duration)])
 
 
 class GaugeMetric(Metric[GaugeResult]):
@@ -181,8 +189,21 @@ class BaseMetrics:
     def __init__(self, custom_metrics: Optional[List[Metric[Any]]] = None) -> None:
         self.custom_metrics = custom_metrics or []
 
-    def get_all_metrics(self) -> List[Metric[Any]]:
-        return list(self.custom_metrics)
+    def _iter_metrics(self) -> Iterator[Metric[Any]]:
+        """Yield every metric this container holds.
+
+        Subclasses override this to yield their named fields (and then defer to
+        super() for the custom metrics) so iteration is explicit rather than a
+        reflection walk over __dict__.
+        """
+        yield from self.custom_metrics
+
+    def __iter__(self) -> Iterator[Metric[Any]]:
+        seen: set[int] = set()
+        for metric in self._iter_metrics():
+            if id(metric) not in seen:
+                seen.add(id(metric))
+                yield metric
 
 
 class ModelServerClient(ABC):
