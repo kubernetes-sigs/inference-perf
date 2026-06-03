@@ -26,11 +26,22 @@ multimodal payloads, or anything else where "passes unit tests" doesn't
 imply "actually works against a real server."
 
 To run them you need a configured cluster, a built `inference-perf` image,
-and the relevant secrets. See each subdirectory for the harness scripts and
-per-case configs:
+and the relevant secrets. They are marked `@pytest.mark.live` and excluded
+from default CI via `-m "not live"`. Run them explicitly, passing one or more
+kubeconfigs; a case is skipped when no cluster has a live node matching its
+manifest's `nodeSelector`:
 
-- `optional/manual/multimodal/` — multimodal benchmarking against a Qwen3-VL
-  deployment. Driven by `e2e_test.sh`; cases under `cases/*/`.
+```sh
+pytest tests/optional -m live --kubeconfigs=/path/to/kubeconfig
+```
+
+Useful flags: `--image` (or `$INFERENCE_PERF_IMAGE`) overrides the job image,
+and `--sweep-orphan-namespaces` reclaims `inference-perf-e2e-*` namespaces left
+by killed prior runs.
+
+- `optional/multimodal/` — multimodal benchmarking against a Qwen3-VL
+  deployment; cases under `cases/*/`, driven by `test_multimodal.py`. Per-case
+  reports are written to `cases/<case>/output/`.
 
 ## `optional/automated/`
 

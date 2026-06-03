@@ -17,6 +17,7 @@ Intentionally NOT marked ``live``: these run in default CI with no cluster, whic
 is the whole point of splitting inference (testable anywhere) from matching
 (needs a cluster).
 """
+
 from __future__ import annotations
 
 import textwrap
@@ -51,9 +52,7 @@ def test_infers_node_selector_from_deployment(tmp_path: Path) -> None:
           ports: [{port: 8000}]
         """,
     )
-    assert requirements.infer_node_selector(manifest) == {
-        "cloud.google.com/gke-accelerator": "nvidia-h100-80gb"
-    }
+    assert requirements.infer_node_selector(manifest) == {"cloud.google.com/gke-accelerator": "nvidia-h100-80gb"}
 
 
 def test_no_constraint_matches_everything(tmp_path: Path) -> None:

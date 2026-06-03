@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Live multimodal end-to-end tests, one per case under manual/multimodal/cases.
+"""Live multimodal end-to-end tests, one per case under multimodal/cases.
 
 Each case is parametrized by its vllm.yaml. The cluster_for_case fixture (see
 conftest.py) infers the case's nodeSelector from that manifest, skips when no
@@ -20,6 +20,7 @@ contending cases onto the available nodes. Run with:
 
     pytest tests/optional/test_multimodal.py -m live --kubeconfigs=/path/to/kubeconfig
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +30,7 @@ import pytest
 from harness import runner
 from harness.runner import Cluster
 
-CASES_DIR = Path(__file__).parent / "manual" / "multimodal" / "cases"
+CASES_DIR = Path(__file__).parent / "multimodal" / "cases"
 CASE_MANIFESTS = sorted(CASES_DIR.glob("*/vllm.yaml"))
 
 
@@ -40,6 +41,6 @@ CASE_MANIFESTS = sorted(CASES_DIR.glob("*/vllm.yaml"))
     ids=[m.parent.name for m in CASE_MANIFESTS],
     indirect=True,
 )
-def test_multimodal_case(cluster_for_case: Cluster) -> None:
+def test_multimodal_case(cluster_for_case: Cluster, image: str) -> None:
     case_dir = cluster_for_case.manifest_path.parent
-    runner.run_case(cluster_for_case.kubeconfig, cluster_for_case.namespace, case_dir)
+    runner.run_case(cluster_for_case.kubeconfig, cluster_for_case.namespace, case_dir, image)

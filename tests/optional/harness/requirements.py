@@ -22,6 +22,7 @@ v1 scope (deliberately narrow): nodeSelector only (no affinity, no resource
 accounting), and matching is live-nodes-only (a node pool scaled to zero is
 invisible and reads as "no hardware").
 """
+
 from __future__ import annotations
 
 import json
@@ -70,10 +71,7 @@ def infer_node_selector(manifest_path: str | Path) -> NodeSelector:
         for key, value in node_selector.items():
             existing = selector.get(key)
             if existing is not None and existing != value:
-                raise ValueError(
-                    f"{manifest_path}: conflicting nodeSelector for {key!r}: "
-                    f"{existing!r} vs {value!r}"
-                )
+                raise ValueError(f"{manifest_path}: conflicting nodeSelector for {key!r}: {existing!r} vs {value!r}")
             selector[str(key)] = str(value)
     return selector
 
