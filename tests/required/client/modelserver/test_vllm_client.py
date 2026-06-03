@@ -26,7 +26,7 @@ def test_vllm_get_prometheus_metric_metadata() -> None:
     assert isinstance(metrics, OpenAIMetrics)
 
     # Verify some vLLM specific metrics are present in custom_metrics
-    custom_metric_names = [m.metric_name for m in metrics.custom_metrics]
+    custom_metric_names = [m.metric_name for m in metrics.custom_metrics.values()]
     assert "vllm:num_requests_running" in custom_metric_names
     assert "vllm:time_to_first_token_seconds" in custom_metric_names
     assert "vllm:kv_cache_usage_perc" in custom_metric_names

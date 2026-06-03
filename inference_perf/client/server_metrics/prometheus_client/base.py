@@ -115,11 +115,11 @@ class PrometheusMetricsClient(ServerMetricsClient):
         def execute(query: str) -> float:
             return self.execute_query(query, str(query_eval_time))
 
-        # Each metric owns its query+parse (collect) and names the field it populates.
-        # Building the dict and validating it through Pydantic enforces the field's
-        # declared result type at construction, replacing the reflective setattr and
-        # the hand-rolled field-name guard.
-        collected = {metric.target_field: metric.collect(execute, query_duration) for metric in metrics_metadata}
+        # Iterating the metadata yields (target_field, metric) pairs; each metric owns its
+        # query+parse (collect), with the container's shared label filters applied. Building the
+        # dict and validating it through Pydantic enforces the field's declared result type.
+        filters = metrics_metadata.filters
+        collected = {field: metric.collect(execute, query_duration, filters) for field, metric in metrics_metadata}
         return ModelServerMetrics.model_validate(collected)
 
     def execute_query(self, query: str, eval_time: str) -> float:
