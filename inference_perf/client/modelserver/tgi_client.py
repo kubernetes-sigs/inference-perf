@@ -15,7 +15,7 @@
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, OpenAIMetrics
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
-from .metrics import GaugeMetric, HistogramMetric, RequestsMetric
+from .metrics import GaugeMetric, HistogramMetric, CounterMetric
 from typing import List, Optional
 import logging
 
@@ -57,12 +57,11 @@ class TGImodelServerClient(openAIModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         return OpenAIMetrics(
-            prompt_tokens=HistogramMetric("prompt_tokens", "tgi_request_input_length", self.metric_filters),
-            output_tokens=HistogramMetric("output_tokens", "tgi_request_generated_tokens", self.metric_filters),
-            requests=RequestsMetric("tgi_request_success", self.metric_filters),
-            request_latency=HistogramMetric("request_latency", "tgi_request_duration", self.metric_filters),
-            queue_length=GaugeMetric("queue_length", "tgi_queue_size", self.metric_filters),
-            time_per_output_token=HistogramMetric(
-                "time_per_output_token", "tgi_request_mean_time_per_token_duration", self.metric_filters
-            ),
+            filters=self.metric_filters,
+            prompt_tokens=HistogramMetric("tgi_request_input_length"),
+            output_tokens=HistogramMetric("tgi_request_generated_tokens"),
+            requests=CounterMetric("tgi_request_success"),
+            request_latency=HistogramMetric("tgi_request_duration"),
+            queue_length=GaugeMetric("tgi_queue_size"),
+            time_per_output_token=HistogramMetric("tgi_request_mean_time_per_token_duration"),
         )

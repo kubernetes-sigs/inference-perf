@@ -20,7 +20,6 @@ from inference_perf.client.modelserver.metrics import (
     BaseMetrics,
     HistogramResult,
     GaugeResult,
-    RequestsResult,
     CounterResult,
 )
 
@@ -57,23 +56,25 @@ class PerfRuntimeParameters:
 
 
 class ModelServerMetrics(BaseModel):
-    # Throughput
-    prompt_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    output_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    requests: RequestsResult = Field(default_factory=RequestsResult)
+    # --- Common to every model server: required (each client's metadata always declares them) ---
+    # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
+    prompt_tokens: CounterResult | HistogramResult
+    output_tokens: CounterResult | HistogramResult
+    requests: CounterResult
+    request_latency: HistogramResult
+    queue_length: GaugeResult
+    time_per_output_token: HistogramResult
 
+    # --- Server-specific: optional (only some model servers expose these) ---
     # Latency
-    request_latency: HistogramResult = Field(default_factory=HistogramResult)
     time_to_first_token: HistogramResult = Field(default_factory=HistogramResult)
-    time_per_output_token: HistogramResult = Field(default_factory=HistogramResult)
     inter_token_latency: HistogramResult = Field(default_factory=HistogramResult)
 
     # Gauges
-    queue_length: GaugeResult = Field(default_factory=GaugeResult)
     num_requests_running: GaugeResult = Field(default_factory=GaugeResult)
     kv_cache_usage: GaugeResult = Field(default_factory=GaugeResult)
 
-    # Single-value customs
+    # Tally counters: only the windowed total (.total) is read.
     num_requests_swapped: CounterResult = Field(default_factory=CounterResult)
     num_preemptions_total: CounterResult = Field(default_factory=CounterResult)
     prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)

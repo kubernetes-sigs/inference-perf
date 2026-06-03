@@ -15,7 +15,7 @@
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, OpenAIMetrics
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
-from .metrics import GaugeMetric, CounterMetric, HistogramMetric, CustomMetric, RequestsMetric
+from .metrics import GaugeMetric, CounterMetric, HistogramMetric
 from typing import List, Optional
 import logging
 
@@ -61,107 +61,42 @@ class vLLMModelServerClient(openAIModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         return OpenAIMetrics(
-            prompt_tokens=CounterMetric("prompt_tokens", "vllm:prompt_tokens", self.metric_filters),
-            output_tokens=CounterMetric("output_tokens", "vllm:generation_tokens", self.metric_filters),
-            requests=RequestsMetric('{__name__=~"vllm:request_success(_total)?"}', self.metric_filters),
-            request_latency=HistogramMetric("request_latency", "vllm:e2e_request_latency_seconds", self.metric_filters),
-            queue_length=GaugeMetric("queue_length", "vllm:num_requests_waiting", self.metric_filters),
-            time_per_output_token=HistogramMetric(
-                "time_per_output_token", "vllm:request_time_per_output_token_seconds", self.metric_filters
-            ),
-            custom_metrics=[
-                GaugeMetric("num_requests_running", "vllm:num_requests_running", self.metric_filters),
-                HistogramMetric("time_to_first_token", "vllm:time_to_first_token_seconds", self.metric_filters),
-                HistogramMetric("inter_token_latency", "vllm:inter_token_latency_seconds", self.metric_filters),
-                CustomMetric(
-                    "request_success_count",
-                    '{__name__=~"vllm:request_success(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                GaugeMetric("kv_cache_usage", "vllm:kv_cache_usage_perc", self.metric_filters),
-                CustomMetric(
-                    "num_preemptions_total",
-                    '{__name__=~"vllm:num_preemptions(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "prefix_cache_hits",
-                    '{__name__=~"vllm:prefix_cache_hits(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "prefix_cache_queries",
-                    '{__name__=~"vllm:prefix_cache_queries(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                HistogramMetric("request_queue_time", "vllm:request_queue_time_seconds", self.metric_filters),
-                HistogramMetric("request_inference_time", "vllm:request_inference_time_seconds", self.metric_filters),
-                HistogramMetric("request_prefill_time", "vllm:request_prefill_time_seconds", self.metric_filters),
-                HistogramMetric("request_decode_time", "vllm:request_decode_time_seconds", self.metric_filters),
-                HistogramMetric("request_prompt_tokens", "vllm:request_prompt_tokens", self.metric_filters),
-                HistogramMetric("request_generation_tokens", "vllm:request_generation_tokens", self.metric_filters),
-                HistogramMetric(
-                    "request_max_num_generation_tokens", "vllm:request_max_num_generation_tokens", self.metric_filters
-                ),
-                HistogramMetric("request_params_n", "vllm:request_params_n", self.metric_filters),
-                HistogramMetric("request_params_max_tokens", "vllm:request_params_max_tokens", self.metric_filters),
-                HistogramMetric("iteration_tokens", "vllm:iteration_tokens_total", self.metric_filters),
-                CustomMetric(
-                    "prompt_tokens_cached",
-                    '{__name__=~"vllm:prompt_tokens_cached(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "prompt_tokens_recomputed",
-                    '{__name__=~"vllm:prompt_tokens_recomputed(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "external_prefix_cache_hits",
-                    '{__name__=~"vllm:external_prefix_cache_hits(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "external_prefix_cache_queries",
-                    '{__name__=~"vllm:external_prefix_cache_queries(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "mm_cache_hits",
-                    '{__name__=~"vllm:mm_cache_hits(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric(
-                    "mm_cache_queries",
-                    '{__name__=~"vllm:mm_cache_queries(_total)?"}',
-                    "increase",
-                    "counter",
-                    self.metric_filters,
-                ),
-                CustomMetric("corrupted_requests", "vllm:corrupted_requests", "increase", "counter", self.metric_filters),
-                HistogramMetric(
-                    "request_prefill_kv_computed_tokens", "vllm:request_prefill_kv_computed_tokens", self.metric_filters
-                ),
-                HistogramMetric("kv_block_idle_before_evict", "vllm:kv_block_idle_before_evict_seconds", self.metric_filters),
-                HistogramMetric("kv_block_lifetime", "vllm:kv_block_lifetime_seconds", self.metric_filters),
-                HistogramMetric("kv_block_reuse_gap", "vllm:kv_block_reuse_gap_seconds", self.metric_filters),
-            ],
+            filters=self.metric_filters,
+            prompt_tokens=CounterMetric("vllm:prompt_tokens"),
+            output_tokens=CounterMetric("vllm:generation_tokens"),
+            requests=CounterMetric('{__name__=~"vllm:request_success(_total)?"}'),
+            request_latency=HistogramMetric("vllm:e2e_request_latency_seconds"),
+            queue_length=GaugeMetric("vllm:num_requests_waiting"),
+            time_per_output_token=HistogramMetric("vllm:request_time_per_output_token_seconds"),
+            custom_metrics={
+                "num_requests_running": GaugeMetric("vllm:num_requests_running"),
+                "time_to_first_token": HistogramMetric("vllm:time_to_first_token_seconds"),
+                "inter_token_latency": HistogramMetric("vllm:inter_token_latency_seconds"),
+                "request_success_count": CounterMetric('{__name__=~"vllm:request_success(_total)?"}'),
+                "kv_cache_usage": GaugeMetric("vllm:kv_cache_usage_perc"),
+                "num_preemptions_total": CounterMetric('{__name__=~"vllm:num_preemptions(_total)?"}'),
+                "prefix_cache_hits": CounterMetric('{__name__=~"vllm:prefix_cache_hits(_total)?"}'),
+                "prefix_cache_queries": CounterMetric('{__name__=~"vllm:prefix_cache_queries(_total)?"}'),
+                "request_queue_time": HistogramMetric("vllm:request_queue_time_seconds"),
+                "request_inference_time": HistogramMetric("vllm:request_inference_time_seconds"),
+                "request_prefill_time": HistogramMetric("vllm:request_prefill_time_seconds"),
+                "request_decode_time": HistogramMetric("vllm:request_decode_time_seconds"),
+                "request_prompt_tokens": HistogramMetric("vllm:request_prompt_tokens"),
+                "request_generation_tokens": HistogramMetric("vllm:request_generation_tokens"),
+                "request_max_num_generation_tokens": HistogramMetric("vllm:request_max_num_generation_tokens"),
+                "request_params_n": HistogramMetric("vllm:request_params_n"),
+                "request_params_max_tokens": HistogramMetric("vllm:request_params_max_tokens"),
+                "iteration_tokens": HistogramMetric("vllm:iteration_tokens_total"),
+                "prompt_tokens_cached": CounterMetric('{__name__=~"vllm:prompt_tokens_cached(_total)?"}'),
+                "prompt_tokens_recomputed": CounterMetric('{__name__=~"vllm:prompt_tokens_recomputed(_total)?"}'),
+                "external_prefix_cache_hits": CounterMetric('{__name__=~"vllm:external_prefix_cache_hits(_total)?"}'),
+                "external_prefix_cache_queries": CounterMetric('{__name__=~"vllm:external_prefix_cache_queries(_total)?"}'),
+                "mm_cache_hits": CounterMetric('{__name__=~"vllm:mm_cache_hits(_total)?"}'),
+                "mm_cache_queries": CounterMetric('{__name__=~"vllm:mm_cache_queries(_total)?"}'),
+                "corrupted_requests": CounterMetric("vllm:corrupted_requests"),
+                "request_prefill_kv_computed_tokens": HistogramMetric("vllm:request_prefill_kv_computed_tokens"),
+                "kv_block_idle_before_evict": HistogramMetric("vllm:kv_block_idle_before_evict_seconds"),
+                "kv_block_lifetime": HistogramMetric("vllm:kv_block_lifetime_seconds"),
+                "kv_block_reuse_gap": HistogramMetric("vllm:kv_block_reuse_gap_seconds"),
+            },
         )
