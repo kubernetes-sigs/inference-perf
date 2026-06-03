@@ -15,7 +15,7 @@
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, OpenAIMetrics
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
-from .metrics import GaugeMetric, HistogramMetric, CounterMetric, RequestsMetric
+from .metrics import GaugeMetric, HistogramMetric, CounterMetric
 from typing import List, Optional
 import logging
 
@@ -57,17 +57,16 @@ class SGlangModelServerClient(openAIModelServerClient):
 
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         return OpenAIMetrics(
-            prompt_tokens=CounterMetric("prompt_tokens", "sglang:prompt_tokens_total", self.metric_filters),
-            output_tokens=CounterMetric("output_tokens", "sglang:generation_tokens_total", self.metric_filters),
-            requests=RequestsMetric("sglang:e2e_request_latency_seconds_count", self.metric_filters),
-            request_latency=HistogramMetric("request_latency", "sglang:e2e_request_latency_seconds", self.metric_filters),
-            queue_length=GaugeMetric("queue_length", "sglang:num_queue_reqs", self.metric_filters),
-            time_per_output_token=HistogramMetric(
-                "time_per_output_token", "sglang:time_per_output_token_seconds", self.metric_filters
-            ),
-            custom_metrics=[
-                HistogramMetric("time_to_first_token", "sglang:time_to_first_token_seconds", self.metric_filters),
-                HistogramMetric("inter_token_latency", "sglang:inter_token_latency_seconds", self.metric_filters),
-                GaugeMetric("kv_cache_usage", "sglang:cache_hit_rate", self.metric_filters),
-            ],
+            filters=self.metric_filters,
+            prompt_tokens=CounterMetric("sglang:prompt_tokens_total"),
+            output_tokens=CounterMetric("sglang:generation_tokens_total"),
+            requests=CounterMetric("sglang:e2e_request_latency_seconds_count"),
+            request_latency=HistogramMetric("sglang:e2e_request_latency_seconds"),
+            queue_length=GaugeMetric("sglang:num_queue_reqs"),
+            time_per_output_token=HistogramMetric("sglang:time_per_output_token_seconds"),
+            custom_metrics={
+                "time_to_first_token": HistogramMetric("sglang:time_to_first_token_seconds"),
+                "inter_token_latency": HistogramMetric("sglang:inter_token_latency_seconds"),
+                "kv_cache_usage": GaugeMetric("sglang:token_usage"),
+            },
         )

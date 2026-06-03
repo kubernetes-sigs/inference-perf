@@ -26,7 +26,7 @@ def test_sglang_get_prometheus_metric_metadata() -> None:
     assert isinstance(metrics, OpenAIMetrics)
 
     # Verify some SGLang specific metrics are present in custom_metrics
-    custom_metric_names = [m.metric_name for m in metrics.custom_metrics]
+    custom_metric_names = [m.metric_name for m in metrics.custom_metrics.values()]
     assert "sglang:time_to_first_token_seconds" in custom_metric_names
     assert "sglang:inter_token_latency_seconds" in custom_metric_names
-    assert "sglang:cache_hit_rate" in custom_metric_names
+    assert "sglang:token_usage" in custom_metric_names

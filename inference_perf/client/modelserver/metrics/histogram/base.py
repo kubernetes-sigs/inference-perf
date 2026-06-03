@@ -18,23 +18,23 @@ from ..gauge.base import GaugeResult
 
 
 class HistogramResult(GaugeResult):
+    """Distribution (avg/median/p90/p99 + as_summary, from GaugeResult) plus a per-second rate."""
+
     per_second: float = 0.0
 
 
 class HistogramMetric(Metric[HistogramResult]):
-    def __init__(self, target_field: str, metric_name: str, filters: List[str]) -> None:
-        self.target_field = target_field
+    def __init__(self, metric_name: str) -> None:
         self.metric_name = metric_name
-        self.filters = ",".join(filters)
 
-    def get_queries(self, duration: float) -> List[str]:
-        f, m = self.filters, self.metric_name
+    def get_queries(self, duration: float, filters: str) -> List[str]:
+        f, m = filters, self.metric_name
         return [
             f"sum(rate({m}_sum{{{f}}}[{duration:.0f}s])) / (sum(rate({m}_count{{{f}}}[{duration:.0f}s])) > 0)",
             f"histogram_quantile(0.5, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))",
             f"histogram_quantile(0.9, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))",
             f"histogram_quantile(0.99, sum(rate({m}_bucket{{{f}}}[{duration:.0f}s])) by (le))",
-            f"sum(rate({m}_sum{{{f}}}[{duration:.0f}s]))",
+            f"sum(rate({m}_count{{{f}}}[{duration:.0f}s]))",
         ]
 
     def parse(self, results: List[float]) -> HistogramResult:

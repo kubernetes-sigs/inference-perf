@@ -299,44 +299,49 @@ async def test_session_id_header_not_injected_when_header_key_is_none(mock_clien
     assert "x-session-id" not in headers_passed
 
 
-def test_openai_metrics_iteration_deduplicates() -> None:
-    """Iterating OpenAIMetrics yields each metric once across named fields and custom_metrics."""
+def test_openai_metrics_iteration_yields_each_field_once() -> None:
+    """Iterating OpenAIMetrics yields (target_field, metric) pairs; named fields take precedence
+    over a custom_metrics entry that reuses a named field's key."""
 
     class FakeMetric(Metric[CounterResult]):
         def __init__(self, name: str) -> None:
-            self.name = name
             self.metric_name = name
-            self.target_field = name
 
-        def get_queries(self, duration: float) -> list[str]:
+        def get_queries(self, duration: float, filters: str) -> list[str]:
             return []
 
         def parse(self, results: list[float]) -> CounterResult:
             return CounterResult()
 
-    m1 = FakeMetric("m1")
-    m2 = FakeMetric("m2")
-    m3 = FakeMetric("m3")
-    m4 = FakeMetric("m4")
-
     metrics = OpenAIMetrics(
-        prompt_tokens=m1,
-        output_tokens=m2,
-        requests=m3,
-        request_latency=m1,  # Duplicate
-        queue_length=m2,  # Duplicate
-        time_per_output_token=m3,  # Duplicate
-        custom_metrics=[m1, m4],
+        filters=[],
+        prompt_tokens=FakeMetric("pt"),
+        output_tokens=FakeMetric("ot"),
+        requests=FakeMetric("req"),
+        request_latency=FakeMetric("lat"),
+        queue_length=FakeMetric("q"),
+        time_per_output_token=FakeMetric("tpot"),
+        custom_metrics={
+            "kv_cache_usage": FakeMetric("kv"),
+            "prompt_tokens": FakeMetric("custom-pt"),  # collides with the named field
+        },
     )
 
-    all_metrics = list(metrics)
+    fields = [field for field, _ in metrics]
+    by_field = dict(metrics)
 
-    # Should contain m1, m2, m3, m4 (deduplicated)
-    assert len(all_metrics) == 4
-    assert m1 in all_metrics
-    assert m2 in all_metrics
-    assert m3 in all_metrics
-    assert m4 in all_metrics
+    # Each field appears once, named field wins over the colliding custom entry.
+    assert len(fields) == len(set(fields))
+    assert set(fields) == {
+        "prompt_tokens",
+        "output_tokens",
+        "requests",
+        "request_latency",
+        "queue_length",
+        "time_per_output_token",
+        "kv_cache_usage",
+    }
+    assert by_field["prompt_tokens"].metric_name == "pt"
 
 
 @pytest.mark.asyncio
