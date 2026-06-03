@@ -223,6 +223,15 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             mock_tg = MagicMock()
             MockTaskGroup.return_value.__aenter__.return_value = mock_tg
 
+            # create_task is given client.process_request(...) — an AsyncMock
+            # coroutine. The real TaskGroup would await it; the mock must close
+            # it so it isn't garbage-collected later as "never awaited".
+            def _close_coro(coro: Any) -> MagicMock:
+                coro.close()
+                return MagicMock()
+
+            mock_tg.create_task.side_effect = _close_coro
+
             async def dummy_process_request(*args: Any, **kwargs: Any) -> None:
                 pass
 
