@@ -23,7 +23,8 @@ from inference_perf.apis import (
     UnaryResponseMetrics,
 )
 from inference_perf.payloads import RequestMetrics, Text
-from .base import ModelServerClient, BaseMetrics
+from .base import ModelServerClient
+from .metrics import BaseMetrics
 import asyncio
 import time
 import logging
