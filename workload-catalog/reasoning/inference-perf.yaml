@@ -35,7 +35,7 @@ data:
       mean: 1000
       std_dev: 800
     output_tokens_per_turn:
-      type: lognormal
+      type: exponential
       min: 500
       max: 32000
       mean: 8000
