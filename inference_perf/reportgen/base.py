@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
-from inference_perf.client.modelserver.base import GaugeResult
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
@@ -207,10 +206,6 @@ def calculate_goodput_metrics(
     return result
 
 
-def _hist(h: GaugeResult) -> Dict[str, float]:
-    return {"mean": h.avg, "median": h.median, "p90": h.p90, "p99": h.p99}
-
-
 def _ratio(num: float, den: float) -> float:
     return (num / den) * 100.0 if den > 0 else 0.0
 
@@ -226,26 +221,26 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             "prompt_len": {"mean": metrics.prompt_tokens.avg, "rate": metrics.prompt_tokens.per_second},
             "output_len": {"mean": metrics.output_tokens.avg, "rate": metrics.output_tokens.per_second},
             "queue_len": {"mean": metrics.queue_length.avg},
-            "request_latency": _hist(metrics.request_latency),
-            "time_to_first_token": _hist(metrics.time_to_first_token),
-            "time_per_output_token": _hist(metrics.time_per_output_token),
-            "kv_cache_usage_percentage": _hist(metrics.kv_cache_usage),
+            "request_latency": metrics.request_latency.as_summary(),
+            "time_to_first_token": metrics.time_to_first_token.as_summary(),
+            "time_per_output_token": metrics.time_per_output_token.as_summary(),
+            "kv_cache_usage_percentage": metrics.kv_cache_usage.as_summary(),
             "num_requests_swapped": {"mean": metrics.num_requests_swapped.value},
             "num_preemptions_total": {"mean": metrics.num_preemptions_total.value},
             "prefix_cache_hit_percent": {"mean": _ratio(metrics.prefix_cache_hits.value, metrics.prefix_cache_queries.value)},
-            "inter_token_latency": _hist(metrics.inter_token_latency),
+            "inter_token_latency": metrics.inter_token_latency.as_summary(),
             "num_requests_running": {"mean": metrics.num_requests_running.avg},
-            "request_queue_time": _hist(metrics.request_queue_time),
-            "request_inference_time": _hist(metrics.request_inference_time),
-            "request_prefill_time": _hist(metrics.request_prefill_time),
-            "request_decode_time": _hist(metrics.request_decode_time),
-            "request_prompt_tokens": _hist(metrics.request_prompt_tokens),
-            "request_generation_tokens": _hist(metrics.request_generation_tokens),
-            "request_max_num_generation_tokens": _hist(metrics.request_max_num_generation_tokens),
-            "request_params_n": _hist(metrics.request_params_n),
-            "request_params_max_tokens": _hist(metrics.request_params_max_tokens),
+            "request_queue_time": metrics.request_queue_time.as_summary(),
+            "request_inference_time": metrics.request_inference_time.as_summary(),
+            "request_prefill_time": metrics.request_prefill_time.as_summary(),
+            "request_decode_time": metrics.request_decode_time.as_summary(),
+            "request_prompt_tokens": metrics.request_prompt_tokens.as_summary(),
+            "request_generation_tokens": metrics.request_generation_tokens.as_summary(),
+            "request_max_num_generation_tokens": metrics.request_max_num_generation_tokens.as_summary(),
+            "request_params_n": metrics.request_params_n.as_summary(),
+            "request_params_max_tokens": metrics.request_params_max_tokens.as_summary(),
             "request_success_count": metrics.request_success_count.value,
-            "iteration_tokens": _hist(metrics.iteration_tokens),
+            "iteration_tokens": metrics.iteration_tokens.as_summary(),
             "prompt_tokens_cached": metrics.prompt_tokens_cached.value,
             "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed.value,
             "external_prefix_cache_hit_percent": {
@@ -253,10 +248,10 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             },
             "mm_cache_hit_percent": {"mean": _ratio(metrics.mm_cache_hits.value, metrics.mm_cache_queries.value)},
             "corrupted_requests": metrics.corrupted_requests.value,
-            "request_prefill_kv_computed_tokens": _hist(metrics.request_prefill_kv_computed_tokens),
-            "kv_block_idle_before_evict": _hist(metrics.kv_block_idle_before_evict),
-            "kv_block_lifetime": _hist(metrics.kv_block_lifetime),
-            "kv_block_reuse_gap": _hist(metrics.kv_block_reuse_gap),
+            "request_prefill_kv_computed_tokens": metrics.request_prefill_kv_computed_tokens.as_summary(),
+            "kv_block_idle_before_evict": metrics.kv_block_idle_before_evict.as_summary(),
+            "kv_block_lifetime": metrics.kv_block_lifetime.as_summary(),
+            "kv_block_reuse_gap": metrics.kv_block_reuse_gap.as_summary(),
         },
     )
 
