@@ -29,7 +29,6 @@ cancellation/rendezvous overhead.
 """
 
 import asyncio
-import multiprocessing as mp
 import os
 import sys
 import time
@@ -55,6 +54,7 @@ from inference_perf.config import (
 )
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, Worker
+from inference_perf.utils.mp_context import MP_CONTEXT
 from inference_perf.utils.request_queue import RequestQueue
 
 
@@ -207,20 +207,6 @@ def _line_count(path: str) -> int:
         return len(f.readlines())
 
 
-@pytest.fixture(autouse=True)
-def _fork_start_method() -> Generator[None, None, None]:
-    # Workers must fork (matching production: Linux default, forced on macOS in
-    # main_cli) so unpicklable test state is inherited rather than pickled.
-    old = mp.get_start_method(allow_none=True)
-    if old != "fork":
-        if "fork" not in mp.get_all_start_methods():
-            pytest.skip("fork start method unavailable on this platform")
-        mp.set_start_method("fork", force=True)
-    yield
-    if old is not None and old != "fork":
-        mp.set_start_method(old, force=True)
-
-
 class _Harness:
     def __init__(
         self,
@@ -242,13 +228,13 @@ class _Harness:
         )
         self.loadgen = LoadGenerator(self.datagen, load_config)
         self.request_queue: RequestQueue[RequestQueueData] = RequestQueue(1)
-        self.finished_counter = mp.Value("i", 0)
-        self.active_counter = mp.Value("i", 0)
-        self.request_phase = mp.Event()
-        self.stop_signal = mp.Event()
-        self.cancel_signal = mp.Event()
-        self.force_stop_signal = mp.Event()
-        self.stage_boundary_seq = mp.Value("i", 0)
+        self.finished_counter = MP_CONTEXT.Value("i", 0)
+        self.active_counter = MP_CONTEXT.Value("i", 0)
+        self.request_phase = MP_CONTEXT.Event()
+        self.stop_signal = MP_CONTEXT.Event()
+        self.cancel_signal = MP_CONTEXT.Event()
+        self.force_stop_signal = MP_CONTEXT.Event()
+        self.stage_boundary_seq = MP_CONTEXT.Value("i", 0)
         self.loadgen._force_stop_signal = self.force_stop_signal
         self.loadgen._stage_boundary_seq = self.stage_boundary_seq
         self.request_phase.set()
@@ -267,7 +253,7 @@ class _Harness:
             None,
             base_seed=42,
             force_stop_signal=self.force_stop_signal,
-            stage_done_counter=mp.Value("i", 0),
+            stage_done_counter=MP_CONTEXT.Value("i", 0),
             stage_boundary_seq=self.stage_boundary_seq,
             teardown_grace_seconds=teardown_grace_seconds,
         )
