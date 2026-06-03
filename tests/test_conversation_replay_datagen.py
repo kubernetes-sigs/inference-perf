@@ -285,6 +285,33 @@ class TestConversationReplayDataGenerator:
             # All within bounds
             assert all(1 <= lat <= 30 for lat in bp.turn_tool_call_latencies)
 
+    def test_min_tokens_equals_max_tokens_for_deterministic_output(self) -> None:
+        """Every emitted per-turn API data has min_tokens == max_tokens == sampled output length.
+
+        Without this invariant, models whose generation_config.eos_token_id
+        is a list (Qwen3, Llama 3, Nemotron) terminate generation early at
+        chat-template stop tokens despite ignore_eos=True, yielding
+        different mean output token counts per model family and
+        invalidating throughput comparisons.
+        """
+        api_config, data_config = _make_config(num_conversations=3, turns_min=4, turns_max=4, turns_mean=4)
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+        # Sweep across every (conversation, turn) pair the datagen will dispatch.
+        total_turns = sum(bp.num_turns for bp in gen.blueprints)
+        for data_index in range(total_turns):
+            conv_idx = data_index % len(gen.blueprints)
+            lazy = LazyLoadInferenceAPIData(data_index=data_index, preferred_worker_id=conv_idx)
+            result = gen.load_lazy_data(lazy)
+            assert isinstance(result, _ConversationReplayAPIData)
+            assert result.min_tokens is not None
+            assert result.min_tokens == result.max_tokens
+            # And both equal the per-turn sampled output length.
+            bp = gen.blueprints[conv_idx]
+            round_num = data_index // len(gen.blueprints)
+            turn_idx = round_num % bp.num_turns
+            assert result.max_tokens == bp.turn_output_lens[turn_idx]
+
 
 class TestDistributionExtensions:
     def test_lognormal_distribution(self) -> None:

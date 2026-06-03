@@ -34,6 +34,23 @@ async def test_completion_api_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_completion_api_data_omits_min_tokens_when_unset() -> None:
+    """min_tokens defaults to None and is not included in the payload."""
+    data = CompletionAPIData(prompt="Hello")
+    payload = await data.to_request_body("test-model", 100, False, False)
+    assert "min_tokens" not in payload
+
+
+@pytest.mark.asyncio
+async def test_completion_api_data_includes_min_tokens_when_set() -> None:
+    """min_tokens propagates into the request body verbatim."""
+    data = CompletionAPIData(prompt="Hello", max_tokens=256, min_tokens=256)
+    payload = await data.to_request_body("test-model", 100, False, False)
+    assert payload["min_tokens"] == 256
+    assert payload["max_tokens"] == 256
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_api_data_with_tools() -> None:
     tool_defs = [
         {
