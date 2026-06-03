@@ -227,8 +227,8 @@ async def test_session_id_header_not_injected_when_header_key_is_none(mock_clien
     assert "x-session-id" not in headers_passed
 
 
-def test_openai_metrics_get_all_metrics() -> None:
-    """Test get_all_metrics deduplicates and collects from lists."""
+def test_openai_metrics_iteration_deduplicates() -> None:
+    """Iterating OpenAIMetrics yields each metric once across named fields and custom_metrics."""
 
     class FakeMetric(Metric[CounterResult]):
         def __init__(self, name: str) -> None:
@@ -257,7 +257,7 @@ def test_openai_metrics_get_all_metrics() -> None:
         custom_metrics=[m1, m4],
     )
 
-    all_metrics = metrics.get_all_metrics()
+    all_metrics = list(metrics)
 
     # Should contain m1, m2, m3, m4 (deduplicated)
     assert len(all_metrics) == 4

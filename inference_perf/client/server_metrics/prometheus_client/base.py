@@ -111,22 +111,16 @@ class PrometheusMetricsClient(ServerMetricsClient):
         Returns:
         A ModelServerMetrics object containing the summary metrics.
         """
-        target = ModelServerMetrics()
-        valid_fields = set(ModelServerMetrics.model_fields.keys())
 
-        for metric in metrics_metadata.get_all_metrics():
-            if metric.target_field not in valid_fields:
-                logger.warning(
-                    f"Metric '{metric.metric_name}' targets field '{metric.target_field}', "
-                    f"which is not defined on ModelServerMetrics; result will be dropped."
-                )
-                continue
-            results = [self.execute_query(q, str(query_eval_time)) for q in metric.get_queries(query_duration)]
-            if not results:
-                continue
-            setattr(target, metric.target_field, metric.parse(results))
+        def execute(query: str) -> float:
+            return self.execute_query(query, str(query_eval_time))
 
-        return target
+        # Each metric owns its query+parse (collect) and names the field it populates.
+        # Building the dict and validating it through Pydantic enforces the field's
+        # declared result type at construction, replacing the reflective setattr and
+        # the hand-rolled field-name guard.
+        collected = {metric.target_field: metric.collect(execute, query_duration) for metric in metrics_metadata}
+        return ModelServerMetrics.model_validate(collected)
 
     def execute_query(self, query: str, eval_time: str) -> float:
         """
