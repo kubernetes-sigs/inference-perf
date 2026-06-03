@@ -15,7 +15,7 @@ import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, StreamingDatasetMixin
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Generator, List, Optional
 from datasets import load_dataset
@@ -24,12 +24,23 @@ import os
 logger = logging.getLogger(__name__)
 
 
-class CNNDailyMailDataGenerator(DataGenerator):
+class CNNDailyMailDataGenerator(StreamingDatasetMixin, DataGenerator):
+    _streaming_dataset_attr = "cnn_dailymail_dataset"
+
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
         if tokenizer is None:
             raise ValueError("CustomTokenizer instance cannot be None")
 
+        self.config = config
+        self.article_key = "article"
+        self.highlights_key = "highlights"
+        self._initialize_dataset()
+        # initialize data collection
+        next(self.cnn_dailymail_dataset)
+
+    def _initialize_dataset(self) -> None:
+        config = self.config
         if config.path is not None:
             # check if the path is valid
             if not os.path.exists(config.path):
@@ -56,10 +67,6 @@ class CNNDailyMailDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-        self.article_key = "article"
-        self.highlights_key = "highlights"
-        # initialize data collection
-        next(self.cnn_dailymail_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion]

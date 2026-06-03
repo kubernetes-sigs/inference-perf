@@ -20,12 +20,14 @@ from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAP
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
-from .base import DataGenerator
+from .base import DataGenerator, StreamingDatasetMixin
 
 logger = logging.getLogger(__name__)
 
 
-class BillsumConversationsDataGenerator(DataGenerator):
+class BillsumConversationsDataGenerator(StreamingDatasetMixin, DataGenerator):
+    _streaming_dataset_attr = "billsum_dataset"
+
     def __init__(
         self,
         api_config: APIConfig,
