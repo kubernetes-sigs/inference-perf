@@ -5,7 +5,7 @@ from unittest.mock import patch
 from inference_perf.client.server_metrics.prometheus_client.base import PrometheusMetricsClient
 from inference_perf.client.server_metrics.base import ModelServerMetrics
 from inference_perf.config import PrometheusClientConfig
-from inference_perf.client.modelserver.base import BaseMetrics, CounterResult, HistogramMetric, Metric
+from inference_perf.client.modelserver.metrics import BaseMetrics, CounterResult, HistogramMetric, Metric
 
 
 def test_get_model_server_metrics_base_metrics() -> None:

@@ -26,7 +26,8 @@ from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anth
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerClientSession, Metric, BaseMetrics
+from .base import ModelServerClient, ModelServerClientSession
+from .metrics import Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation
 from typing import Iterator, List, Optional, Any, Dict
 import aiohttp

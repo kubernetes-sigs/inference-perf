@@ -1,6 +1,6 @@
 from typing import List
 
-from inference_perf.client.modelserver.base import GaugeMetric, GaugeResult, HistogramResult
+from inference_perf.client.modelserver.metrics import GaugeMetric, GaugeResult, HistogramResult
 
 
 def test_gauge_result_as_summary() -> None:
