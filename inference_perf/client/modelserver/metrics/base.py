@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, TypeVar
 from pydantic import BaseModel
 
 R = TypeVar("R", bound=BaseModel)
@@ -20,11 +20,14 @@ R = TypeVar("R", bound=BaseModel)
 
 class Metric(ABC, Generic[R]):
     metric_name: str
-    target_field: str
 
     @abstractmethod
-    def get_queries(self, duration: float) -> List[str]:
-        """Returns the ordered list of PromQL queries this metric requires."""
+    def get_queries(self, duration: float, filters: str) -> List[str]:
+        """Returns the ordered list of PromQL queries this metric requires.
+
+        filters is the comma-joined label selector (e.g. "model_name='m'"), supplied by the
+        owning container so it is not repeated on every metric.
+        """
         ...
 
     @abstractmethod
@@ -32,31 +35,40 @@ class Metric(ABC, Generic[R]):
         """Convert the ordered query results into a typed result object."""
         ...
 
-    def collect(self, execute: Callable[[str], float], duration: float) -> R:
+    def collect(self, execute: Callable[[str], float], duration: float, filters: str) -> R:
         """Run this metric's queries via execute and parse them into its typed result.
 
         Keeps query execution and parsing together on the metric so callers never
         need to know the query/result shape of a particular metric type.
         """
-        return self.parse([execute(query) for query in self.get_queries(duration)])
+        return self.parse([execute(query) for query in self.get_queries(duration, filters)])
 
 
 class BaseMetrics:
-    def __init__(self, custom_metrics: Optional[List[Metric[Any]]] = None) -> None:
-        self.custom_metrics = custom_metrics or []
+    """A collection of metrics keyed by the ModelServerMetrics field they populate.
 
-    def _iter_metrics(self) -> Iterator[Metric[Any]]:
-        """Yield every metric this container holds.
+    The field name lives in the container (the custom_metrics dict key, or a named
+    field's attribute name) rather than on the metric, so a metric only carries its
+    PromQL name and never repeats the target field. The label filters are uniform across
+    a model server, so they live here too and are applied at query-build time.
+    """
 
-        Subclasses override this to yield their named fields (and then defer to
+    def __init__(self, filters: Optional[List[str]] = None, custom_metrics: Optional[Dict[str, Metric[Any]]] = None) -> None:
+        self.filters = ",".join(filters or [])
+        self.custom_metrics = custom_metrics or {}
+
+    def _iter_metrics(self) -> Iterator[Tuple[str, Metric[Any]]]:
+        """Yield (target_field, metric) for every metric this container holds.
+
+        Subclasses override this to yield their named fields first (and then defer to
         super() for the custom metrics) so iteration is explicit rather than a
         reflection walk over __dict__.
         """
-        yield from self.custom_metrics
+        yield from self.custom_metrics.items()
 
-    def __iter__(self) -> Iterator[Metric[Any]]:
-        seen: set[int] = set()
-        for metric in self._iter_metrics():
-            if id(metric) not in seen:
-                seen.add(id(metric))
-                yield metric
+    def __iter__(self) -> Iterator[Tuple[str, Metric[Any]]]:
+        seen: set[str] = set()
+        for field, metric in self._iter_metrics():
+            if field not in seen:
+                seen.add(field)
+                yield field, metric

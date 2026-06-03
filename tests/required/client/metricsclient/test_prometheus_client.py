@@ -1,11 +1,30 @@
-from typing import Any, Iterator, List
+from typing import Any, Dict, Iterator, List, Tuple
 import pytest
 from pydantic import ValidationError
 from unittest.mock import patch
 from inference_perf.client.server_metrics.prometheus_client.base import PrometheusMetricsClient
 from inference_perf.client.server_metrics.base import ModelServerMetrics
 from inference_perf.config import PrometheusClientConfig
-from inference_perf.client.modelserver.metrics import BaseMetrics, CounterResult, HistogramMetric, Metric
+from inference_perf.client.modelserver.metrics import (
+    BaseMetrics,
+    CounterMetric,
+    CounterResult,
+    GaugeMetric,
+    HistogramMetric,
+    Metric,
+)
+
+
+def _required_metrics() -> Dict[str, Metric[Any]]:
+    """The fields ModelServerMetrics requires; every real client's metadata declares them."""
+    return {
+        "prompt_tokens": CounterMetric("fake:pt"),
+        "output_tokens": CounterMetric("fake:ot"),
+        "requests": CounterMetric("fake:req"),
+        "request_latency": HistogramMetric("fake:lat"),
+        "queue_length": GaugeMetric("fake:q"),
+        "time_per_output_token": HistogramMetric("fake:tpot"),
+    }
 
 
 def test_get_model_server_metrics_base_metrics() -> None:
@@ -14,9 +33,9 @@ def test_get_model_server_metrics_base_metrics() -> None:
     client = PrometheusMetricsClient(config)
 
     class FakeBaseMetrics(BaseMetrics):
-        def _iter_metrics(self) -> Iterator[Metric[Any]]:
-            yield HistogramMetric("inter_token_latency", "fake:itl", [])
-            yield HistogramMetric("time_per_output_token", "fake:tpot", [])
+        def _iter_metrics(self) -> Iterator[Tuple[str, Metric[Any]]]:
+            yield from _required_metrics().items()
+            yield "inter_token_latency", HistogramMetric("fake:itl")
 
     def mock_execute(query: str, eval_time: str) -> float:
         if "fake:itl" in query and "_sum" in query and "/" in query:
@@ -38,7 +57,7 @@ def test_get_model_server_metrics_uses_custom_metrics_by_default() -> None:
     config = PrometheusClientConfig(url="http://localhost:9090")
     client = PrometheusMetricsClient(config)
 
-    metadata = BaseMetrics(custom_metrics=[HistogramMetric("inter_token_latency", "fake:itl", [])])
+    metadata = BaseMetrics(custom_metrics={**_required_metrics(), "inter_token_latency": HistogramMetric("fake:itl")})
 
     with patch.object(PrometheusMetricsClient, "execute_query", return_value=1.23):
         result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
@@ -58,15 +77,16 @@ def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
 
     class WrongTypeMetric(Metric[CounterResult]):
         metric_name = "fake:wrong"
-        target_field = "request_latency"  # declared as HistogramResult on ModelServerMetrics
 
-        def get_queries(self, duration: float) -> List[str]:
+        def get_queries(self, duration: float, filters: str) -> List[str]:
             return ["q"]
 
         def parse(self, results: List[float]) -> CounterResult:
-            return CounterResult(value=1.0)
+            return CounterResult(total=1.0)
 
-    metadata = BaseMetrics(custom_metrics=[WrongTypeMetric()])
+    # request_latency is declared HistogramResult; supplying a CounterResult there is the only
+    # validation failure (the other required fields are present and correctly typed).
+    metadata = BaseMetrics(custom_metrics={**_required_metrics(), "request_latency": WrongTypeMetric()})
 
     with patch.object(PrometheusMetricsClient, "execute_query", return_value=1.0):
         with pytest.raises(ValidationError):

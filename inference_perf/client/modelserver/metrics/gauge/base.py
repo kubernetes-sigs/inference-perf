@@ -33,13 +33,11 @@ class GaugeResult(BaseModel):
 
 
 class GaugeMetric(Metric[GaugeResult]):
-    def __init__(self, target_field: str, metric_name: str, filters: List[str]) -> None:
-        self.target_field = target_field
+    def __init__(self, metric_name: str) -> None:
         self.metric_name = metric_name
-        self.filters = ",".join(filters)
 
-    def get_queries(self, duration: float) -> List[str]:
-        f, m = self.filters, self.metric_name
+    def get_queries(self, duration: float, filters: str) -> List[str]:
+        f, m = filters, self.metric_name
         return [
             f"avg_over_time({m}{{{f}}}[{duration:.0f}s])",
             f"quantile_over_time(0.5, {m}{{{f}}}[{duration:.0f}s])",

@@ -15,8 +15,6 @@ from .base import Metric, BaseMetrics
 from .gauge.base import GaugeResult, GaugeMetric
 from .histogram.base import HistogramResult, HistogramMetric
 from .counter.base import CounterResult, CounterMetric
-from .requests.base import RequestsResult, RequestsMetric
-from .custom.base import CustomMetric
 
 __all__ = [
     "Metric",
@@ -27,7 +25,4 @@ __all__ = [
     "HistogramMetric",
     "CounterResult",
     "CounterMetric",
-    "RequestsResult",
-    "RequestsMetric",
-    "CustomMetric",
 ]

@@ -15,29 +15,39 @@ from typing import List
 from pydantic import BaseModel
 
 from ..base import Metric
-from ..histogram.base import HistogramResult
 
 
 class CounterResult(BaseModel):
-    value: float = 0.0
+    """Result of a counter query: the windowed total (increase), the average per-second rate
+    over the window, and the overall per-second rate."""
+
+    total: float = 0.0
+    avg: float = 0.0
+    per_second: float = 0.0
 
 
-class CounterMetric(Metric[HistogramResult]):
-    """Returns HistogramResult (not CounterResult) because target fields like prompt_tokens may
-    be populated by either CounterMetric (vllm/sglang) or HistogramMetric (tgi). Counter fills
-    only avg+per_second; percentile fields default to 0."""
+class CounterMetric(Metric[CounterResult]):
+    """avg is the average per-second rate over the window (avg_over_time of the rate), matching the
+    pre-refactor counter "mean" semantics rather than the window total."""
 
-    def __init__(self, target_field: str, metric_name: str, filters: List[str]) -> None:
-        self.target_field = target_field
+    def __init__(self, metric_name: str) -> None:
         self.metric_name = metric_name
-        self.filters = ",".join(filters)
 
-    def get_queries(self, duration: float) -> List[str]:
-        f, m = self.filters, self.metric_name
+    def _selector(self, filters: str) -> str:
+        # A counter name may be a plain metric or a `{__name__=~"foo(_total)?"}` selector;
+        # merge the filters inside the braces for the latter instead of appending a second group.
+        m = self.metric_name
+        if m.startswith("{") and m.endswith("}"):
+            return f"{{{m[1:-1]},{filters}}}" if filters else m
+        return f"{m}{{{filters}}}"
+
+    def get_queries(self, duration: float, filters: str) -> List[str]:
+        s = self._selector(filters)
         return [
-            f"sum(increase({m}{{{f}}}[{duration:.0f}s]))",
-            f"sum(rate({m}{{{f}}}[{duration:.0f}s]))",
+            f"sum(increase({s}[{duration:.0f}s]))",
+            f"avg_over_time(rate({s}[{duration:.0f}s])[{duration:.0f}s:{duration:.0f}s])",
+            f"sum(rate({s}[{duration:.0f}s]))",
         ]
 
-    def parse(self, results: List[float]) -> HistogramResult:
-        return HistogramResult(avg=results[0], per_second=results[1])
+    def parse(self, results: List[float]) -> CounterResult:
+        return CounterResult(total=results[0], avg=results[1], per_second=results[2])
