@@ -16,6 +16,8 @@ import multiprocessing as mp
 from queue import Empty
 from typing import Generic, List, TypeVar
 
+from inference_perf.utils.mp_context import MP_CONTEXT
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -39,7 +41,7 @@ class RequestQueue(Generic[T]):
             num_channels (int, optional): number of channels. Defaults to 1.
         """
         self.num_channels: int = num_channels
-        self.queues: List[mp.Queue[T]] = [mp.Queue() for _ in range(num_channels)]
+        self.queues: List["mp.Queue[T]"] = [MP_CONTEXT.Queue() for _ in range(num_channels)]
 
     def get_channel(self, channel_id: int) -> "mp.Queue[T]":
         return self.queues[channel_id % self.num_channels]
@@ -52,7 +54,7 @@ class RequestQueue(Generic[T]):
         replacement consumer. Only valid for per-consumer channels; a shared
         channel must not be replaced while other consumers hold the old one.
         """
-        queue: "mp.Queue[T]" = mp.Queue()
+        queue: "mp.Queue[T]" = MP_CONTEXT.Queue()
         self.queues[channel_id % self.num_channels] = queue
         return queue
 

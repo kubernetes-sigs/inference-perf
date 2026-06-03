@@ -81,6 +81,7 @@ from rich.progress import (
 import signal
 
 from inference_perf.observability.logging import get_console
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class RequestQueueData(NamedTuple):
     lora_adapter: Optional[str]
 
 
-class Worker(mp.Process):
+class Worker(MP_CONTEXT.Process):  # type: ignore[name-defined,misc]
     def __init__(
         self,
         id: int,
@@ -986,7 +987,7 @@ class LoadGenerator:
         considered up to date at the next rendezvous. request_channel, when
         given, replaces the dead worker's queue channel (see _teardown_stage).
         """
-        stage_done_counter: "Synchronized[int]" = mp.Value("i", self._expected_stage_done)
+        stage_done_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", self._expected_stage_done)
         return Worker(
             dead.id,
             dead.client,
@@ -1209,19 +1210,19 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )
-        finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        request_phase: SyncEvent = mp.Event()
-        stop_signal: SyncEvent = mp.Event()
-        cancel_signal: SyncEvent = mp.Event()
+        finished_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        active_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        request_phase: SyncEvent = MP_CONTEXT.Event()
+        stop_signal: SyncEvent = MP_CONTEXT.Event()
+        cancel_signal: SyncEvent = MP_CONTEXT.Event()
         # Broadcast when the teardown grace expires so workers cancel whatever
         # is still in flight (see _teardown_stage).
-        force_stop_signal: SyncEvent = mp.Event()
+        force_stop_signal: SyncEvent = MP_CONTEXT.Event()
         self._force_stop_signal = force_stop_signal
         # Stage-boundary sequence number, written only by the main process.
         # Workers assign it to their stage_done_counter at each rendezvous
         # (see _teardown_stage).
-        stage_boundary_seq: "Synchronized[int]" = mp.Value("i", 0)
+        stage_boundary_seq: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         self._stage_boundary_seq = stage_boundary_seq
         # start workers in the request phase
         request_phase.set()
@@ -1230,14 +1231,14 @@ class LoadGenerator:
         for id in range(self.num_workers):
             # Create shared value for each worker's max concurrency if concurrent load type
             if self.load_type == LoadType.CONCURRENT:
-                shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
+                shared_max_concurrency = MP_CONTEXT.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
 
             # Per-worker stage-done counter for the stage rendezvous: the worker
             # sets it to the published boundary sequence after winding down each
             # stage (see _teardown_stage).
-            stage_done_counter: "Synchronized[int]" = mp.Value("i", 0)
+            stage_done_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
 
             self.workers.append(
                 Worker(
