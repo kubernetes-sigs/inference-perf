@@ -16,7 +16,7 @@ import asyncio
 import aiohttp
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
-from inference_perf.client.modelserver.base import Metric, CounterResult
+from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage, ErrorResponseInfo, InferenceInfo
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
 from inference_perf.config import APIType

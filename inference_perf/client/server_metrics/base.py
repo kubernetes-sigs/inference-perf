@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from inference_perf.client.modelserver.base import (
+from inference_perf.client.modelserver.metrics import (
     BaseMetrics,
     HistogramResult,
     GaugeResult,

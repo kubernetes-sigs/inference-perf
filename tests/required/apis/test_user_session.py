@@ -24,7 +24,8 @@ from unittest.mock import MagicMock
 
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.apis import InferenceAPIData
-from inference_perf.client.modelserver.base import ModelServerClient, BaseMetrics
+from inference_perf.client.modelserver.base import ModelServerClient
+from inference_perf.client.modelserver.metrics import BaseMetrics
 from inference_perf.config import (
     APIConfig,
     APIType,
