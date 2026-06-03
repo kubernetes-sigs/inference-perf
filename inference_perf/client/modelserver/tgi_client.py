@@ -15,7 +15,7 @@
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, OpenAIMetrics
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
-from .base import GaugeMetric, HistogramMetric, RequestsMetric
+from .metrics import GaugeMetric, HistogramMetric, RequestsMetric
 from typing import List, Optional
 import logging
 
