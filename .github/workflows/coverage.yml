@@ -9,9 +9,16 @@ on:
       - '**/*.md'
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   format-check:
     runs-on: ubuntu-latest
+    # contents: write is only needed to push the badge to the 'badges' branch,
+    # which happens solely on push to main (see the publish step's condition).
+    permissions:
+      contents: write
     strategy:
       matrix:
         python-version: ['3.13']
@@ -53,3 +60,37 @@ jobs:
       - name: Run Validation
         if: steps.changes.outputs.code == 'true'
         run: pdm run check:cov
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.json
+            coverage.xml
+            coverage-endpoint.json
+          if-no-files-found: warn
+      - name: Publish coverage badge to badges branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp coverage-endpoint.json /tmp/coverage-endpoint.json
+          # Use an isolated worktree on an orphan 'badges' branch so we never
+          # touch the checked-out source tree. The README points shields.io at
+          # this JSON; shields renders the badge and GitHub camo-proxies it.
+          git fetch origin badges --depth=1 || true
+          if git show-ref --verify --quiet refs/remotes/origin/badges; then
+            git worktree add /tmp/badges origin/badges
+          else
+            git worktree add --orphan -b badges /tmp/badges
+          fi
+          cp /tmp/coverage-endpoint.json /tmp/badges/coverage-endpoint.json
+          cd /tmp/badges
+          git add coverage-endpoint.json
+          if git diff --staged --quiet; then
+            echo "Badge unchanged; nothing to publish."
+          else
+            git commit -m "Update coverage badge"
+            git push origin HEAD:badges
+          fi
