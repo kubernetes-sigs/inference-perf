@@ -21,8 +21,12 @@ Flow per live test:
     -> hand the test a Cluster handle (kubeconfig + fresh namespace)
     -> on teardown, delete the namespace (frees the GPU) and release the slot.
 """
+
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import uuid
 from collections.abc import Iterator
@@ -35,7 +39,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 from harness import requirements, slots  # noqa: E402
-from harness.runner import Cluster  # noqa: E402
+from harness.runner import DEFAULT_IMAGE, Cluster  # noqa: E402
+
+# Namespace naming, shared by per-case creation and the orphan sweep.
+NAMESPACE_PREFIX = "inference-perf-e2e"
+_IMAGE_ENV = "INFERENCE_PERF_IMAGE"
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -45,13 +53,24 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Comma-separated kubeconfig paths; each is one candidate cluster. "
         "Empty means use the ambient kubeconfig as the single cluster.",
     )
+    parser.addoption(
+        "--image",
+        default="",
+        help=f"inference-perf image for the job (default: ${_IMAGE_ENV} or {DEFAULT_IMAGE}).",
+    )
+    parser.addoption(
+        "--sweep-orphan-namespaces",
+        action="store_true",
+        default=False,
+        help=f"Before running, delete leftover {NAMESPACE_PREFIX}-* namespaces from "
+        "killed prior runs. Off by default; unsafe alongside concurrent runs.",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "live: requires a real model-server backend on a matching cluster "
-        "(excluded from default CI via -m 'not live').",
+        "live: requires a real model-server backend on a matching cluster (excluded from default CI via -m 'not live').",
     )
 
 
@@ -61,10 +80,32 @@ def kubeconfigs(request: pytest.FixtureRequest) -> list[str | None]:
     return [p.strip() for p in raw.split(",") if p.strip()] or [None]
 
 
+@pytest.fixture(scope="session")
+def image(request: pytest.FixtureRequest) -> str:
+    return str(request.config.getoption("--image")) or os.environ.get(_IMAGE_ENV, "") or DEFAULT_IMAGE
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_orphan_namespaces(request: pytest.FixtureRequest, kubeconfigs: list[str | None]) -> None:
+    """Reclaim namespaces leaked by killed prior runs (opt-in via flag).
+
+    Per-case teardown already deletes namespaces on a clean exit; this covers
+    hard kills (SIGKILL, OOM, CI timeout) where teardown never ran.
+    """
+    if not request.config.getoption("--sweep-orphan-namespaces"):
+        return
+    for kubeconfig in kubeconfigs:
+        raw = _kubectl(kubeconfig, "get", "namespaces", "-o", "json", capture=True, check=False)
+        if not raw.strip():
+            continue
+        names = [ns.get("metadata", {}).get("name", "") for ns in json.loads(raw).get("items", [])]
+        orphans = [n for n in names if n.startswith(f"{NAMESPACE_PREFIX}-")]
+        for name in orphans:
+            _kubectl(kubeconfig, "delete", "namespace", name, "--wait=false", check=False)
+
+
 @pytest.fixture
-def cluster_for_case(
-    request: pytest.FixtureRequest, kubeconfigs: list[str | None]
-) -> Iterator[Cluster]:
+def cluster_for_case(request: pytest.FixtureRequest, kubeconfigs: list[str | None]) -> Iterator[Cluster]:
     """Match the case's manifest to a cluster, serialize on scarce hardware, clean up.
 
     The case's manifest path is supplied via indirect parametrize, e.g.:
@@ -79,9 +120,7 @@ def cluster_for_case(
     node_selector = requirements.infer_node_selector(manifest_path)
 
     # Live-nodes-only matching. capacity is the contention-class size.
-    candidates = [
-        (kc, requirements.matching_node_count(node_selector, kc)) for kc in kubeconfigs
-    ]
+    candidates = [(kc, requirements.matching_node_count(node_selector, kc)) for kc in kubeconfigs]
     usable = [(kc, n) for kc, n in candidates if n > 0]
     if not usable:
         pytest.skip(
@@ -91,24 +130,21 @@ def cluster_for_case(
 
     kubeconfig, capacity = usable[0]
     key = slots.class_key(kubeconfig, node_selector)
-    namespace = f"inference-perf-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = f"{NAMESPACE_PREFIX}-{uuid.uuid4().hex[:8]}"
 
     with slots.acquire_slot(key, capacity):
         _kubectl(kubeconfig, "create", "namespace", namespace)
         try:
-            yield Cluster(
-                kubeconfig=kubeconfig, namespace=namespace, manifest_path=Path(manifest_path)
-            )
+            yield Cluster(kubeconfig=kubeconfig, namespace=namespace, manifest_path=Path(manifest_path))
         finally:
             # Release == delete the namespace so the next queued test in this
             # class can schedule onto the freed node. Non-negotiable for reuse.
             _kubectl(kubeconfig, "delete", "namespace", namespace, "--wait=true", check=False)
 
 
-def _kubectl(kubeconfig: str | None, *args: str, check: bool = True) -> None:
-    import subprocess
-
+def _kubectl(kubeconfig: str | None, *args: str, capture: bool = False, check: bool = True) -> str:
     cmd = ["kubectl", *args]
     if kubeconfig:
         cmd[1:1] = ["--kubeconfig", kubeconfig]
-    subprocess.run(cmd, check=check)
+    result = subprocess.run(cmd, capture_output=capture, text=True, check=check)
+    return result.stdout if capture else ""

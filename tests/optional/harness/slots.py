@@ -21,6 +21,7 @@ hardware sequentially. Distinct classes share nothing and run fully in parallel.
 File-based (atomic O_EXCL slot files) so it holds across pytest-xdist workers, not
 just threads. No third-party dependency.
 """
+
 from __future__ import annotations
 
 import errno

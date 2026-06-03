@@ -183,3 +183,6 @@ reports-*/
 
 # VSCode settings (keep local configurations)
 .vscode/
+
+# Optional live-test per-case reports
+tests/optional/**/output/
