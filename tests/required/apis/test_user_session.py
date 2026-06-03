@@ -19,7 +19,7 @@ import re
 import pytest
 from collections import defaultdict
 from queue import Empty
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 from unittest.mock import MagicMock
 
 from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
@@ -37,6 +37,8 @@ from inference_perf.config import (
 )
 from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
+from inference_perf.utils.mp_context import MP_CONTEXT
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 def _mock_tokenizer() -> MagicMock:
@@ -54,7 +56,37 @@ def _mock_tokenizer() -> MagicMock:
     return tok
 
 
-def _make_datagen(num_groups: int = 1, num_prompts_per_group: int = 1) -> SharedPrefixDataGenerator:
+class _PicklableHFTokenizer:
+    """Picklable stand-in for the HF tokenizer object returned by
+    CustomTokenizer.get_tokenizer(). MagicMock is not picklable, so the mp test
+    (which ships the datagen into a forkserver worker) needs a real class.
+    Mirrors the _mock_tokenizer behavior: every decode returns "tok_<len>"."""
+
+    vocab_size = 1000
+    all_special_ids: List[int] = []
+
+    def decode(self, ids: List[int], **kw: object) -> str:
+        return f"tok_{len(ids)}"
+
+    def batch_decode(self, batch: List[List[int]], **kw: object) -> List[str]:
+        return [f"tok_{len(ids)}" for ids in batch]
+
+
+class _PicklableTokenizer:
+    """Picklable CustomTokenizer stand-in, matching _mock_tokenizer's surface."""
+
+    def get_tokenizer(self) -> _PicklableHFTokenizer:
+        return _PicklableHFTokenizer()
+
+    def count_tokens(self, text: object) -> int:
+        if isinstance(text, str):
+            return sum(int(n) for n in re.findall(r"tok_(\d+)", text))
+        return 0
+
+
+def _make_datagen(
+    num_groups: int = 1, num_prompts_per_group: int = 1, tokenizer: Optional[CustomTokenizer] = None
+) -> SharedPrefixDataGenerator:
     api_config = APIConfig(type=APIType.Completion)
     data_config = DataConfig(
         type=DataGenType.SharedPrefix,
@@ -68,7 +100,7 @@ def _make_datagen(num_groups: int = 1, num_prompts_per_group: int = 1) -> Shared
             seed=42,
         ),
     )
-    return SharedPrefixDataGenerator(api_config, data_config, _mock_tokenizer())
+    return SharedPrefixDataGenerator(api_config, data_config, tokenizer if tokenizer is not None else _mock_tokenizer())
 
 
 class SessionTrackingClient(ModelServerClient):
@@ -199,7 +231,7 @@ class TestLocalUserSessionLifecycle:
     async def test_loadgen_mp_does_not_leak_session_context_across_stages(self) -> None:
         """
         Same as the non-mp test but with num_workers=1 so requests flow
-        through a forked Worker subprocess.
+        through a Worker subprocess started via the shared forkserver context.
 
         The client writes (stage_id, prompt) tuples to an mp.Queue that the
         main process drains after the run.  If any stage-1 prompt contains
@@ -208,9 +240,9 @@ class TestLocalUserSessionLifecycle:
 
 
         """
-        mp.set_start_method("fork", force=True)
-
-        datagen = _make_datagen()
+        # forkserver pickles the worker payload, so the datagen needs a
+        # picklable tokenizer rather than the MagicMock used elsewhere.
+        datagen = _make_datagen(tokenizer=cast(CustomTokenizer, _PicklableTokenizer()))
         load_config = LoadConfig(
             type=LoadType.CONSTANT,
             stages=[
@@ -221,7 +253,7 @@ class TestLocalUserSessionLifecycle:
             interval=0,
         )
 
-        prompt_queue: "mp.Queue[Tuple[int, str]]" = mp.Queue()
+        prompt_queue: "mp.Queue[Tuple[int, str]]" = MP_CONTEXT.Queue()
         client = SessionTrackingClient(prompt_queue=prompt_queue)
         loadgen = LoadGenerator(datagen, load_config)
 
