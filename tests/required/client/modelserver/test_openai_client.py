@@ -169,8 +169,8 @@ async def test_otel_records_output_from_sse_response(mock_client: MagicMock, moc
     assert response_info["output_text"] == "Hello world"
 
 
-def test_openai_metrics_get_all_metrics() -> None:
-    """Test get_all_metrics deduplicates and collects from lists."""
+def test_openai_metrics_iteration_deduplicates() -> None:
+    """Iterating OpenAIMetrics yields each metric once across named fields and custom_metrics."""
 
     class FakeMetric(Metric[CounterResult]):
         def __init__(self, name: str) -> None:
@@ -199,7 +199,7 @@ def test_openai_metrics_get_all_metrics() -> None:
         custom_metrics=[m1, m4],
     )
 
-    all_metrics = metrics.get_all_metrics()
+    all_metrics = list(metrics)
 
     # Should contain m1, m2, m3, m4 (deduplicated)
     assert len(all_metrics) == 4
