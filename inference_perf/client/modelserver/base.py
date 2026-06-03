@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, Optional, Tuple, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar
 from pydantic import BaseModel
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis import InferenceAPIData
@@ -23,6 +23,14 @@ class GaugeResult(BaseModel):
     median: float = 0.0
     p90: float = 0.0
     p99: float = 0.0
+
+    def as_summary(self) -> Dict[str, float]:
+        """Project to the report's mean/median/p90/p99 shape.
+
+        HistogramResult inherits this and is intentionally narrowed to the same
+        four keys (its per_second field is not part of the per-metric summary).
+        """
+        return {"mean": self.avg, "median": self.median, "p90": self.p90, "p99": self.p99}
 
 
 class HistogramResult(GaugeResult):
