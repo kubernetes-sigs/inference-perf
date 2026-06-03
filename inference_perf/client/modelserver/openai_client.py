@@ -28,7 +28,7 @@ from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation
-from typing import List, Optional, Any, Dict
+from typing import Iterator, List, Optional, Any, Dict
 import aiohttp
 import asyncio
 import json
@@ -60,24 +60,14 @@ class OpenAIMetrics(BaseMetrics):
         self.queue_length = queue_length
         self.time_per_output_token = time_per_output_token
 
-    def get_all_metrics(self) -> List[Metric[Any]]:
-        seen = set()
-        metrics: List[Metric[Any]] = []
-
-        def add_metric(m: Metric[Any]) -> None:
-            if id(m) not in seen:
-                seen.add(id(m))
-                metrics.append(m)
-
-        for attr_value in self.__dict__.values():
-            if isinstance(attr_value, Metric):
-                add_metric(attr_value)
-            elif isinstance(attr_value, list):
-                for item in attr_value:
-                    if isinstance(item, Metric):
-                        add_metric(item)
-
-        return metrics
+    def _iter_metrics(self) -> Iterator[Metric[Any]]:
+        yield self.prompt_tokens
+        yield self.output_tokens
+        yield self.requests
+        yield self.request_latency
+        yield self.queue_length
+        yield self.time_per_output_token
+        yield from super()._iter_metrics()
 
 
 class openAIModelServerClient(ModelServerClient):
