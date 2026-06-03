@@ -225,7 +225,7 @@ def _compile_filter(filter_expr: Optional[str]) -> Optional[Callable[..., Any]]:
     if not filter_expr:
         return None
     try:
-        filter_func = eval(filter_expr)
+        filter_func = eval(filter_expr, {"__builtins__": {}}, {})
         if not callable(filter_func):
             raise ValueError(f"Filter expression must be a callable (lambda), got: {type(filter_func).__name__}")
         return cast(Callable[..., Any], filter_func)
