@@ -70,8 +70,25 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "live: requires a real model-server backend on a matching cluster (excluded from default CI via -m 'not live').",
+        "live: requires a real model-server backend on a matching cluster "
+        "(auto-skipped unless --kubeconfigs is passed; also excludable via -m 'not live').",
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Auto-skip the live tier unless the run explicitly points at clusters.
+
+    A live test needs a real backend, so without --kubeconfigs it can only error
+    (no kubectl, no cluster). Skipping rather than erroring keeps the default
+    `pytest tests` / `pdm run test` / coverage runs green without every caller
+    having to remember `-m "not live"`. Passing --kubeconfigs opts the tier in.
+    """
+    if str(config.getoption("--kubeconfigs")).strip():
+        return
+    skip_live = pytest.mark.skip(reason="live tier: pass --kubeconfigs=<path,...> to run live-backend tests")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip_live)
 
 
 @pytest.fixture(scope="session")

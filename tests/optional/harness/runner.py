@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Run one multimodal case end-to-end against a cluster.
+"""Run one end-to-end case against a cluster.
 
 Owns deploy, run, verification, and artifact extraction for a single case. The
 namespace lifecycle and concurrency control live in the fixture (conftest.py);
 this module assumes the namespace already exists and does not delete it.
+
+Nothing here is multimodal-specific: a case is a directory holding a server
+manifest (``vllm.yaml``) and an inference-perf ``config.yml``. The Deployment to
+wait on is read from the manifest, so any suite can bring its own server.
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from harness import requirements
 
 
 @dataclass
@@ -37,7 +43,6 @@ class Cluster:
 
 DEFAULT_IMAGE = "quay.io/inference-perf/inference-perf:latest"
 _TEMPLATE_IMAGE = "quay.io/inference-perf/inference-perf:latest"
-_VLLM_DEPLOYMENT = "qwen3-32b-vllm-deployment"
 _CONFIG_MAP = "inference-perf-config"
 _JOB = "inference-perf"
 _JOB_TIMEOUT = "600s"
@@ -89,28 +94,42 @@ def _copy_hf_secret(kubeconfig: str | None, namespace: str) -> None:
     _kubectl(kubeconfig, namespace, "apply", "-f", "-", stdin=json.dumps(secret))
 
 
-def run_case(kubeconfig: str | None, namespace: str, case_dir: Path, image: str = DEFAULT_IMAGE) -> None:
+def run_case(
+    kubeconfig: str | None,
+    namespace: str,
+    case_dir: Path,
+    image: str = DEFAULT_IMAGE,
+    deployments: list[str] | None = None,
+) -> None:
     """Deploy the model server, run inference-perf, and assert all requests succeeded.
 
-    Raises AssertionError on zero successes or any failures; lets subprocess errors
+    The Deployment(s) to wait on default to whatever ``vllm.yaml`` declares (read
+    from the manifest, not hardcoded); pass ``deployments`` to override. Raises
+    AssertionError on zero successes or any failures; lets subprocess errors
     (rollout/job timeouts) propagate so the test fails loudly rather than hanging.
     """
     case_dir = Path(case_dir)
 
     _copy_hf_secret(kubeconfig, namespace)
 
-    # Step 1: model server.
+    # Step 1: model server. Apply the manifest, then wait on each Deployment it
+    # declares (inferred unless the caller named them explicitly).
     vllm = case_dir / "vllm.yaml"
     if vllm.is_file():
         _kubectl(kubeconfig, namespace, "apply", "-f", str(vllm))
-    _kubectl(
-        kubeconfig,
-        namespace,
-        "rollout",
-        "status",
-        f"deployment/{_VLLM_DEPLOYMENT}",
-        f"--timeout={_ROLLOUT_TIMEOUT}",
-    )
+    if deployments is not None:
+        rollout_targets = deployments
+    else:
+        rollout_targets = requirements.deployment_names(vllm) if vllm.is_file() else []
+    for deployment in rollout_targets:
+        _kubectl(
+            kubeconfig,
+            namespace,
+            "rollout",
+            "status",
+            f"deployment/{deployment}",
+            f"--timeout={_ROLLOUT_TIMEOUT}",
+        )
 
     # Step 2: config.
     cm = _kubectl(
