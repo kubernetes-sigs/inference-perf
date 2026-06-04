@@ -22,6 +22,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     StreamedResponseMetrics,
 )
+from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
 from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
@@ -409,15 +410,25 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         # aiohttp.ClientError handler.
                         if response is not None and response.status == 200 and not info:
                             caught_exception = read_error
+                            # If the stream broke partway, recover the bytes
+                            # received so the per-request report shows what the
+                            # server actually sent, and report the underlying
+                            # exception (e.g. ClientPayloadError) rather than the
+                            # StreamInterruptedError wrapper.
+                            original_error: Exception = read_error
+                            if isinstance(read_error, StreamInterruptedError):
+                                original_error = read_error.original
+                                if read_error.raw_content:
+                                    response_content = read_error.raw_content
                             error = ErrorResponseInfo(
-                                error_msg=str(read_error),
-                                error_type=type(read_error).__name__,
+                                error_msg=str(original_error),
+                                error_type=type(original_error).__name__,
                             )
                             info = await data.process_failure(
                                 response=None,
                                 config=self.client.api_config,
                                 tokenizer=self.client.tokenizer,
-                                exception=read_error,
+                                exception=original_error,
                                 lora_adapter=lora_adapter,
                             )
                         else:
