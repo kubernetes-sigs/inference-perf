@@ -89,7 +89,7 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 
 "test" = "pytest tests"
 "test:picked" = "pytest --picked"
-"test:e2e" = "pytest e2e"
+"test:e2e" = "pytest e2e tests/optional {args}"
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
 
 "check:cov" = "python scripts/check_coverage_regression.py"

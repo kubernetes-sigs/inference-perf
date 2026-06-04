@@ -76,6 +76,25 @@ def infer_node_selector(manifest_path: str | Path) -> NodeSelector:
     return selector
 
 
+def deployment_names(manifest_path: str | Path) -> list[str]:
+    """Return the metadata.name of every Deployment in a manifest, in document order.
+
+    The runner waits on these rollouts before driving load, so the server's name
+    is read from the manifest rather than hardcoded. This is what lets a new suite
+    bring its own Deployment (named anything) without touching the harness.
+    """
+    names: list[str] = []
+    text = Path(manifest_path).read_text()
+    for doc in yaml.safe_load_all(text):
+        if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+            continue
+        metadata = doc.get("metadata")
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 def node_fits(node_selector: NodeSelector, node_labels: dict[str, str]) -> bool:
     """A node fits if its labels satisfy every nodeSelector key (subset match)."""
     return all(node_labels.get(key) == value for key, value in node_selector.items())
