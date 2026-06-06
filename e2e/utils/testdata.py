@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import pathlib
-import subprocess
+import tarfile
 
 TEST_E2E_DIR = pathlib.Path(__file__).parent.parent
 TEST_E2E_TESTDATA = TEST_E2E_DIR.joinpath("testdata")
@@ -38,6 +38,26 @@ def extract_tarball(name: str | pathlib.Path) -> pathlib.Path:
             raise FileNotFoundError(f"Tarball {name} not found!")
 
         os.makedirs(dest)
-        subprocess.run(["tar", "-xzvf", name, "-C", dest], check=True)
+        with tarfile.open(name, "r:gz") as tar:
+            safe_members = []
+            resolved_dest = dest.resolve()
+            for member in tar.getmembers():
+                member_path = pathlib.Path(member.name)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError(f"Tarball {name} contains unsafe path: {member.name}")
+                if member.issym() or member.islnk():
+                    raise ValueError(f"Tarball {name} contains unsupported link: {member.name}")
+
+                resolved_member_path = resolved_dest.joinpath(member_path).resolve()
+                try:
+                    resolved_member_path.relative_to(resolved_dest)
+                except ValueError as err:
+                    raise ValueError(
+                        f"Tarball {name} contains unsafe path: {member.name}"
+                    ) from err
+
+                safe_members.append(member)
+
+            tar.extractall(path=dest, members=safe_members)
 
     return dest
