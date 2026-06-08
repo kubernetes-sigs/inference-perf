@@ -23,6 +23,7 @@ from inference_perf.config.datagen.replay import (
     OTelTraceReplayConfig,
     TraceConfig,
 )
+from inference_perf.config.datagen.visionarena import VisionArenaConfig
 
 
 class DataGenType(Enum):
@@ -36,6 +37,7 @@ class DataGenType(Enum):
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
     ConversationReplay = "conversation_replay"
+    VisionArena = "visionarena"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -102,3 +104,6 @@ class DataConfig(BaseModel):
 
     # Conversation replay configuration
     conversation_replay: Optional[ConversationReplayConfig] = None
+
+    # VisionArena-Chat dataset configuration
+    visionarena: Optional[VisionArenaConfig] = None

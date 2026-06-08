@@ -14,7 +14,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
 | `--api.session_id_header_key` | str | Matches api.session_id_header_key in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay) | Matches data.type in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
 | `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
@@ -65,7 +65,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.shared_prefix.multimodal.image.count.skew` | float | Matches data.shared_prefix.multimodal.image.count.skew in config |
 | `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.shared_prefix.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
-| `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
 | `--data.shared_prefix.multimodal.video.count.min` | int | Matches data.shared_prefix.multimodal.video.count.min in config |
 | `--data.shared_prefix.multimodal.video.count.max` | int | Matches data.shared_prefix.multimodal.video.count.max in config |
 | `--data.shared_prefix.multimodal.video.count.mean` | float | Matches data.shared_prefix.multimodal.video.count.mean in config |
@@ -97,7 +97,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.multimodal.image.count.skew` | float | Matches data.multimodal.image.count.skew in config |
 | `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
-| `--data.multimodal.image.representation` | Enum (png, jpeg) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
 | `--data.multimodal.video.count.min` | int | Matches data.multimodal.video.count.min in config |
 | `--data.multimodal.video.count.max` | int | Matches data.multimodal.video.count.max in config |
 | `--data.multimodal.video.count.mean` | float | Matches data.multimodal.video.count.mean in config |
@@ -183,6 +183,12 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.conversation_replay.tool_call_latency_sec.variance` | float | Matches data.conversation_replay.tool_call_latency_sec.variance in config |
 | `--data.conversation_replay.tool_call_latency_sec.skew` | float | Matches data.conversation_replay.tool_call_latency_sec.skew in config |
 | `--data.conversation_replay.max_model_len` | int | Maximum model context length in tokens |
+| `--data.visionarena.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
+| `--data.visionarena.hf_split` | str | HuggingFace split to stream. |
+| `--data.visionarena.hf_data_files` | str | Optional ``data_files`` glob forwarded to ``load_dataset``. |
+| `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
+| `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
+| `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |

@@ -37,6 +37,7 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
     TraceFormat,
 )
+from inference_perf.config.datagen.visionarena import VisionArenaConfig
 
 __all__ = [
     "AnyResolution",
@@ -44,6 +45,7 @@ __all__ = [
     "ConversationReplayConfig",
     "DataConfig",
     "DataGenType",
+    "VisionArenaConfig",
     "ImageDatagenConfig",
     "MediaDatagenConfig",
     "OTelTraceReplayConfig",

@@ -43,6 +43,7 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     ConversationReplayDataGenerator,
+    VisionArenaDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -331,6 +332,9 @@ def main_cli() -> None:
         if config.data.type == DataGenType.ConversationReplay and config.data.conversation_replay is None:
             raise Exception(f"{config.data.type.value} data generator requires 'conversation_replay' to be configured")
 
+        if config.data.type == DataGenType.VisionArena and config.data.visionarena is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'visionarena' to be configured")
+
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.CNNDailyMail:
@@ -350,6 +354,8 @@ def main_cli() -> None:
             datagen = InfinityInstructDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.BillsumConversations:
             datagen = BillsumConversationsDataGenerator(config.api, config.data, tokenizer)
+        elif config.data.type == DataGenType.VisionArena:
+            datagen = VisionArenaDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.OTelTraceReplay:
             datagen = OTelTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers

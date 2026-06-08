@@ -23,6 +23,7 @@ from .hf_billsum_datagen import BillsumConversationsDataGenerator
 from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from .conversation_replay_datagen import ConversationReplayDataGenerator
 from .multimodal_datagen import MultimodalDataGenerator
+from .visionarena_datagen import VisionArenaDataGenerator
 
 __all__ = [
     "BaseGenerator",
@@ -40,4 +41,5 @@ __all__ = [
     "OTelTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",
     "MultimodalDataGenerator",
+    "VisionArenaDataGenerator",
 ]

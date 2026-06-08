@@ -28,7 +28,7 @@ It was founded as a part of the inference benchmarking and metrics standardizati
 - **Automatic Visualization**: Generate charts for QPS vs Latency/Throughput/Goodput. See [analysis.md](./docs/analysis.md).
 
 ### 🧠 Smart Data Generation
-- **Real-world Datasets**: Support for ShareGPT, CNN DailyMail, Infinity Instruct and Billsum.
+- **Real-world Datasets**: Support for ShareGPT, CNN DailyMail, Infinity Instruct, Billsum, and the VisionArena image dataset.
 - **Synthetic & Random**: Configure exact input/output distributions.
 - **Advanced Scenarios**: Shared prefix and multi-turn chat conversations.
 - **Multimodal**: Synthetic image, video, and audio payloads with per-modality reporting. Resolutions/profiles/durations are passed through as-is; pick values within your model's accepted range. See [docs/config.md](docs/config.md#multimodal-data-generation).
