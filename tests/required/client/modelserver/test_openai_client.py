@@ -246,3 +246,61 @@ async def test_process_request_success(mock_client: MagicMock, mock_data: MagicM
     assert metric.info == expected_info
     assert metric.response_data == "success_response_text"
     assert metric.error is None
+
+
+@pytest.mark.asyncio
+async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_data.session_id = "trace0_test_session"
+    mock_client.api_config.session_id_header_key = "x-session-id"
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert "x-session-id" in headers_passed
+    assert headers_passed["x-session-id"] == "trace0_test_session"
+
+
+@pytest.mark.asyncio
+async def test_session_id_header_not_injected_when_session_id_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_data.session_id = None
+    mock_client.api_config.session_id_header_key = "x-session-id"
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert "x-session-id" not in headers_passed
+
+
+@pytest.mark.asyncio
+async def test_session_id_header_not_injected_when_header_key_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_data.session_id = "trace0_test_session"
+    mock_client.api_config.session_id_header_key = None
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert "x-session-id" not in headers_passed

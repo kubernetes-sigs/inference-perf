@@ -594,10 +594,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             return ""
 
         if config.streaming:
-            # Accumulate tool_call chunks alongside text content.
+            # Accumulate tool_call chunks and reasoning_content alongside text content.
             # delta.tool_calls is a list of partial objects; each chunk carries an
             # index that identifies which tool call it belongs to.
             tool_call_chunks: Dict[int, Dict[str, Any]] = {}
+            reasoning_content_chunks: list[str] = []
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
                 delta = data.get("choices", [{}])[0].get("delta", {})
@@ -616,12 +617,25 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         tool_call_chunks[idx]["function"]["arguments"] += fn["arguments"]
                     if chunk.get("id"):
                         tool_call_chunks[idx]["id"] = chunk["id"]
+
+                # Accumulate reasoning_content chunks
+                reasoning_chunk = delta.get("reasoning_content")
+                if reasoning_chunk is not None:
+                    reasoning_content_chunks.append(str(reasoning_chunk))
+
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
                 response, extract_content=_extract_streaming_content
             )
+
+            # Combine reasoning_content with output text for the content field
+            reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
+            if reasoning_text:
+                output_text = reasoning_text + text_content
+            else:
+                output_text = text_content
 
             streaming_output_message: Optional[Dict[str, Any]] = None
             if tool_call_chunks:
@@ -631,6 +645,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     streaming_output_message["content"] = output_text
             else:
                 streaming_output_message = {"role": "assistant", "content": output_text}
+
+            # Keep separate reasoning_content and output_content fields
+            if reasoning_text:
+                streaming_output_message["reasoning_content"] = reasoning_text
+                streaming_output_message["output_content"] = text_content
 
             prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
@@ -664,14 +683,27 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             tool_calls = None
             if choices:
                 msg_dict = choices[0].get("message", {})
-                output_text = msg_dict.get("content", "") or ""
+                text_content = msg_dict.get("content", "") or ""
                 tool_calls = msg_dict.get("tool_calls")
+                reasoning_content = msg_dict.get("reasoning_content")
+
+                # Combine reasoning_content with output text for the content field
+                if reasoning_content:
+                    output_text = reasoning_content + text_content
+                else:
+                    output_text = text_content
+
                 if tool_calls:
                     output_message = {"role": "assistant", "tool_calls": tool_calls}
                     if output_text:
                         output_message["content"] = output_text
                 else:
                     output_message = {"role": "assistant", "content": output_text}
+
+                # Keep separate reasoning_content and output_content fields
+                if reasoning_content:
+                    output_message["reasoning_content"] = reasoning_content
+                    output_message["output_content"] = text_content
             usage = data.get("usage") or {}
             server_completion_tokens = usage.get("completion_tokens")
             if server_completion_tokens is not None:
