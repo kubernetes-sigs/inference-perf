@@ -11,6 +11,10 @@ data:
       #revision: "v1"     # Optional: git revision (branch, tag, or commit hash)
       #split: "train"       # Optional: dataset split (default: "train" if not specified)
 
+    # Optional: Filter traces by criteria (applied to all data sources)
+    #filter: "lambda x: x.get('max_tokens', 0) < 40960 and len(x.get('spans', [])) < 20"
+
+
     # Model configuration
     use_static_model: true
     static_model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"
@@ -24,7 +28,7 @@ load:
   type: trace_session_replay
   stages:
     - concurrent_sessions: 10 # number of concurrent sessions to replay in this stage
-      num_sessions: 100 # Total number of sessions to replay in this stage, out of the 1,781 available
+      num_sessions: 300 # Total number of sessions to replay in this stage, out of the 1,781 available
                         # in the dataset. To replay more than 1,781 sessions, use duplicate_sessions_target
                         # to duplicate existing sessions until the desired target is reached.
   worker_max_concurrency: 8000

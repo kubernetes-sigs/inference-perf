@@ -13,6 +13,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
+| `--api.session_id_header_key` | str | Matches api.session_id_header_key in config |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
@@ -133,7 +134,11 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.otel_trace_replay.trace_files` | JSON | List of paths to specific OTel JSON trace files |
 | `--data.otel_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
   - String: 'username/dataset-name'
-  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'} |
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}
+Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
+| `--data.otel_trace_replay.filter` | str | Lambda expression to filter trace records. Applied uniformly to all data sources.
+Example: "lambda x: x['benchmark'] == 'gsm8k'" or "lambda x: 'spans' in x and len(x['spans']) > 5"
+Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |
