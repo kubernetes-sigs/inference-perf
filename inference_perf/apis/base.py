@@ -84,6 +84,13 @@ class SessionLifecycleMetric(BaseModel):
     num_events: int
     num_events_completed: int
     num_events_cancelled: Optional[int] = None
+    # Per-session count of events whose live tool_call response was
+    # detected malformed and replaced with the recorded assistant
+    # message at substitution time. None when bad_tool_call_handling
+    # is `none` (the upstream-default). Zero when handling is enabled
+    # but no malformed tool_calls were observed.
+    n_recorded_substitutions: Optional[int] = None
+    recorded_substitution_event_ids: Optional[List[str]] = None
     success: Optional[bool] = None
     error: Optional[ErrorResponseInfo] = None
     total_input_tokens: Optional[int] = None
