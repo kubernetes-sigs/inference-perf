@@ -775,6 +775,16 @@ class ReportGenerator:
         total_events = sum(m.num_events for m in metrics)
         total_events_completed = sum(m.num_events_completed for m in metrics)
         total_events_cancelled = sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None)
+        # Bad tool-call handling: sum across sessions where the worker
+        # exercised the substitution path. Sessions with handling=none
+        # contribute None and are skipped, so a default-config run
+        # surfaces 0 sessions and a `null` total in the report.
+        sessions_with_recorded_substitution = sum(
+            1 for m in metrics if m.n_recorded_substitutions is not None and m.n_recorded_substitutions > 0
+        )
+        total_recorded_substitutions = sum(
+            m.n_recorded_substitutions for m in metrics if m.n_recorded_substitutions is not None
+        )
 
         sessions_per_second = 0.0
         if num_sessions > 0:
@@ -789,6 +799,8 @@ class ReportGenerator:
             "total_events": total_events,
             "total_events_completed": total_events_completed,
             "total_events_cancelled": total_events_cancelled,
+            "sessions_with_recorded_substitution": sessions_with_recorded_substitution,
+            "total_recorded_substitutions": total_recorded_substitutions,
             "sessions_per_second": sessions_per_second,
             "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
             "num_events": summarize([float(m.num_events) for m in metrics], percentiles),

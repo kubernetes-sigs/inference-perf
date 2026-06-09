@@ -23,6 +23,42 @@ class TraceFormat(Enum):
     AZURE_PUBLIC_DATASET = "AzurePublicDataset"
 
 
+class BadToolCallHandling(str, Enum):
+    """How to handle a tool-call response whose `function.arguments` is not
+    valid JSON.
+
+    Some server-side tool-call parsers (e.g. vLLM's `qwen3_xml`) leak parser
+    markers into the `arguments` JSON string at decode time. vLLM still
+    returns 200 on the response, but on the *next* turn the chat template's
+    `json.loads(arguments)` raises and vLLM returns HTTP 400. Replaying the
+    bad bytes verbatim therefore halts the session.
+
+    none
+        Default. No mitigation. Bytes propagate; vLLM may HTTP-400 on the
+        next turn. Use for benchmarking the upstream bug or for strict
+        trace fidelity.
+
+    use_recorded
+        When the live model returns malformed `arguments` for a tool_call,
+        discard the live response and substitute the recorded assistant
+        message at this slot. The recorded `tool_call_id` flows naturally
+        into the recorded role:tool successor that follows. The next-turn
+        request is structurally identical to a healthy replay: same
+        message count, same roles, valid JSON in arguments, matching
+        tool_call_id pairs. The next-turn live model never sees its own
+        malformed output.
+
+        If the recorded message ALSO has malformed tool_calls (the trace
+        was captured from a buggy parser too), the current event is
+        hard-failed via _fail_and_notify(); EventFailedError cascades to
+        downstream events that await this one's output. Parallel DAG
+        branches continue.
+    """
+
+    NONE = "none"
+    USE_RECORDED = "use_recorded"
+
+
 class TraceConfig(BaseModel):
     file: str
     format: TraceFormat = TraceFormat.AZURE_PUBLIC_DATASET
@@ -126,6 +162,23 @@ class OTelTraceReplayConfig(SessionReplayConfig):
             "Lambda expression to filter trace records. Applied uniformly to all data sources.\n"
             "Example: \"lambda x: x['benchmark'] == 'gsm8k'\" or \"lambda x: 'spans' in x and len(x['spans']) > 5\"\n"
             "Security: Filter expressions use eval() and should only contain trusted input."
+        ),
+    )
+
+    # Client-side mitigation for server-side tool-call parser bugs (e.g.
+    # vLLM's `qwen3_xml` leaking closing XML markers into the JSON `arguments`
+    # string at decode time). The default `none` preserves upstream behavior
+    # (the bug reproduces). `use_recorded` substitutes the recorded
+    # assistant message at the affected slot. See BadToolCallHandling.
+    bad_tool_call_handling: BadToolCallHandling = Field(
+        BadToolCallHandling.NONE,
+        description=(
+            "How to handle tool_calls whose function.arguments is not valid "
+            "JSON. none (default): no mitigation, bytes propagate and vLLM "
+            "may return HTTP 400 on the next turn. use_recorded: discard "
+            "the live response and substitute the recorded assistant "
+            "message at the affected slot; the recorded tool_call_id flows "
+            "into the recorded role:tool successor unchanged."
         ),
     )
 
