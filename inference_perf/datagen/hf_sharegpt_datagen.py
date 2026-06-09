@@ -63,8 +63,12 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
+        # initialize data collection — guard against empty datasets
+        try:
+            next(self.sharegpt_dataset)
+        except StopIteration:
+            logger.warning("ShareGPT dataset is empty; data generation will be a no-op")
+            self.sharegpt_dataset = None
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
@@ -82,7 +86,11 @@ class HFShareGPTDataGenerator(DataGenerator):
         if self.tokenizer is None:
             raise Exception("Tokenizer is required for completion API of HFShareGPTDataGenerator")
         while True:
-            data = next(self.sharegpt_dataset)
+            try:
+                data = next(self.sharegpt_dataset)
+            except StopIteration:
+                logger.warning("ShareGPT dataset exhausted unexpectedly, re-initializing cycle")
+                break
             if (
                 data is None
                 or data[self.data_key] is None
@@ -139,7 +147,11 @@ class HFShareGPTDataGenerator(DataGenerator):
             raise Exception("Tokenizer is required for chat API of HFShareGPTDataGenerator")
 
         while True:
-            data = next(self.sharegpt_dataset)
+            try:
+                data = next(self.sharegpt_dataset)
+            except StopIteration:
+                logger.warning("ShareGPT dataset exhausted unexpectedly, re-initializing cycle")
+                break
             if (
                 data is None
                 or data[self.data_key] is None
