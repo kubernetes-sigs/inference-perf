@@ -35,7 +35,7 @@ from inference_perf.config import (
     VideoDatagenConfig,
     VideoProfile,
 )
-from inference_perf.utils.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution
 
 
 _PRESET_TO_WH: dict[ResolutionPreset, Tuple[int, int]] = {

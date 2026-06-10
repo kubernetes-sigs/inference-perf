@@ -57,7 +57,7 @@ from inference_perf.config import (
     Distribution,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution
 
 from .base import DataGenerator, LazyLoadDataMixin
 
@@ -289,9 +289,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
                 # BACKWARDS COMPATIBILITY: Stage 0 must use the shared global self.rng
                 # to maintain the exact sequence of calls at startup, ensuring existing
                 # benchmark seeds generate identical conversation blueprints.
-                self._current_shared_prompt = self._generate_random_token_text(
-                    self.cr_config.shared_system_prompt_len
-                )
+                self._current_shared_prompt = self._generate_random_token_text(self.cr_config.shared_system_prompt_len)
             else:
                 # Later stages derive their seed stably from the base seed and stage ID.
                 # This happens dynamically at runtime (post-setup) and uses local isolated RNGs.
