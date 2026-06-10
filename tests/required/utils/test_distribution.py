@@ -16,6 +16,7 @@ import pytest
 
 from inference_perf.config import Distribution, DistributionType
 from inference_perf.utils.distribution import (
+    estimate_max_requests_for_interval,
     generate_distribution,
     sample_floats_from_distribution,
     sample_from_distribution,
@@ -164,6 +165,30 @@ class TestSampleFloatsFromDistribution:
         config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
         with pytest.raises(ValueError, match="positive"):
             sample_floats_from_distribution(config, 0)
+
+    def test_unsupported_type_raises(self) -> None:
+        # Both samplers share the unsupported-type guard in _sample_continuous
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
+        config.type = "bogus"  # type: ignore[assignment]
+        with pytest.raises(ValueError, match="Unsupported distribution type"):
+            sample_floats_from_distribution(config, 10)
+        with pytest.raises(ValueError, match="Unsupported distribution type"):
+            sample_from_distribution(config, 10)
+
+
+class TestEstimateMaxRequestsForInterval:
+    def test_uniform_uses_min_gap(self) -> None:
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
+        assert estimate_max_requests_for_interval(config, 60.0) == 60
+
+    def test_fixed_uses_mean(self) -> None:
+        config = Distribution(type=DistributionType.FIXED, mean=2.0, min=0, max=10)
+        assert estimate_max_requests_for_interval(config, 60.0) == 30
+
+    def test_zero_min_falls_back_to_expected_gap(self) -> None:
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=0, max=10)
+        # Expected gap is 5s; fallback halves it for headroom -> 60 / 2.5 = 24
+        assert estimate_max_requests_for_interval(config, 60.0) == 24
 
 
 class TestLegacyGenerateDistribution:
