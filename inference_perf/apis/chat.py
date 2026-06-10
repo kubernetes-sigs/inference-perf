@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from aiohttp import ClientResponse
+from openai.types.chat import ChatCompletion
 from pydantic import BaseModel, field_validator
 
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
@@ -557,15 +558,16 @@ class ChatCompletionAPIData(InferenceAPIData):
                 extra_info={"raw_response": raw_content},
             )
 
-        data = await response.json()
+        # Validate against the official OpenAI schema so malformed bodies
+        # fail loudly instead of silently reporting an empty response.
+        data = ChatCompletion.model_validate(await response.json())
         prompt_len = self._count_prompt_tokens(tokenizer)
-        choices = data.get("choices", [])
-        if len(choices) == 0:
+        if len(data.choices) == 0:
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, 0),
                 lora_adapter=lora_adapter,
             )
-        output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
+        output_text = "".join(choice.message.content or "" for choice in data.choices)
         output_len = tokenizer.count_tokens(output_text)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
