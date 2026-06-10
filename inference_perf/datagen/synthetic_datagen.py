@@ -19,7 +19,7 @@ from typing import Generator, List, Optional
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.numeric.distribution import generate_distribution
 from .base import DataGenerator, LazyLoadDataMixin
 from .datagen_utils import converge_to_exact_length_text
 

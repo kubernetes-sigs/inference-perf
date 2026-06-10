@@ -33,7 +33,7 @@ from inference_perf.datagen.conversation_replay_datagen import (
 )
 from inference_perf.apis.base import LazyLoadInferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
-from inference_perf.utils.distribution import generate_distribution
+from inference_perf.utils.numeric.distribution import generate_distribution
 
 
 @pytest.fixture(autouse=True)
