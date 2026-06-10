@@ -83,9 +83,7 @@ def test_worker_rng_uniqueness_per_worker() -> None:
 
     assert isinstance(result_w0, CompletionAPIData)
     assert isinstance(result_w1, CompletionAPIData)
-    assert result_w0.prompt != result_w1.prompt, (
-        "Workers with different seeds must produce different prompts"
-    )
+    assert result_w0.prompt != result_w1.prompt, "Workers with different seeds must produce different prompts"
 
 
 def test_random_datagen_excludes_special_tokens() -> None:

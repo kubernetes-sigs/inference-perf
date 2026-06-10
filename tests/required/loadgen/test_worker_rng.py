@@ -18,7 +18,16 @@ import unittest
 from typing import Any
 
 from inference_perf.client.modelserver.mock_client import MockModelServerClient
-from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, Distribution, LoadConfig, LoadType, StandardLoadStage
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    DataGenType,
+    Distribution,
+    LoadConfig,
+    LoadType,
+    StandardLoadStage,
+)
 from inference_perf.datagen.random_datagen import RandomDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector

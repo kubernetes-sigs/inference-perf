@@ -247,7 +247,9 @@ class TestConversationReplayDataGenerator:
         for stage_idx in range(3):
             LocalUserSession.clear_instances()
             for conv_idx in range(3):
-                gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx, stage_id=stage_idx))
+                gen.load_lazy_data(
+                    LazyLoadInferenceAPIData(data_index=conv_idx, preferred_worker_id=conv_idx, stage_id=stage_idx)
+                )
                 current_context = LocalUserSession._instances[f"conv_{conv_idx}"].context
                 assert current_context != last_contexts[conv_idx]
                 last_contexts[conv_idx] = current_context
@@ -385,7 +387,7 @@ class TestConversationReplayDataGenerator:
 
         context_conv0_s1 = LocalUserSession._instances["conv_0"].context
         context_conv1_s1 = LocalUserSession._instances["conv_1"].context
-        
+
         # Verify they are still identical in Stage 1
         assert context_conv0_s1 == context_conv1_s1
         # Verify Stage 1 prompt is different from Stage 0 prompt
@@ -394,6 +396,7 @@ class TestConversationReplayDataGenerator:
     def test_unique_system_prompt_within_stage_after_clear(self) -> None:
         """Verify that different conversations with dynamic_system_prompt_len get unique system prompts after stage clear."""
         api_config, data_config = _make_config(num_conversations=2)
+
         def make_deterministic_mock_tok() -> MagicMock:
             mock_tok = MagicMock()
             hf_tok = MagicMock()
@@ -424,7 +427,7 @@ class TestConversationReplayDataGenerator:
 
         # 1. The system prompts in Stage 1 should still be different from each other
         assert context_conv0_s1 != context_conv1_s1
-        
+
         # 2. Stage 1 prompts should also be different from their Stage 0 versions (new stage prefix)
         assert context_conv0_s1 != context_conv0_s0
         assert context_conv1_s1 != context_conv1_s0
@@ -458,6 +461,8 @@ class TestConversationReplayDataGenerator:
 
         # Decode should have been called exactly once for the shared prompt across both slot re-primes.
         assert decode_count == 1
+
+
 class TestDistributionExtensions:
     def test_lognormal_distribution(self) -> None:
         rng = np.random.default_rng(42)
