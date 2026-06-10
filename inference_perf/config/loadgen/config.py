@@ -18,7 +18,7 @@ from typing import List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from inference_perf.config.common import Distribution
+from inference_perf.config.common import Distribution, DistributionType
 from inference_perf.config.datagen.replay import TraceConfig
 
 
@@ -37,9 +37,24 @@ class LoadStage(BaseModel):
 
 
 class StandardLoadStage(LoadStage):
-    """Load stage for CONSTANT and POISSON load types."""
+    """Load stage for CONSTANT and POISSON load types.
 
-    rate: float = Field(..., gt=0, description="Request rate (QPS)")
+    Exactly one of ``rate`` or ``interval`` must be set: ``rate`` dispatches
+    requests at a fixed QPS, ``interval`` draws the delay between consecutive
+    requests from a Distribution (CONSTANT load type only).
+    """
+
+    rate: Optional[float] = Field(None, gt=0, description="Request rate (QPS). Specify exactly one of 'rate' or 'interval'.")
+    interval: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Distribution of the delay in seconds between consecutive requests, "
+            "sampled once per request (e.g. type: uniform, min: 1, max: 10). "
+            "Only supported with the CONSTANT load type. Specify exactly one of "
+            "'rate' or 'interval'. Set min/max explicitly: samples are clamped to "
+            "[min, max] and the Distribution defaults are tuned for token counts."
+        ),
+    )
     duration: int = Field(..., gt=0, description="Duration in seconds")
 
     # These fields should not be set for standard load types
@@ -48,6 +63,15 @@ class StandardLoadStage(LoadStage):
 
     @model_validator(mode="after")
     def validate_standard_fields(self) -> "StandardLoadStage":
+        if (self.rate is None) == (self.interval is None):
+            raise ValueError("Specify exactly one of 'rate' or 'interval' for CONSTANT/POISSON load stages")
+        if self.interval is not None:
+            if self.interval.min < 0:
+                raise ValueError(
+                    f"interval.min ({self.interval.min}) must be >= 0; intervals are delays in seconds between requests."
+                )
+            if self.interval.type == DistributionType.FIXED and self.interval.mean <= 0:
+                raise ValueError(f"interval.mean ({self.interval.mean}) must be > 0 for a fixed interval")
         if self.num_requests is not None:
             raise ValueError("num_requests should not be set for CONSTANT/POISSON load types")
         if self.concurrency_level is not None:
@@ -141,11 +165,14 @@ class TraceSessionReplayLoadStage(LoadStage):
                 "session_interval is equivalent to a randomized session_rate."
             )
 
-        if self.session_interval is not None and self.session_interval.min < 0:
-            raise ValueError(
-                f"session_interval.min ({self.session_interval.min}) must be >= 0; "
-                f"intervals are delays in seconds between session starts."
-            )
+        if self.session_interval is not None:
+            if self.session_interval.min < 0:
+                raise ValueError(
+                    f"session_interval.min ({self.session_interval.min}) must be >= 0; "
+                    f"intervals are delays in seconds between session starts."
+                )
+            if self.session_interval.type == DistributionType.FIXED and self.session_interval.mean <= 0:
+                raise ValueError(f"session_interval.mean ({self.session_interval.mean}) must be > 0 for a fixed interval")
 
         # Validate session_rate vs concurrent_sessions
         if self.session_rate is not None and self.concurrent_sessions > 0:
@@ -216,6 +243,11 @@ class LoadConfig(BaseModel):
                 if not isinstance(stage, StandardLoadStage):
                     raise ValueError(
                         f"Stage {i}: {self.type.value.upper()} load type requires StandardLoadStage, got {type(stage).__name__}"
+                    )
+                if stage.interval is not None and self.type != LoadType.CONSTANT:
+                    raise ValueError(
+                        f"Stage {i}: 'interval' is only supported with the CONSTANT load type; "
+                        f"{self.type.value.upper()} defines its own arrival process, use 'rate' instead"
                     )
 
         # Validate multilora traffic split adds up to 1.0 if present

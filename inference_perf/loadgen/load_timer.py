@@ -13,10 +13,14 @@
 # limitations under the License.
 import time
 from abc import ABC, abstractmethod
-from typing import Generator, Optional, Tuple
+from typing import TYPE_CHECKING, Generator, List, Optional, Tuple
 import numpy as np
+from inference_perf.utils.distribution import sample_floats_from_distribution
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from inference_perf.config import Distribution
 
 
 class LoadTimer(ABC):
@@ -63,6 +67,43 @@ class ConstantLoadTimer(LoadTimer):
         for interval in normalized_intervals:
             next_time += interval
             yield next_time
+
+
+class IntervalLoadTimer(LoadTimer):
+    """
+    A load generator that separates consecutive requests by gaps sampled
+    from a Distribution (e.g. uniform 1-10 seconds).
+
+    The schedule is precomputed so the number of requests that fit in the
+    stage duration is known up front via num_requests.
+    """
+
+    def __init__(self, interval: "Distribution", duration: float, rng: Optional[np.random.Generator] = None) -> None:
+        self._rand = rng if rng is not None else np.random.default_rng()
+        offsets: List[float] = []
+        elapsed = 0.0
+        while elapsed <= duration:
+            gaps = sample_floats_from_distribution(interval, 256, rng=self._rand)
+            if np.sum(gaps) <= 0:
+                raise ValueError(f"interval distribution produced non-positive gaps: {interval}")
+            for gap in gaps:
+                elapsed += float(gap)
+                if elapsed > duration:
+                    break
+                offsets.append(elapsed)
+            else:
+                continue
+            break
+        self._offsets = offsets
+
+    @property
+    def num_requests(self) -> int:
+        return len(self._offsets)
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start_time = time.monotonic() if initial is None else initial
+        for offset in self._offsets:
+            yield start_time + offset
 
 
 class PoissonLoadTimer(LoadTimer):

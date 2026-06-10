@@ -169,6 +169,42 @@ def test_standard_load_stage_validation() -> None:
         StandardLoadStage(rate=10, duration=60, concurrency_level=5)
 
 
+def test_standard_load_stage_interval_validation() -> None:
+    interval = Distribution(type=DistributionType.UNIFORM, min=1, max=10)
+
+    # interval alone is valid
+    stage = StandardLoadStage(interval=interval, duration=60)
+    assert stage.interval is not None
+    assert stage.rate is None
+
+    # exactly one of rate/interval: neither set
+    with pytest.raises(ValueError, match="exactly one of 'rate' or 'interval'"):
+        StandardLoadStage(duration=60)
+
+    # exactly one of rate/interval: both set
+    with pytest.raises(ValueError, match="exactly one of 'rate' or 'interval'"):
+        StandardLoadStage(rate=10, interval=interval, duration=60)
+
+    # negative interval bound rejected
+    with pytest.raises(ValueError, match="must be >= 0"):
+        StandardLoadStage(interval=Distribution(type=DistributionType.UNIFORM, min=-1, max=10), duration=60)
+
+    # fixed interval requires a positive mean
+    with pytest.raises(ValueError, match="must be > 0 for a fixed interval"):
+        StandardLoadStage(interval=Distribution(type=DistributionType.FIXED, mean=0.0, min=0, max=10), duration=60)
+
+
+def test_load_config_interval_requires_constant_type() -> None:
+    interval = Distribution(type=DistributionType.UNIFORM, min=1, max=10)
+
+    # CONSTANT with interval is valid
+    LoadConfig(type=LoadType.CONSTANT, stages=[StandardLoadStage(interval=interval, duration=60)])
+
+    # POISSON with interval is rejected
+    with pytest.raises(ValueError, match="only supported with the CONSTANT load type"):
+        LoadConfig(type=LoadType.POISSON, stages=[StandardLoadStage(interval=interval, duration=60)])
+
+
 def test_concurrent_load_stage() -> None:
     # Just verify we can create it and it hits the validator returning self
     stage = ConcurrentLoadStage(num_requests=100, concurrency_level=10)

@@ -17,7 +17,7 @@ from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.distribution import sample_floats_from_distribution
 from inference_perf.utils.request_queue import RequestQueue
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .load_timer import LoadTimer, ConstantLoadTimer, IntervalLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
@@ -26,6 +26,7 @@ from inference_perf.client.modelserver.otel_instrumentation import get_otel_inst
 from inference_perf.circuit_breaker import get_circuit_breaker
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
+    Distribution,
     LoadConfig,
     LoadType,
     StageGenType,
@@ -363,13 +364,25 @@ class LoadGenerator:
             return str(np.random.choice(self.lora_adapters, p=self.lora_weights))
         return None
 
-    def get_timer(self, rate: float, duration: float) -> LoadTimer:
-        if self.load_type == LoadType.POISSON:
-            return PoissonLoadTimer(rate=rate, duration=duration)
-        elif self.load_type == LoadType.TRACE_REPLAY:
+    def get_timer(
+        self,
+        rate: Optional[float],
+        duration: float,
+        interval: Optional[Distribution] = None,
+        stage_id: int = 0,
+    ) -> LoadTimer:
+        if interval is not None:
+            return IntervalLoadTimer(
+                interval=interval, duration=duration, rng=np.random.default_rng((self.base_seed + stage_id) % 2**32)
+            )
+        if self.load_type == LoadType.TRACE_REPLAY:
             if self.trace is None:
                 raise ValueError("Trace configuration is required for trace replay load generator")
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
+        if rate is None:
+            raise ValueError(f"{self.load_type.value} load type requires a stage rate")
+        if self.load_type == LoadType.POISSON:
+            return PoissonLoadTimer(rate=rate, duration=duration)
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
 
@@ -736,7 +749,7 @@ class LoadGenerator:
     async def run_stage(
         self,
         stage_id: int,
-        rate: float,
+        rate: Optional[float],
         duration: int,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
@@ -746,6 +759,7 @@ class LoadGenerator:
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[Progress] = None,
+        interval: Optional[Distribution] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -755,7 +769,7 @@ class LoadGenerator:
         request_phase.set()
         with finished_requests_counter.get_lock():
             finished_requests_counter.value = 0
-        timer = self.get_timer(rate, duration)
+        timer = self.get_timer(rate, duration, interval=interval, stage_id=stage_id)
 
         # Allow generation a second to begin populating the queue so the workers
         # don't miss the initial scheuled request times
@@ -764,7 +778,11 @@ class LoadGenerator:
 
         if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
             num_requests = self.datagen.get_request_count()
+        elif isinstance(timer, IntervalLoadTimer):
+            num_requests = timer.num_requests
         else:
+            if rate is None:
+                raise ValueError("run_stage requires either a rate or an interval")
             num_requests = int(rate * duration)
 
         stage_status = StageStatus.RUNNING
@@ -839,7 +857,7 @@ class LoadGenerator:
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
-            rate=rate,
+            rate=rate if rate is not None else 0.0,
             start_time=start_time_epoch,
             end_time=time.time(),
             status=stage_status,
@@ -1065,6 +1083,7 @@ class LoadGenerator:
                         cancel_signal,
                         concurrency_level=concurrency_level,
                         progress_ctx=progress,
+                        interval=stage.interval,
                     )
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
@@ -1104,14 +1123,19 @@ class LoadGenerator:
                 if not isinstance(stage, StandardLoadStage):
                     raise TypeError(f"Non-multiprocessing run() only supports StandardLoadStage, got {type(stage)}")
 
-                timer = self.get_timer(stage.rate, stage.duration)
+                timer = self.get_timer(stage.rate, stage.duration, interval=stage.interval, stage_id=stage_id)
                 start_time_epoch = time.time()
                 start_time = time.perf_counter()
                 end_time = start_time + stage.duration
                 stage_status = StageStatus.RUNNING
                 logger.info("Stage %d - run started", stage_id)
 
-                num_requests = int(stage.rate * stage.duration)
+                if isinstance(timer, IntervalLoadTimer):
+                    num_requests = timer.num_requests
+                elif stage.rate is not None:
+                    num_requests = int(stage.rate * stage.duration)
+                else:
+                    raise ValueError("Stage requires either a rate or an interval")
                 stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
 
                 if not isinstance(self.datagen, DataGenerator):
@@ -1156,7 +1180,7 @@ class LoadGenerator:
                     logger.info("Stage %d - run failed", stage_id)
                 self.stage_runtime_info[stage_id] = StageRuntimeInfo(
                     stage_id=stage_id,
-                    rate=stage.rate,
+                    rate=stage.rate if stage.rate is not None else 0.0,
                     start_time=start_time_epoch,
                     end_time=time.time(),
                     status=stage_status,
