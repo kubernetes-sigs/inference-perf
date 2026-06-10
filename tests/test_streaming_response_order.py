@@ -78,7 +78,15 @@ async def test_non_streaming_reads_body() -> None:
 
     response = MagicMock()
     response.status = 200
-    response.json = AsyncMock(return_value={"choices": [{"message": {"content": "Hello world"}}]})
+    response.json = AsyncMock(
+        return_value={
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Hello world"}}],
+        }
+    )
 
     tokenizer = MagicMock()
     tokenizer.count_tokens = MagicMock(return_value=2)
