@@ -151,6 +151,10 @@ load:
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+      # interval:                   # OR: random delay in seconds between requests (CONSTANT LOADS,
+      #   type: uniform             #     mutually exclusive with rate — specify exactly one)
+      #   min: 1                    #     each request is sent 1-10s after the previous one
+      #   max: 10
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)

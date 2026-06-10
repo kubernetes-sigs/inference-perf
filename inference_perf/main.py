@@ -72,6 +72,7 @@ from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
+from inference_perf.utils.numeric.distribution import estimate_max_requests_for_interval
 from inference_perf.observability.logging import setup_logging
 import asyncio
 import time
@@ -310,7 +311,12 @@ def main_cli() -> None:
                 max_requests = 0
                 for stage in config.load.stages:
                     if isinstance(stage, StandardLoadStage):
-                        max_requests = max(max_requests, int(stage.rate * stage.duration))
+                        if stage.rate is not None:
+                            max_requests = max(max_requests, int(stage.rate * stage.duration))
+                        elif stage.interval is not None:
+                            max_requests = max(
+                                max_requests, estimate_max_requests_for_interval(stage.interval, stage.duration)
+                            )
                     elif isinstance(stage, ConcurrentLoadStage):
                         max_requests = max(max_requests, stage.num_requests)
                 total_count = max_requests + 1

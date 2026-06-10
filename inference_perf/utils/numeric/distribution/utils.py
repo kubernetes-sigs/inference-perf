@@ -193,6 +193,28 @@ def sample_from_distribution(
     return cast(NDArray[np.int_], result)
 
 
+def estimate_max_requests_for_interval(interval: "Distribution", duration: float) -> int:
+    """Upper-bound estimate of how many requests fit in `duration` seconds when
+    inter-request gaps are drawn from `interval`.
+
+    Uses the smallest possible gap (the distribution's lower clamp, or the mean
+    for FIXED). Falls back to half the expected gap when the lower bound is zero.
+    """
+    from inference_perf.config import DistributionType
+
+    if interval.type == DistributionType.FIXED:
+        smallest_gap = float(interval.mean)
+    else:
+        smallest_gap = float(interval.min)
+    if smallest_gap <= 0:
+        if interval.type == DistributionType.UNIFORM:
+            expected_gap = (interval.min + interval.max) / 2.0
+        else:
+            expected_gap = min(max(interval.mean, float(interval.min)), float(interval.max))
+        smallest_gap = max(expected_gap / 2.0, 1e-3)
+    return int(duration / smallest_gap)
+
+
 def sample_floats_from_distribution(
     config: "Distribution",
     count: int,
