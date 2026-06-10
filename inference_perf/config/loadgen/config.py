@@ -18,6 +18,7 @@ from typing import List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from inference_perf.config.common import Distribution
 from inference_perf.config.datagen.replay import TraceConfig
 
 
@@ -82,6 +83,7 @@ class TraceSessionReplayLoadStage(LoadStage):
     Modes:
     1. Simple concurrency control: set concurrent_sessions (and optionally num_sessions)
     2. Rate-based with concurrency: set concurrent_sessions + session_rate (+ num_sessions)
+    3. Random-interval dispatch: set concurrent_sessions + session_interval (+ num_sessions)
     """
 
     # Session concurrency control (REQUIRED)
@@ -100,6 +102,16 @@ class TraceSessionReplayLoadStage(LoadStage):
         None,
         gt=0,
         description="Sessions to start per second (optional, omit for no rate limit)",
+    )
+    session_interval: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Distribution of the delay in seconds between session starts, sampled "
+            "once per dispatch (e.g. type: uniform, min: 1, max: 10 starts each "
+            "session 1-10s after the previous one). Mutually exclusive with "
+            "session_rate. Set min/max explicitly: samples are clamped to "
+            "[min, max] and the Distribution defaults are tuned for token counts."
+        ),
     )
     num_sessions: Optional[int] = Field(
         None,
@@ -123,6 +135,18 @@ class TraceSessionReplayLoadStage(LoadStage):
 
     @model_validator(mode="after")
     def validate_trace_session_fields(self) -> "TraceSessionReplayLoadStage":
+        if self.session_rate is not None and self.session_interval is not None:
+            raise ValueError(
+                "Specify either 'session_rate' or 'session_interval', not both. "
+                "session_interval is equivalent to a randomized session_rate."
+            )
+
+        if self.session_interval is not None and self.session_interval.min < 0:
+            raise ValueError(
+                f"session_interval.min ({self.session_interval.min}) must be >= 0; "
+                f"intervals are delays in seconds between session starts."
+            )
+
         # Validate session_rate vs concurrent_sessions
         if self.session_rate is not None and self.concurrent_sessions > 0:
             if self.session_rate > self.concurrent_sessions:

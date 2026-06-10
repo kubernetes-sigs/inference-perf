@@ -15,6 +15,7 @@ from pathlib import Path
 from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+from inference_perf.utils.distribution import sample_floats_from_distribution
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
@@ -427,6 +428,10 @@ class LoadGenerator:
         # Session pool management
         concurrent_sessions = stage.concurrent_sessions
         session_rate = stage.session_rate
+        session_interval_dist = stage.session_interval
+        interval_rng = (
+            np.random.default_rng((self.base_seed + stage_id) % 2**32) if session_interval_dist is not None else None
+        )
         timeout = stage.timeout
 
         # Compute this stage's session slice from the cursor
@@ -443,7 +448,7 @@ class LoadGenerator:
 
         logger.info(
             f"Session pool: concurrent_sessions={concurrent_sessions}, "
-            f"session_rate={session_rate}, timeout={timeout}, "
+            f"session_rate={session_rate}, session_interval={session_interval_dist}, timeout={timeout}, "
             f"num_sessions={effective_num_sessions} (corpus offset {stage_start_cursor}), "
             f"total_sessions={total_sessions}"
         )
@@ -500,7 +505,7 @@ class LoadGenerator:
                 return False
 
             # Check rate limit
-            if session_rate is not None:
+            if session_rate is not None or session_interval_dist is not None:
                 now = time.perf_counter()
                 if now < next_dispatch_time:
                     return False
@@ -562,7 +567,10 @@ class LoadGenerator:
             # Update timing for rate limiting
             now = time.perf_counter()
             last_dispatch_time = now
-            if session_rate is not None:
+            if session_interval_dist is not None and interval_rng is not None:
+                session_interval = float(sample_floats_from_distribution(session_interval_dist, 1, rng=interval_rng)[0])
+                next_dispatch_time = max(next_dispatch_time + session_interval, now)
+            elif session_rate is not None:
                 session_interval = 1.0 / session_rate
                 next_dispatch_time = max(next_dispatch_time + session_interval, now)
 

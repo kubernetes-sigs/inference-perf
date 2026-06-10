@@ -176,6 +176,56 @@ def test_concurrent_load_stage() -> None:
     assert stage.concurrency_level == 10
 
 
+def test_trace_session_replay_session_interval_validation() -> None:
+    from inference_perf.config import TraceSessionReplayLoadStage
+
+    # session_interval alone is valid
+    stage = TraceSessionReplayLoadStage(
+        concurrent_sessions=5,
+        session_interval=Distribution(type=DistributionType.UNIFORM, min=1, max=10),
+    )
+    assert stage.session_interval is not None
+    assert stage.session_rate is None
+
+    # session_rate and session_interval are mutually exclusive
+    with pytest.raises(ValueError, match="either 'session_rate' or 'session_interval'"):
+        TraceSessionReplayLoadStage(
+            concurrent_sessions=5,
+            session_rate=1.0,
+            session_interval=Distribution(type=DistributionType.UNIFORM, min=1, max=10),
+        )
+
+    # negative interval bound rejected
+    with pytest.raises(ValueError, match="must be >= 0"):
+        TraceSessionReplayLoadStage(
+            concurrent_sessions=5,
+            session_interval=Distribution(type=DistributionType.UNIFORM, min=-1, max=10),
+        )
+
+
+def test_trace_session_replay_session_interval_from_dict() -> None:
+    from inference_perf.config import TraceSessionReplayLoadStage
+
+    # Parse the way users write it in YAML
+    cfg = LoadConfig.model_validate(
+        {
+            "type": "trace_session_replay",
+            "stages": [
+                {
+                    "concurrent_sessions": 4,
+                    "session_interval": {"type": "uniform", "min": 1, "max": 10},
+                }
+            ],
+        }
+    )
+    stage = cfg.stages[0]
+    assert isinstance(stage, TraceSessionReplayLoadStage)
+    assert stage.session_interval is not None
+    assert stage.session_interval.type == DistributionType.UNIFORM
+    assert stage.session_interval.min == 1
+    assert stage.session_interval.max == 10
+
+
 def test_load_config_validation() -> None:
     import pytest
     from inference_perf.config import SweepConfig, StageGenType

@@ -15,7 +15,11 @@ import numpy as np
 import pytest
 
 from inference_perf.config import Distribution, DistributionType
-from inference_perf.utils.distribution import generate_distribution, sample_from_distribution
+from inference_perf.utils.distribution import (
+    generate_distribution,
+    sample_floats_from_distribution,
+    sample_from_distribution,
+)
 
 
 class TestSampleFromDistribution:
@@ -121,6 +125,45 @@ class TestSampleFromDistribution:
         # Pydantic validator catches this at construction time
         with pytest.raises(Exception, match="min.*max"):
             Distribution(type=DistributionType.NORMAL, mean=50.0, min=100, max=10, std_dev=10.0)
+
+
+class TestSampleFloatsFromDistribution:
+    def test_uniform_within_bounds_and_continuous(self) -> None:
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
+        result = sample_floats_from_distribution(config, 1000, rng=np.random.default_rng(42))
+        assert len(result) == 1000
+        assert result.min() >= 1.0
+        assert result.max() <= 10.0
+        # Values are continuous, not rounded to integers
+        assert np.any(result != np.round(result))
+
+    def test_fixed_returns_fractional_mean(self) -> None:
+        config = Distribution(type=DistributionType.FIXED, mean=0.5, min=0, max=1)
+        result = sample_floats_from_distribution(config, 100)
+        assert np.all(result == 0.5)
+
+    def test_normal_within_bounds(self) -> None:
+        config = Distribution(type=DistributionType.NORMAL, mean=5.0, min=1, max=10, std_dev=2.0)
+        result = sample_floats_from_distribution(config, 1000, rng=np.random.default_rng(42))
+        assert result.min() >= 1.0
+        assert result.max() <= 10.0
+
+    def test_lognormal_within_bounds(self) -> None:
+        config = Distribution(type=DistributionType.LOGNORMAL, mean=5.0, min=1, max=60, std_dev=3.0)
+        result = sample_floats_from_distribution(config, 1000, rng=np.random.default_rng(42))
+        assert result.min() >= 1.0
+        assert result.max() <= 60.0
+
+    def test_deterministic_seeding(self) -> None:
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
+        result1 = sample_floats_from_distribution(config, 100, rng=np.random.default_rng(7))
+        result2 = sample_floats_from_distribution(config, 100, rng=np.random.default_rng(7))
+        np.testing.assert_array_equal(result1, result2)
+
+    def test_invalid_count_zero(self) -> None:
+        config = Distribution(type=DistributionType.UNIFORM, mean=5.0, min=1, max=10)
+        with pytest.raises(ValueError, match="positive"):
+            sample_floats_from_distribution(config, 0)
 
 
 class TestLegacyGenerateDistribution:
