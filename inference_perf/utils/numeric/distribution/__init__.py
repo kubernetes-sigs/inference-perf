@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .utils import generate_distribution, sample_from_distribution
+from .utils import generate_distribution, sample_floats_from_distribution, sample_from_distribution
 
-__all__ = ["generate_distribution", "sample_from_distribution"]
+__all__ = ["generate_distribution", "sample_floats_from_distribution", "sample_from_distribution"]
