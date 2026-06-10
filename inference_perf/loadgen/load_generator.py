@@ -277,6 +277,10 @@ class Worker(mp.Process):
         # Seed with current time + worker id to ensure unique random sequences per worker
         seed = (self.base_seed + self.id) % 2**32
         np.random.seed(seed)
+        # Also reseed any np.random.Generator on the datagen (e.g. RandomDataGenerator.rng),
+        # since np.random.seed() only affects the legacy module, not Generator instances.
+        if hasattr(self.datagen, "rng") and isinstance(self.datagen.rng, np.random.Generator):
+            self.datagen.rng = np.random.default_rng(seed)
         logger.debug(f"[Worker {self.id}] seeded numpy with {seed} and base seed {self.base_seed}")
 
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
