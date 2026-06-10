@@ -76,7 +76,7 @@ from rich.progress import (
 )
 import signal
 
-from inference_perf.observability.logging.logger import get_console
+from inference_perf.observability.logging import get_console
 
 logger = logging.getLogger(__name__)
 

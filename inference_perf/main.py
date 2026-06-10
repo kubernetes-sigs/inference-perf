@@ -71,7 +71,7 @@ from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
-from inference_perf.observability.logging.logger import setup_logging
+from inference_perf.observability.logging import setup_logging
 import asyncio
 import time
 
