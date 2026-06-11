@@ -57,6 +57,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
+from inference_perf.config.datagen.replay import BadToolCallHandling
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
@@ -1502,3 +1503,187 @@ class TestBuildReplayScheduleRandomSessionID:
 
         # 3 sessions x 2 events each = 6 total events
         assert len(gen.all_events) == 6
+
+
+# ---------------------------------------------------------------------------
+# bad_tool_call_handling tests
+# ---------------------------------------------------------------------------
+
+# Registry of known server-side tool-call parser bugs that produce malformed
+# `function.arguments` strings. Add new entries here when a new bug pattern
+# is discovered — the parameterized tests below will automatically cover them.
+#
+# Each entry: (id, malformed_args_string, human_readable_description)
+MALFORMED_ARGS_CASES = [
+    (
+        "xml_parser_leak",
+        "</parameter></function>",
+        "vLLM tool parser can leak closing XML markers into the arguments string, thus making it an invalid json",
+    ),
+    (
+        "truncated_mid_string",
+        '{"command": "',
+        "Truncation race in non-streaming concurrent path — arguments string ends mid-JSON",
+    ),
+]
+
+VALID_ARGS = '{"location": "Paris"}'
+
+
+def _make_tool_call(args: str, call_id: str = "call_0", name: str = "get_weather") -> dict:
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}
+
+
+def _make_assistant_message_with_tool_call(args: str, call_id: str = "call_0") -> dict:
+    return {"role": "assistant", "content": None, "tool_calls": [_make_tool_call(args, call_id)]}
+
+
+def _make_api_data_with_tool_call_output(
+    registry: EventOutputRegistry,
+    tracker: WorkerSessionTracker,
+    recorded_args: str,
+    handling: BadToolCallHandling = BadToolCallHandling.USE_RECORDED,
+) -> SessionChatCompletionAPIData:
+    """Two-event chain: event_0 produces a tool_call; event_1 reads it via an output segment."""
+    recorded_assistant = _make_assistant_message_with_tool_call(recorded_args)
+    original_messages = [
+        {"role": "user", "content": "What is the weather?"},
+        recorded_assistant,  # slot that will be substituted
+    ]
+    segments = [
+        InputSegment(type="unique", message_count=1, token_count=5),
+        InputSegment(type="output", message_count=1, token_count=10, source_event_id="session_0:event_0"),
+    ]
+    return SessionChatCompletionAPIData(
+        messages=[
+            ChatMessage(role="user", content="What is the weather?"),
+            ChatMessage(role="assistant", content=None, tool_calls=[_make_tool_call(recorded_args)]),
+        ],
+        max_tokens=50,
+        event_id="session_0:event_1",
+        registry=registry,
+        worker_tracker=tracker,
+        completion_queue=None,
+        total_events_in_session=2,
+        predecessor_event_ids=["session_0:event_0"],
+        input_segments=segments,
+        original_messages=original_messages,
+        bad_tool_call_handling=handling,
+    )
+
+
+class TestBadToolCallHandling:
+    """End-to-end tests for bad_tool_call_handling via wait_for_predecessors_and_substitute.
+
+    Parameterized over MALFORMED_ARGS_CASES so every known parser-bug pattern is
+    covered automatically. To add a new pattern, append an entry to that registry.
+    """
+
+    def _register_live_message(self, registry: EventOutputRegistry, event_id: str, args: str) -> None:
+        """Seed the registry with a live assistant tool_call response."""
+        live_message = _make_assistant_message_with_tool_call(args, call_id="live_call_0")
+        registry.record(event_id, "", [], output_message=live_message)
+
+    @pytest.mark.asyncio
+    async def test_clean_live_tool_call_passes_through(self) -> None:
+        """With use_recorded, a valid live tool_call is used as-is (no substitution)."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        self._register_live_message(registry, "session_0:event_0", VALID_ARGS)
+
+        api_data = _make_api_data_with_tool_call_output(registry, tracker, VALID_ARGS)
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # event_1 must not be skipped — valid live args should proceed normally
+        assert not api_data.skip_request
+        # event_1 must not be marked failed in the registry
+        assert not registry.is_event_failed("session_0:event_1")
+        # The live message (valid args) was used directly, not replaced
+        assert api_data.messages[1].tool_calls is not None
+        assert api_data.messages[1].tool_calls[0]["function"]["arguments"] == VALID_ARGS
+        # No substitution fired, so telemetry must be empty
+        assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
+        # No failure reason set
+        assert api_data._substitution_failure_reason is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
+    async def test_malformed_live_tool_call_substitutes_recorded(
+        self, case_id: str, malformed_args: str, desc: str
+    ) -> None:
+        """Malformed live tool_call arguments are replaced with the recorded assistant message."""
+        print(f"\n[{case_id}] {desc}")
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        # Live response has malformed args; recorded slot (in original_messages) has valid args.
+        self._register_live_message(registry, "session_0:event_0", malformed_args)
+
+        api_data = _make_api_data_with_tool_call_output(registry, tracker, VALID_ARGS)
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # event_1 must not be skipped — recorded fallback was clean so replay can continue
+        assert not api_data.skip_request, f"[{case_id}] should not skip when recorded fallback is clean"
+        # event_1 must not be marked failed in the registry
+        assert not registry.is_event_failed("session_0:event_1")
+        # The recorded message (valid args) was substituted in place of the malformed live one
+        assert api_data.messages[1].tool_calls is not None
+        assert api_data.messages[1].tool_calls[0]["function"]["arguments"] == VALID_ARGS
+        # Telemetry must record event_0 as the predecessor whose live response was replaced
+        subs = tracker.get_session_recorded_substitution_event_ids("session_0")
+        assert "event_0" in subs, f"[{case_id}] substitution telemetry must name the predecessor"
+        # No failure reason set — substitution succeeded cleanly
+        assert api_data._substitution_failure_reason is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
+    async def test_malformed_live_and_recorded_hard_fails(
+        self, case_id: str, malformed_args: str, desc: str
+    ) -> None:
+        """When both the live response and the recorded fallback are malformed, the event hard-fails exactly once."""
+        print(f"\n[{case_id}] {desc}")
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        # Both live and recorded have the same malformed args — no clean fallback.
+        self._register_live_message(registry, "session_0:event_0", malformed_args)
+
+        api_data = _make_api_data_with_tool_call_output(registry, tracker, malformed_args)
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # event_1 must be skipped — no clean message to send to the model
+        assert api_data.skip_request, f"[{case_id}] must skip when both live and recorded are malformed"
+        # The registry must mark event_1 as failed so downstream events in the DAG cascade-fail
+        assert registry.is_event_failed("session_0:event_1")
+        # No telemetry recorded — the substitution never completed successfully
+        assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
+        # The failure reason must name the recorded fallback specifically, not the generic plain-text message,
+        # so the log is actionable (tells the operator the trace itself was captured from a buggy parser)
+        assert api_data._substitution_failure_reason is not None
+        assert "recorded fallback" in api_data._substitution_failure_reason
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
+    async def test_handling_none_does_not_substitute(
+        self, case_id: str, malformed_args: str, desc: str
+    ) -> None:
+        """With bad_tool_call_handling=none, malformed args pass through unchanged (upstream behavior)."""
+        print(f"\n[{case_id}] {desc}")
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        self._register_live_message(registry, "session_0:event_0", malformed_args)
+
+        api_data = _make_api_data_with_tool_call_output(
+            registry, tracker, VALID_ARGS, handling=BadToolCallHandling.NONE
+        )
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # event_1 must not be skipped — handling=none never intervenes regardless of arg validity
+        assert not api_data.skip_request, f"[{case_id}] handling=none must never skip"
+        # event_1 must not be marked failed in the registry
+        assert not registry.is_event_failed("session_0:event_1")
+        # The live malformed args passed through byte-for-byte; no recorded fallback was consulted
+        assert api_data.messages[1].tool_calls is not None
+        assert api_data.messages[1].tool_calls[0]["function"]["arguments"] == malformed_args
+        # No substitution fired, so telemetry must be empty
+        assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
+        # No failure reason set
+        assert api_data._substitution_failure_reason is None
