@@ -24,9 +24,10 @@ from inference_perf.apis import (
 )
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
-from .base import ModelServerClient, ModelServerClientSession, PrometheusMetricMetadata
+from .base import ModelServerClient, ModelServerClientSession
+from .metrics import Metric, BaseMetrics
 from .otel_instrumentation import get_otel_instrumentation
-from typing import List, Optional, Any, Dict
+from typing import Iterator, List, Optional, Any, Dict
 import aiohttp
 import asyncio
 import json
@@ -37,6 +38,35 @@ import ssl
 
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAIMetrics(BaseMetrics):
+    def __init__(
+        self,
+        prompt_tokens: Metric[Any],
+        output_tokens: Metric[Any],
+        requests: Metric[Any],
+        request_latency: Metric[Any],
+        queue_length: Metric[Any],
+        time_per_output_token: Metric[Any],
+        custom_metrics: Optional[List[Metric[Any]]] = None,
+    ) -> None:
+        super().__init__(custom_metrics)
+        self.prompt_tokens = prompt_tokens
+        self.output_tokens = output_tokens
+        self.requests = requests
+        self.request_latency = request_latency
+        self.queue_length = queue_length
+        self.time_per_output_token = time_per_output_token
+
+    def _iter_metrics(self) -> Iterator[Metric[Any]]:
+        yield self.prompt_tokens
+        yield self.output_tokens
+        yield self.requests
+        yield self.request_latency
+        yield self.queue_length
+        yield self.time_per_output_token
+        yield from super()._iter_metrics()
 
 
 class openAIModelServerClient(ModelServerClient):
@@ -137,7 +167,7 @@ class openAIModelServerClient(ModelServerClient):
         return []
 
     @abstractmethod
-    def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
+    def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         raise NotImplementedError
 
     def get_supported_models(self) -> List[dict[str, Any]]:
