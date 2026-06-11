@@ -92,14 +92,17 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 |-----------|------|----------|-------------|
 | `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`) |
 | `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` files will be loaded |
-| `hf_dataset_path` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier (e.g., `"lenadan/otel-test-snippet"`). Dataset will be automatically downloaded and cached |
+| `hf_dataset_path` | string \| dict | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier. As a string: `"username/dataset-name"`. As a dict: `{path, revision, split, ...}` — extra keys are forwarded to `datasets.load_dataset()`. Downloaded and cached automatically |
 | `use_static_model` | boolean | No (default: `false`) | Override all recorded model names with `static_model_name` |
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |
 | `model_mapping` | dict | No | Map recorded model names to target models (e.g., `"gpt-4": "my-model"`) |
 | `default_max_tokens` | integer | No (default: `1000`) | Fallback `max_tokens` for traces that don't specify it |
+| `duplicate_sessions_target` | integer | No | Pad the corpus by duplicating sessions until the total reaches this number, in round-robin order. Useful when the trace corpus is smaller than needed for stress testing. Duplicates get IDs of the form `{original_id}_dup{N}` |
+| `inject_random_session_id` | boolean | No (default: `false`) | Prepend a random string (`[SESS:<random>] `) to messages in `unique` input segments to defeat KV-cache reuse between sessions. Duplicate sessions (created by `duplicate_sessions_target`) get this injection automatically regardless of this flag, so each duplicate evaluates as a fresh KV-cache miss |
 | `max_wait_ms` | integer | No (default: `15000`) | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace |
-| `include_errors` | boolean | No (default: `false`) | Include spans marked as errors in the trace |
+| `include_errors` | boolean | No (default: `true`) | Include spans marked as errors in the trace. Set to `false` to exclude error spans entirely |
 | `skip_invalid_files` | boolean | No (default: `true`) | Skip unparseable trace files instead of failing |
+| `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 
 **Examples:**
 
@@ -132,9 +135,37 @@ data:
     use_static_model: true
     static_model_name: "llama-3-8b"
     default_max_tokens: 2048
+
+# Filtering (works with all three sources)
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    hf_dataset_path: "lenadan/otel-test-snippet"
+    filter: "lambda x: x['benchmark'] == 'gsm8k' and len(x['spans']) >= 3"
+    use_static_model: true
+    static_model_name: "llama-3-8b"
 ```
 
 > **Note:** The `hf_dataset_path` option automatically downloads the dataset from HuggingFace Hub and caches it locally (typically in `~/.cache/huggingface/datasets`). Subsequent runs will use the cached version. All JSON files in the dataset directory tree will be loaded as trace files.
+
+### Scaling a Small Corpus
+
+For stress testing with a corpus smaller than your target session count, set
+`duplicate_sessions_target` to inflate the corpus. Each duplicate gets a unique
+ID (`{original_id}_dup1`, `_dup2`, …) and is automatically tagged with a per-
+session random string injected into its unique-segment messages, so duplicates
+do not share KV-cache state.
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    trace_directory: "small_corpus/"
+    duplicate_sessions_target: 500   # inflate any size up to 500 sessions
+```
+
+If you also want non-duplicate sessions to be KV-cache-isolated from each
+other, set `inject_random_session_id: true`.
 
 ### Load Configuration: `trace_session_replay`
 
@@ -243,6 +274,10 @@ After a run, three session report files are generated:
 - **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage
 
 - **`per_session_lifecycle_metrics.json`** — One entry per session with all fields (for detailed analysis)
+
+At the end of a run, the CLI also prints these session-level statistics as
+summary tables (Session Summary, Session Duration & Events, Session Token
+Totals) alongside the standard per-stage tables.
 
 These complement the standard per-request metrics, giving you both micro (individual LLM calls) and macro (complete workflows) views of performance.
 
@@ -391,6 +426,47 @@ This decomposition happens during graph construction and enables:
 1. Accurate simulation of KV-cache behavior (shared prefixes)
 2. Dynamic output substitution (growing context patterns)
 3. Realistic context growth in multi-turn conversations
+
+### Tool-Call Replay
+
+OTel trace replay reproduces tool-calling agent traces faithfully: captured tool
+definitions are re-attached to each request, the live model is forced to emit a
+tool call where the original trace did, and live tool-call IDs are propagated
+into successor `role: "tool"` messages so the dependency graph stays coherent.
+
+#### Activation
+
+Tool-call replay activates for an event only when the source span carries
+**both** a `gen_ai.tool.definitions` attribute (JSON-encoded list of tool
+schemas, or a raw list) and a recorded assistant output containing tool calls.
+If the recorded output has tool calls but the span has no
+`gen_ai.tool.definitions`, that event is replayed as a plain-text chat
+completion and a warning is logged — make sure your instrumentation emits the
+attribute if you want tool-call replay to engage.
+
+#### Schema Cleaning
+
+Tool parameter schemas captured from production traces frequently contain JSON
+Schema features that vLLM's xgrammar backend rejects. Before each request,
+schemas are normalized to a vLLM-compatible subset (unsupported keywords are
+stripped and missing required fields are filled in with safe defaults). The
+goal is server acceptance for load testing, not faithful schema preservation.
+
+#### Forced `tool_choice` and Token Budget
+
+When the recorded output was a tool call, the request is sent with
+`tool_choice` set to the recorded function (or `"required"` when that isn't
+possible) so the model cannot return plain text. `ignore_eos` is also disabled
+and `max_tokens` raised, since the replay model's tokenizer may need more
+headroom than the original to express the same call.
+
+#### Output Substitution
+
+When a successor's input depends on a predecessor's tool-call response,
+substitution preserves the structured tool call rather than just its text:
+the predecessor's live `tool_calls` array (with IDs generated by the replay
+server) is injected, and `tool_call_id`s in the successor's `role: "tool"`
+messages are rewritten to match.
 
 ### Output-Aware Replay Implementation
 
