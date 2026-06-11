@@ -151,6 +151,10 @@ load:
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+      # interval:                   # OR: random delay in seconds between requests (CONSTANT LOADS,
+      #   type: uniform             #     mutually exclusive with rate — specify exactly one)
+      #   min: 1                    #     each request is sent 1-10s after the previous one
+      #   max: 10
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
@@ -410,7 +414,7 @@ OTel trace replay reconstructs the original call graph from trace files, preserv
 2. **Session-Based Execution**: Each trace file represents one *session*. The load generator controls:
    - How many sessions run concurrently (`concurrent_sessions`)
    - How many sessions to process per stage (`num_sessions`)
-   - Optional rate limiting for session starts (`session_rate`)
+   - Optional rate limiting for session starts (`session_rate` or `session_interval`)
 
 3. **Output Substitution**: When a request depends on a predecessor's output, the recorded assistant message is replaced at runtime with the actual generated text, ensuring realistic KV-cache behavior for multi-turn conversations and agent chains.
 
@@ -446,6 +450,10 @@ load:
     - concurrent_sessions: 4                      # Max sessions active simultaneously
       num_sessions: 20                            # Run 20 sessions in this stage
       session_rate: 2.0                           # Optional: start max 2 sessions/sec
+      # session_interval:                         # OR: random delay between session starts
+      #   type: uniform                           #     (mutually exclusive with session_rate)
+      #   min: 1                                  #     each session starts 1-10s after the
+      #   max: 10                                 #     previous one
       timeout: 300                                # Optional: stage timeout in seconds
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
@@ -464,6 +472,13 @@ load:
 **`session_rate`** (optional): Rate limit for starting new sessions
 - Omit for no rate limiting
 - Useful for controlled ramp-up scenarios
+
+**`session_interval`** (optional): Random delay in seconds between session starts
+- A [`Distribution`](#data-configuration) sampled once per session dispatch, e.g.
+  `{type: uniform, min: 1, max: 10}` starts each session 1-10 seconds after the previous one
+- Supports `uniform`, `normal`, `lognormal`, `fixed`, and other distribution types
+- Set `min`/`max` explicitly: samples are clamped to `[min, max]`
+- Mutually exclusive with `session_rate` (it is equivalent to a randomized `session_rate`)
 
 **`timeout`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED

@@ -151,7 +151,8 @@ The `load.trace_session_replay` section controls how sessions are executed. Unli
 |-----------|------|----------|-------------|
 | `concurrent_sessions` | integer | Yes | Max sessions running simultaneously. Set to `0` for unlimited (stress mode) |
 | `num_sessions` | integer | No | Total sessions to run in this stage. Omit to run all remaining sessions (entire corpus if single stage) |
-| `session_rate` | float | No | Optional rate limit for starting new sessions (sessions/sec) |
+| `session_rate` | float | No | Optional rate limit for starting new sessions (sessions/sec). Mutually exclusive with `session_interval` |
+| `session_interval` | Distribution | No | Optional random delay in seconds between session starts, sampled per dispatch (e.g. `{type: uniform, min: 1, max: 10}`). Mutually exclusive with `session_rate` |
 
 **Example:**
 
