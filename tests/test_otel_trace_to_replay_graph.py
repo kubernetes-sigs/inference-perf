@@ -41,6 +41,7 @@ from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
     extract_messages,
+    is_llm_span,
     print_graph,
     summarize_graph,
 )
@@ -746,3 +747,29 @@ class TestDeveloperRoleNormalization:
         assert isinstance(msg, ComplexReplayMessage)
         assert msg.message_info["role"] == "system"
         assert normalized_count == 1
+
+
+def test_is_llm_span_uses_operation_name_not_message_key_presence() -> None:
+    """Spans are classified as LLM calls by the OTel ``gen_ai.operation.name``
+    discriminator, not by mere presence of the ``gen_ai.input.messages`` key.
+
+    A fixed-schema source (e.g. a typed columnar export) can carry an empty
+    ``gen_ai.input.messages`` on every span; keying off presence alone would
+    misclassify ``execute_tool`` / ``invoke_agent`` spans as LLM calls.
+    """
+    tool_span = {
+        "name": "execute_tool get_weather",
+        "attributes": {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.input.messages": None,  # present-but-empty
+        },
+    }
+    chat_span = {
+        "name": "chat gpt-4",
+        "attributes": {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.input.messages": '[{"role": "user", "content": "hi"}]',
+        },
+    }
+    assert is_llm_span(tool_span) is False
+    assert is_llm_span(chat_span) is True
