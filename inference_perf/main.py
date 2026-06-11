@@ -11,10 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import multiprocessing as mp
-import sys
 from argparse import ArgumentParser
 from inference_perf.analysis.analyze import analyze_reports
+from inference_perf.utils.mp_context import MP_CONTEXT
 from typing import List, Optional
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
 from inference_perf.datagen.base import BaseGenerator
@@ -110,14 +109,9 @@ class InferencePerfRunner:
 
 
 def main_cli() -> None:
-    # Set multiprocessing start method to 'fork' on macOS to avoid pickle issues
-    # This must be done before any multiprocessing operations
-    if sys.platform == "darwin":  # macOS
-        try:
-            mp.set_start_method("fork", force=True)
-        except RuntimeError:
-            # Start method already set, ignore
-            pass
+    # The load generator pins its own ``forkserver`` multiprocessing context
+    # (see inference_perf.utils.mp_context), so the process-global default start
+    # method is no longer relied upon and is intentionally left untouched here.
 
     # Parse command line arguments
     parser = ArgumentParser()
@@ -270,10 +264,11 @@ def main_cli() -> None:
         raise Exception("Load stages must be configured, or sweep must be configured")
 
     # Create multiprocessing manager for session replay datagens if needed.
-    # Must be created before workers are forked.
+    # Must be created before workers are started, and from the same context as
+    # the workers so its proxies are usable across the worker boundary.
     mp_manager = None
     if config.data and config.data.type in (DataGenType.OTelTraceReplay,) and config.load.num_workers > 0:
-        mp_manager = mp.Manager()
+        mp_manager = MP_CONTEXT.Manager()
 
     datagen: BaseGenerator
     if config.data:
