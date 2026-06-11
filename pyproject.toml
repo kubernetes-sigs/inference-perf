@@ -172,7 +172,18 @@ ignore_missing_imports = true
 [tool.coverage.run]
 source = ["inference_perf"]
 omit = ["tests/*", "**/__init__.py", "scripts/*", "scripts/**/*"]
+# Trace subprocesses (e.g. the multiprocessing request-collector Workers in
+# inference_perf/loadgen/load_generator.py) which are otherwise reported as
+# uncovered even when tests exercise them. parallel=true writes per-process
+# data files that pytest-cov combines; sigterm=true flushes data when a
+# daemon worker is terminated.
+concurrency = ["multiprocessing"]
+parallel = true
+sigterm = true
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
+[tool.coverage.xml]
+output = "coverage.xml"
