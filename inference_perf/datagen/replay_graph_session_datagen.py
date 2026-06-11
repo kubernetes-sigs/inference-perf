@@ -292,6 +292,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # `none` (default) is byte-identical to upstream main; `use_recorded`
     # substitutes the recorded assistant message at the affected slot.
     bad_tool_call_handling: BadToolCallHandling = BadToolCallHandling.NONE
+    # Set by _build_messages_with_substitution when it calls record_failure
+    # early (e.g. recorded fallback also malformed). Lets the caller pass the
+    # right reason string to _fail_and_notify instead of a generic fallback.
+    _substitution_failure_reason: Optional[str] = None
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -413,7 +417,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             # early when substitution is not possible (e.g. tool call expected but
             # live model returned plain text). Detect that and skip the request.
             if self.registry.is_event_failed(self.event_id):
-                self._fail_and_notify(session_id, "substitution failed (tool call expected but plain text returned)")
+                reason = self._substitution_failure_reason or "Unknown"
+                self._fail_and_notify(session_id, reason)
                 return
             self.messages = [
                 ChatMessage(
@@ -500,12 +505,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                     f"but the recorded fallback is also malformed "
                                     f"(errors={[e for (_, _, e) in bad_recorded]}). Failing event."
                                 )
-                                session_id = self._extract_session_id()
-                                self._fail_and_notify(
-                                    session_id,
-                                    f"recorded fallback for {seg.source_event_id} is also malformed",
+                                self._substitution_failure_reason = (
+                                    f"recorded fallback for {seg.source_event_id} is also malformed"
                                 )
-                                return result  # partial; caller checks skip_request
+                                self.registry.record_failure(self.event_id)
+                                return result  # partial; caller checks is_event_failed
                             # Tag the predecessor event_id for telemetry. Set
                             # semantics dedupe across DAG fan-out.
                             session_id = self._extract_session_id()
@@ -550,6 +554,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                     f"returned plain text. Marking event as failed to prevent downstream "
                                     f"requests with dangling tool_call_id references."
                                 )
+                                self._substitution_failure_reason = (
+                                    "substitution failed (tool call expected but plain text returned)")
                                 self.registry.record_failure(self.event_id)
                                 return result  # partial result; caller should check skip_request
                             for msg in seg_msgs:
