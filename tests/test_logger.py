@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 import pytest
-from inference_perf.logger import setup_logging
+from inference_perf.observability.logging import setup_logging
 
 
 @pytest.mark.parametrize(
