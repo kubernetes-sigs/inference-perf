@@ -315,6 +315,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     session_summary_table.add_column("Total Events", justify="right")
     session_summary_table.add_column("Events Completed", justify="right")
     session_summary_table.add_column("Events Cancelled", justify="right")
+    session_summary_table.add_column("Bad Tool Calls Substitutions", justify="right")
 
     # Table 2: Session Duration & Events
     session_duration_table = Table(
@@ -351,6 +352,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         total_events_completed = contents.get("total_events_completed", 0)
         total_events_cancelled = contents.get("total_events_cancelled", 0)
         sessions_per_second = contents.get("sessions_per_second", 0.0)
+        total_recorded_substitutions = contents.get("total_recorded_substitutions", 0)
 
         # Color code succeeded/failed sessions
         succeeded_str = f"[green]{num_sessions_succeeded}[/]"
@@ -363,6 +365,11 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         error_color = "red" if session_error_rate > 0.05 else ("yellow" if session_error_rate > 0 else "green")
         error_str = f"[{error_color}]{session_error_pct:.1f}%[/]"
 
+        substitution_str = (
+            f"[yellow]{total_recorded_substitutions}[/]" if total_recorded_substitutions > 0
+            else str(total_recorded_substitutions)
+        )
+
         # Populate Table 1
         session_summary_table.add_row(
             str(stage_id),
@@ -374,6 +381,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             str(total_events),
             str(total_events_completed),
             str(total_events_cancelled),
+            substitution_str,
         )
 
         # Extract session duration metrics
