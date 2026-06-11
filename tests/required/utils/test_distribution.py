@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from inference_perf.config import Distribution, DistributionType
-from inference_perf.utils.distribution import generate_distribution, sample_from_distribution
+from inference_perf.utils.numeric.distribution import generate_distribution, sample_from_distribution
 
 
 class TestSampleFromDistribution:
