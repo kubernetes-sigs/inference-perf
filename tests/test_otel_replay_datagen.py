@@ -769,7 +769,11 @@ class TestEndToEndSimpleChain:
         gen.worker_tracker = tracker
         gen.session_completion_queue = queue
         gen.api_config = make_api_config()
-        gen.replay_config = None  # Add missing replay_config attribute
+        mock_otel_config = MagicMock()
+        mock_otel_config.attribute_to_header_map = {}
+        mock_otel_config.attribute_to_label_map = {}
+        gen.otel_config = mock_otel_config
+        gen.replay_config = mock_otel_config
         gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
 
         from inference_perf.apis import LazyLoadInferenceAPIData

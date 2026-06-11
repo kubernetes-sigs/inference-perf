@@ -89,6 +89,7 @@ class GraphCall:
     # specific function when there is exactly one tool call; with multiple calls
     # we fall back to "required" since vLLM only accepts one name at a time.
     expected_output_tool_names: Optional[List[str]] = None
+    attributes: Optional[Dict[str, Any]] = None
 
 
 @dataclass

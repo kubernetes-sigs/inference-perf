@@ -128,6 +128,10 @@ class OTelTraceReplayConfig(SessionReplayConfig):
             "Security: Filter expressions use eval() and should only contain trusted input."
         ),
     )
+    attribute_to_header_map: Optional[Dict[str, str]] = Field(None, description="Map OTel span attributes to HTTP headers")
+    attribute_to_label_map: Optional[Dict[str, str]] = Field(
+        None, description="Map OTel span attributes to metrics reporting labels"
+    )
 
     @model_validator(mode="after")
     def validate_trace_sources(self) -> "OTelTraceReplayConfig":

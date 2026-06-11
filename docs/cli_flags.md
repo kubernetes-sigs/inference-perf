@@ -139,6 +139,8 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.otel_trace_replay.filter` | str | Lambda expression to filter trace records. Applied uniformly to all data sources.
 Example: "lambda x: x['benchmark'] == 'gsm8k'" or "lambda x: 'spans' in x and len(x['spans']) > 5"
 Security: Filter expressions use eval() and should only contain trusted input. |
+| `--data.otel_trace_replay.attribute_to_header_map` | JSON | Map OTel span attributes to HTTP headers |
+| `--data.otel_trace_replay.attribute_to_label_map` | JSON | Map OTel span attributes to metrics reporting labels |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |

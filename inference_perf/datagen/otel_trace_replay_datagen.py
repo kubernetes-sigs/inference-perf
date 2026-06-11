@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -68,12 +68,14 @@ from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
     ReplayGraphSessionGeneratorBase,
+    SessionChatCompletionAPIData,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.apis import LazyLoadInferenceAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +384,15 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             _validate_dataset_schema(dataset, self.otel_config.trace_directory)
 
         elif self.otel_config.trace_files:
+            # Multiple files mode
+            for path in self.otel_config.trace_files:
+                if "*" not in path and "?" not in path:
+                    if not Path(path).is_file():
+                        raise ValueError(f"Trace file does not exist: {path}")
+
             trace_files = resolve_trace_files(self.otel_config.trace_files)
+            if not trace_files:
+                raise ValueError(f"No trace files resolved from {self.otel_config.trace_files}")
 
             for trace_file in trace_files:
                 if not trace_file.exists():
@@ -489,3 +499,45 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             session_index=trace_index,
             graph=graph,
         )
+
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
+        api_data = super().load_lazy_data(data)
+
+        n = data.data_index
+        event = self.all_events[n]
+        session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
+        raw_event_id = event.event_id.split(":", 1)[1] if ":" in event.event_id else event.event_id
+        state = self.session_graph_state.get(session_id)
+        gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
+
+        if gc:
+            # Ensure we have a dict to query, even if the span had no extra attributes
+            attributes = gc.attributes or {}
+            headers = {}
+            labels = {}
+
+            if self.otel_config.attribute_to_header_map:
+                for attr_key, header_name in self.otel_config.attribute_to_header_map.items():
+                    val = attributes.get(attr_key)
+                    if val is None:
+                        val = "default"
+                    headers[header_name] = str(val)
+
+            if self.otel_config.attribute_to_label_map:
+                for attr_key, label_name in self.otel_config.attribute_to_label_map.items():
+                    val = attributes.get(attr_key)
+                    if val is None:
+                        val = "default"
+                    labels[label_name] = str(val)
+
+            if headers:
+                if api_data.headers is None:
+                    api_data.headers = {}
+                api_data.headers.update(headers)
+
+            if labels:
+                if api_data.labels is None:
+                    api_data.labels = {}
+                api_data.labels.update(labels)
+
+        return api_data

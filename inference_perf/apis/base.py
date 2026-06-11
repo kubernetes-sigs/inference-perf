@@ -41,6 +41,7 @@ class InferenceInfo(BaseModel):
     response_metrics: Optional[SerializeAsAny[ResponseMetrics]] = None
     extra_info: dict[str, Any] = {}
     lora_adapter: Optional[str] = None
+    labels: dict[str, str] = {}
 
     # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top
     # level for back-compat with parsers of pre-multimodal
@@ -95,6 +96,8 @@ class InferenceAPIData(BaseModel):
     session_id: Optional[str] = None  # set by loadgen for session-based workloads
     otel_context: Optional[dict[str, str]] = None  # OTEL trace context for distributed tracing
     stage_id: int = 0  # stage id
+    headers: Optional[dict[str, str]] = None
+    labels: dict[str, str] = {}
 
     @abstractmethod
     def get_api_type(self) -> APIType:
