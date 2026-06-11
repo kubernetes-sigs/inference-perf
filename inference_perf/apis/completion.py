@@ -16,6 +16,8 @@
 from typing import Optional
 
 from aiohttp import ClientResponse
+from openai.types import Completion
+
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -73,15 +75,16 @@ class CompletionAPIData(InferenceAPIData):
                 extra_info={"raw_response": raw_content},
             )
         else:
-            data = await response.json()
+            # Validate against the official OpenAI schema so malformed bodies
+            # fail loudly instead of silently reporting an empty response.
+            data = Completion.model_validate(await response.json())
             prompt_len = tokenizer.count_tokens(self.prompt)
-            choices = data.get("choices", [])
-            if len(choices) == 0:
+            if len(data.choices) == 0:
                 return InferenceInfo(
                     request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                     lora_adapter=lora_adapter,
                 )
-            output_text = choices[0].get("text", "")
+            output_text = data.choices[0].text
             output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
             return InferenceInfo(
