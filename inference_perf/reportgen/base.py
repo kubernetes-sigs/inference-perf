@@ -37,6 +37,10 @@ from inference_perf.config import (
     GoodputConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
+from inference_perf.reportgen.br.v0_2 import (
+    build_partial_report,
+    generate_run_uid,
+)
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -751,6 +755,29 @@ class ReportGenerator:
 
         if report_config.prometheus:
             lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+
+        if request_metrics:
+            # Always emit the inference-perf slice of a BR0.2 report per stage,
+            # alongside the native inference-perf reports. Downstream composers
+            # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
+            # own partials on top to produce a full BR0.2 document.
+            br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None:
+                    br_stage_buckets[metric.stage_id].append(metric)
+            for br_stage_id, stage_metrics in br_stage_buckets.items():
+                partial = build_partial_report(
+                    stage_metrics,
+                    tokenizer,
+                    run_uid=generate_run_uid(br_stage_id),
+                )
+                lifecycle_reports.append(
+                    ReportFile(
+                        name=f"inference-perf.partial.stage_{br_stage_id}",
+                        file_type="yaml",
+                        contents=partial,
+                    )
+                )
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
