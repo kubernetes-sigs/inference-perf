@@ -289,7 +289,13 @@ def is_llm_span(span: Dict[str, Any], include_errors: bool = False) -> bool:
     """Check if span represents an LLM call."""
     name = span.get("name", "") or ""
     attrs = span.get("attributes") or {}
-    is_llm = name.startswith("chat ") or "gen_ai.input.messages" in attrs
+    # Classify on the OTel discriminator gen_ai.operation.name (chat / execute_tool /
+    # invoke_agent), with a name fallback for sources that omit it, AND require input
+    # messages to be present. A fixed-schema source can carry an empty
+    # gen_ai.input.messages on every span, so key-presence alone misclassifies
+    # tool/agent spans as LLM calls.
+    op = attrs.get("gen_ai.operation.name")
+    is_llm = (op == "chat" or name.startswith("chat ")) and bool(attrs.get("gen_ai.input.messages"))
     if not is_llm:
         return False
     if not include_errors:
