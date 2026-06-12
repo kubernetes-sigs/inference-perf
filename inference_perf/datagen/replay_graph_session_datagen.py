@@ -46,11 +46,54 @@ from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
+from inference_perf.config.datagen.replay import BadToolCallHandling
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
 from inference_perf.datagen.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
+
+# --- bad_tool_call_handling ------------------------------------------------
+# Server-side tool-call parsers can emit malformed JSON in
+# tool_calls[i].function.arguments — for example vLLM's `qwen3_xml` parser
+# leaks closing XML markers (`</parameter></function>`) into the JSON string
+# value at decode time. vLLM still returns 200 on the response, but on the
+# *next* turn the chat template's `json.loads(arguments)` raises and vLLM
+# returns HTTP 400. Replaying the bad bytes verbatim therefore halts the
+# session.
+#
+# This mitigation lives ENTIRELY in the substitution path
+# (`_build_messages_with_substitution`). The response path is byte-identical
+# to upstream main: it stores the raw tool_calls in the registry exactly as
+# the model emitted them. At substitution time, when a downstream event
+# pulls a predecessor's stored message, we run `_detect_bad_tool_calls` on
+# its `tool_calls` and, if `bad_tool_call_handling=use_recorded`, substitute
+# the recorded assistant message at this slot.
+#
+# Gated per-event by the `bad_tool_call_handling` field on the OTel replay
+# config. When the value is `none` (the default), the inline detection is
+# short-circuited and behavior is identical to upstream main.
+
+
+def _detect_bad_tool_calls(
+    tool_calls: Optional[List[Dict[str, Any]]],
+) -> List[Tuple[int, str, str]]:
+    """Return [(index, function_name, json_error)] for tool_calls whose
+    `arguments` field is a string that fails json.loads(). Empty list = ok."""
+    bad: List[Tuple[int, str, str]] = []
+    if not tool_calls:
+        return bad
+    for i, tc in enumerate(tool_calls):
+        fn = tc.get("function") or {}
+        args = fn.get("arguments", "")
+        if not isinstance(args, str):
+            continue
+        try:
+            json.loads(args)
+        except json.JSONDecodeError as e:
+            bad.append((i, fn.get("name", "?"), str(e)))
+    return bad
+# --- end bad_tool_call_handling --------------------------------------------
 
 
 class EventFailedError(Exception):
@@ -88,6 +131,13 @@ class WorkerSessionTracker:
     def __init__(self) -> None:
         self._event_completions: Dict[str, Dict[str, float]] = {}
         self._failed_sessions: Set[str] = set()
+        # Per-session set of predecessor event_ids whose live tool_call
+        # response was detected malformed at substitution time and replaced
+        # with the recorded assistant message. Empty when
+        # bad_tool_call_handling is `none`. Stored as a set so a
+        # predecessor with multiple downstream consumers (DAG fan-out) is
+        # counted once, not once per consumer.
+        self._recorded_substitution_event_ids: Dict[str, Set[str]] = {}
 
     def record_event_completed(self, session_id: str, event_id: str, completion_time: float) -> None:
         if session_id not in self._event_completions:
@@ -111,6 +161,15 @@ class WorkerSessionTracker:
 
     def get_session_completion_times(self, session_id: str) -> Dict[str, float]:
         return self._event_completions.get(session_id, {}).copy()
+
+    def record_recorded_substitution(self, session_id: str, event_id: str) -> None:
+        """Tag a predecessor event_id whose live tool_call response was
+        replaced with the recorded message. Idempotent."""
+        self._recorded_substitution_event_ids.setdefault(session_id, set()).add(event_id)
+
+    def get_session_recorded_substitution_event_ids(self, session_id: str) -> List[str]:
+        # Sorted for deterministic test/log output.
+        return sorted(self._recorded_substitution_event_ids.get(session_id, set()))
 
 
 class EventOutputRegistry:
@@ -227,6 +286,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # KV-cache invalidation configuration
     inject_random_session_id: bool = False
     session_random_string: Optional[str] = None
+    # Mitigation for tool-call responses with malformed JSON in `arguments`.
+    # `none` (default) is byte-identical to upstream main; `use_recorded`
+    # substitutes the recorded assistant message at the affected slot.
+    bad_tool_call_handling: BadToolCallHandling = BadToolCallHandling.NONE
+    # Set by _build_messages_with_substitution when it calls record_failure
+    # early (e.g. recorded fallback also malformed). Lets the caller pass the
+    # right reason string to _fail_and_notify instead of a generic fallback.
+    _substitution_failure_reason: Optional[str] = None
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -343,7 +410,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             # early when substitution is not possible (e.g. tool call expected but
             # live model returned plain text). Detect that and skip the request.
             if self.registry.is_event_failed(self.event_id):
-                self._fail_and_notify(session_id, "substitution failed (tool call expected but plain text returned)")
+                reason = self._substitution_failure_reason or "Unknown"
+                self._fail_and_notify(session_id, reason)
                 return
             self.messages = [
                 ChatMessage(
@@ -396,14 +464,71 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     actual_message = self.registry.get_message_by_event_id(seg.source_event_id)
                     if actual_message:
                         live_tool_calls = actual_message.get("tool_calls")
-                        if live_tool_calls:
-                            # Record the position of this assistant message so the post-pass
-                            # can rewrite tool_call_id in the role:tool messages that follow.
-                            pending_id_rewrites.append((len(result), live_tool_calls))
-                        result.append(actual_message)
-                        logger.debug(
-                            f"Event {self.event_id}: substituted output segment with structured message from {seg.source_event_id}"
+                        # Inline detection: if the live model produced tool_calls
+                        # AND bad_tool_call_handling is enabled, check each
+                        # `arguments` for valid JSON. Any failure means the next
+                        # request would 400 on the chat template's json.loads.
+                        bad_live = (
+                            _detect_bad_tool_calls(live_tool_calls)
+                            if (self.bad_tool_call_handling == BadToolCallHandling.USE_RECORDED
+                                and live_tool_calls)
+                            else []
                         )
+                        if bad_live:
+                            # Substitute the recorded assistant message at this slot.
+                            # The recorded message is `seg_msgs[0]` (output segments
+                            # cover exactly one message — the assistant turn). Its
+                            # `tool_call_id` flows naturally into the role:tool
+                            # successors that follow in `original_messages`, so no
+                            # entry is appended to pending_id_rewrites for this
+                            # position. The wire body for the demoted slot is
+                            # structurally identical to a healthy replay.
+                            recorded_message = seg_msgs[0]
+                            recorded_tool_calls = recorded_message.get("tool_calls") or []
+                            # Defensive: if the recorded trace ALSO has malformed
+                            # tool_calls at this slot, we have no clean fallback.
+                            # Hard-fail the event; EventFailedError will cascade
+                            # to downstream events that await this one. Parallel
+                            # DAG branches continue.
+                            bad_recorded = _detect_bad_tool_calls(recorded_tool_calls)
+                            if bad_recorded:
+                                logger.error(
+                                    f"Event {self.event_id}: bad_tool_call_handling=use_recorded "
+                                    f"detected malformed live tool_calls from {seg.source_event_id}, "
+                                    f"but the recorded fallback is also malformed "
+                                    f"(errors={[e for (_, _, e) in bad_recorded]}). Failing event."
+                                )
+                                self._substitution_failure_reason = (
+                                    f"recorded fallback for {seg.source_event_id} is also malformed"
+                                )
+                                self.registry.record_failure(self.event_id)
+                                return result  # partial; caller checks is_event_failed
+                            # Tag the predecessor event_id for telemetry. Set
+                            # semantics dedupe across DAG fan-out.
+                            session_id = self._extract_session_id()
+                            pred_event_id = (
+                                seg.source_event_id.split(":", 1)[1]
+                                if ":" in seg.source_event_id
+                                else seg.source_event_id
+                            )
+                            self.worker_tracker.record_recorded_substitution(
+                                session_id, pred_event_id
+                            )
+                            result.append(recorded_message)
+                            logger.warning(
+                                f"Event {self.event_id}: substituted RECORDED message for "
+                                f"{seg.source_event_id} (live had {len(bad_live)} malformed "
+                                f"tool_call(s); recorded structurally clean)"
+                            )
+                        else:
+                            if live_tool_calls:
+                                # Record the position of this assistant message so the post-pass
+                                # can rewrite tool_call_id in the role:tool messages that follow.
+                                pending_id_rewrites.append((len(result), live_tool_calls))
+                            result.append(actual_message)
+                            logger.debug(
+                                f"Event {self.event_id}: substituted output segment with structured message from {seg.source_event_id}"
+                            )
                     else:
                         actual_output = self.registry.get_output_by_event_id(seg.source_event_id)
                         logger.debug(
@@ -422,6 +547,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                     f"returned plain text. Marking event as failed to prevent downstream "
                                     f"requests with dangling tool_call_id references."
                                 )
+                                self._substitution_failure_reason = (
+                                    "substitution failed (tool call expected but plain text returned)")
                                 self.registry.record_failure(self.event_id)
                                 return result  # partial result; caller should check skip_request
                             for msg in seg_msgs:
@@ -561,6 +688,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 "failed": self.worker_tracker.is_session_failed(session_id),
                 "event_completion_times": self.worker_tracker.get_session_completion_times(session_id),
             }
+            # Telemetry: only emit recorded-substitution keys when at least
+            # one substitution fired in this session, so upstream-default runs
+            # (handling=none, or handling set but no malformed tool_calls
+            # observed) produce an identical wire format.
+            recorded_subst_ids = self.worker_tracker.get_session_recorded_substitution_event_ids(session_id)
+            if recorded_subst_ids:
+                completion_data["recorded_substitution_event_ids"] = recorded_subst_ids
+                completion_data["n_recorded_substitutions"] = len(recorded_subst_ids)
 
             if self.completion_queue is not None:
                 try:
@@ -787,6 +922,12 @@ class ReplaySessionState:
     is_complete: bool = False
     failed: bool = False
     cancelled_events: int = 0
+    # Populated from completion_data when the worker finishes the
+    # session. None means the worker did not push the keys (i.e.
+    # bad_tool_call_handling=none); empty list means handling was
+    # enabled but no substitutions fired.
+    n_recorded_substitutions: Optional[int] = None
+    recorded_substitution_event_ids: Optional[List[str]] = None
     random_string: Optional[str] = None  # Random string for KV-cache invalidation (shared by all events in session)
 
 
@@ -1079,6 +1220,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             num_events=num_events,
             num_events_completed=num_events_completed,
             num_events_cancelled=num_events_cancelled,
+            n_recorded_substitutions=state.n_recorded_substitutions,
+            recorded_substitution_event_ids=state.recorded_substitution_event_ids,
         )
 
     def activate_session(self, session_id: str) -> None:
@@ -1112,6 +1255,16 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                     completed_state.is_complete = True
                     completed_state.failed = completion_data.get("failed", False)
                     completed_state.cancelled_events = completion_data.get("cancelled_events", 0)
+                    # Bad tool-call handling telemetry. The two keys are
+                    # gated worker-side behind `len(...) > 0`, so their
+                    # absence here is meaningful (no substitution path
+                    # exercised) and we propagate that absence to the
+                    # session metric as None.
+                    if "n_recorded_substitutions" in completion_data:
+                        completed_state.n_recorded_substitutions = completion_data["n_recorded_substitutions"]
+                        completed_state.recorded_substitution_event_ids = completion_data.get(
+                            "recorded_substitution_event_ids", []
+                        )
                     logger.debug(
                         "Session %s marked complete from queue notification (failed=%s)",
                         completed_session_id,
@@ -1219,6 +1372,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             # Pass KV-cache invalidation configuration and session random string
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
             session_random_string=state.random_string if state else None,
+            # Mitigation knob: read once per event from replay_config. Default
+            # NONE keeps the wire format byte-identical to upstream main.
+            bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE) if self.replay_config else BadToolCallHandling.NONE,
         )
 
     def cleanup_session(self, session_id: str) -> None:
