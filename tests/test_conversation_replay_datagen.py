@@ -398,10 +398,10 @@ class TestOnCompletionAsyncAndTokenCaching:
 
         # Simulate execution of request preparation and async callback
         import asyncio
+
         asyncio.run(data.to_request_body("some_model", 10, False, False))
         asyncio.run(data.on_completion_async(info))
 
         # history_tokens should now have the total turn tokens (20 + 15 = 35)
         assert session.history_tokens == [35]
         assert len(session.history) == 1
-

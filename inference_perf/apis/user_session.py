@@ -189,9 +189,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
 
             system_tokens = self.user_session.tokenizer.count_tokens(system_prompt)
             current_prompt_tokens = (
-                self.prompt_len
-                if self.prompt_len is not None
-                else self.user_session.tokenizer.count_tokens(current_prompt)
+                self.prompt_len if self.prompt_len is not None else self.user_session.tokenizer.count_tokens(current_prompt)
             )
 
             total_len = system_tokens + sum(history_tokens) + current_prompt_tokens
@@ -221,11 +219,7 @@ class UserSessionCompletionAPIData(CompletionAPIData):
                     self.user_session.system_prompt = system_prompt
                     self.user_session.history_tokens = []
 
-                combined_text = (
-                    system_prompt + " " + current_prompt
-                    if system_prompt
-                    else current_prompt
-                )
+                combined_text = system_prompt + " " + current_prompt if system_prompt else current_prompt
             else:
                 combined_text = join_conversation_context(system_prompt, history, current_prompt)
 
@@ -247,9 +241,8 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     ) -> InferenceInfo:
         inference_info = await super().process_response(response, config, tokenizer)
         self.update_inference_info(inference_info)
-        total_turn_tokens = (
-            inference_info.request_metrics.text.input_tokens +
-            (inference_info.response_metrics.output_tokens if inference_info.response_metrics else 0)
+        total_turn_tokens = inference_info.request_metrics.text.input_tokens + (
+            inference_info.response_metrics.output_tokens if inference_info.response_metrics else 0
         )
         self.user_session.update_context(self.prompt + " " + self.model_response, response_len=total_turn_tokens)
         return inference_info

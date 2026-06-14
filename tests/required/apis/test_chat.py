@@ -95,9 +95,7 @@ async def test_multimodal_heartbeat_fires_on_interval(caplog: Any) -> None:
 
     # Drive monotonic forward by the configured interval on every call so each
     # to_request_body crosses the heartbeat boundary.
-    fake_time: Iterator[float] = iter(
-        (i * chat_module._MULTIMODAL_PROGRESS_LOG_INTERVAL_SEC for i in range(1, 100))
-    )
+    fake_time: Iterator[float] = iter((i * chat_module._MULTIMODAL_PROGRESS_LOG_INTERVAL_SEC for i in range(1, 100)))
 
     caplog.set_level(logging.INFO, logger=chat_module.__name__)
     with patch("inference_perf.apis.chat.time.monotonic", side_effect=lambda: next(fake_time)):
