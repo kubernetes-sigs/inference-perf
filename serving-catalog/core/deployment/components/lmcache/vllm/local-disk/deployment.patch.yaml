@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "*"
+spec:
+  template:
+    spec:
+      containers:
+      - name: inference-server
+        env:
+        - name: LMCACHE_MAX_LOCAL_CPU_SIZE
+          value: "128.0"
+        - name: LMCACHE_LOCAL_DISK
+          value: "file:///kv-store-disk/"
+        - name: LMCACHE_MAX_LOCAL_DISK_SIZE
+          value: "576.0"
+        resources:
+          requests:
+            memory: 1024G
+            ephemeral-storage: 4608Gi
+      volumes:
+      - name: kv-store-disk
+        emptyDir: {}

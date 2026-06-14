@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '*'
+spec:
+  template:
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-tpu-topology: 1x1
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+      containers:
+      - name: inference-server
+        resources:
+          requests:
+            google.com/tpu: 1
+          limits:
+            google.com/tpu: 1

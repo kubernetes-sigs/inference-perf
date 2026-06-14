@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '*'
+spec:
+  template:
+    metadata:
+      labels:
+        ai.gke.io/model: gemma-7b-it
+        ai.gke.io/inference-server: jetstream
+        examples.ai.gke.io/source: blueprints

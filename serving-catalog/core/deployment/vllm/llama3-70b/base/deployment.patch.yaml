@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: llama3-70b-vllm-inference-server
+  name: llama3-70b-vllm-deployment
+spec:
+  selector:
+    matchLabels:
+      app: llama3-70b-vllm-inference-server
+      deployment: llama3-70b-vllm-deployment
+  template:
+    metadata:
+      labels:
+        app: llama3-70b-vllm-inference-server
+        deployment: llama3-70b-vllm-deployment
+    spec:
+      containers:
+      - name: inference-server
+        env:
+          - name: MODEL_ID
+            value: meta-llama/Meta-Llama-3-70B

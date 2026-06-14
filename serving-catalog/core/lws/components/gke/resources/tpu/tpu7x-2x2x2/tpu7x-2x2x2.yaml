@@ -1,0 +1,80 @@
+# Leader
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/nodeSelector
+  value:
+    cloud.google.com/gke-tpu-topology: 2x2x2
+    cloud.google.com/gke-tpu-accelerator: tpu7x
+- op: replace
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/image
+  value: vllm/vllm-tpu:nightly
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/resources
+  value:
+    limits:
+      google.com/tpu: 4
+    requests:
+      google.com/tpu: 4
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/-
+  value: 
+    name: TENSOR_PARALLEL_SIZE
+    value: "16"
+- op: replace # overwrite pipeline_parallel_size which defaults to lws_set_size
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/2/value
+  value: "1" 
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/-
+  value: 
+    name: TPU_MULTIHOST_BACKEND
+    value: "ray"
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/-
+  value: 
+    name: TPU_BACKEND_TYPE
+    value: "jax"
+- op: add
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/env/-
+  value: 
+    name: JAX_PLATFORMS
+    value: ""
+- op: replace # overwrite command since the executable is in a different directory for tpu
+  path: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/command
+  value: 
+    - sh
+    - -c
+    - "bash /workspace/vllm/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+      python3 -m vllm.entrypoints.openai.api_server \"$@\""
+    - "--"
+
+# Worker
+- op: replace
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/image
+  value: vllm/vllm-tpu:nightly
+- op: copy
+  from: /spec/leaderWorkerTemplate/leaderTemplate/spec/nodeSelector
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/nodeSelector
+- op: copy
+  from: /spec/leaderWorkerTemplate/leaderTemplate/spec/containers/0/resources
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/resources
+- op: add
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/env/-
+  value: 
+    name: TPU_MULTIHOST_BACKEND
+    value: "ray"
+- op: add
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/env/-
+  value: 
+    name: TPU_BACKEND_TYPE
+    value: "jax"
+- op: add
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/env/-
+  value: 
+    name: JAX_PLATFORMS
+    value: ""
+- op: replace # overwrite command since the executable is in a different directory for tpu
+  path: /spec/leaderWorkerTemplate/workerTemplate/spec/containers/0/command
+  value: 
+    - sh
+    - -c
+    - bash /workspace/vllm/examples/online_serving/multi-node-serving.sh worker
+      --ray_address=$(LWS_LEADER_ADDRESS)

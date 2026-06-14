@@ -1,0 +1,17 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: singlehost-inference-hpa
+spec:
+  # TODO: add best practices as defined at:
+  #   - https://cloud.google.com/kubernetes-engine/docs/how-to/machine-learning/inference/autoscaling-tpu
+  #   - https://cloud.google.com/kubernetes-engine/docs/how-to/machine-learning/inference/autoscaling
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: jetstream-token-latency-ms
+      target:
+        type: AverageValue

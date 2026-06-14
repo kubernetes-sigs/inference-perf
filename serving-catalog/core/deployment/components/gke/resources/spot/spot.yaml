@@ -1,0 +1,14 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '*'
+spec:
+  template:
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-spot: "true"
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"

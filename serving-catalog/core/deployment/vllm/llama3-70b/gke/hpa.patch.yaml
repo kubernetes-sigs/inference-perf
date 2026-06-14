@@ -1,0 +1,10 @@
+- op: add
+  path: /metadata/name
+  value: llama3-70b-vllm-hpa
+- op: add
+  path: /metadata/labels
+  value:
+    app: llama3-70b-vllm-inference-server
+- op: add
+  path: /spec/metrics/0/pods/target/averageValue
+  value: 50

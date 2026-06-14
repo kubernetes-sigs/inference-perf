@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '*'
+spec:
+  template:
+    metadata:
+      labels:
+        ai.gke.io/model: LLaMA3_8B
+        ai.gke.io/inference-server: jetstream
+        examples.ai.gke.io/source: blueprints
+      annotations:
+        gke-gcsfuse/volumes: "true"
+    spec:
+      containers:
+      - name: inference-server
+        volumeMounts:
+        - name: gcs-fuse-checkpoint
+          mountPath: /models
+      volumes:
+      - name: gcs-fuse-checkpoint
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          readOnly: true
+          volumeAttributes:
+            bucketName: $BUCKET_NAME
+            mountOptions: "implicit-dirs"

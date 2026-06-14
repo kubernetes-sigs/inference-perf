@@ -1,0 +1,23 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+
+components:
+  - ../../../components/gke/resources/tpu/v5e-2x4
+  # - ../../../components/hpa/jetstream/token-latency # HPA is a work-in-progress
+
+patches:
+  - path: deployment.patch.yaml
+    target:
+      kind: Deployment
+  - path: job.patch.yaml
+    target:
+      kind: Job
+  - options:
+      allowNameChange: true
+    path: hpa.patch.yaml
+    target:
+      kind: HorizontalPodAutoscaler

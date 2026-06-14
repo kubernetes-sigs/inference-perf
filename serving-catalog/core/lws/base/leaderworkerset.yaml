@@ -1,0 +1,23 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: multihost-base
+spec:
+  leaderWorkerTemplate:
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          app: multihost-inference-server
+          role: leader
+          deployment: vllm-multihost-base
+      spec:
+        containers:
+          - name: multihost-leader-base
+    workerTemplate:
+      metadata:
+        labels:
+          app: multihost-inference-server
+      spec:
+        containers:
+          - name: multihost-worker-base

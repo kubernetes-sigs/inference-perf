@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '*'
+spec:
+  template:
+    metadata:
+      labels:
+        ai.gke.io/model: LLaMA3_70B
+        ai.gke.io/inference-server: vllm
+        examples.ai.gke.io/source: blueprints

@@ -1,0 +1,19 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: llama3-1-405b-it-lws
+spec:
+  leaderWorkerTemplate:
+    size: 2
+    leaderTemplate:
+      metadata:
+        labels:
+          ai.gke.io/model: llama3-1-405b-it
+          examples.ai.gke.io/source: blueprints
+          role: leader
+          deployment: vllm-multihost-base
+    workerTemplate:
+      metadata:
+        labels:
+          ai.gke.io/model: llama3-1-405b-it
+          examples.ai.gke.io/source: blueprints

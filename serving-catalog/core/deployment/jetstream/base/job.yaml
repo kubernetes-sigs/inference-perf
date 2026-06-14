@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-loader
+  labels:
+    prerequisite: model-load
+spec:
+  ttlSecondsAfterFinished: 30
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: inference-checkpoint
+        image: us-docker.pkg.dev/cloud-tpu-images/inference/inference-checkpoint:v0.2.2
+        volumeMounts:
+        - mountPath: "/kaggle/"
+          name: kaggle-credentials
+          readOnly: true
+      volumes:
+      - name: kaggle-credentials
+        secret:
+          defaultMode: 0400
+          secretName: kaggle-secret

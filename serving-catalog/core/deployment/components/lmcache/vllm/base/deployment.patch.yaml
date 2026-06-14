@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "*"
+spec:
+  template:
+    spec:
+      containers:
+      - name: inference-server
+        image: lmcache/vllm-openai:v0.3.5
+        command: ["/opt/venv/bin/vllm"]
+        ports:
+          - containerPort: 8000
+            name: metrics
+        args:
+        - "serve"
+        - "$(MODEL_ID)"
+        - "--kv-transfer-config"
+        - '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+        - "--enable_prefix_caching"
+        - "--tensor-parallel-size=$(TENSOR_PARALLEL_SIZE)"

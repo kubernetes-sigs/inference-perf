@@ -1,0 +1,22 @@
+# kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: deployment.patch.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --model=/data/models/$(MODEL_PATH)
+    target:
+      kind: Deployment
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --download-dir=/data/models
+    target:
+      kind: Deployment

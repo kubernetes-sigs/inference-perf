@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gemma-2b-vllm-service
+  labels:
+    app: gemma-2b-vllm-inference-server 
+spec:
+  selector:
+    app: gemma-2b-vllm-inference-server
+    deployment: gemma-2b-vllm-deployment
