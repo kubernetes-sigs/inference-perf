@@ -1,0 +1,42 @@
+load:
+  type: trace_session_replay
+  stages:
+  - num_sessions: 50
+    concurrent_sessions: 5
+  - num_sessions: 100
+    concurrent_sessions: 10
+  - num_sessions: 200
+    concurrent_sessions: 20
+  - num_sessions: 300
+    concurrent_sessions: 30
+  - num_sessions: 400
+    concurrent_sessions: 40
+  num_workers: 4
+  worker_max_concurrency: 2000
+  base_seed: 42
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-8B
+  base_url: http://localhost:8000
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    hf_dataset_path: Exgentic/agent-llm-traces
+    # Pin a specific revision when one is available, e.g.:
+    # hf_dataset_path:
+    #   path: Exgentic/agent-llm-traces
+    #   revision: v1
+    use_static_model: true
+    static_model_name: Qwen/Qwen3-8B
+    include_errors: false
+    skip_invalid_files: true
+    # Drop sessions whose largest single call exceeds the served context window.
+    # Qwen3-8B is 32k natively and 128k only with YaRN enabled on the server
+    # (rope_scaling). The cap below assumes YaRN/128k with headroom for the
+    # response; lower it to ~28000 if serving at the native 32k.
+    # To narrow to a single benchmark instead, e.g.:
+    #   lambda x: x['benchmark'] == 'tau2_retail'
+    filter: "lambda x: x.get('max_tokens', 0) < 120000"

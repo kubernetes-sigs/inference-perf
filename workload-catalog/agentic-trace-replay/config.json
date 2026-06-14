@@ -1,0 +1,43 @@
+{
+  "input_sequence_length": {
+    "min": 9100,
+    "max": 63100,
+    "mean": 28273,
+    "standard_deviation": 17000,
+    "distribution_type": "log_normal"
+  },
+  "output_sequence_length": {
+    "min": 50,
+    "max": 2000,
+    "mean": 233,
+    "standard_deviation": 135,
+    "distribution_type": "log_normal"
+  },
+  "number_of_turns": {
+    "min": 7,
+    "max": 158,
+    "mean": 21,
+    "standard_deviation": 27,
+    "distribution_type": "log_normal"
+  },
+  "system_prompt": {
+    "min": 2000,
+    "max": 2000,
+    "mean": 2000,
+    "standard_deviation": 0,
+    "distribution_type": "normal"
+  },
+  "input_sequence_type_token_ratio": 0.08,
+  "metadata": {
+    "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "P/D disaggregation"],
+    "prefill_decode_ratio": 121.0,
+    "agentic_characteristics": {
+      "_comment": "Agentic-specific properties of the trace corpus. Values are placeholders pending computation from the raw Exgentic traces; review and fill before relying on them.",
+      "tool_calls_per_session": null,
+      "tool_wait_call_ratio": null,
+      "mean_inter_call_wait_sec": null,
+      "independent_call_ratio": null,
+      "shared_prefix_ratio": null
+    }
+  }
+}
