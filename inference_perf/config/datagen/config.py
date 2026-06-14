@@ -21,6 +21,7 @@ from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenC
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
+    WekaTraceReplayConfig,
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
@@ -36,6 +37,7 @@ class DataGenType(Enum):
     InfinityInstruct = "infinity_instruct"
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
+    WekaTraceReplay = "weka_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
 
@@ -102,8 +104,12 @@ class DataConfig(BaseModel):
     # OTel trace replay configuration
     otel_trace_replay: Optional[OTelTraceReplayConfig] = None
 
+    # Weka trace replay configuration
+    weka_trace_replay: Optional[WekaTraceReplayConfig] = None
+
     # Conversation replay configuration
     conversation_replay: Optional[ConversationReplayConfig] = None
 
     # VisionArena-Chat dataset configuration
     visionarena: Optional[VisionArenaConfig] = None
+

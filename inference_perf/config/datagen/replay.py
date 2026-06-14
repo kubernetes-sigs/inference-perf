@@ -151,3 +151,44 @@ class OTelTraceReplayConfig(SessionReplayConfig):
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
         return self
+
+
+class WekaTraceReplayConfig(SessionReplayConfig):
+    """Configuration for Weka trace replay data generator."""
+
+    trace_directory: Optional[str] = Field(None, description="Directory containing Weka JSON trace files")
+    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific Weka JSON trace files")
+    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
+            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
+        ),
+    )
+    trace_idle_gap_cap_seconds: float = Field(60.0, description="Cap idle timing gaps between turns in seconds")
+    ignore_trace_delays: bool = Field(False, description="Ignore delays/delays from original trace and run back-to-back")
+    use_think_time_only: bool = Field(False, description="Only use think_time attribute instead of timestamps")
+    default_block_size: int = Field(64, description="Default block size if not specified in trace")
+    num_dataset_entries: int = Field(100, description="Max number of dataset traces to load from HuggingFace")
+
+    @model_validator(mode="after")
+    def validate_trace_sources(self) -> "WekaTraceReplayConfig":
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
+        sources_provided = sum(
+            [
+                self.trace_directory is not None,
+                self.trace_files is not None,
+                self.hf_dataset_path is not None,
+            ]
+        )
+
+        if sources_provided == 0:
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+        if sources_provided > 1:
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
+        return self
+

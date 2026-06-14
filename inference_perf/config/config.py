@@ -47,13 +47,13 @@ class Config(BaseModel):
     circuit_breakers: Optional[List[CircuitBreakerConfig]] = None
 
     @model_validator(mode="after")
-    def validate_otel_trace_replay_load_type(self) -> "Config":
-        """Validate that otel_trace_replay data type uses trace_session_replay load type."""
-        if self.data.type == DataGenType.OTelTraceReplay:
+    def validate_trace_replay_load_type(self) -> "Config":
+        """Validate that trace replay data types use trace_session_replay load type."""
+        if self.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay):
             if self.load.type != LoadType.TRACE_SESSION_REPLAY:
                 raise ValueError(
-                    f"data.type 'otel_trace_replay' requires load.type 'trace_session_replay', "
-                    f"but got '{self.load.type.value}'. OTel trace replay with dependencies requires "
+                    f"data.type '{self.data.type.value}' requires load.type 'trace_session_replay', "
+                    f"but got '{self.load.type.value}'. Trace replay with dependencies requires "
                     f"session-based load dispatch to properly handle event dependencies and timing."
                 )
         return self
