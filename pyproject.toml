@@ -154,6 +154,9 @@ python_functions = ["test_*"]
 where = ["."]
 include = ["inference_perf*", "deploy*"]
 
+[tool.setuptools.package-data]
+inference_perf = ["assets/*.txt"]
+
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 
