@@ -227,6 +227,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # KV-cache invalidation configuration
     inject_random_session_id: bool = False
     session_random_string: Optional[str] = None
+    override_tool_call_max_tokens: bool = False
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -234,12 +235,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         payload = await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
         if self.expected_output_is_tool_call and self.tool_definitions:
-            payload["ignore_eos"] = False
-            # The recorded output_tokens might come from a different model/tokenizer.
-            # The replay model may need significantly more tokens to express the
-            # same tool call (different tokenizer, different tool-call preamble).
-            # Use a generous cap and let ignore_eos=False stop generation naturally.
-            payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+            if self.override_tool_call_max_tokens:
+                payload["ignore_eos"] = False
+                # The recorded output_tokens might come from a different model/tokenizer.
+                # The replay model may need significantly more tokens to express the
+                # same tool call (different tokenizer, different tool-call preamble).
+                # Use a generous cap and let ignore_eos=False stop generation naturally.
+                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
 
             if "tool_choice" in payload:
                 logger.warning(
@@ -432,13 +434,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                 f"Event {self.event_id}: substituted output segment with text output from {seg.source_event_id}"
                             )
                         else:
-                            logger.warning(
+                            logger.debug(
                                 f"Event {self.event_id}: output segment from {seg.source_event_id} "
                                 f"not available, using recorded content"
                             )
                             result.extend(seg_msgs)
                 else:
-                    logger.warning(f"Event {self.event_id}: output segment has no source_event_id, using recorded content")
+                    logger.debug(f"Event {self.event_id}: output segment has no source_event_id, using recorded content")
                     result.extend(seg_msgs)
             elif seg.type == "shared":
                 if seg.source_event_id is None:
@@ -1219,6 +1221,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             # Pass KV-cache invalidation configuration and session random string
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
             session_random_string=state.random_string if state else None,
+            override_tool_call_max_tokens=self.replay_config.override_tool_call_max_tokens if self.replay_config else False,
         )
 
     def cleanup_session(self, session_id: str) -> None:

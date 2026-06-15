@@ -14,6 +14,7 @@
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Generator, List, Optional
 
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
@@ -56,8 +57,20 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.output_distribution.std_dev,
             self.output_distribution.total_count,
         )
+        corpus_text = ""
+        if self.config and self.config.corpus_file_path:
+            corpus_path = Path(self.config.corpus_file_path)
+            try:
+                corpus_text = corpus_path.read_text(encoding="utf-8")
+                logger.info(f"Loaded custom prompt corpus from: {self.config.corpus_file_path} ({len(corpus_text)} chars)")
+            except Exception as e:
+                logger.error(f"Failed to read custom prompt corpus from {self.config.corpus_file_path}: {e}. Falling back to default sonnet corpus.")
+                corpus_text = self.get_sonnet_data()
+        else:
+            corpus_text = self.get_sonnet_data()
+
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
-        self.token_ids: list[int] = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
+        self.token_ids: list[int] = self.tokenizer.get_tokenizer().encode(base_prompt + corpus_text)
 
         # Per-process counters for the progress heartbeat emitted from
         # load_lazy_data. Each worker process tracks its own count and

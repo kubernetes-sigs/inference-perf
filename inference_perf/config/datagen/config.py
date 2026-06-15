@@ -91,6 +91,7 @@ class DataConfig(BaseModel):
 
     # Valid only for shareGPT type at this moment
     path: Optional[str] = None  # path to the downloaded shareGPT dataset
+    corpus_file_path: Optional[str] = Field(None, description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet")
 
     # Distributions are only supported for synthetic/random dataset at this moment
     input_distribution: Optional[Distribution] = None

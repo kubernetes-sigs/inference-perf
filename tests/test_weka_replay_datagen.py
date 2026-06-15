@@ -13,14 +13,13 @@
 # limitations under the License.
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
-import pytest
 
 from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType
 from inference_perf.datagen.weka_trace_replay_datagen import (
     HashIdRandomGenerator,
     WekaTraceReplayDataGenerator,
-    WekaTrace,
     RoleSegment,
     ConversationReconstructor,
     longest_common_prefix,
@@ -158,7 +157,7 @@ def test_conversation_reconstructor() -> None:
     assert msgs[2]["content"] == "12"
 
 
-def test_weka_trace_replay_generator_mock(tmp_path) -> None:
+def test_weka_trace_replay_generator_mock(tmp_path: Path) -> None:
     # Create a mock Weka Trace file
     trace_data = {
         "id": "mock_trace_123",
@@ -233,3 +232,75 @@ def test_weka_trace_replay_generator_mock(tmp_path) -> None:
 
     # Predecessor edge check
     assert events[1].predecessor_event_ids == [events[0].event_id]
+
+
+def test_weka_trace_replay_generator_mock_no_warp(tmp_path: Path) -> None:
+    # Create a mock Weka Trace file with a huge gap (100 seconds)
+    trace_data = {
+        "id": "mock_trace_no_warp",
+        "models": ["claude-opus-4-8"],
+        "block_size": 2,
+        "tool_tokens": 0,
+        "system_tokens": 0,
+        "requests": [
+            {
+                "t": 0.1,
+                "type": "n",
+                "model": "claude-opus-4-8",
+                "in": 4,
+                "out": 2,
+                "hash_ids": [10, 20],
+                "api_time": 0.5,
+            },
+            {
+                "t": 100.1,
+                "type": "n",
+                "model": "claude-opus-4-8",
+                "in": 8,
+                "out": 4,
+                "hash_ids": [10, 20, 30, 40],
+                "api_time": 0.8,
+            },
+        ],
+    }
+
+    trace_file = tmp_path / "mock_trace_no_warp.json"
+    trace_file.write_text(json.dumps(trace_data))
+
+    # Mock tokenizer
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.get_tokenizer().encode = lambda x: [9] * len(x)
+    mock_tokenizer.get_tokenizer().decode = lambda x: "".join(str(i) for i in x)
+
+    # API config
+    api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+
+    # Datagen Config with trace_idle_gap_cap_seconds = 0 (disabled)
+    data_cfg = DataConfig(type=DataGenType.WekaTraceReplay)
+    from inference_perf.config.datagen.replay import WekaTraceReplayConfig
+    weka_cfg = WekaTraceReplayConfig(
+        trace_files=[str(trace_file)],
+        default_block_size=2,
+        trace_idle_gap_cap_seconds=0,
+    )
+    data_cfg.weka_trace_replay = weka_cfg
+
+    # Initialize generator
+    gen = WekaTraceReplayDataGenerator(
+        api_config=api_cfg,
+        config=data_cfg,
+        tokenizer=mock_tokenizer,
+        num_workers=1,
+    )
+
+    assert len(gen.sessions) == 1
+    session = gen.sessions[0]
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+
+    # In raw seconds: t0 = 0.1s (100ms), t1 = 100.1s (100100ms)
+    # The gap is exactly 100000ms. Since gap warping is disabled (<= 0),
+    # the start times should reflect original timing.
+    assert events[0].t_start_ms == 100
+    assert events[1].t_start_ms == 100100
+    assert events[1].wait_ms == 100100 - events[0].t_end_ms
+

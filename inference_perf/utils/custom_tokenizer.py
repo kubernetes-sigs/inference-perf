@@ -18,7 +18,7 @@ from inference_perf.config import CustomTokenizerConfig
 
 class CustomTokenizer:
     def __init__(self, config: CustomTokenizerConfig) -> None:
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(  # type: ignore[no-untyped-call]
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
             config.pretrained_model_name_or_path, token=config.token, trust_remote_code=config.trust_remote_code
         )
 

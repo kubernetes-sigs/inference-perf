@@ -183,11 +183,13 @@ class UserSessionCompletionAPIData(CompletionAPIData):
 
                     if available_for_system > 0:
                         system_ids = system_ids[:available_for_system]
-                        system_prompt = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
+                        decoded_sys = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
+                        system_prompt = decoded_sys if isinstance(decoded_sys, str) else " ".join(decoded_sys)
                     else:
                         system_prompt = ""
                         current_ids = current_ids[:target_len]
-                        current_prompt = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
+                        decoded_curr = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
+                        current_prompt = decoded_curr if isinstance(decoded_curr, str) else " ".join(decoded_curr)
 
                     combined_text = get_text(system_prompt, [], current_prompt)
 

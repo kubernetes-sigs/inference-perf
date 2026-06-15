@@ -263,8 +263,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 q_len = self.question_len_list_per_group[group_id][prompt_id]
                 suffix_ids = self._sample_suffix_ids(q_len)
                 full_text = hf_tokenizer.decode(shared_prefix_ids + suffix_ids, skip_special_tokens=True)
+                full_text_str = full_text if isinstance(full_text, str) else " ".join(full_text)
 
-                self.prompts.append(full_text)
+                self.prompts.append(full_text_str)
                 self.prefix_texts.append(shared_prefix_text)
                 self.prompt_groups.append(group_id)
 

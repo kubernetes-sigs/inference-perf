@@ -21,7 +21,7 @@ trace's hash IDs, then builds a dependency graph and replays them using the
 graph-backed session replayer.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -32,21 +32,19 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Annotated
 from multiprocessing.managers import SyncManager
 
 from huggingface_hub import hf_hub_download
-from pydantic import BaseModel, Field, Discriminator
+from pydantic import BaseModel, Field
 
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
     ReplayGraphSessionGeneratorBase,
-    SessionChatCompletionAPIData,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     RawCall,
     build_graph,
 )
-from inference_perf.datagen.replay_graph_types import ReplayMessage, ComplexReplayMessage
+from inference_perf.datagen.replay_graph_types import ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.apis import LazyLoadInferenceAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +186,7 @@ class HashIdRandomGenerator:
     def randrange(self, stop: int) -> int:
         return self._rng.randrange(stop)
 
-    def choice(self, seq: list) -> Any:
+    def choice(self, seq: list[Any]) -> Any:
         return self._rng.choice(seq)
 
 
@@ -458,7 +456,9 @@ def _sa_end_seconds(entry: WekaSubagentEntry) -> float:
 
 
 def _subagent_request_absolute_t(entry: WekaSubagentEntry, req: WekaNormalRequest) -> float:
-    return entry.t + req.t
+    if req.t + 1e-6 < entry.t:
+        return entry.t + req.t
+    return req.t
 
 
 def _pack_into_streams(requests: List[WekaNormalRequest]) -> List[List[WekaNormalRequest]]:
@@ -485,6 +485,38 @@ def _build_trace_idle_timing(
     child_plans: List[_ChildPlan],
     cap_seconds: float,
 ) -> _TraceIdleTiming:
+    if cap_seconds <= 0:
+        parent_by_outer_idx = {}
+        prev_t = None
+        for outer_idx, req in plan.normals:
+            delay_ms: Optional[float] = None if prev_t is None else (req.t - prev_t) * 1000.0
+            parent_by_outer_idx[outer_idx] = _RequestTiming(req.t, delay_ms)
+            prev_t = req.t
+
+        child_by_session_request = {}
+        child_plans_for_trace = [cp for cp in child_plans if cp.parent_trace_id == plan.trace_id]
+        for cp in child_plans_for_trace:
+            prev_child_t = None
+            for k, req in enumerate(cp.stream_requests):
+                t = _subagent_request_absolute_t(cp.entry, req)
+                delay_ms = None if prev_child_t is None else (t - prev_child_t) * 1000.0
+                child_by_session_request[(cp.session_id, k)] = _RequestTiming(t, delay_ms)
+                prev_child_t = t
+
+        subagent_end_by_outer_idx = {
+            outer_idx: _sa_end_seconds(entry)
+            for outer_idx, entry in plan.subagents
+        }
+        subagent_start_by_outer_idx = {
+            outer_idx: entry.t for outer_idx, entry in plan.subagents
+        }
+        return _TraceIdleTiming(
+            parent_by_outer_idx=parent_by_outer_idx,
+            child_by_session_request=child_by_session_request,
+            subagent_end_by_outer_idx=subagent_end_by_outer_idx,
+            subagent_start_by_outer_idx=subagent_start_by_outer_idx,
+        )
+
     request_starts: List[float] = [req.t for _, req in plan.normals]
 
     # Filter child plans for this trace
@@ -494,17 +526,17 @@ def _build_trace_idle_timing(
             request_starts.append(_subagent_request_absolute_t(cp.entry, req))
 
     warp = _IdleGapTimeWarp(request_starts, cap_seconds)
-    parent_by_outer_idx: Dict[int, _RequestTiming] = {}
-    prev_t: Optional[float] = None
+    parent_by_outer_idx = {}
+    prev_t = None
     for outer_idx, req in plan.normals:
         t = warp.map(req.t)
         delay_ms = None if prev_t is None else (t - prev_t) * 1000.0
         parent_by_outer_idx[outer_idx] = _RequestTiming(t, delay_ms)
         prev_t = t
 
-    child_by_session_request: Dict[Tuple[str, int], _RequestTiming] = {}
+    child_by_session_request = {}
     for cp in child_plans_for_trace:
-        prev_child_t: Optional[float] = None
+        prev_child_t = None
         for k, req in enumerate(cp.stream_requests):
             t = warp.map(_subagent_request_absolute_t(cp.entry, req))
             delay_ms = None if prev_child_t is None else (t - prev_child_t) * 1000.0
@@ -565,8 +597,21 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         # Initialize deterministic prompt corpus
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for WekaTraceReplayDataGenerator")
+        
+        corpus_text = ""
+        if self.config and self.config.corpus_file_path:
+            corpus_path = Path(self.config.corpus_file_path)
+            try:
+                corpus_text = corpus_path.read_text(encoding="utf-8")
+                logger.info(f"Loaded custom prompt corpus from: {self.config.corpus_file_path} ({len(corpus_text)} chars)")
+            except Exception as e:
+                logger.error(f"Failed to read custom prompt corpus from {self.config.corpus_file_path}: {e}. Falling back to default sonnet corpus.")
+                corpus_text = self.get_sonnet_data()
+        else:
+            corpus_text = self.get_sonnet_data()
+
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
-        self._tokenized_corpus = self.tokenizer.get_tokenizer().encode(base_prompt + self.get_sonnet_data())
+        self._tokenized_corpus = self.tokenizer.get_tokenizer().encode(base_prompt + corpus_text)
         self._corpus_size = len(self._tokenized_corpus)
 
         self._hash_id_rng = HashIdRandomGenerator(self.base_seed)
@@ -621,8 +666,8 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 local_path = hf_hub_download(repo_id=repo_id, filename="traces.jsonl", repo_type="dataset")
                 logger.info(f"Trace file downloaded to {local_path}")
                 
-                with open(local_path, "r", encoding="utf-8") as f:
-                    for line_idx, line in enumerate(f):
+                with open(local_path, "r", encoding="utf-8") as file_stream:
+                    for line_idx, line in enumerate(file_stream):
                         if line_idx >= self.weka_config.num_dataset_entries:
                             break
                         if line.strip():
@@ -747,8 +792,11 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             offset = int.from_bytes(digest[:8], "big") % max(self._corpus_size - n, 1)
             return list(self._tokenized_corpus[offset : offset + n])
 
+        assert self.tokenizer is not None
+        tokenizer_instance = self.tokenizer
         def decode_tokens_to_text(tokens: List[int]) -> str:
-            return self.tokenizer.get_tokenizer().decode(tokens)
+            decoded = tokenizer_instance.get_tokenizer().decode(tokens)
+            return decoded if isinstance(decoded, str) else " ".join(decoded)
 
         # Reconstruct Parent Calls
         parent_recon = ConversationReconstructor(
