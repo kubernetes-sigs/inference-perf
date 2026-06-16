@@ -45,6 +45,9 @@
   "input_sequence_type_token_ratio": 0.5,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "Wide Expert Parallelism", "Fault-tolerant queueing"],
-    "prefill_decode_ratio": 0.125
+    "prefill_decode_ratio": 0.125,
+    "slos": {
+      "e2e_p99_ms": 30000
+    }
   }
 }

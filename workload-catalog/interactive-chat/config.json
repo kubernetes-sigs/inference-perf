@@ -45,6 +45,10 @@
   "input_sequence_type_token_ratio": 0.35,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "P/D disaggregation"],
-    "prefill_decode_ratio": 13.3
+    "prefill_decode_ratio": 13.3,
+    "slos": {
+      "ttft_p99_ms": 500,
+      "itl_p99_ms": 50
+    }
   }
 }

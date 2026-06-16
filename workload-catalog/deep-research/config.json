@@ -45,6 +45,10 @@
   "input_sequence_type_token_ratio": 0.08,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
-    "prefill_decode_ratio": 150.0
+    "prefill_decode_ratio": 150.0,
+    "slos": {
+      "ttft_p99_ms": 10000,
+      "itl_p99_ms": 100
+    }
   }
 }
