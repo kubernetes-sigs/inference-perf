@@ -141,12 +141,25 @@ class StageGenType(Enum):
 
 
 class SweepConfig(BaseModel):
-    type: StageGenType
-    num_requests: int = 2000
-    timeout: float = 60
-    num_stages: int = 5
-    stage_duration: int = 180
-    saturation_percentile: float = 95
+    """Auto-detect the server's max sustainable throughput (mu_max) and lay out
+    a sweep of load stages around it.
+
+    inference-perf finds mu_max on its own via a closed-loop concurrency search
+    (see ``inference_perf.loadgen.saturation``); you do not configure the search.
+    The only knobs are the shape of the resulting sweep: how many stages and how
+    long each runs.
+
+    Stages are placed by utilization (rho = rate / mu_max), with resolution
+    concentrated at the knee (rho -> 1) where the latency curve bends, plus one
+    above-saturation stage to expose the cliff. The window's bounds are derived
+    from the measurement itself (stage duration, request timeout, mu_max), not
+    from a fixed multiplier, so the layout adapts automatically to any input and
+    output length distribution and any throughput. There is nothing else to tune.
+    """
+
+    type: StageGenType = StageGenType.GEOM
+    num_stages: int = Field(default=10, gt=0, description="Number of load stages to generate")
+    stage_duration: int = Field(default=60, gt=0, description="Duration (s) of each generated stage")
 
 
 class MultiLoRAConfig(BaseModel):

@@ -17,6 +17,13 @@ from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
 from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .saturation import (
+    ProbeResult,
+    SaturationConfig,
+    SaturationResult,
+    find_saturation,
+    throughput_from_counter_series,
+)
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
@@ -53,7 +60,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
+from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict, Iterator
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -62,6 +69,7 @@ from multiprocessing.synchronize import Barrier as SyncBarrier, Event as SyncEve
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
 from functools import partial
+from itertools import repeat
 import logging
 import uvloop
 import numpy as np
@@ -79,6 +87,34 @@ import signal
 from inference_perf.observability.logging import get_console
 
 logger = logging.getLogger(__name__)
+
+# --- Sweep layout (set-and-forget; methodology, not user config) ------------
+# The sweep characterizes the latency-vs-load curve, whose information is
+# concentrated at the knee (utilization rho = lambda/mu_max -> 1). Stages are
+# therefore placed by *utilization*, spaced geometrically in the saturation gap
+# (1 - rho), so resolution clusters at the knee instead of being spent on low
+# load or on the degenerate region far above mu_max. Because every bound is
+# normalized by the *measured* mu_max (which already reflects the configured
+# input/output length distribution and the hardware), the layout is invariant
+# to absolute rate and to I/O lengths: no rate-window multiplier is needed.
+#
+# These constants are not user-facing. Each maps to a measurable requirement and
+# only trades cost for resolution; none of them shift where saturation is judged
+# to be. They replace the former arbitrary, symmetric +/-1.5x rate window.
+
+# Minimum completions a stage must gather for a stable tail-latency estimate.
+# Sets the lowest sampled utilization: rho_min = m_min / (mu_max * duration).
+SWEEP_MIN_REQUESTS_PER_STAGE: int = 200
+# The highest stable stage targets at most this fraction of the request timeout
+# (latency read off the probes via Little's law), so it records latency rather
+# than a wall of timeouts.
+SWEEP_TIMEOUT_LATENCY_FRACTION: float = 0.5
+# Hard ceiling on stable utilization: never sit on the 1/(1-rho) asymptote.
+SWEEP_RHO_CEILING: float = 0.98
+# Deliberate above-saturation stages. In open loop every point past mu_max is
+# degenerate (throughput pinned at mu_max, latency limited by the timeout), so
+# one stage is enough to confirm the latency cliff.
+SWEEP_OVERLOAD_STAGES: int = 1
 
 
 class RequestQueueData(NamedTuple):
@@ -306,6 +342,7 @@ class LoadGenerator:
         self.workers: List[Worker] = []
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
+        self.request_timeout = load_config.request_timeout
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
         signal.signal(signal.SIGINT, self._sigint_handler)
@@ -742,6 +779,8 @@ class LoadGenerator:
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[Progress] = None,
+        num_requests_override: Optional[int] = None,
+        closed_loop: bool = False,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -751,21 +790,30 @@ class LoadGenerator:
         request_phase.set()
         with finished_requests_counter.get_lock():
             finished_requests_counter.value = 0
-        timer = self.get_timer(rate, duration)
 
         # Allow generation a second to begin populating the queue so the workers
         # don't miss the initial scheuled request times
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
+        if num_requests_override is not None:
+            num_requests = num_requests_override
+        elif isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
             num_requests = self.datagen.get_request_count()
         else:
             num_requests = int(rate * duration)
 
         stage_status = StageStatus.RUNNING
 
-        time_generator = timer.start_timer(start_time)
+        time_generator: Iterator[float]
+        if closed_loop:
+            # Closed-loop probe (saturation search): dispatch all requests
+            # immediately and let the worker semaphore (concurrency_level) bound
+            # the number in flight. Avoids the open-loop timer's O(rate*duration)
+            # preallocation for the high effective rate this would imply.
+            time_generator = repeat(start_time)
+        else:
+            time_generator = self.get_timer(rate, duration).start_timer(start_time)
         if isinstance(self.datagen, DataGenerator):
             data_generator = self.datagen.get_data()
         else:
@@ -843,6 +891,181 @@ class LoadGenerator:
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
+    @staticmethod
+    def _stable_utilization_bounds(
+        mu_max: float,
+        probes: List[ProbeResult],
+        stage_duration: float,
+        timeout: Optional[float],
+    ) -> Tuple[float, float]:
+        """Lowest/highest utilization (``rho = lambda / mu_max``) for the stable band.
+
+        Both bounds are *derived* from operational requirements, never chosen, so
+        they never bias where the knee is judged to be:
+
+        * ``rho_min`` is the lowest load whose stage still completes
+          ``SWEEP_MIN_REQUESTS_PER_STAGE`` requests, so even the lightest stage
+          yields a stable tail-latency estimate.
+        * ``rho_max`` is the highest load whose predicted latency stays under
+          ``SWEEP_TIMEOUT_LATENCY_FRACTION`` of the request timeout, so the stage
+          measures latency rather than timeouts. Latency is read off the
+          closed-loop probes via Little's law (``R = N / X(N)``). With no timeout
+          configured it falls back to the asymptote ceiling.
+
+        Note: closed-loop latency underestimates open-loop latency at the same
+        throughput (Poisson arrivals queue more than a fixed population), so the
+        timeout-derived cap is mildly optimistic; ``SWEEP_RHO_CEILING`` backstops
+        it.
+        """
+        rho_min = SWEEP_MIN_REQUESTS_PER_STAGE / (mu_max * stage_duration)
+        # Keep the floor meaningfully below saturation even for short stages.
+        rho_min = min(max(rho_min, 1e-3), 0.5)
+
+        rho_max = SWEEP_RHO_CEILING
+        if timeout and timeout > 0:
+            budget = SWEEP_TIMEOUT_LATENCY_FRACTION * timeout
+            under = [p.throughput for p in probes if p.throughput > 0 and (p.concurrency / p.throughput) <= budget]
+            if under:
+                rho_max = min(rho_max, max(under) / mu_max)
+        return rho_min, rho_max
+
+    @staticmethod
+    def _generate_sweep_rates(
+        sat: SaturationResult,
+        size: int,
+        gen_type: StageGenType,
+        stage_duration: float,
+        timeout: Optional[float],
+    ) -> List[float]:
+        """Lay out ``size`` open-loop arrival rates around the measured saturation rate.
+
+        Stages are placed by utilization ``rho = lambda / mu_max`` with geometric
+        spacing in the saturation gap ``(1 - rho)``, so resolution concentrates
+        where the latency curve bends (``rho -> 1``) rather than on low load or on
+        the degenerate region far above ``mu_max``. A single deliberate
+        above-saturation stage confirms the latency cliff. Because the layout is
+        normalized by the measured ``mu_max`` (which itself reflects the configured
+        input/output lengths), it is invariant to absolute rate and to I/O lengths.
+
+        ``LINEAR`` keeps the same data-derived bounds but spaces ``rho`` evenly
+        between them.
+        """
+        mu_max = sat.max_throughput
+
+        # No plateau was found (throughput still climbing at the harness ceiling):
+        # there is no knee to bracket, so a centered sweep would be meaningless.
+        # Ramp from a statistically-sufficient floor up to the lower-bound mu_max
+        # instead; the caller already warns that mu_max is a lower bound.
+        if sat.harness_limited:
+            lo = SWEEP_MIN_REQUESTS_PER_STAGE / stage_duration
+            if mu_max > 0:
+                lo = min(lo, mu_max / 2)
+            space = np.geomspace if gen_type == StageGenType.GEOM else np.linspace
+            return sorted({float(round(r, 3)) for r in space(lo, mu_max, num=size)})
+
+        # Reserve at most one above-saturation stage, but never the whole budget.
+        n_over = min(SWEEP_OVERLOAD_STAGES, max(size - 2, 0))
+        k_stable = size - n_over
+
+        rho_min, rho_max = LoadGenerator._stable_utilization_bounds(mu_max, sat.probes, stage_duration, timeout)
+        if rho_min >= rho_max:
+            # mu_max * stage_duration is too small to fit a sufficiency-respecting
+            # band: the stages are too short for this throughput. Use a thin band
+            # just below saturation; per-stage request counts will be low.
+            rho_min = 0.5 * rho_max
+
+        if k_stable <= 1:
+            rhos = np.array([rho_max], dtype=float)
+        elif gen_type == StageGenType.GEOM:
+            # Geometric in the gap g = 1 - rho => points cluster as rho -> rho_max.
+            gaps = np.geomspace(1.0 - rho_min, 1.0 - rho_max, num=k_stable)
+            rhos = 1.0 - gaps
+        elif gen_type == StageGenType.LINEAR:
+            rhos = np.linspace(rho_min, rho_max, num=k_stable)
+        else:
+            raise ValueError(f"Unsupported stage generation type: {gen_type}")
+
+        rates = [float(r * mu_max) for r in rhos]
+
+        if n_over:
+            # One above-saturation stage. Its backlog makes the end-of-stage queue
+            # delay reach the timeout (backlog = mu_max * timeout), so the cliff is
+            # observed once instead of with many clamped, near-identical points.
+            if timeout and timeout > 0:
+                lam_over = mu_max * (1.0 + timeout / stage_duration)
+            else:
+                lam_over = mu_max + SWEEP_MIN_REQUESTS_PER_STAGE / stage_duration
+            rates.append(lam_over)
+
+        return sorted({float(round(r, 3)) for r in rates})
+
+    async def _measure_concurrency(
+        self,
+        n: int,
+        request_queue: RequestQueue[RequestQueueData],
+        active_requests_counter: "Synchronized[int]",
+        finished_requests_counter: "Synchronized[int]",
+        request_phase: SyncEvent,
+        cancel_signal: SyncEvent,
+        stage_barrier: SyncBarrier,
+        cfg: SaturationConfig,
+    ) -> ProbeResult:
+        """Run the server at exactly ``n`` in-flight requests and measure steady-state throughput.
+
+        Drives a closed-loop probe: sets each worker's concurrency to total ``n``,
+        floods immediate-dispatch requests so the semaphore is the sole limiter,
+        samples the cumulative completion counter, and derives a batch-means
+        throughput estimate (warm-up discarded) once ``n * cfg.requests_per_slot``
+        requests have completed or the per-probe budget elapses.
+        """
+        self._set_worker_concurrency(n)
+
+        samples: List[Tuple[float, int]] = []
+
+        async def aggregator() -> None:
+            while True:
+                samples.append((time.perf_counter(), finished_requests_counter.value))
+                await sleep(0.25)
+
+        aggregator_task = create_task(aggregator())
+
+        await self.run_stage(
+            -1,
+            0.0,
+            0,
+            request_queue,
+            active_requests_counter,
+            finished_requests_counter,
+            request_phase,
+            cancel_signal=cancel_signal,
+            timeout=cfg.max_probe_seconds,
+            concurrency_level=n,
+            num_requests_override=n * cfg.requests_per_slot,
+            closed_loop=True,
+        )
+        # Pair with the worker-side barrier so workers advance past the stage
+        # boundary and re-read the (next probe's) concurrency at their outer loop.
+        stage_barrier.wait()
+
+        aggregator_task.cancel()
+        try:
+            await aggregator_task
+        except CancelledError:
+            pass
+
+        throughput, ci_half_width, n_batches = throughput_from_counter_series(samples, min_batches=cfg.min_batches)
+        converged = throughput > 0 and n_batches >= cfg.min_batches and (ci_half_width / throughput) <= cfg.relative_precision
+        logger.info(
+            f"Probe N={n}: {throughput:.2f} req/s (+/-{ci_half_width:.2f}, batches={n_batches}, converged={converged})"
+        )
+        return ProbeResult(
+            concurrency=n,
+            throughput=throughput,
+            ci_half_width=ci_half_width,
+            n_batches=n_batches,
+            converged=converged,
+        )
+
     async def preprocess(
         self,
         client: ModelServerClient,
@@ -851,81 +1074,71 @@ class LoadGenerator:
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: SyncEvent,
+        stage_barrier: SyncBarrier,
     ) -> None:
-        """
-        Runs a preliminary load test to automatically determine the server's saturation point
-        and generate a suitable series of load stages for the main benchmark.
+        """Determine the server's max sustainable throughput (mu_max) via a
+        closed-loop concurrency search, then generate the open-loop sweep stages.
 
-        An aggregator task samples the active requests and then the burn down rate is
-        calculated from the samples. Saturation is derived from a percentile of the
-        sampled burn down rates.
+        Probes a geometric ladder of fixed concurrency levels and finds where the
+        throughput-vs-concurrency curve flattens (the plateau is mu_max). Each
+        probe is a stationary steady-state measurement whose duration is governed
+        by a precision target, not a fixed window. The bracketing/plateau math
+        lives in ``inference_perf.loadgen.saturation`` and is unit tested there.
         """
-        logger.info("Running preprocessing stage")
-        results: List[Tuple[float, int]] = []
-
         if self.sweep_config is None:
             raise Exception("sweep_config cannot be none")
+        sweep = self.sweep_config
 
-        # Aggregator collects timestamped value of active_requests throughout the preprocessing
-        async def aggregator() -> None:
-            while True:
-                results.append((time.perf_counter(), active_requests_counter.value))
-                await sleep(0.5)
+        # Concurrency ceiling is the load generator's own limit (num_workers *
+        # worker_max_concurrency). Reaching it without a plateau is reported as a
+        # lower bound, not a guess. The search itself runs on robust internal
+        # defaults; nothing here is user-configured.
+        harness_ceiling = self.num_workers * self.worker_max_concurrency
+        cfg = SaturationConfig(max_concurrency=harness_ceiling)
+        logger.info(f"Running closed-loop saturation search (concurrency 1..{harness_ceiling})")
 
-        aggregator_task = create_task(aggregator())
+        # Park workers at request_phase.wait() so the first probe's concurrency
+        # change is picked up at the worker outer-loop boundary.
+        request_phase.clear()
+        stage_barrier.wait()
 
-        stage_id = -1
-        duration = 5
-        rate = self.sweep_config.num_requests / duration
-        timeout = self.sweep_config.timeout
-        start_time = time.perf_counter()
-        await self.run_stage(
-            stage_id,
-            rate,
-            duration,
-            request_queue,
-            active_requests_counter,
-            finished_requests_counter,
-            request_phase,
-            timeout=timeout,
-            cancel_signal=cancel_signal,
+        async def probe(n: int) -> ProbeResult:
+            return await self._measure_concurrency(
+                n,
+                request_queue,
+                active_requests_counter,
+                finished_requests_counter,
+                request_phase,
+                cancel_signal,
+                stage_barrier,
+                cfg,
+            )
+
+        result = await find_saturation(probe, cfg)
+        mu_max = result.max_throughput
+
+        if mu_max <= 0:
+            raise Exception("Loadgen preprocessing failed to determine a valid saturation point (no throughput measured).")
+        if result.harness_limited:
+            logger.warning(
+                f"Throughput still climbing at the concurrency ceiling ({harness_ceiling}); "
+                f"mu_max={mu_max:.2f} req/s is a LOWER BOUND. Raise num_workers / worker_max_concurrency to refine it."
+            )
+        elif not result.confident:
+            logger.warning(
+                f"Saturation plateau was not confirmed to target precision; mu_max={mu_max:.2f} req/s is approximate. "
+                "The server's throughput may be too noisy to pin down at the configured probe budget."
+            )
+        logger.info(
+            f"Saturation: mu_max={mu_max:.2f} req/s, knee at concurrency {result.knee_concurrency} "
+            f"(probes: {[(p.concurrency, round(p.throughput, 2)) for p in result.probes]})"
         )
 
-        aggregator_task.cancel()
-        try:
-            await aggregator_task
-        except CancelledError:
-            pass
+        # Restore worker concurrency for the open-loop benchmark stages.
+        self._set_worker_concurrency(harness_ceiling)
 
-        # Ensure that we don't calculate saturation based on the post-timeout drain
-        results = [(timestamp, requests) for timestamp, requests in results if timestamp < start_time + timeout]
-        # Calculate the sampled QPS by interval between the samples
-        rates = [
-            abs((current_requests - previous_requests) / (current_timestamp - previous_timestamp))
-            for (current_timestamp, current_requests), (previous_timestamp, previous_requests) in zip(
-                results[1:], results[:-1], strict=True
-            )
-            if current_requests - previous_requests < 0
-        ]
-
-        if len(rates) <= 1:
-            raise Exception(
-                "Loadgen preprocessing failed to gather enough samples to determine saturation, try increasing the num_requests or timeout"
-            )
-
-        # Generate new stages
-        logger.debug(f"Determining saturation from rates: {[f'{rate:0.2f}' for rate in sorted(rates)]}")
-        saturation_point = float(np.percentile(rates, self.sweep_config.saturation_percentile))
-        logger.info(f"Saturation point estimated at {saturation_point:0.2f} concurrent requests.")
-
-        def generateRates(target_request_rate: float, size: int, gen_type: StageGenType) -> List[float]:
-            if gen_type == StageGenType.GEOM:
-                return [float(round(1 + target_request_rate - rr, 2)) for rr in np.geomspace(target_request_rate, 1, num=size)]
-            elif gen_type == StageGenType.LINEAR:
-                return [float(round(r, 2)) for r in np.linspace(1, target_request_rate, size)]
-
-        rates = generateRates(saturation_point, self.sweep_config.num_stages, self.sweep_config.type)
-        self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
+        rates = self._generate_sweep_rates(result, sweep.num_stages, sweep.type, sweep.stage_duration, self.request_timeout)
+        self.stages = [StandardLoadStage(rate=r, duration=sweep.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
     async def mp_run(self, client: ModelServerClient) -> None:
@@ -945,8 +1158,10 @@ class LoadGenerator:
 
         # Create list of workers to process requests
         for id in range(self.num_workers):
-            # Create shared value for each worker's max concurrency if concurrent load type
-            if self.load_type == LoadType.CONCURRENT:
+            # Create shared value for each worker's max concurrency for the
+            # CONCURRENT load type, or whenever a sweep is configured (the
+            # closed-loop saturation search drives workers at fixed concurrency).
+            if self.load_type == LoadType.CONCURRENT or self.sweep_config is not None:
                 shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
@@ -973,7 +1188,13 @@ class LoadGenerator:
         if self.sweep_config:
             try:
                 await self.preprocess(
-                    client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
+                    client,
+                    request_queue,
+                    active_requests_counter,
+                    finished_requests_counter,
+                    request_phase,
+                    cancel_signal,
+                    stage_barrier,
                 )
             except Exception as e:
                 logger.error(f"Preprocessing exception: {e}")
