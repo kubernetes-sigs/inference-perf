@@ -142,16 +142,28 @@ class StageGenType(Enum):
 
 
 class SweepConfig(StrictBaseModel):
-    type: StageGenType = Field(description="How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'.")
-    num_requests: int = Field(
-        default=2000, description="Number of requests sent in the initial burst used to find the saturation rate."
+    """Auto-detect the server's max sustainable throughput (mu_max) and lay out
+    a sweep of load stages around it.
+
+    inference-perf finds mu_max on its own via a closed-loop concurrency search
+    (see ``inference_perf.loadgen.saturation``); you do not configure the search.
+    The only knobs are the shape of the resulting sweep: how many stages and how
+    long each runs.
+
+    Stages are placed by utilization (rho = rate / mu_max), with resolution
+    concentrated at the knee (rho -> 1) where the latency curve bends, plus one
+    above-saturation stage to expose the cliff. The window's bounds are derived
+    from the measurement itself (stage duration, request timeout, mu_max), not
+    from a fixed multiplier, so the layout adapts automatically to any input and
+    output length distribution and any throughput. There is nothing else to tune.
+    """
+
+    type: StageGenType = Field(
+        default=StageGenType.GEOM,
+        description="How stage rates are spaced across the sweep window: 'geometric' or 'linear'.",
     )
-    timeout: float = Field(default=60, description="Time limit in seconds for the saturation probe stage.")
-    num_stages: int = Field(default=5, description="Number of load stages to generate.")
-    stage_duration: int = Field(default=180, description="Duration of each generated stage in seconds.")
-    saturation_percentile: float = Field(
-        default=95, description="Percentile of observed request rates taken as the saturation point."
-    )
+    num_stages: int = Field(default=10, gt=0, description="Number of load stages to generate.")
+    stage_duration: int = Field(default=60, gt=0, description="Duration of each generated stage in seconds.")
 
 
 class MultiLoRAConfig(StrictBaseModel):

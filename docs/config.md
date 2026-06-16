@@ -169,19 +169,27 @@ load:
 
 #### Load Sweeps
 
-Defines the preprocessing phase to determine load based on
+Defines the preprocessing phase that automatically determines load based on
 target service saturation.
+
+inference-perf finds the server's maximum sustainable throughput (`mu_max`) on
+its own via a closed-loop concurrency search, so the search itself is not
+configured. The only knobs shape the resulting sweep. Stages are placed by
+utilization (`rho = rate / mu_max`), with resolution concentrated at the knee
+(`rho -> 1`, where latency bends sharply) plus one above-saturation stage to
+expose the cliff. The window's bounds are derived from the measurement itself
+(stage duration, request timeout, `mu_max`) rather than a fixed multiplier, so
+the layout adapts automatically to any input/output length distribution and any
+throughput. There is nothing else to tune.
 
 ```yaml
 load:
   type: constant|poisson
   interval: 15
-  sweep:                        # Automatically determine saturation point of the target service and generate stages
-    type: linear|geometric      # Produce a linear distribution [1.0, saturation] of rates for num_stages or geometric distribution clustered around the saturation point
-    timeout: 60                 # Length of time to run load to determine saturation
-    num_stages: 5               # Number of stages to generate
-    stage_duration: 180         # Duration of each generated stage
-    saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
+  sweep:                        # Auto-detect mu_max, then place stages by utilization around it
+    type: geometric|linear      # Spacing of the generated stage rates (geometric concentrates at the knee)
+    num_stages: 10              # Number of stages to generate
+    stage_duration: 60          # Duration (s) of each generated stage
 ```
 
 ### Model Server

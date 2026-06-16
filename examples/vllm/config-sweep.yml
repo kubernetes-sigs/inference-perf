@@ -1,12 +1,10 @@
 load:
   type: constant
   interval: 15
-  sweep:                   # Automatically determine saturation point of the target service and generate stages
-    type: linear            # Produce a linear distribution [1.0, saturation] of rates for num_stages
-    timeout: 60                 # Length of time to run load to determine saturation
-    num_stages: 10              # Number of stages to generate
-    stage_duration: 60          # Duration of each generated stage
-    saturation_percentile: 95   # Percentile of sampled rates to select as saturation point
+  sweep:                   # inference-perf finds the saturation rate (mu_max) on its own, then places stages by utilization around it
+    type: geometric         # geometric|linear spacing (geometric concentrates resolution at the knee)
+    num_stages: 10          # Number of stages to generate
+    stage_duration: 60      # Duration (s) of each generated stage
 api:
   type: completion
 server:

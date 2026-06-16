@@ -223,12 +223,9 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
 | `--load.stages` | JSON | Load stages to run in sequence. The stage fields depend on the load type. |
-| `--load.sweep.type` | Enum (geometric, linear) | How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'. |
-| `--load.sweep.num_requests` | int | Number of requests sent in the initial burst used to find the saturation rate. |
-| `--load.sweep.timeout` | float | Time limit in seconds for the saturation probe stage. |
+| `--load.sweep.type` | Enum (geometric, linear) | How stage rates are spaced across the sweep window: 'geometric' or 'linear'. |
 | `--load.sweep.num_stages` | int | Number of load stages to generate. |
 | `--load.sweep.stage_duration` | int | Duration of each generated stage in seconds. |
-| `--load.sweep.saturation_percentile` | float | Percentile of observed request rates taken as the saturation point. |
 | `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the CPU count. |
 | `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
 | `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |

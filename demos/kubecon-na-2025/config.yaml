@@ -14,7 +14,6 @@ load:
   interval: 1.0
   sweep:
     type: linear
-    timeout: 180
     num_stages: 7
     stage_duration: 60
   num_workers: 44
