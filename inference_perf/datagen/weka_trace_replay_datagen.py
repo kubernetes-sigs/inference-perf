@@ -49,7 +49,9 @@ hashes recorded in the trace.
      user prompt. Because KV-cache blocks are aligned on fixed boundaries, this 1-token shift would cause a
      100% cache miss on all subsequent user prompt blocks.
    - History substitution preserves the exact token offsets and boundaries, guaranteeing 100% KV-cache alignment
-     under deterministic (temperature=0) benchmarks.
+     under deterministic (temperature=0) benchmarks. Caveat is that this is not always possible when benchmarking
+     different models. But this approach is preserved so we can resemble the KV cache tester approach for this
+     replay which is what we are trying to emulate.
 """
 
 from dataclasses import dataclass
