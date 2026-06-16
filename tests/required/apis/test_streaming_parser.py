@@ -14,7 +14,7 @@
 
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import parse_sse_stream, StreamInterruptedError
 import pytest
 
 
@@ -98,3 +98,41 @@ async def test_parse_sse_stream_timestamps_only_content_events() -> None:
     assert server_usage == {"prompt_tokens": 5, "completion_tokens": 2}, (
         "usage info from a content-less chunk should still be surfaced separately"
     )
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
+    """A stream that breaks partway (e.g. truncated SSE / dropped connection on a
+    200 response) must raise StreamInterruptedError carrying the bytes received so
+    far. This is what lets the per-request report show what the server actually sent
+    instead of an empty response body, so 200-but-failed requests stay diagnosable."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": " world"}}]}\n\n',
+    ]
+    boom = ConnectionResetError("Response payload is not completed")
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+        raise boom
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    with pytest.raises(StreamInterruptedError) as exc_info:
+        await parse_sse_stream(mock_response, extract_content)
+
+    err = exc_info.value
+    # The original transport exception is preserved for accurate error_type/error_msg.
+    assert err.original is boom
+    assert isinstance(err.original, ConnectionResetError)
+    # The bytes received before the break are retained, not discarded.
+    assert "Hello" in err.raw_content
+    assert "world" in err.raw_content

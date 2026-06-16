@@ -26,6 +26,22 @@ from typing import Any, Callable, List, Optional, Tuple
 from aiohttp import ClientResponse
 
 
+class StreamInterruptedError(Exception):
+    """Raised when an SSE stream fails partway through being read.
+
+    Carries the raw bytes received before the failure (``raw_content``) so
+    callers can still surface what the server actually sent, which is the whole
+    point of per-request error capture. The triggering exception is preserved as
+    ``original`` so callers can report its real type and message rather than this
+    wrapper's.
+    """
+
+    def __init__(self, original: Exception, raw_content: str) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.raw_content = raw_content
+
+
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
 ) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
@@ -63,30 +79,37 @@ async def parse_sse_stream(
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
 
-    async for chunk in response.content.iter_any():
-        raw_content += chunk
-        buffer += chunk
-        while b"\n\n" in buffer:
-            message, buffer = buffer.split(b"\n\n", 1)
-            message_time = time.perf_counter()
-            done = False
-            for line in message.split(sep=b"\n"):
-                if line.startswith(b"data:"):
-                    data_str = line.removeprefix(b"data: ").strip()
-                    if data_str == b"[DONE]":
-                        done = True
-                        break
-                    try:
-                        data = json.loads(data_str)
-                        if usage := data.get("usage"):
-                            server_usage = usage
-                        if content := extract_content(data):
-                            output_text += content
-                            chunk_times.append(message_time)
-                            response_chunks.append(data_str.decode("utf-8", errors="ignore"))
-                    except (json.JSONDecodeError, IndexError):
-                        continue
-            if done:
-                break
+    try:
+        async for chunk in response.content.iter_any():
+            raw_content += chunk
+            buffer += chunk
+            while b"\n\n" in buffer:
+                message, buffer = buffer.split(b"\n\n", 1)
+                message_time = time.perf_counter()
+                done = False
+                for line in message.split(sep=b"\n"):
+                    if line.startswith(b"data:"):
+                        data_str = line.removeprefix(b"data: ").strip()
+                        if data_str == b"[DONE]":
+                            done = True
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            if usage := data.get("usage"):
+                                server_usage = usage
+                            if content := extract_content(data):
+                                output_text += content
+                                chunk_times.append(message_time)
+                                response_chunks.append(data_str.decode("utf-8", errors="ignore"))
+                        except (json.JSONDecodeError, IndexError):
+                            continue
+                if done:
+                    break
+    except Exception as e:
+        # The stream broke partway (e.g. a truncated SSE stream, a dropped
+        # connection, or a proxy that 200s then sends an error page). Re-raise
+        # with the bytes received so far attached so the caller can still record
+        # what the server actually sent instead of an empty response body.
+        raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
     return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
