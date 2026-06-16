@@ -273,7 +273,11 @@ def main_cli() -> None:
     # Create multiprocessing manager for session replay datagens if needed.
     # Must be created before workers are forked.
     mp_manager = None
-    if config.data and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay) and config.load.num_workers > 0:
+    if (
+        config.data
+        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay)
+        and config.load.num_workers > 0
+    ):
         mp_manager = mp.Manager()
 
     datagen: BaseGenerator

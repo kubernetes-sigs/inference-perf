@@ -14,8 +14,9 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
 | `--api.session_id_header_key` | str | Matches api.session_id_header_key in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
+| `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
 | `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
 | `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
 | `--data.input_distribution.mean` | float | Matches data.input_distribution.mean in config |
@@ -125,6 +126,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
 | `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
 | `--data.otel_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
@@ -141,6 +143,27 @@ Example: "lambda x: x['benchmark'] == 'gsm8k'" or "lambda x: 'spans' in x and le
 Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.otel_trace_replay.attribute_to_header_map` | JSON | Map OTel span attributes to HTTP headers |
 | `--data.otel_trace_replay.attribute_to_label_map` | JSON | Map OTel span attributes to metrics reporting labels |
+| `--data.weka_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
+| `--data.weka_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
+| `--data.weka_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
+| `--data.weka_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.weka_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
+| `--data.weka_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
+| `--data.weka_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
+| `--data.weka_trace_replay.include_errors` | boolean | Include spans with error status |
+| `--data.weka_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--data.weka_trace_replay.trace_directory` | str | Directory containing Weka JSON trace files |
+| `--data.weka_trace_replay.trace_files` | JSON | List of paths to specific Weka JSON trace files |
+| `--data.weka_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
+  - String: 'username/dataset-name'
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}
+Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
+| `--data.weka_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between turns in seconds |
+| `--data.weka_trace_replay.ignore_trace_delays` | boolean | Ignore delays/delays from original trace and run back-to-back |
+| `--data.weka_trace_replay.use_think_time_only` | boolean | Only use think_time attribute instead of timestamps |
+| `--data.weka_trace_replay.default_block_size` | int | Default block size if not specified in trace |
+| `--data.weka_trace_replay.num_dataset_entries` | int | Max number of dataset traces to load from HuggingFace |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |

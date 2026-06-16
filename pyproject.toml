@@ -97,6 +97,7 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 "docker:e2e-test:run".shell = "rm result && pdm run docker:e2e-test:build --iidfile result && docker run --rm -it $(< result)"
 
 [tool.ruff]
+exclude = ["scratch", "push-to-gcs"]
 # The GitHub editor is 127 chars wide
 line-length = 127
 indent-width = 4

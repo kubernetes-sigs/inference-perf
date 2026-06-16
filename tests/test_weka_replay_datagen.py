@@ -202,6 +202,7 @@ def test_weka_trace_replay_generator_mock(tmp_path: Path) -> None:
     data_cfg = DataConfig(type=DataGenType.WekaTraceReplay)
     # Setup weka_trace_replay config mock
     from inference_perf.config.datagen.replay import WekaTraceReplayConfig
+
     weka_cfg = WekaTraceReplayConfig(
         trace_files=[str(trace_file)],
         default_block_size=2,
@@ -278,6 +279,7 @@ def test_weka_trace_replay_generator_mock_no_warp(tmp_path: Path) -> None:
     # Datagen Config with trace_idle_gap_cap_seconds = 0 (disabled)
     data_cfg = DataConfig(type=DataGenType.WekaTraceReplay)
     from inference_perf.config.datagen.replay import WekaTraceReplayConfig
+
     weka_cfg = WekaTraceReplayConfig(
         trace_files=[str(trace_file)],
         default_block_size=2,
@@ -303,4 +305,3 @@ def test_weka_trace_replay_generator_mock_no_warp(tmp_path: Path) -> None:
     assert events[0].t_start_ms == 100
     assert events[1].t_start_ms == 100100
     assert events[1].wait_ms == 100100 - events[0].t_end_ms
-

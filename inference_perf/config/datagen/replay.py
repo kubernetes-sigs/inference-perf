@@ -195,4 +195,3 @@ class WekaTraceReplayConfig(SessionReplayConfig):
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
         return self
-
