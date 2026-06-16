@@ -48,7 +48,9 @@
     "prefill_decode_ratio": 13.3,
     "slos": {
       "ttft_p99_ms": 500,
-      "itl_p99_ms": 50
+      "ttft_p99_ms_justification": "Taken from the MLPerf v5.0 Interactive target for Llama 3.1 8B (500ms p99 time-to-first-token; https://github.com/mlcommons/inference/blob/master/loadgen/mlperf.conf), and kept under the 1-second limit for a user's train of thought to stay uninterrupted (Nielsen, https://www.nngroup.com/articles/response-times-3-important-limits/).",
+      "itl_p99_ms": 50,
+      "itl_p99_ms_justification": "Interactive chat streams output to a human reader, so the per-token rate only needs to outpace reading. MLPerf v5.0 defines an Interactive tier at 30-40ms per token (https://mlcommons.org/2025/04/llm-inference-v5/); 50ms is set just above that, about twice as fast as the ~100ms per token that already exceeds typical reading speed (Databricks, https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices)."
     }
   }
 }

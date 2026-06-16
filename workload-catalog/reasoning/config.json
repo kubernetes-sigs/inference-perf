@@ -48,7 +48,9 @@
     "prefill_decode_ratio": 0.125,
     "slos": {
       "ttft_p99_ms": 2000,
-      "itl_p99_ms": 100
+      "ttft_p99_ms_justification": "Taken from the MLPerf v5.0 Server time-to-first-token target (2s; https://mlcommons.org/2025/04/llm-inference-v5/). Inputs here are small (up to 5,000 tokens), so prefill is quick and this target is easily met; the cost of a reasoning request is in its long generation, not first-token latency.",
+      "itl_p99_ms": 100,
+      "itl_p99_ms_justification": "Taken from the MLPerf v5.0 Server inter-token latency target for Llama 3.1 8B (100ms; https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc). The thinking phase is not shown to the user, so the per-token rate is not bound by reading speed."
     }
   }
 }

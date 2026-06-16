@@ -48,8 +48,11 @@
     "prefill_decode_ratio": 30.0,
     "slos": {
       "ttft_p99_ms": 15000,
+      "ttft_p99_ms_justification": "MLPerf v5.0 Server time-to-first-token targets for large models range from 2s (Llama 2 70B) to 6s (Llama 3.1 405B; https://mlcommons.org/2025/04/llm-inference-v5/). This workload's inputs are far larger (up to 80,000 tokens) and it runs offline with no user waiting on the first token, so a ceiling of 15s, a few times the largest of those targets, is comfortably loose.",
       "itl_p99_ms": 100,
-      "e2e_p99_ms": 430000
+      "itl_p99_ms_justification": "Taken from the MLPerf v5.0 Server inter-token latency target for Llama 3.1 8B (100ms; https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc). Because this is an offline batch job, output is not streamed to a person reading it live, so the tighter interactive target (50ms) is unnecessary.",
+      "e2e_p99_ms": 430000,
+      "e2e_p99_ms_justification": "A worst-case request is time-to-first-token (15s) plus generation of the maximum 2,000 output tokens at 100ms each (200s), about 215s of service. Doubling that to allow for time spent waiting behind other jobs on a busy batch server gives the stated value."
     }
   }
 }
