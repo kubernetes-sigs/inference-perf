@@ -86,11 +86,7 @@ class HFShareGPTDataGenerator(DataGenerator):
         if self.tokenizer is None:
             raise Exception("Tokenizer is required for completion API of HFShareGPTDataGenerator")
         while True:
-            try:
-                data = next(self.sharegpt_dataset)
-            except StopIteration:
-                logger.warning("ShareGPT dataset exhausted unexpectedly, re-initializing cycle")
-                break
+            data = next(self.sharegpt_dataset)
             if (
                 data is None
                 or data[self.data_key] is None
@@ -147,11 +143,7 @@ class HFShareGPTDataGenerator(DataGenerator):
             raise Exception("Tokenizer is required for chat API of HFShareGPTDataGenerator")
 
         while True:
-            try:
-                data = next(self.sharegpt_dataset)
-            except StopIteration:
-                logger.warning("ShareGPT dataset exhausted unexpectedly, re-initializing cycle")
-                break
+            data = next(self.sharegpt_dataset)
             if (
                 data is None
                 or data[self.data_key] is None
