@@ -13,11 +13,8 @@ spec:
   template:
     metadata:
       labels:
-        ai.gke.io/inference-server: vllm
-        ai.gke.io/model: qwen3-32b
         app: qwen3-32b-vllm-inference-server
         deployment: qwen3-32b-vllm-deployment
-        examples.ai.gke.io/source: blueprints
     spec:
       containers:
       - args:
@@ -65,9 +62,24 @@ spec:
         volumeMounts:
         - mountPath: /dev/shm
           name: dshm
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            # GFD clusters (EKS / AKS / on-prem NVIDIA GPU Operator).
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-H100-80GB-HBM3
+            # GKE managed GPU nodes.
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: In
+                values:
+                - nvidia-h100-80gb
+                - nvidia-h100-mega-80gb
       dnsPolicy: ClusterFirst
-      nodeSelector:
-        cloud.google.com/gke-accelerator: nvidia-h100-80gb
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext: {}

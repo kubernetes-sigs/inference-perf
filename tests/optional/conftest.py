@@ -14,10 +14,10 @@
 """Pytest plumbing for the optional (live-backend) test tier.
 
 Flow per live test:
-  infer nodeSelector from the case manifest
-    -> find supplied clusters with >=1 matching node
+  infer the required nodeAffinity from the case manifest
+    -> find supplied clusters with >=1 live node satisfying it (any OR'd term)
     -> skip loudly if none
-    -> acquire a slot in that (cluster, nodeSelector) class (capacity = node count)
+    -> acquire a slot in that (cluster, requirement) class (capacity = node count)
     -> hand the test a Cluster handle (kubeconfig + fresh namespace)
     -> on teardown, delete the namespace (frees the GPU) and release the slot.
 """
@@ -134,19 +134,19 @@ def cluster_for_case(request: pytest.FixtureRequest, kubeconfigs: list[str | Non
         def test_case(cluster_for_case): ...
     """
     manifest_path = request.param
-    node_selector = requirements.infer_node_selector(manifest_path)
+    requirement = requirements.infer_node_affinity(manifest_path)
 
     # Live-nodes-only matching. capacity is the contention-class size.
-    candidates = [(kc, requirements.matching_node_count(node_selector, kc)) for kc in kubeconfigs]
+    candidates = [(kc, requirements.matching_node_count(requirement, kc)) for kc in kubeconfigs]
     usable = [(kc, n) for kc, n in candidates if n > 0]
     if not usable:
         pytest.skip(
-            f"no supplied cluster has a live node matching nodeSelector "
-            f"{node_selector or '{}'} (scaled-to-zero pools are not detected)"
+            f"no supplied cluster has a live node satisfying "
+            f"{requirements.describe(requirement)} (scaled-to-zero pools are not detected)"
         )
 
     kubeconfig, capacity = usable[0]
-    key = slots.class_key(kubeconfig, node_selector)
+    key = slots.class_key(kubeconfig, repr(sorted(requirement)))
     namespace = f"{NAMESPACE_PREFIX}-{uuid.uuid4().hex[:8]}"
 
     with slots.acquire_slot(key, capacity):

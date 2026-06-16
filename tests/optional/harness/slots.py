@@ -13,7 +13,7 @@
 # limitations under the License.
 """A file-based counting semaphore keyed by contention class.
 
-One contention class == one (kubeconfig, nodeSelector signature) pair. Capacity ==
+One contention class == one (kubeconfig, hardware-requirement) pair. Capacity ==
 matching node count. Tests in the same class acquire a slot before deploying and
 release it on teardown, so they queue when they outnumber the nodes but reuse the
 hardware sequentially. Distinct classes share nothing and run fully in parallel.
@@ -36,8 +36,8 @@ from pathlib import Path
 _ROOT = Path(tempfile.gettempdir()) / "inference-perf-optional-slots"
 
 
-def class_key(kubeconfig: str | None, node_selector: dict[str, str]) -> str:
-    signature = repr(sorted(node_selector.items())) + "|" + (kubeconfig or "<ambient>")
+def class_key(kubeconfig: str | None, requirement: str) -> str:
+    signature = requirement + "|" + (kubeconfig or "<ambient>")
     return hashlib.sha1(signature.encode()).hexdigest()[:16]
 
 

@@ -34,6 +34,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent / "optional"))
 
 from harness import requirements  # noqa: E402
+from harness.requirements import Requirement  # noqa: E402
+
+# A two-term requirement (GFD OR GKE) like the real case manifests use.
+_GPU_REQ: Requirement = [
+    (("nvidia.com/gpu.product", "In", ("NVIDIA-H100-80GB-HBM3",)),),
+    (("cloud.google.com/gke-accelerator", "In", ("nvidia-h100-80gb", "nvidia-h100-mega-80gb")),),
+]
 
 
 def _write(tmp_path: Path, body: str) -> Path:
@@ -42,28 +49,37 @@ def _write(tmp_path: Path, body: str) -> Path:
     return path
 
 
-def test_infers_node_selector_from_deployment(tmp_path: Path) -> None:
-    manifest = _write(
-        tmp_path,
-        """
-        apiVersion: apps/v1
-        kind: Deployment
-        spec:
-          template:
-            spec:
-              nodeSelector:
-                cloud.google.com/gke-accelerator: nvidia-h100-80gb
-        ---
-        apiVersion: v1
-        kind: Service
-        spec:
-          ports: [{port: 8000}]
-        """,
-    )
-    assert requirements.infer_node_selector(manifest) == {"cloud.google.com/gke-accelerator": "nvidia-h100-80gb"}
+_AFFINITY_YAML = """
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values: [NVIDIA-H100-80GB-HBM3]
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: In
+                values: [nvidia-h100-80gb, nvidia-h100-mega-80gb]
+---
+apiVersion: v1
+kind: Service
+spec:
+  ports: [{port: 8000}]
+"""
 
 
-def test_no_constraint_matches_everything(tmp_path: Path) -> None:
+def test_infers_node_affinity_from_deployment(tmp_path: Path) -> None:
+    assert requirements.infer_node_affinity(_write(tmp_path, _AFFINITY_YAML)) == _GPU_REQ
+
+
+def test_no_affinity_is_empty(tmp_path: Path) -> None:
     manifest = _write(
         tmp_path,
         """
@@ -73,41 +89,121 @@ def test_no_constraint_matches_everything(tmp_path: Path) -> None:
           containers: [{name: c, image: busybox}]
         """,
     )
-    assert requirements.infer_node_selector(manifest) == {}
+    assert requirements.infer_node_affinity(manifest) == []
 
 
-def test_conflicting_selectors_raise(tmp_path: Path) -> None:
+def test_conflicting_affinity_raises(tmp_path: Path) -> None:
     manifest = _write(
         tmp_path,
         """
         apiVersion: v1
         kind: Pod
         spec:
-          nodeSelector: {gpu: h100}
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions: [{key: nvidia.com/gpu.product, operator: In, values: [NVIDIA-L4]}]
         ---
         apiVersion: apps/v1
         kind: Deployment
         spec:
           template:
             spec:
-              nodeSelector: {gpu: a100}
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions: [{key: nvidia.com/gpu.product, operator: In, values: [NVIDIA-A100-SXM4-80GB]}]
         """,
     )
     with pytest.raises(ValueError):
-        requirements.infer_node_selector(manifest)
+        requirements.infer_node_affinity(manifest)
+
+
+def test_unsupported_operator_raises(tmp_path: Path) -> None:
+    manifest = _write(
+        tmp_path,
+        """
+        apiVersion: v1
+        kind: Pod
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions: [{key: gpu-count, operator: Gt, values: ["0"]}]
+        """,
+    )
+    with pytest.raises(ValueError):
+        requirements.infer_node_affinity(manifest)
 
 
 @pytest.mark.parametrize(
-    "selector, labels, fits",
+    "labels, matches",
     [
-        ({"gpu": "h100"}, {"gpu": "h100", "zone": "us"}, True),  # subset match
-        ({"gpu": "h100"}, {"gpu": "a100"}, False),  # wrong value
-        ({"gpu": "h100"}, {"zone": "us"}, False),  # missing key
-        ({}, {"anything": "x"}, True),  # empty selector matches any node
+        ({"cloud.google.com/gke-accelerator": "nvidia-h100-80gb", "zone": "us"}, True),  # GKE term
+        ({"cloud.google.com/gke-accelerator": "nvidia-h100-mega-80gb"}, True),  # GKE alt value
+        ({"nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3"}, True),  # GFD term
+        ({"nvidia.com/gpu.product": "NVIDIA-L4"}, False),  # wrong SKU
+        ({"cloud.google.com/gke-accelerator": "nvidia-l4"}, False),  # wrong SKU
+        ({"zone": "us"}, False),  # not a GPU node
     ],
 )
-def test_node_fits(selector: dict[str, str], labels: dict[str, str], fits: bool) -> None:
-    assert requirements.node_fits(selector, labels) is fits
+def test_node_matches_ord_terms(labels: dict[str, str], matches: bool) -> None:
+    assert requirements.node_matches(labels, _GPU_REQ) is matches
+
+
+def test_empty_requirement_matches_any_node() -> None:
+    assert requirements.node_matches({"anything": "x"}, []) is True
+
+
+def test_expressions_within_a_term_are_anded() -> None:
+    # One term, two expressions: a node must satisfy both.
+    req: Requirement = [
+        (
+            ("nvidia.com/gpu.product", "In", ("NVIDIA-H100-80GB-HBM3",)),
+            ("topology.kubernetes.io/zone", "In", ("us-east1",)),
+        )
+    ]
+    assert requirements.node_matches(
+        {"nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3", "topology.kubernetes.io/zone": "us-east1"}, req
+    )
+    # GPU matches but zone does not -> term fails.
+    assert not requirements.node_matches(
+        {"nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3", "topology.kubernetes.io/zone": "eu-west1"}, req
+    )
+
+
+@pytest.mark.parametrize(
+    "operator, values, labels, matches",
+    [
+        ("NotIn", ("NVIDIA-L4",), {"nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3"}, True),
+        ("NotIn", ("NVIDIA-L4",), {"nvidia.com/gpu.product": "NVIDIA-L4"}, False),
+        ("NotIn", ("NVIDIA-L4",), {"zone": "us"}, True),  # absent key satisfies NotIn
+        ("Exists", (), {"nvidia.com/gpu.product": "anything"}, True),
+        ("Exists", (), {"zone": "us"}, False),
+        ("DoesNotExist", (), {"zone": "us"}, True),
+        ("DoesNotExist", (), {"nvidia.com/gpu.product": "x"}, False),
+    ],
+)
+def test_match_operators(operator: str, values: tuple[str, ...], labels: dict[str, str], matches: bool) -> None:
+    req: Requirement = [(("nvidia.com/gpu.product", operator, values),)]
+    assert requirements.node_matches(labels, req) is matches
+
+
+def test_matching_node_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_nodes = [
+        {"cloud.google.com/gke-accelerator": "nvidia-h100-80gb"},  # match (GKE)
+        {"nvidia.com/gpu.product": "NVIDIA-H100-80GB-HBM3"},  # match (GFD)
+        {"nvidia.com/gpu.product": "NVIDIA-L4"},  # wrong SKU
+        {"zone": "us"},  # not a GPU node
+    ]
+    monkeypatch.setattr(requirements, "_list_node_labels", lambda kubeconfig: fake_nodes)
+    assert requirements.matching_node_count(_GPU_REQ, None) == 2
+    # A requirement no node satisfies -> 0 -> the fixture skips the case.
+    a100: Requirement = [(("nvidia.com/gpu.product", "In", ("NVIDIA-A100-SXM4-80GB",)),)]
+    assert requirements.matching_node_count(a100, None) == 0
 
 
 def test_deployment_names_read_from_manifest_in_order(tmp_path: Path) -> None:

@@ -13,13 +13,22 @@
 # limitations under the License.
 """Infer a test's hardware requirement from its manifest and match it to clusters.
 
-The manifest is the single source of truth: a case's hardware requirement is just
-the ``nodeSelector`` on its pod-bearing objects. Matching a cluster is then the
-same question the scheduler asks, restricted to label selection: does this cluster
-have at least one node whose labels are a superset of that nodeSelector.
+The manifest is the single source of truth: a case's hardware requirement is the
+required ``nodeAffinity`` on its pod-bearing objects. Affinity (not a plain
+nodeSelector) is used so one portable manifest can name a GPU SKU under whatever
+label each provider applies: its ``nodeSelectorTerms`` are OR'd, so a term for GFD's
+``nvidia.com/gpu.product`` and a term for GKE's ``cloud.google.com/gke-accelerator``
+let the same pod schedule on either, with the scheduler enforcing the SKU natively.
 
-v1 scope (deliberately narrow): nodeSelector only (no affinity, no resource
-accounting), and matching is live-nodes-only (a node pool scaled to zero is
+Matching a cluster is then the same question the scheduler asks, restricted to label
+selection: does this cluster have at least one live node that satisfies the affinity
+(any term, all of that term's expressions). The harness applies the manifest as-is
+(no rewriting); it only reads the affinity to skip cleanly when no cluster has the
+hardware and to size the per-class slot semaphore.
+
+v1 scope (deliberately narrow): required nodeAffinity matchExpressions with the
+In/NotIn/Exists/DoesNotExist operators (no matchFields, no preferred affinity, no
+resource accounting), and matching is live-nodes-only (a node pool scaled to zero is
 invisible and reads as "no hardware").
 """
 
@@ -35,7 +44,14 @@ import yaml
 # ConfigMap, ...) has no scheduling constraints and is ignored.
 _POD_BEARING_KINDS = {"Pod", "Deployment", "StatefulSet", "Job", "DaemonSet", "ReplicaSet"}
 
-NodeSelector = dict[str, str]
+_SUPPORTED_OPERATORS = {"In", "NotIn", "Exists", "DoesNotExist"}
+
+# A required nodeAffinity, parsed and normalized for matching. ``Requirement`` is a
+# list of OR'd terms; each term is an AND of (key, operator, values) expressions. An
+# empty Requirement means the case sets no node constraint (matches any node).
+MatchExpr = tuple[str, str, tuple[str, ...]]
+Term = tuple[MatchExpr, ...]
+Requirement = list[Term]
 
 
 def _pod_spec(doc: dict[str, object]) -> dict[str, object] | None:
@@ -51,13 +67,47 @@ def _pod_spec(doc: dict[str, object]) -> dict[str, object] | None:
     return None
 
 
-def infer_node_selector(manifest_path: str | Path) -> NodeSelector:
-    """Return the merged nodeSelector across all pod-bearing docs in a manifest.
+def _parse_terms(pod: dict[str, object]) -> Requirement:
+    """Pull the required nodeAffinity nodeSelectorTerms out of a pod spec."""
+    affinity = pod.get("affinity")
+    node_affinity = affinity.get("nodeAffinity") if isinstance(affinity, dict) else None
+    required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution") if isinstance(node_affinity, dict) else None
+    raw_terms = required.get("nodeSelectorTerms") if isinstance(required, dict) else None
+    if not isinstance(raw_terms, list):
+        return []
+    terms: Requirement = []
+    for raw_term in raw_terms:
+        if not isinstance(raw_term, dict):
+            continue
+        raw_exprs = raw_term.get("matchExpressions")
+        if not isinstance(raw_exprs, list):
+            continue
+        exprs: list[MatchExpr] = []
+        for raw in raw_exprs:
+            if not isinstance(raw, dict):
+                continue
+            key = raw.get("key")
+            operator = raw.get("operator")
+            if not isinstance(key, str) or not isinstance(operator, str):
+                continue
+            if operator not in _SUPPORTED_OPERATORS:
+                raise ValueError(f"unsupported nodeAffinity operator: {operator!r}")
+            raw_values = raw.get("values")
+            values = tuple(str(v) for v in raw_values) if isinstance(raw_values, list) else ()
+            exprs.append((key, operator, values))
+        if exprs:
+            terms.append(tuple(exprs))
+    return terms
 
-    Raises ValueError if two pods in the same manifest disagree on a label, since
-    that would make the case's hardware requirement ambiguous.
+
+def infer_node_affinity(manifest_path: str | Path) -> Requirement:
+    """Return the case's required nodeAffinity, or [] if it sets no constraint.
+
+    Read from the pod-bearing docs. Raises ValueError if two pods carry different
+    affinities, since that makes the case's hardware requirement ambiguous; a
+    GPU server alongside a CPU-only sidecar (no affinity) is fine.
     """
-    selector: NodeSelector = {}
+    found: Requirement | None = None
     text = Path(manifest_path).read_text()
     for doc in yaml.safe_load_all(text):
         if not isinstance(doc, dict):
@@ -65,15 +115,13 @@ def infer_node_selector(manifest_path: str | Path) -> NodeSelector:
         pod = _pod_spec(doc)
         if pod is None:
             continue
-        node_selector = pod.get("nodeSelector") or {}
-        if not isinstance(node_selector, dict):
+        terms = _parse_terms(pod)
+        if not terms:
             continue
-        for key, value in node_selector.items():
-            existing = selector.get(key)
-            if existing is not None and existing != value:
-                raise ValueError(f"{manifest_path}: conflicting nodeSelector for {key!r}: {existing!r} vs {value!r}")
-            selector[str(key)] = str(value)
-    return selector
+        if found is not None and found != terms:
+            raise ValueError(f"{manifest_path}: conflicting nodeAffinity: {found!r} vs {terms!r}")
+        found = terms
+    return found or []
 
 
 def deployment_names(manifest_path: str | Path) -> list[str]:
@@ -95,9 +143,40 @@ def deployment_names(manifest_path: str | Path) -> list[str]:
     return names
 
 
-def node_fits(node_selector: NodeSelector, node_labels: dict[str, str]) -> bool:
-    """A node fits if its labels satisfy every nodeSelector key (subset match)."""
-    return all(node_labels.get(key) == value for key, value in node_selector.items())
+def _expr_satisfied(node_labels: dict[str, str], expr: MatchExpr) -> bool:
+    key, operator, values = expr
+    present = key in node_labels
+    value = node_labels.get(key)
+    if operator == "In":
+        return present and value in values
+    if operator == "NotIn":
+        return not present or value not in values
+    if operator == "Exists":
+        return present
+    if operator == "DoesNotExist":
+        return not present
+    raise ValueError(f"unsupported nodeAffinity operator: {operator!r}")
+
+
+def node_matches(node_labels: dict[str, str], requirement: Requirement) -> bool:
+    """A node matches if it satisfies any term (terms are OR'd; expressions AND'd).
+
+    An empty requirement matches every node (the case set no node constraint).
+    """
+    if not requirement:
+        return True
+    return any(all(_expr_satisfied(node_labels, expr) for expr in term) for term in requirement)
+
+
+def describe(requirement: Requirement) -> str:
+    """A short human description of a requirement, for skip messages."""
+    if not requirement:
+        return "any node"
+    parts = []
+    for term in requirement:
+        anded = " and ".join(f"{key} {op} {list(values)}" for key, op, values in term)
+        parts.append(f"({anded})")
+    return " or ".join(parts)
 
 
 def _list_node_labels(kubeconfig: str | None) -> list[dict[str, str]]:
@@ -109,10 +188,10 @@ def _list_node_labels(kubeconfig: str | None) -> list[dict[str, str]]:
     return [item.get("metadata", {}).get("labels", {}) or {} for item in data.get("items", [])]
 
 
-def matching_node_count(node_selector: NodeSelector, kubeconfig: str | None) -> int:
-    """Number of live nodes in the cluster that satisfy the nodeSelector.
+def matching_node_count(requirement: Requirement, kubeconfig: str | None) -> int:
+    """Number of live nodes in the cluster that satisfy the requirement.
 
     Doubles as the contention-class capacity: 0 means skip, N>0 means up to N of
     these tests can run concurrently before they have to queue.
     """
-    return sum(1 for labels in _list_node_labels(kubeconfig) if node_fits(node_selector, labels))
+    return sum(1 for labels in _list_node_labels(kubeconfig) if node_matches(labels, requirement))

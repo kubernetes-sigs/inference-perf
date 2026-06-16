@@ -33,11 +33,19 @@ They are marked `@pytest.mark.live` and **auto-skipped unless you pass
 `--kubeconfigs`**, so a plain `pytest tests` / `pdm run test` stays green
 without anyone remembering `-m "not live"` (that filter still works too). Run
 the tier explicitly, passing one or more kubeconfigs; a case is skipped when no
-cluster has a live node matching its manifest's `nodeSelector`:
+cluster has a live node satisfying its manifest's GPU `nodeAffinity`:
 
 ```sh
 pytest tests/optional -m live --kubeconfigs=/path/to/kubeconfig
 ```
+
+**Cross-provider GPU targeting.** A case pins its GPU SKU with a required
+`nodeAffinity` whose `nodeSelectorTerms` are OR'd: one term for GFD's
+`nvidia.com/gpu.product` (any cluster running the NVIDIA GPU Operator, e.g. EKS/AKS)
+and one for GKE's managed `cloud.google.com/gke-accelerator`. The scheduler honors
+whichever the cluster uses, so the same manifest is portable across GKE/EKS/AKS with
+no per-cloud copy and no setup on your existing GKE cluster. To support another
+provider's label, add a term to the manifests.
 
 `pdm run test:e2e --kubeconfigs=/path/to/kubeconfig` is the convenient entry
 point: it runs the simulated e2e suite plus this live tier (and without
@@ -52,10 +60,11 @@ by killed prior runs.
 
 `harness/` is shared and knows nothing about any particular suite:
 
-- `requirements.py` reads a case's hardware requirement (its manifest
-  `nodeSelector`) and the Deployment name(s) to wait on, straight from the
-  manifest, and matches the requirement against live cluster nodes.
-- `slots.py` is a file-based semaphore keyed by `(cluster, nodeSelector)` so
+- `requirements.py` reads a case's hardware requirement (its manifest's required
+  `nodeAffinity`) and the Deployment name(s) to wait on, straight from the
+  manifest, and matches the requirement against live cluster nodes. It only reads
+  the affinity; the manifest is applied as-is, so the scheduler does the enforcing.
+- `slots.py` is a file-based semaphore keyed by `(cluster, requirement)` so
   cases contending for the same scarce hardware queue and reuse it sequentially.
 - `runner.py` deploys the server, runs the `inference-perf` job, and verifies
   the request lifecycle summary. It is **not** multimodal-specific.
@@ -67,7 +76,7 @@ by killed prior runs.
 A suite is just a folder of cases, no Python required:
 
 1. Drop cases under `optional/<suite>/cases/<case>/`, each a `vllm.yaml` (server
-   manifest, carrying the `nodeSelector` and Deployment name) and a `config.yml`
+   manifest, carrying the GPU `nodeAffinity` and Deployment name) and a `config.yml`
    (the inference-perf config).
 
 That's it. `test_live.py` discovers every `<suite>/cases/<case>/vllm.yaml` by
