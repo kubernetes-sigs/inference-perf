@@ -89,3 +89,20 @@ class CompletionAPIData(InferenceAPIData):
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len),
                 lora_adapter=lora_adapter,
             )
+
+    async def process_failure(
+        self,
+        response: Optional[ClientResponse],
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        exception: Exception,
+        lora_adapter: Optional[str] = None,
+    ) -> Optional[InferenceInfo]:
+        # The prompt is fully known at send time, so record its token count even
+        # when the response never completed (e.g. an SSE stream that broke
+        # mid-flight). Without this the failed request falls back to
+        # input_tokens=0 and prompt_len drops out of the failures report.
+        return InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=tokenizer.count_tokens(self.prompt))),
+            lora_adapter=lora_adapter,
+        )
