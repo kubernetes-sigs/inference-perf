@@ -77,6 +77,7 @@ from rich.progress import (
 import signal
 
 from inference_perf.observability.logging import get_console
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class RequestQueueData(NamedTuple):
     lora_adapter: Optional[str]
 
 
-class Worker(mp.Process):
+class Worker(MP_CONTEXT.Process):  # type: ignore[name-defined,misc]
     def __init__(
         self,
         id: int,
@@ -932,14 +933,14 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )
-        finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        request_phase: SyncEvent = mp.Event()
-        stop_signal: SyncEvent = mp.Event()
-        cancel_signal: SyncEvent = mp.Event()
+        finished_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        active_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        request_phase: SyncEvent = MP_CONTEXT.Event()
+        stop_signal: SyncEvent = MP_CONTEXT.Event()
+        cancel_signal: SyncEvent = MP_CONTEXT.Event()
         # Synchronize workers and main at stage boundaries so workers finish
         # in-flight requests and clear session state before the next stage begins.
-        stage_barrier: SyncBarrier = mp.Barrier(self.num_workers + 1)
+        stage_barrier: SyncBarrier = MP_CONTEXT.Barrier(self.num_workers + 1)
         # start workers in the request phase
         request_phase.set()
 
@@ -947,7 +948,7 @@ class LoadGenerator:
         for id in range(self.num_workers):
             # Create shared value for each worker's max concurrency if concurrent load type
             if self.load_type == LoadType.CONCURRENT:
-                shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
+                shared_max_concurrency = MP_CONTEXT.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
 
