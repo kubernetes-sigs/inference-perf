@@ -534,3 +534,51 @@ class TestSlidingWindowTruncation:
         session.update_context(session.context + " Turn4")
         assert session.history == ["Turn2", "Turn3", "Turn4"]
         assert session.context == "System Instruction Turn2 Turn3 Turn4"
+
+
+class TestOnCompletionAsyncAndTokenCaching:
+    def test_on_completion_async_caches_tokens(self) -> None:
+        from inference_perf.apis.user_session import LocalUserSession
+        from inference_perf.apis import InferenceInfo, UnaryResponseMetrics
+        from inference_perf.payloads import RequestMetrics, Text
+
+        mock_tokenizer = _make_mock_tokenizer()
+
+        system_prompt = "System Instruction"  # 20 tokens
+        session = LocalUserSession(
+            user_session_id="test_async_session",
+            context=system_prompt,
+            system_prompt=system_prompt,
+            tokenizer=mock_tokenizer,
+            max_model_len=1000,
+        )
+        LocalUserSession._instances["test_async_session"] = session
+
+        api_config, data_config = _make_config(num_conversations=1)
+        gen = ConversationReplayDataGenerator(api_config, data_config, mock_tokenizer)
+        gen.user_sessions = [session]
+
+        # Retrieve data object
+        lazy = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        data = gen.load_lazy_data(lazy)
+
+        # Simulate request processing
+        data.model_response = "Assistant response"
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=20)),
+            response_metrics=UnaryResponseMetrics(output_tokens=15),
+            lora_adapter=None,
+        )
+
+        # Before calling callback, history_tokens is empty
+        assert len(session.history_tokens) == 0
+
+        # Simulate execution of request preparation and async callback
+        import asyncio
+
+        asyncio.run(data.to_request_body("some_model", 10, False, False))
+        asyncio.run(data.on_completion_async(info))
+
+        # history_tokens should now have the total turn tokens (20 + 15 = 35)
+        assert session.history_tokens == [35]
+        assert len(session.history) == 1

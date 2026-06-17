@@ -35,6 +35,7 @@ import time
 import logging
 import requests
 import ssl
+import inspect
 
 
 logger = logging.getLogger(__name__)
@@ -546,6 +547,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Record the metric
         self.client.metrics_collector.record_metric(metric)
+
+        # Post-completion hook executed after connection is closed
+        res = data.on_completion_async(metric.info)
+        if inspect.isawaitable(res):
+            await res
 
     async def close(self) -> None:
         await self.session.close()
