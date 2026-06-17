@@ -36,6 +36,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis import (
     ChatCompletionAPIData,
+    ErrorResponseInfo,
     InferenceInfo,
     LazyLoadInferenceAPIData,
     SessionLifecycleMetric,
@@ -292,6 +293,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 "session_id": session_id,
                 "completion_time": completion_time,
                 "failed": True,
+                "failure_reason": reason,
                 "cancelled_events": cancelled,
                 "event_completion_times": self.worker_tracker.get_session_completion_times(session_id),
             }
@@ -316,6 +318,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 )
             except EventFailedError:
                 self._fail_and_notify(session_id, "predecessor failed")
+                return
+            except (TimeoutError, Exception) as e:
+                self._fail_and_notify(session_id, f"predecessor wait failed: {type(e).__name__}")
                 return
             logger.debug(f"Event {self.event_id} all predecessors done")
 
@@ -754,6 +759,7 @@ class ReplaySessionState:
     is_active: bool = False
     is_complete: bool = False
     failed: bool = False
+    failure_reason: Optional[str] = None
     cancelled_events: int = 0
     random_string: Optional[str] = None  # Random string for KV-cache invalidation (shared by all events in session)
 
@@ -1037,6 +1043,10 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         num_events_completed = len(state.completed_events)
         num_events_cancelled = state.cancelled_events if state.failed else 0
 
+        error = None
+        if state.failure_reason:
+            error = ErrorResponseInfo(error_type="SessionReplayError", error_msg=state.failure_reason)
+
         return SessionLifecycleMetric(
             session_id=session_id,
             stage_id=stage_id,
@@ -1047,6 +1057,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             num_events=num_events,
             num_events_completed=num_events_completed,
             num_events_cancelled=num_events_cancelled,
+            error=error,
         )
 
     def activate_session(self, session_id: str) -> None:
@@ -1079,6 +1090,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
                     completed_state.is_complete = True
                     completed_state.failed = completion_data.get("failed", False)
+                    completed_state.failure_reason = completion_data.get("failure_reason")
                     completed_state.cancelled_events = completion_data.get("cancelled_events", 0)
                     logger.debug(
                         "Session %s marked complete from queue notification (failed=%s)",
