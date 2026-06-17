@@ -73,7 +73,7 @@ class SessionReplayConfig(BaseModel):
     # Request configuration
     default_max_tokens: int = Field(1000, gt=0, description="Default max_tokens if not specified in trace")
     override_tool_call_max_tokens: bool = Field(
-        False,
+        True,
         description="Override tool call max_tokens to 4096 instead of using trace recorded length",
     )
 
