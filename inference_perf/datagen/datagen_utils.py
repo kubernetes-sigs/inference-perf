@@ -106,6 +106,8 @@ def converge_to_exact_length_text(
     last_len = -1
     for _ in range(max_iterations):
         text = hf_tokenizer.decode(current_tokens, skip_special_tokens=True)
+        if isinstance(text, list):
+            text = " ".join(text)
 
         current_len = tokenizer.count_tokens(text)
 

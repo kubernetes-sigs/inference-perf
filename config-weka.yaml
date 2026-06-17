@@ -1,0 +1,36 @@
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+      num_sessions: 5
+  num_workers: 2
+  worker_max_concurrency: 100
+  request_timeout: 30
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: google/gemma-3-1b-it
+  base_url: http://localhost:8000
+tokenizer:
+  pretrained_model_name_or_path: google/gemma-3-1b-it
+data:
+  type: weka_trace_replay
+  weka_trace_replay:
+    hf_dataset_path: "semianalysisai/cc-traces-weka-with-subagents-060826-256k"
+    num_dataset_entries: 5
+    use_static_model: true
+    static_model_name: "google/gemma-3-1b-it"
+    default_block_size: 64
+    skip_invalid_files: true
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+  goodput:
+    constraints:
+      ttft: 0.3
+      itl: 0.018
+    percentile: p90

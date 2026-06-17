@@ -23,6 +23,7 @@ class BaseGenerator(ABC):
 
     api_config: APIConfig
     tokenizer: Optional[CustomTokenizer]
+    config: DataConfig
 
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         """Initialize base generator with common attributes.
@@ -38,6 +39,7 @@ class BaseGenerator(ABC):
 
         self.api_config = api_config
         self.tokenizer = tokenizer
+        self.config = config
 
     @abstractmethod
     def get_supported_apis(self) -> List[APIType]:

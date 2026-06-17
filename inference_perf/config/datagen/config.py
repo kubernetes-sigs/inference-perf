@@ -21,6 +21,7 @@ from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenC
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
+    WekaTraceReplayConfig,
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
@@ -36,6 +37,7 @@ class DataGenType(Enum):
     InfinityInstruct = "infinity_instruct"
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
+    WekaTraceReplay = "weka_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
 
@@ -89,6 +91,10 @@ class DataConfig(BaseModel):
 
     # Valid only for shareGPT type at this moment
     path: Optional[str] = None  # path to the downloaded shareGPT dataset
+    corpus_file_path: Optional[str] = Field(
+        None,
+        description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet",
+    )
 
     # Distributions are only supported for synthetic/random dataset at this moment
     input_distribution: Optional[Distribution] = None
@@ -101,6 +107,9 @@ class DataConfig(BaseModel):
 
     # OTel trace replay configuration
     otel_trace_replay: Optional[OTelTraceReplayConfig] = None
+
+    # Weka trace replay configuration
+    weka_trace_replay: Optional[WekaTraceReplayConfig] = None
 
     # Conversation replay configuration
     conversation_replay: Optional[ConversationReplayConfig] = None

@@ -21,6 +21,7 @@ from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
 from .infinity_instruct_datagen import InfinityInstructDataGenerator
 from .hf_billsum_datagen import BillsumConversationsDataGenerator
 from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from .weka_trace_replay_datagen import WekaTraceReplayDataGenerator
 from .conversation_replay_datagen import ConversationReplayDataGenerator
 from .multimodal_datagen import MultimodalDataGenerator
 from .visionarena_datagen import VisionArenaDataGenerator
@@ -39,6 +40,7 @@ __all__ = [
     "InfinityInstructDataGenerator",
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
+    "WekaTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",
     "MultimodalDataGenerator",
     "VisionArenaDataGenerator",
