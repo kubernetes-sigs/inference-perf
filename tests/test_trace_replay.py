@@ -18,6 +18,12 @@ from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.datagen.random_datagen import RandomDataGenerator
 from inference_perf.datagen.base import LazyLoadDataMixin
+from inference_perf.datagen.replay_graph_session_datagen import (
+    ReplayGraphSessionGeneratorBase,
+    ReplaySession,
+    ReplaySessionState,
+)
+from inference_perf.datagen.replay_graph_types import ReplayGraph
 from inference_perf.config import APIConfig, DataConfig, APIType, TraceFormat, TraceConfig, DataGenType
 
 
@@ -85,3 +91,69 @@ class TestTraceReplay:
 
         finally:
             temp_path.unlink()
+
+
+class TestBuildSessionMetricFailureReason:
+    """Tests that failure_reason is surfaced as an error in SessionLifecycleMetric."""
+
+    def _make_generator(self) -> ReplayGraphSessionGeneratorBase:
+        api_config = APIConfig(type=APIType.Chat)
+        data_config = DataConfig(type=DataGenType.Random)
+        return ReplayGraphSessionGeneratorBase(
+            api_config=api_config,
+            config=data_config,
+            tokenizer=None,
+        )
+
+    def _make_graph(self) -> ReplayGraph:
+        return ReplayGraph(
+            events={"evt_1": Mock()},
+            root_event_ids=["evt_1"],
+            source_file="test_trace.json",
+        )
+
+    def test_failure_reason_produces_error(self) -> None:
+        gen = self._make_generator()
+        graph = self._make_graph()
+
+        gen.sessions = [ReplaySession(session_id="s1", source_id="src", session_index=0, graph=graph)]
+        gen.session_graph_state["s1"] = ReplaySessionState(
+            session_id="s1",
+            graph=graph,
+            ready_events=set(),
+            dispatched_events=set(),
+            completed_events=set(),
+            event_completion_times={},
+            failed=True,
+            failure_reason="predecessor wait failed: TimeoutError",
+            cancelled_events=1,
+        )
+
+        metric = gen.build_session_metric(session_id="s1", stage_id=0, start_time=100.0, end_time=110.0)
+
+        assert metric.error is not None
+        assert metric.error.error_type == "SessionReplayError"
+        assert metric.error.error_msg == "predecessor wait failed: TimeoutError"
+        assert metric.num_events_cancelled == 1
+
+    def test_no_failure_reason_no_error(self) -> None:
+        gen = self._make_generator()
+        graph = self._make_graph()
+
+        gen.sessions = [ReplaySession(session_id="s1", source_id="src", session_index=0, graph=graph)]
+        gen.session_graph_state["s1"] = ReplaySessionState(
+            session_id="s1",
+            graph=graph,
+            ready_events=set(),
+            dispatched_events=set(),
+            completed_events={"evt_1"},
+            event_completion_times={"evt_1": 105.0},
+            failed=False,
+            failure_reason=None,
+        )
+
+        metric = gen.build_session_metric(session_id="s1", stage_id=0, start_time=100.0, end_time=110.0)
+
+        assert metric.error is None
+        assert metric.num_events_completed == 1
+        assert metric.num_events_cancelled == 0

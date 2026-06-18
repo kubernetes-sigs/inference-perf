@@ -831,7 +831,9 @@ class ReportGenerator:
             inp, out = token_by_session.get(sm.session_id, (0, 0))
             sm.total_input_tokens = inp
             sm.total_output_tokens = out
-            sm.error = error_by_session.get(sm.session_id)
+            request_error = error_by_session.get(sm.session_id)
+            if request_error is not None:
+                sm.error = request_error
             sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
 
     def generate_session_reports(
