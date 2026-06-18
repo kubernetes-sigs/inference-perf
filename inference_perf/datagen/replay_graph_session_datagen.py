@@ -319,7 +319,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             except EventFailedError:
                 self._fail_and_notify(session_id, "predecessor failed")
                 return
-            except (TimeoutError, Exception) as e:
+            except (TimeoutError, asyncio.TimeoutError) as e:
                 self._fail_and_notify(session_id, f"predecessor wait failed: {type(e).__name__}")
                 return
             logger.debug(f"Event {self.event_id} all predecessors done")
