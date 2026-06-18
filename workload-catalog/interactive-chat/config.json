@@ -47,10 +47,10 @@
     "suitable_optimizations": ["Prefix aware routing", "P/D disaggregation"],
     "prefill_decode_ratio": 13.3,
     "slos": {
-      "ttft_p99_ms": 500,
-      "ttft_p99_ms_justification": "Taken from the MLPerf v5.0 Interactive target for Llama 3.1 8B (500ms p99 time-to-first-token; https://github.com/mlcommons/inference/blob/master/loadgen/mlperf.conf), and kept under the 1-second limit for a user's train of thought to stay uninterrupted (Nielsen, https://www.nngroup.com/articles/response-times-3-important-limits/).",
+      "ttft_p99_ms": 1000,
+      "ttft_p99_ms_justification": "Keep 99% of requests within the 1-second limit for a user's train of thought to stay uninterrupted (Nielsen, https://www.nngroup.com/articles/response-times-3-important-limits/). The *-interactive.Server.ttft_latency values from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf (last updated 2026-02-06) range from 450 - 4500 ms, so 1 second is the right order of magnitude. ML Perf uses 99th percentile tail latencies for interactive scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios).",
       "itl_p99_ms": 50,
-      "itl_p99_ms_justification": "Interactive chat streams output to a human reader, so the per-token rate only needs to outpace reading. MLPerf v5.0 defines an Interactive tier at 30-40ms per token (https://mlcommons.org/2025/04/llm-inference-v5/); 50ms is set just above that, about twice as fast as the ~100ms per token that already exceeds typical reading speed (Databricks, https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices)."
+      "itl_p99_ms_justification": "Interactive chat streams output to a human reader, so the per-token rate should outpace reading. The MLPerf interactive tier targets 15 - 80 ms per token (see *-interactive.Server.tpot_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). ML Perf uses 99th percentile tail latencies for interactive scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios). Databricks states 100 ms/token translates to ~450 wpm, faster than a typical reader (https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices). Set P99 to 50 ms to keep the system very responsive and allow it to keep up with a reader skimming the text."
     }
   }
 }

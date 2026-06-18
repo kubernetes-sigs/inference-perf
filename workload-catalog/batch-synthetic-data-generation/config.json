@@ -47,8 +47,8 @@
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "Wide Expert Parallelism", "Fault-tolerant queueing"],
     "prefill_decode_ratio": 0.125,
     "slos": {
-      "e2e_p99_ms": 1800000,
-      "e2e_p99_ms_justification": "Runaway backstop for an offline job. Worst case is the maximum 8,000 output tokens at 175ms each, the slowest inter-token latency in any MLPerf v5.0 benchmark (Llama 3.1 405B Server; https://mlcommons.org/2025/04/llm-inference-v5/), about 23 min, plus ~30% headroom for queueing and scheduling. Anything beyond 30 min signals a fault rather than normal load."
+      "e2e_p99_ms": 2080000,
+      "e2e_p99_ms_justification": "Runaway backstop for an offline job. Worst case is the maximum 8,000 output tokens at 200 ms each, the slowest inter-token latency in any MLPerf benchmark (https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06), 1600 seconds, plus 30% headroom for queueing and scheduling."
     }
   }
 }
