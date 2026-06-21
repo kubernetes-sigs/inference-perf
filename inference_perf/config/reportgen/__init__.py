@@ -13,6 +13,7 @@
 # limitations under the License.
 from inference_perf.config.reportgen.config import (
     GoodputConfig,
+    PerRequestFieldsConfig,
     PrometheusMetricsReportConfig,
     ReportConfig,
     RequestLifecycleMetricsReportConfig,
@@ -21,6 +22,7 @@ from inference_perf.config.reportgen.config import (
 
 __all__ = [
     "GoodputConfig",
+    "PerRequestFieldsConfig",
     "PrometheusMetricsReportConfig",
     "ReportConfig",
     "RequestLifecycleMetricsReportConfig",

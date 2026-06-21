@@ -240,6 +240,10 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--report.request_lifecycle.summary` | boolean | Matches report.request_lifecycle.summary in config |
 | `--report.request_lifecycle.per_stage` | boolean | Matches report.request_lifecycle.per_stage in config |
 | `--report.request_lifecycle.per_request` | boolean | Matches report.request_lifecycle.per_request in config |
+| `--report.request_lifecycle.per_request_fields.request` | boolean | Matches report.request_lifecycle.per_request_fields.request in config |
+| `--report.request_lifecycle.per_request_fields.response` | boolean | Matches report.request_lifecycle.per_request_fields.response in config |
+| `--report.request_lifecycle.per_request_fields.info` | boolean | Matches report.request_lifecycle.per_request_fields.info in config |
+| `--report.request_lifecycle.per_request_fields.response_chunks` | boolean | Matches report.request_lifecycle.per_request_fields.response_chunks in config |
 | `--report.request_lifecycle.per_adapter` | boolean | Matches report.request_lifecycle.per_adapter in config |
 | `--report.request_lifecycle.per_adapter_stage` | boolean | Matches report.request_lifecycle.per_adapter_stage in config |
 | `--report.request_lifecycle.percentiles` | JSON | Matches report.request_lifecycle.percentiles in config |
