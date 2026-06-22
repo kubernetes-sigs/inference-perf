@@ -5,7 +5,11 @@ on:
     branches:
       - main
       - 'feature/**'
+    paths-ignore:
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
 
 jobs:
   format-check:
