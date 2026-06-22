@@ -1,0 +1,114 @@
+# Worked example of a non-multimodal suite (discovered by tests/optional/test_live.py).
+#
+# Nothing here is special-cased by the harness: the Deployment name below is
+# discovered from this file (not hardcoded), which is what proves the runner is
+# no longer pinned to the multimodal deployment. The required nodeAffinity below is
+# the case's hardware requirement; the runner matches it against --kubeconfigs
+# clusters and the scheduler enforces it. It intentionally requests the same SKU as
+# the multimodal suite so this case co-schedules on the same nodes (serialized via
+# the slot semaphore) rather than skipping for want of a different accelerator.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-text-vllm-deployment
+  labels:
+    app: qwen3-text-vllm-inference-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen3-text-vllm-inference-server
+      deployment: qwen3-text-vllm-deployment
+  template:
+    metadata:
+      labels:
+        app: qwen3-text-vllm-inference-server
+        deployment: qwen3-text-vllm-deployment
+    spec:
+      containers:
+      - args:
+        - --model=$(MODEL_ID)
+        command:
+        - /bin/sh
+        - -c
+        - exec python3 -m vllm.entrypoints.openai.api_server "$@"
+        - dummy-arg
+        env:
+        - name: MODEL_ID
+          value: Qwen/Qwen3-0.6B
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: hf_api_token
+              name: hf-secret
+        - name: TENSOR_PARALLEL_SIZE
+          value: "1"
+        image: vllm/vllm-openai:latest
+        imagePullPolicy: IfNotPresent
+        name: inference-server
+        ports:
+        - containerPort: 8000
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+          requests:
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            # GFD clusters (EKS / AKS / on-prem NVIDIA GPU Operator).
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-H100-80GB-HBM3
+            # GKE managed GPU nodes.
+            - matchExpressions:
+              - key: cloud.google.com/gke-accelerator
+                operator: In
+                values:
+                - nvidia-h100-80gb
+                - nvidia-h100-mega-80gb
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Equal
+        value: present
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: dshm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-text-vllm-service
+spec:
+  ports:
+  - port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app: qwen3-text-vllm-inference-server
+    deployment: qwen3-text-vllm-deployment
+  type: ClusterIP

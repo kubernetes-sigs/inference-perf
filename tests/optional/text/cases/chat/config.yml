@@ -1,0 +1,24 @@
+# Plain text-only chat load: no `multimodal` block. This is the entire
+# difference from a multimodal case as far as inference-perf is concerned, and
+# the harness neither knows nor cares which one it is running.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: Qwen/Qwen3-0.6B
+  base_url: http://qwen3-text-vllm-service:8000
+data:
+  type: synthetic
+  input_distribution: { type: uniform, min: 100, max: 1000 }
+  output_distribution: { type: uniform, min: 50, max: 100 }
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 10
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
