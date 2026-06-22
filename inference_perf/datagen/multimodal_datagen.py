@@ -29,7 +29,7 @@ from inference_perf.payloads import (
 )
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution
 from inference_perf.datagen.multimodal_sampling import (
     resolution_to_wh,
     sample_audio_duration,

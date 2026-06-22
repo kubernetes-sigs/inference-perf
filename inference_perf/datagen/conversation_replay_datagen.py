@@ -57,7 +57,7 @@ from inference_perf.config import (
     Distribution,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution
 
 from .base import DataGenerator, LazyLoadDataMixin
 
