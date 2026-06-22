@@ -45,6 +45,10 @@
   "input_sequence_type_token_ratio": 0.5,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "Wide Expert Parallelism", "Fault-tolerant queueing"],
-    "prefill_decode_ratio": 0.125
+    "prefill_decode_ratio": 0.125,
+    "slos": {
+      "e2e_p99_ms": 2080000,
+      "e2e_p99_ms_justification": "Runaway backstop for an offline job. Worst case is the maximum 8,000 output tokens at 200 ms each, the slowest inter-token latency in any MLPerf benchmark (https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06), 1600 seconds, plus 30% headroom for queueing and scheduling."
+    }
   }
 }

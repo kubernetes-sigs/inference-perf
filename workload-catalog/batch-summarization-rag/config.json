@@ -45,6 +45,14 @@
   "input_sequence_type_token_ratio": 0.2,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
-    "prefill_decode_ratio": 30.0
+    "prefill_decode_ratio": 30.0,
+    "slos": {
+      "ttft_p90_ms": 15000,
+      "ttft_p90_ms_justification": "MLPerf Server non-interactive TTFT targets range from 2000 - 6000 ms (see *.Server.ttft_latency fields, ignoring *-interactive.Server.ttft_latency fields at https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). This workload's inputs are large (up to 80,000 tokens) and it runs offline with no user waiting on the first token, so a ceiling of 15s, a few times the largest of those targets, at P90 is comfortably loose.",
+      "itl_p95_ms": 150,
+      "itl_p95_ms_justification": "The MLPerf server tier targets 80 - 200 ms per token (see *.Server.tpot_latency fields excluding *-interactive.Server.tpot_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). Because this is an offline batch job, we can be looser in the target.",
+      "e2e_p99_ms": 630000,
+      "e2e_p99_ms_justification": "A worst-case request is time-to-first-token (15s) plus generation of the maximum 2,000 output tokens at 150 ms each, about 315s of service. Doubling that to allow for time spent waiting behind other jobs on a busy batch server gives the stated value."
+    }
   }
 }

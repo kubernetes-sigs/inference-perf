@@ -45,6 +45,12 @@
   "input_sequence_type_token_ratio": 0.5,
   "metadata": {
     "suitable_optimizations": ["P/D disaggregation"],
-    "prefill_decode_ratio": 0.125
+    "prefill_decode_ratio": 0.125,
+    "slos": {
+      "ttft_p99_ms": 2000,
+      "ttft_p99_ms_justification": "MLPerf server TTFT targets range from 2000 - 6000 ms (see *.Server.ttft_latency fields excluding *-interactive.Server.ttft_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). Inputs here are small (up to 5,000 tokens), so prefill is quick and this target is easily met; the cost of a reasoning request is in its long generation, not first-token latency, so pick short end of range. ML Perf uses 99th percentile tail latencies for server scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios).",
+      "itl_p99_ms": 100,
+      "itl_p99_ms_justification": "The MLPerf server tier targets 80 - 200 ms per token (see *.Server.tpot_latency fields excluding *-interactive.Server.tpot_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). ML Perf uses 99th percentile tail latencies for server scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios). The thinking phase is not shown to a user, so ITL is not bound by reading speed."
+    }
   }
 }

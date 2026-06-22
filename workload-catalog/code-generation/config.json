@@ -45,7 +45,13 @@
   "input_sequence_type_token_ratio": 0.03,
   "metadata": {
     "suitable_optimizations": ["Prefix aware routing", "KV cache offloading"],
-    "prefill_decode_ratio": 376.47
+    "prefill_decode_ratio": 376.47,
+    "slos": {
+      "ttft_p95_ms": 30000,
+      "ttft_p95_ms_justification": "MLPerf server TTFT targets for large models top out at 6000 ms (llama3_1-405b.Server.ttft_latency = 6000 from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). This workload can load very large contexts (up to 990,000 tokens), an expected one-time wait that coding tools cover with a progress indicator rather than interactive typing, so 30s is set as a generous ceiling in addition to only enforcing at P95.",
+      "itl_p99_ms": 100,
+      "itl_p99_ms_justification": "The MLPerf server tier targets 80 - 200 ms per token (see *.Server.tpot_latency fields excluding *-interactive.Server.tpot_latency fields from https://github.com/mlcommons/inference/blob/7a7db59c1183d6482da22fc363c49ad083b79b3e/loadgen/mlperf.conf, last updated 2026-02-06). ML Perf uses 99th percentile tail latencies for server scenarios (https://github.com/mlcommons/inference_policies/blob/master/inference_rules.adoc#3-scenarios)."
+    }
   }
 }
 
