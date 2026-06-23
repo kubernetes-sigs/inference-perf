@@ -55,7 +55,7 @@ def test_summarize_requests_with_chunks() -> None:
 
     mock_tokenizer = Mock()
     # Assume 1 chunk has 2 tokens, another has 3 tokens
-    mock_tokenizer.count_tokens.side_effect = lambda text: 2 if "hello" in text else (3 if "world" in text else 0)
+    mock_tokenizer.count_tokens.side_effect = lambda text, **kwargs: 2 if "hello" in text else (3 if "world" in text else 0)
 
     info = InferenceInfo(
         request_metrics=RequestMetrics(text=Text(input_tokens=5)),
@@ -87,7 +87,7 @@ def test_summarize_requests_multiple_tokens_same_timestamp() -> None:
     from unittest.mock import Mock
 
     mock_tokenizer = Mock()
-    mock_tokenizer.count_tokens.side_effect = lambda text: 3 if "hello" in text else 0
+    mock_tokenizer.count_tokens.side_effect = lambda text, **kwargs: 3 if "hello" in text else 0
 
     info = InferenceInfo(
         request_metrics=RequestMetrics(text=Text(input_tokens=5)),
@@ -102,6 +102,63 @@ def test_summarize_requests_multiple_tokens_same_timestamp() -> None:
 
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
     assert metric.info.response_metrics.output_token_times == [1.0, 1.0, 1.0]
+
+
+def test_itl_not_inflated_by_per_chunk_bos() -> None:
+    """Regression for the ITL half of #564, using the real
+    neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8 tokenizer, which prepends a BOS
+    on every call. Re-tokenizing each streamed chunk with special tokens adds
+    one phantom token per chunk (doubling len(output_token_times) and halving
+    ITL); counting with add_special_tokens=False keeps the per-token timestamp
+    series at the true token count, so ITL lands on the same basis as TPOT.
+    """
+    import json
+    from inference_perf.config import CustomTokenizerConfig
+    from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+    try:
+        tokenizer = CustomTokenizer(
+            CustomTokenizerConfig(pretrained_model_name_or_path="neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8")
+        )
+    except Exception as e:  # offline CI / HF hub unreachable
+        pytest.skip(f"real tokenizer unavailable: {e}")
+    hf = tokenizer.get_tokenizer()
+
+    # Build a one-token-per-chunk stream by decoding each real token id back to text.
+    text = "The quick brown fox jumps over the lazy dog"
+    ids = hf.encode(text, add_special_tokens=False)
+    chunk_texts = [hf.decode([i]) for i in ids]
+    n = len(ids)
+
+    # Sanity: with the BOS the per-chunk sum is inflated by exactly one token per
+    # chunk (the bug); without it, it matches the whole-message count (the fix).
+    assert sum(tokenizer.count_tokens(c, add_special_tokens=True) for c in chunk_texts) == n + len(chunk_texts)
+    assert sum(tokenizer.count_tokens(c, add_special_tokens=False) for c in chunk_texts) == n
+
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=n,  # whole-message count
+            response_chunks=[json.dumps({"choices": [{"text": t}]}) for t in chunk_texts],
+            chunk_times=[float(i + 1) for i in range(n)],  # 1s between tokens
+            server_usage={"completion_tokens": n},
+        ),
+    )
+    metric = RequestLifecycleMetric(scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None)
+
+    result = summarize_requests([metric], [50], tokenizer=tokenizer)
+
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+    # One timestamp per real token, not one-per-token-plus-a-BOS-per-chunk.
+    assert len(metric.info.response_metrics.output_token_times) == n
+
+    # ITL is now consistent with TPOT: both average 1.0s/token over the n-1 gaps.
+    itl_mean = result.successes["latency"]["inter_token_latency"]["mean"]
+    tpot_mean = result.successes["latency"]["time_per_output_token"]["mean"]
+    assert itl_mean == pytest.approx(1.0)
+    assert tpot_mean == pytest.approx(1.0)
+    # Client per-chunk count now agrees with the server's completion_tokens.
+    assert result.successes["token_count_mismatches"] == 0
 
 
 def test_summarize_requests_surfaces_output_token_usage() -> None:
@@ -149,7 +206,7 @@ def test_output_len_not_recomputed_from_chunks() -> None:
 
     mock_tokenizer = Mock()
     # Each chunk re-tokenizes to 2, so a per-chunk sum would be 4 (double).
-    mock_tokenizer.count_tokens.side_effect = lambda text: 2 if text else 0
+    mock_tokenizer.count_tokens.side_effect = lambda text, **kwargs: 2 if text else 0
 
     info = InferenceInfo(
         request_metrics=RequestMetrics(text=Text(input_tokens=5)),
@@ -171,7 +228,7 @@ def test_summarize_requests_token_mismatch() -> None:
     from unittest.mock import Mock
 
     mock_tokenizer = Mock()
-    mock_tokenizer.count_tokens.side_effect = lambda text: 2 if "hello" in text else (3 if "world" in text else 0)
+    mock_tokenizer.count_tokens.side_effect = lambda text, **kwargs: 2 if "hello" in text else (3 if "world" in text else 0)
 
     info = InferenceInfo(
         request_metrics=RequestMetrics(text=Text(input_tokens=5)),

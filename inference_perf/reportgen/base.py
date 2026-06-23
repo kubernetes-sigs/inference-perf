@@ -466,7 +466,11 @@ def summarize_requests(
                     continue
 
             for text, chunk_time in parsed_chunks:
-                tokens_in_chunk = tokenizer.count_tokens(text)
+                # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
+                # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
+                # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
+                # by the same factor. See #564.
+                tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
                 if tokens_in_chunk > 0:
                     # Assign every token in a chunk the chunk's arrival time to match user-perceived
                     # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
@@ -476,8 +480,7 @@ def summarize_requests(
                     accumulated_tokens += tokens_in_chunk
 
             m.info.response_metrics.output_token_times = output_token_times
-            # Do not overwrite output_tokens with the per-chunk sum: re-tokenizing each chunk
-            # inflates the count (e.g. a BOS per chunk). Keep the API layer's whole-message
+            # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
             # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
             if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
