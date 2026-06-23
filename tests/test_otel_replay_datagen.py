@@ -773,6 +773,7 @@ class TestEndToEndSimpleChain:
         mock_otel_config = MagicMock()
         mock_otel_config.attribute_to_header_map = {}
         mock_otel_config.attribute_to_label_map = {}
+        mock_otel_config.bad_tool_call_handling = BadToolCallHandling.NONE
         gen.otel_config = mock_otel_config
         gen.replay_config = mock_otel_config
         gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
@@ -1572,6 +1573,7 @@ def _make_api_data_with_tool_call_output(
         predecessor_event_ids=["session_0:event_0"],
         input_segments=segments,
         original_messages=original_messages,
+        override_tool_call_max_tokens=False,
         bad_tool_call_handling=handling,
     )
 
