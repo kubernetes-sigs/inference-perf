@@ -99,14 +99,16 @@ async def test_multi_token_chunks_count_tokens_not_chunks() -> None:
     metric = RequestLifecycleMetric(
         scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="prompt", info=info, error=None
     )
-    summarize_requests([metric], [50], tokenizer=tokenizer)
+    result = summarize_requests([metric], [50], tokenizer=tokenizer)
 
+    assert result is not None
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
-    # Sum of per-chunk tokens, NOT chunk count. This is the assertion that
-    # would fail under the pre-#410 implementation.
-    assert metric.info.response_metrics.output_tokens == 8
-    assert metric.info.response_metrics.output_tokens != len(chunk_texts)
-    # Per-token timestamps expanded so TPOT/ITL distributions are accurate.
+    # The authoritative output token total comes from the server (completion_tokens),
+    # surfaced as output_tokens.total. It reflects real tokens, NOT the chunk count
+    # (the #364 bug).
+    assert result.successes["output_tokens"]["total"] == 8
+    assert result.successes["output_tokens"]["total"] != len(chunk_texts)
+    # Per-token timestamps still expand per chunk so TPOT/ITL distributions are accurate.
     assert len(metric.info.response_metrics.output_token_times) == 8
 
 
@@ -139,11 +141,10 @@ async def test_multi_token_chunks_match_server_usage() -> None:
     )
     result = summarize_requests([metric], [50], tokenizer=tokenizer)
 
+    assert result is not None
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
-    assert metric.info.response_metrics.output_tokens == expected_total
     assert metric.info.response_metrics.server_usage == {"completion_tokens": expected_total}
 
-    # No mismatches between client tokenization and server usage when the
-    # tokenizer matches; this is the normal-operation expectation.
-    assert result is not None
-    assert result.successes["token_count_mismatches"] == 0
+    # The authoritative output token total comes from the server's completion_tokens,
+    # which is what eliminates the gap against `vllm bench`.
+    assert result.successes["output_tokens"]["total"] == expected_total

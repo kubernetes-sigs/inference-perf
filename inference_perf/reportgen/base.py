@@ -84,6 +84,29 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[
     }
 
 
+def summarize_output_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[str, float]:
+    """Total output tokens as reported by the server (usage.completion_tokens).
+
+    The server-side count is exact (a count of decode steps), unlike a
+    client-side re-tokenization of the streamed text. Falls back to the
+    client-side output_tokens when the server does not report usage. Mirrors
+    summarize_prompt_token_usage on the input side.
+    """
+    output_tokens_total = 0.0
+
+    for metric in metrics:
+        response_metrics = metric.info.response_metrics
+        server_usage = response_metrics.server_usage if isinstance(response_metrics, StreamedResponseMetrics) else None
+        completion_tokens = (
+            server_usage.get("completion_tokens")
+            if server_usage
+            else (response_metrics.output_tokens if response_metrics else None)
+        )
+        output_tokens_total += safe_float(completion_tokens)
+
+    return {"total": output_tokens_total}
+
+
 class ResponsesSummary(BaseModel):
     benchmark_time_seconds: float
     load_summary: dict[str, Any]
@@ -453,7 +476,9 @@ def summarize_requests(
                     accumulated_tokens += tokens_in_chunk
 
             m.info.response_metrics.output_token_times = output_token_times
-            m.info.response_metrics.output_tokens = accumulated_tokens
+            # Do not overwrite output_tokens with the per-chunk sum: re-tokenizing each chunk
+            # inflates the count (e.g. a BOS per chunk). Keep the API layer's whole-message
+            # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
             if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
                 mismatched_requests += 1
@@ -596,6 +621,7 @@ def summarize_requests(
             ],
             percentiles,
         ),
+        "output_tokens": summarize_output_token_usage(all_successful),
         "token_count_mismatches": mismatched_requests,
     }
     if goodput_metrics:
