@@ -51,14 +51,20 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
     live on the request lifecycle metric.
     """
 
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
+    def __init__(
+        self,
+        api_config: APIConfig,
+        config: DataConfig,
+        tokenizer: Optional[CustomTokenizer],
+        seed: Optional[int] = None,
+    ) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if config.multimodal is None:
             raise ValueError("Multimodal config is required for MultimodalDataGenerator")
 
         self.multimodal_config = config.multimodal
-        self.rng: np.random.Generator = np.random.default_rng()
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for MultimodalDataGenerator")

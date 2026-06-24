@@ -347,11 +347,11 @@ def main_cli() -> None:
             datagen = CNNDailyMailDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.Synthetic:
             if config.data.multimodal:
-                datagen = MultimodalDataGenerator(config.api, config.data, tokenizer)
+                datagen = MultimodalDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
             else:
-                datagen = SyntheticDataGenerator(config.api, config.data, tokenizer)
+                datagen = SyntheticDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
         elif config.data.type == DataGenType.Random:
-            datagen = RandomDataGenerator(config.api, config.data, tokenizer)
+            datagen = RandomDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
         elif config.data.type == DataGenType.SharedPrefix:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.ConversationReplay:

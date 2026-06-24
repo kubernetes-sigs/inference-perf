@@ -36,8 +36,11 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         api_config: APIConfig,
         config: DataConfig,
         tokenizer: Optional[CustomTokenizer],
+        seed: Optional[int] = None,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
+
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
         if self.trace is None:
             # let's read the trace file and get the input and output lengths
@@ -53,6 +56,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.input_distribution.mean,
                 self.input_distribution.std_dev,
                 self.input_distribution.total_count,
+                rng=self.rng,
             )
             self.output_lengths = generate_distribution(
                 self.output_distribution.min,
@@ -60,6 +64,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.output_distribution.mean,
                 self.output_distribution.std_dev,
                 self.output_distribution.total_count,
+                rng=self.rng,
             )
         else:
             # let's read the trace file and get the input and output lengths
@@ -83,7 +88,6 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
         self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
-        self.rng: np.random.Generator = np.random.default_rng()
 
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
