@@ -85,7 +85,7 @@ async def test_multi_token_chunks_count_tokens_not_chunks() -> None:
     response = FakeStreamingResponse([sse])
 
     tokenizer = MagicMock()
-    tokenizer.count_tokens = MagicMock(side_effect=lambda text: len(text.split()))
+    tokenizer.count_tokens = MagicMock(side_effect=lambda text, **kwargs: len(text.split()))
 
     config = APIConfig(type=APIType.Chat, streaming=True)
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
@@ -130,7 +130,7 @@ async def test_multi_token_chunks_match_server_usage() -> None:
     response = FakeStreamingResponse([sse])
 
     tokenizer = MagicMock()
-    tokenizer.count_tokens = MagicMock(side_effect=lambda text: len(text.split()))
+    tokenizer.count_tokens = MagicMock(side_effect=lambda text, **kwargs: len(text.split()))
 
     config = APIConfig(type=APIType.Chat, streaming=True)
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=expected_total)

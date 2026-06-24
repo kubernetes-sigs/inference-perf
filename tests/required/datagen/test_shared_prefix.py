@@ -21,7 +21,7 @@ class MockCustomTokenizer(CustomTokenizer):
     def get_tokenizer(self) -> Any:
         return MockHFTokenizer()
 
-    def count_tokens(self, text: str) -> int:
+    def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
         return len(text.split())
 
 

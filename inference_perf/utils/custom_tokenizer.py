@@ -22,15 +22,21 @@ class CustomTokenizer:
             config.pretrained_model_name_or_path, token=config.token, trust_remote_code=config.trust_remote_code
         )
 
-    def count_tokens(self, text: str) -> int:
+    def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
         if text == "":
             return 0
 
+        # add_special_tokens=False is for counting a fragment of a larger sequence (e.g. a single
+        # streamed chunk), where prepending a BOS per call would over-count by one token per fragment.
         # Some tokenizers don't set model_max_length which defaults to VERY_LARGE_INTEGER.
         # Prevent overflow and log spam by skipping truncation.
         if self.tokenizer.model_max_length == VERY_LARGE_INTEGER:
-            return len(self.tokenizer(text).input_ids)
-        return len(self.tokenizer(text, truncation=True, max_length=self.tokenizer.model_max_length).input_ids)
+            return len(self.tokenizer(text, add_special_tokens=add_special_tokens).input_ids)
+        return len(
+            self.tokenizer(
+                text, truncation=True, max_length=self.tokenizer.model_max_length, add_special_tokens=add_special_tokens
+            ).input_ids
+        )
 
     def get_tokenizer(self) -> PreTrainedTokenizerBase:
         return self.tokenizer

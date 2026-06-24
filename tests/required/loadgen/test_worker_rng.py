@@ -59,7 +59,7 @@ class _DummyCustomTokenizer(CustomTokenizer):
     def get_tokenizer(self) -> Any:
         return _DummyHFTokenizer()
 
-    def count_tokens(self, text: str) -> int:
+    def count_tokens(self, text: str, add_special_tokens: bool = True) -> int:
         # Each space-separated integer is one token.
         return len(text.split()) if text else 0
 
