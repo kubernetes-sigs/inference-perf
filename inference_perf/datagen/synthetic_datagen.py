@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Generator, List, Optional
 
+import numpy as np
+
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -34,7 +36,13 @@ _PROGRESS_LOG_INTERVAL_SEC = 10.0
 
 
 class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
-    def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
+    def __init__(
+        self,
+        api_config: APIConfig,
+        config: DataConfig,
+        tokenizer: Optional[CustomTokenizer],
+        seed: Optional[int] = None,
+    ) -> None:
         super().__init__(api_config, config, tokenizer)
 
         if self.input_distribution is None or self.output_distribution is None or self.tokenizer is None:
@@ -43,12 +51,15 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
             raise ValueError("IODistribution requires total_count to be set")
 
+        self.rng: np.random.Generator = np.random.default_rng(seed)
+
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
             self.input_distribution.max,
             self.input_distribution.mean,
             self.input_distribution.std_dev,
             self.input_distribution.total_count,
+            rng=self.rng,
         )
         self.output_lengths = generate_distribution(
             self.output_distribution.min,
@@ -56,6 +67,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.output_distribution.mean,
             self.output_distribution.std_dev,
             self.output_distribution.total_count,
+            rng=self.rng,
         )
         if self.config and self.config.corpus_file_path:
             corpus_path = Path(self.config.corpus_file_path)
@@ -95,11 +107,17 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generating exact length prompts.")
 
+        # Select a random start offset to ensure unique prompts
+        max_start = len(self.token_ids) - target_len
+        start_idx = 0
+        if max_start > 0:
+            start_idx = int(self.rng.integers(0, max_start))
+
         # Start with a slice of target_len
         current_slice_len = target_len
 
         initial_slice_len = min(target_len, len(self.token_ids))
-        initial_tokens = self.token_ids[:initial_slice_len]
+        initial_tokens = self.token_ids[start_idx : start_idx + initial_slice_len]
 
         def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
             nonlocal current_slice_len
@@ -113,7 +131,11 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
                     current_slice_len = 1  # Keep at least one
 
             slice_to_use = min(current_slice_len, len(self.token_ids))
-            return self.token_ids[:slice_to_use]
+            end_idx = start_idx + slice_to_use
+            if end_idx > len(self.token_ids):
+                adjusted_start = max(0, len(self.token_ids) - slice_to_use)
+                return self.token_ids[adjusted_start : adjusted_start + slice_to_use]
+            return self.token_ids[start_idx:end_idx]
 
         text, _ = converge_to_exact_length_text(
             tokenizer=self.tokenizer,
