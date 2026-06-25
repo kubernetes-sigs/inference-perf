@@ -70,6 +70,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
     SessionChatCompletionAPIData,
 )
+import inference_perf.datagen.otel_trace_to_replay_graph as otel_graph
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
@@ -460,6 +461,14 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         random.seed(self.base_seed)
         random.shuffle(sessions)
         logger.info(f"Randomized session order using seed: {self.base_seed}")
+
+        msg_count = otel_graph._developer_role_normalized_count
+        if msg_count > 0:
+            logger.warning(
+                f"Normalized {msg_count} 'developer' role message(s) to 'system' "
+                f"for compatibility with model servers that only accept standard roles."
+            )
+            otel_graph._developer_role_normalized_count = 0
 
         return sessions
 

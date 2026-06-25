@@ -74,6 +74,7 @@ from inference_perf.datagen.replay_graph_types import (
 )
 
 logger = logging.getLogger(__name__)
+_developer_role_normalized_count = 0
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,7 @@ def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[st
 
 def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract messages from span attributes. Returns empty list if not found."""
+    global _developer_role_normalized_count
     attrs = span.get("attributes") or {}
     raw = attrs.get("gen_ai.input.messages")
     res = []
@@ -223,6 +225,9 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
         for x in raw:
             # sometimes the content field contains a dictionary with several properties
             role = x["role"]
+            if role == "developer":
+                role = "system"
+                _developer_role_normalized_count += 1
             if "content" in x:
                 content = x["content"]
                 # Check if message also has tool_calls - convert to parts format
