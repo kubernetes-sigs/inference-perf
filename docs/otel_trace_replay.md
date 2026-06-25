@@ -103,6 +103,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `include_errors` | boolean | No (default: `true`) | Include spans marked as errors in the trace. Set to `false` to exclude error spans entirely |
 | `skip_invalid_files` | boolean | No (default: `true`) | Skip unparseable trace files instead of failing |
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
+| `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
 
 **Examples:**
 
@@ -148,6 +149,42 @@ data:
 
 > **Note:** The `hf_dataset_path` option automatically downloads the dataset from HuggingFace Hub and caches it locally (typically in `~/.cache/huggingface/datasets`). Subsequent runs will use the cached version. All JSON files in the dataset directory tree will be loaded as trace files.
 
+### Bad tool-call handling
+
+Some server-side tool-call parsers emit malformed JSON in
+`tool_calls[i].function.arguments` — for example vLLM's `qwen3_xml` parser
+leaks closing XML markers (`</parameter></function>`) into the JSON string
+value at decode time. The model server still returns 200 on the response,
+but on the *next* turn the chat template's `json.loads(arguments)` raises
+and the server returns HTTP 400. Replaying the bad bytes verbatim therefore
+halts the session.
+
+The `bad_tool_call_handling` knob on `otel_trace_replay` selects a
+client-side mitigation:
+
+| Value | Behavior |
+|---|---|
+| `none` (default) | No mitigation. Bytes propagate; the server may HTTP-400 on the next turn. Use for benchmarking the upstream parser bug or for strict trace fidelity. |
+| `use_recorded` | When the live model returns malformed `arguments`, discard the live response and substitute the recorded assistant message at this slot. The recorded `tool_call_id` flows naturally into the recorded `role:tool` successor that follows. The next-turn request is structurally identical to a healthy replay (same message count, same roles, valid JSON in arguments, matching `tool_call_id` pairs). |
+
+The mitigation lives entirely in the substitution path — the response path
+stores raw bytes from the model exactly as upstream main does.
+
+If `use_recorded` detects malformed `tool_calls` AND the recorded fallback
+is also malformed (the trace was captured from a buggy parser too), the
+current event is hard-failed; `EventFailedError` cascades to events that
+await this one's output, while parallel DAG branches continue.
+
+When at least one substitution fires, the session's completion record gains
+two extra keys for telemetry:
+
+- `recorded_substitution_event_ids` — sorted list of predecessor event_ids
+  whose live tool_call response was replaced
+- `n_recorded_substitutions` — `len(recorded_substitution_event_ids)`
+
+These keys are gated behind `len(...) > 0`, so a default-config run
+produces an identical wire format to upstream main.
+
 ### Scaling a Small Corpus
 
 For stress testing with a corpus smaller than your target session count, set
@@ -160,12 +197,23 @@ do not share KV-cache state.
 data:
   type: otel_trace_replay
   otel_trace_replay:
+    trace_directory: "production_traces/"
+    use_static_model: true
+    static_model_name: "qwen3-2b"
+    bad_tool_call_handling: use_recorded
+```
+
+```yaml
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
     trace_directory: "small_corpus/"
     duplicate_sessions_target: 500   # inflate any size up to 500 sessions
 ```
 
 If you also want non-duplicate sessions to be KV-cache-isolated from each
 other, set `inject_random_session_id: true`.
+
 
 ### Load Configuration: `trace_session_replay`
 
