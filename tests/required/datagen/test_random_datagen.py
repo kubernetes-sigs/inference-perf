@@ -1,7 +1,7 @@
 import numpy as np
 
 from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
 from inference_perf.datagen.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from typing import Any
@@ -106,3 +106,38 @@ def test_random_datagen_excludes_special_tokens() -> None:
     encoded_ids = tokenizer.get_tokenizer().encode(real_data.prompt)
     for token in encoded_ids:
         assert token not in [1, 2, 3]
+
+
+def test_random_datagen_distribution_types() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(
+            type=DistributionType.FIXED,
+            min=10,
+            max=20,
+            mean=15,
+            std_dev=2,
+            total_count=5,
+        ),
+        output_distribution=Distribution(
+            type=DistributionType.FIXED,
+            min=5,
+            max=10,
+            mean=7,
+            std_dev=1,
+            total_count=5,
+        ),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = RandomDataGenerator(api_config, data_config, tokenizer)
+
+    # With FIXED type, all generated lengths must be exactly equal to the mean
+    assert len(generator.input_lengths) == 5
+    for length in generator.input_lengths:
+        assert length == 15
+
+    assert len(generator.output_lengths) == 5
+    for length in generator.output_lengths:
+        assert length == 7
