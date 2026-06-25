@@ -94,6 +94,8 @@ def _detect_bad_tool_calls(
         except json.JSONDecodeError as e:
             bad.append((i, fn.get("name", "?"), str(e)))
     return bad
+
+
 # --- end bad_tool_call_handling --------------------------------------------
 
 
@@ -477,8 +479,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         # request would 400 on the chat template's json.loads.
                         bad_live = (
                             _detect_bad_tool_calls(live_tool_calls)
-                            if (self.bad_tool_call_handling == BadToolCallHandling.USE_RECORDED
-                                and live_tool_calls)
+                            if (self.bad_tool_call_handling == BadToolCallHandling.USE_RECORDED and live_tool_calls)
                             else []
                         )
                         if bad_live:
@@ -514,13 +515,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                             # semantics dedupe across DAG fan-out.
                             session_id = self._extract_session_id()
                             pred_event_id = (
-                                seg.source_event_id.split(":", 1)[1]
-                                if ":" in seg.source_event_id
-                                else seg.source_event_id
+                                seg.source_event_id.split(":", 1)[1] if ":" in seg.source_event_id else seg.source_event_id
                             )
-                            self.worker_tracker.record_recorded_substitution(
-                                session_id, pred_event_id
-                            )
+                            self.worker_tracker.record_recorded_substitution(session_id, pred_event_id)
                             result.append(recorded_message)
                             logger.warning(
                                 f"Event {self.event_id}: substituted RECORDED message for "
@@ -555,7 +552,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                     f"requests with dangling tool_call_id references."
                                 )
                                 self._substitution_failure_reason = (
-                                    "substitution failed (tool call expected but plain text returned)")
+                                    "substitution failed (tool call expected but plain text returned)"
+                                )
                                 self.registry.record_failure(self.event_id)
                                 return result  # partial result; caller should check skip_request
                             for msg in seg_msgs:
@@ -1389,7 +1387,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             override_tool_call_max_tokens=self.replay_config.override_tool_call_max_tokens if self.replay_config else False,
             # Mitigation knob: read once per event from replay_config. Default
             # NONE keeps the wire format byte-identical to upstream main.
-            bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE) if self.replay_config else BadToolCallHandling.NONE,
+            bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)
+            if self.replay_config
+            else BadToolCallHandling.NONE,
         )
 
     def cleanup_session(self, session_id: str) -> None:

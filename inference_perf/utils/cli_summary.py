@@ -366,7 +366,8 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         error_str = f"[{error_color}]{session_error_pct:.1f}%[/]"
 
         substitution_str = (
-            f"[yellow]{total_recorded_substitutions}[/]" if total_recorded_substitutions > 0
+            f"[yellow]{total_recorded_substitutions}[/]"
+            if total_recorded_substitutions > 0
             else str(total_recorded_substitutions)
         )
 

@@ -1535,11 +1535,11 @@ MALFORMED_ARGS_CASES = [
 VALID_ARGS = '{"location": "Paris"}'
 
 
-def _make_tool_call(args: str, call_id: str = "call_0", name: str = "get_weather") -> dict:
+def _make_tool_call(args: str, call_id: str = "call_0", name: str = "get_weather") -> dict[str, Any]:
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": args}}
 
 
-def _make_assistant_message_with_tool_call(args: str, call_id: str = "call_0") -> dict:
+def _make_assistant_message_with_tool_call(args: str, call_id: str = "call_0") -> dict[str, Any]:
     return {"role": "assistant", "content": None, "tool_calls": [_make_tool_call(args, call_id)]}
 
 
@@ -1614,9 +1614,7 @@ class TestBadToolCallHandling:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
-    async def test_malformed_live_tool_call_substitutes_recorded(
-        self, case_id: str, malformed_args: str, desc: str
-    ) -> None:
+    async def test_malformed_live_tool_call_substitutes_recorded(self, case_id: str, malformed_args: str, desc: str) -> None:
         """Malformed live tool_call arguments are replaced with the recorded assistant message."""
         print(f"\n[{case_id}] {desc}")
         registry = EventOutputRegistry()
@@ -1642,9 +1640,7 @@ class TestBadToolCallHandling:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
-    async def test_malformed_live_and_recorded_hard_fails(
-        self, case_id: str, malformed_args: str, desc: str
-    ) -> None:
+    async def test_malformed_live_and_recorded_hard_fails(self, case_id: str, malformed_args: str, desc: str) -> None:
         """When both the live response and the recorded fallback are malformed, the event hard-fails exactly once."""
         print(f"\n[{case_id}] {desc}")
         registry = EventOutputRegistry()
@@ -1668,18 +1664,14 @@ class TestBadToolCallHandling:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("case_id,malformed_args,desc", MALFORMED_ARGS_CASES)
-    async def test_handling_none_does_not_substitute(
-        self, case_id: str, malformed_args: str, desc: str
-    ) -> None:
+    async def test_handling_none_does_not_substitute(self, case_id: str, malformed_args: str, desc: str) -> None:
         """With bad_tool_call_handling=none, malformed args pass through unchanged (upstream behavior)."""
         print(f"\n[{case_id}] {desc}")
         registry = EventOutputRegistry()
         tracker = WorkerSessionTracker()
         self._register_live_message(registry, "session_0:event_0", malformed_args)
 
-        api_data = _make_api_data_with_tool_call_output(
-            registry, tracker, VALID_ARGS, handling=BadToolCallHandling.NONE
-        )
+        api_data = _make_api_data_with_tool_call_output(registry, tracker, VALID_ARGS, handling=BadToolCallHandling.NONE)
         await api_data.wait_for_predecessors_and_substitute()
 
         # event_1 must not be skipped — handling=none never intervenes regardless of arg validity
