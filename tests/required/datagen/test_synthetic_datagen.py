@@ -3,7 +3,7 @@ from typing import Any, Iterator
 from unittest.mock import patch
 
 from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
 from inference_perf.datagen import synthetic_datagen
 from inference_perf.datagen.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -104,3 +104,38 @@ def test_synthetic_datagen_skips_progress_log_within_interval() -> None:
     # First call sets the baseline timestamp and logs; subsequent sub-interval
     # calls should be silent.
     assert mock_logger.info.call_count == 1
+
+
+def test_synthetic_datagen_distribution_types() -> None:
+    api_config = APIConfig(type=APIType.Completion)
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(
+            type=DistributionType.FIXED,
+            min=10,
+            max=20,
+            mean=15,
+            std_dev=2,
+            total_count=5,
+        ),
+        output_distribution=Distribution(
+            type=DistributionType.FIXED,
+            min=5,
+            max=10,
+            mean=7,
+            std_dev=1,
+            total_count=5,
+        ),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+
+    # With FIXED type, all generated lengths must be exactly equal to the mean
+    assert len(generator.input_lengths) == 5
+    for length in generator.input_lengths:
+        assert length == 15
+
+    assert len(generator.output_lengths) == 5
+    for length in generator.output_lengths:
+        assert length == 7
