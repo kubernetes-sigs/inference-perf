@@ -56,6 +56,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.input_distribution.mean,
                 self.input_distribution.std_dev,
                 self.input_distribution.total_count,
+                dist_type=self.input_distribution.type,
                 rng=self.rng,
             )
             self.output_lengths = generate_distribution(
@@ -64,6 +65,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.output_distribution.mean,
                 self.output_distribution.std_dev,
                 self.output_distribution.total_count,
+                dist_type=self.output_distribution.type,
                 rng=self.rng,
             )
         else:
