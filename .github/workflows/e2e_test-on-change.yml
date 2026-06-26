@@ -26,6 +26,33 @@ jobs:
         run: |
           nix develop -c pdm sync -d
 
+      # The tool-parity test (e2e/tests/test_tool_parity.py) compares
+      # inference-perf against `vllm bench serve`. vllm publishes no wheels for
+      # the nix devshell's Python (3.14), so install it under a separate 3.12
+      # and hand the test its path via $VLLM_BENCH_BIN. Both steps are
+      # best-effort: if provisioning fails (e.g. the pinned version is not yet
+      # on PyPI), the parity test skips gracefully and the rest of the e2e
+      # suite is unaffected.
+      - name: Set up Python 3.12 for vllm
+        id: setup-vllm-python
+        continue-on-error: true
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install pinned vllm for parity test (best-effort)
+        id: install-vllm
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          # Single source of truth for the version is vllm_bench.py.
+          VLLM_REF="$(grep -oP 'VLLM_PINNED_REF = "\K[^"]+' e2e/utils/vllm_bench.py)"
+          python -m pip install --upgrade pip
+          # CPU-only client bench: it just drives an OpenAI-compatible server.
+          python -m pip install "vllm==${VLLM_REF#v}"
+          echo "VLLM_BENCH_BIN=$(python -c 'import shutil; print(shutil.which("vllm") or "")')" >> "$GITHUB_ENV"
+
       - name: Run end-to-end tests
         run: |
           set -euxo pipefail
