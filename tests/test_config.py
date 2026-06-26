@@ -71,6 +71,19 @@ def test_deep_merge() -> None:
     assert merged["metrics"]["type"] == MetricsClientType.PROMETHEUS
 
 
+def test_read_config_accepts_anthropic_messages_api_type() -> None:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump({"api": {"type": "anthropic_messages"}}, tmp)
+        tmp_path = tmp.name
+
+    try:
+        config = read_config(tmp_path)
+        assert config.api.type == APIType.AnthropicMessages
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def test_read_config_timestamp_substitution() -> None:
     # Create a minimalistic config with {timestamp} in the storage path
     config_content = {

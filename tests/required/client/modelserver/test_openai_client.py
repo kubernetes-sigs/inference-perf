@@ -16,7 +16,8 @@ import asyncio
 import aiohttp
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
-from inference_perf.apis import ErrorResponseInfo, InferenceInfo
+from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage, ErrorResponseInfo, InferenceInfo
+from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -108,7 +109,6 @@ async def test_process_request_general_exception(mock_client: MagicMock, mock_da
 async def test_otel_records_output_from_sse_response(mock_client: MagicMock, mock_data: MagicMock) -> None:
     """OTEL metrics should correctly parse SSE streaming response content."""
     from contextlib import contextmanager
-    from inference_perf.config import APIType
 
     mock_client.api_config.streaming = True
     mock_client.api_config.type = APIType.Chat
@@ -165,6 +165,35 @@ async def test_otel_records_output_from_sse_response(mock_client: MagicMock, moc
     call_kwargs = mock_client.otel.record_response_metrics.call_args[1]
     response_info = call_kwargs["response_info"]
     assert response_info["output_text"] == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.AnthropicMessages
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "claude-sonnet"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello")])
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/v1/messages"
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert headers_passed["x-api-key"] == "test-key"
+    assert headers_passed["anthropic-version"] == "2023-06-01"
+    assert "Authorization" not in headers_passed
+    assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
 
 
 @pytest.mark.asyncio
