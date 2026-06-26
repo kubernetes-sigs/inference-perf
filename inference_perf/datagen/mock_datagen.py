@@ -14,7 +14,13 @@
 from typing import Generator, List, Optional
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.datagen.base import DataGenerator
-from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
+from inference_perf.apis import (
+    AnthropicMessagesAPIData,
+    ChatCompletionAPIData,
+    ChatMessage,
+    CompletionAPIData,
+    InferenceAPIData,
+)
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -23,7 +29,7 @@ class MockDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
@@ -35,6 +41,10 @@ class MockDataGenerator(DataGenerator):
             while True:
                 i += 1
                 yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content=f"mock prompt {i}")])
+        elif self.api_config.type == APIType.AnthropicMessages:
+            while True:
+                i += 1
+                yield AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content=f"mock prompt {i}")])
         else:
             raise Exception("Unsupported API type")
 
