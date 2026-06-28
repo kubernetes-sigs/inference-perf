@@ -218,7 +218,7 @@ def test_weka_trace_replay_generator_mock(tmp_path: Path) -> None:
     )
 
     assert len(gen.sessions) == 1
-    session = gen.sessions[0]
+    session = gen._get_session(0)
     assert session.source_id == "mock_trace_123"
 
     # Graph should have 2 events representing the 2 parent turns
@@ -296,7 +296,7 @@ def test_weka_trace_replay_generator_mock_no_warp(tmp_path: Path) -> None:
     )
 
     assert len(gen.sessions) == 1
-    session = gen.sessions[0]
+    session = gen._get_session(0)
     events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
 
     # In raw seconds: t0 = 0.1s (100ms), t1 = 100.1s (100100ms)

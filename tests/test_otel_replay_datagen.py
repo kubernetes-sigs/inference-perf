@@ -1380,8 +1380,11 @@ def _make_generator(
     gen.output_registry = EventOutputRegistry()
     gen.worker_tracker = WorkerSessionTracker()
     gen.session_completion_queue = None
+    gen.num_workers = 1
     gen.sessions = []
+    gen._session_ids = []
     gen.session_graph_state = {}
+    gen._session_events = {}
     gen.all_events = []
     return gen
 
@@ -1685,3 +1688,66 @@ class TestBadToolCallHandling:
         assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
         # No failure reason set
         assert api_data._substitution_failure_reason is None
+
+
+class TestWorkerSessionEviction:
+    """Verify a worker frees a session's built graph once all its events drain.
+
+    In the lazy path each worker builds its own graphs and the parent's cleanup_session
+    never runs in the worker, so without per-worker eviction a worker retains every graph
+    it ever built for the whole stage. evict_worker_session (triggered when the last event
+    of a session drains) must free the graph, event list, traversal state, registry entries,
+    and worker-tracker bookkeeping. Every event drains exactly once via completion, skip, or
+    request failure — eviction fires only after the last of them.
+    """
+
+    def _session_is_resident(self, gen: ReplayGraphSessionGeneratorBase, session_id: str, idx: int) -> bool:
+        return (
+            session_id in gen.session_graph_state
+            or idx in gen._session_events
+            or (idx < len(gen.sessions) and gen.sessions[idx] is not None)
+        )
+
+    def test_evicted_after_all_events_complete(self) -> None:
+        """A 2-event session is freed only after both events complete, not after the first."""
+        graph = _make_simple_graph(event_count=2)
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+        assert self._session_is_resident(gen, "s", 0)
+
+        events = gen.get_session_events(0)
+        assert len(events) == 2
+        datas = [gen.load_lazy_data(e) for e in events]
+        for d in datas:
+            assert d.generator is gen  # back-reference wired
+
+        info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
+        # First event completes — session must still be resident.
+        datas[0].on_completion(info)
+        assert self._session_is_resident(gen, "s", 0), "session evicted too early (before last event)"
+
+        # Last event completes — now fully drained, must be evicted.
+        datas[1].on_completion(info)
+        assert not self._session_is_resident(gen, "s", 0), "session not evicted after all events completed"
+        assert "s" not in gen.worker_tracker._drained_events
+
+    def test_evicted_after_failure_and_skips_drain(self) -> None:
+        """Root failure + successor skips still drain every event, so the session is freed."""
+        graph = _make_simple_graph(event_count=3)
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+
+        events = gen.get_session_events(0)
+        datas = [gen.load_lazy_data(e) for e in events]
+
+        # Root event fails (request failure path).
+        asyncio.run(datas[0].process_failure(None, make_mock_api_config_streaming(), make_mock_tokenizer(), Exception("boom")))
+        assert self._session_is_resident(gen, "s", 0), "evicted before successors drained"
+
+        # The two successors are dequeued and skip via the session-already-failed path.
+        for d in datas[1:]:
+            asyncio.run(d.wait_for_predecessors_and_substitute())
+            assert d.skip_request is True
+
+        # All three events have now drained — session must be evicted.
+        assert not self._session_is_resident(gen, "s", 0), "session not evicted after failure + skips"
