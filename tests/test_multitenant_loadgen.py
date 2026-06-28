@@ -28,13 +28,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from inference_perf.apis import (
-    LazyLoadInferenceAPIData,
     RequestLifecycleMetric,
     InferenceInfo,
     StreamedResponseMetrics,
 )
 from inference_perf.config import APIConfig, APIType, DataConfig, OTelTraceReplayConfig
 from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay_graph_session_datagen import SessionReplayLazyLoadData
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, openAIModelServerClientSession
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -157,11 +157,10 @@ class TestMultiTenantLoadGen:
 
         data_config = DataConfig(type="otel_trace_replay", otel_trace_replay=otel_config)
 
-        # Initialize generator (this will load the trace file and build graph)
         gen = OTelTraceReplayDataGenerator(api_config=api_config, config=data_config, tokenizer=None, num_workers=1)
 
-        # 3. Load lazy data and assert mappings
-        lazy_data = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        # 3. Load lazy data (builds session 0's graph on demand) and assert mappings
+        lazy_data = SessionReplayLazyLoadData(session_index=0, local_event_index=0, preferred_worker_id=0)
         api_data = gen.load_lazy_data(lazy_data)
 
         # Assert headers mapped correctly
@@ -212,11 +211,10 @@ class TestMultiTenantLoadGen:
 
         data_config = DataConfig(type="otel_trace_replay", otel_trace_replay=otel_config)
 
-        # Initialize generator
         gen = OTelTraceReplayDataGenerator(api_config=api_config, config=data_config, tokenizer=None, num_workers=1)
 
-        # 3. Load lazy data and assert mappings still receive defaults
-        lazy_data = LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0)
+        # 3. Load lazy data (builds session 0's graph on demand) and assert mappings still default
+        lazy_data = SessionReplayLazyLoadData(session_index=0, local_event_index=0, preferred_worker_id=0)
         api_data = gen.load_lazy_data(lazy_data)
 
         # Assert headers mapped to default

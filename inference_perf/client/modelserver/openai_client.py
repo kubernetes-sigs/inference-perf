@@ -374,7 +374,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 tokenizer=self.client.tokenizer,
                                 lora_adapter=lora_adapter,
                             )
-                            response_content = info.extra_info.get("raw_response", "") if info else ""
+                            # pop (not get) to release the raw SSE body from InferenceInfo immediately;
+                            # holding it in extra_info for the lifetime of the object causes unbounded
+                            # memory growth when many sessions run concurrently.
+                            response_content = info.extra_info.pop("raw_response", "") if info else ""
                         else:
                             # Read response body once to avoid double-read issue
                             response_content = await response.text()

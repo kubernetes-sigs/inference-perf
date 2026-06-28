@@ -485,14 +485,6 @@ class LoadGenerator:
         last_dispatch_time = start_time
         next_dispatch_time = start_time
 
-        # Calculate total expected requests for this stage's slice only
-        total_expected_requests = sum(
-            len(self.datagen.get_session_event_indices(i))
-            for i in range(stage_start_cursor, stage_start_cursor + effective_num_sessions)
-        )
-
-        logger.info(f"Total of {total_expected_requests} requests (events) across {effective_num_sessions} sessions")
-
         def should_start_next_session() -> bool:
             """Check if we should start the next session."""
             # Check concurrency limit (0 = unlimited)
@@ -515,9 +507,21 @@ class LoadGenerator:
             """Dispatch all events for a session. Returns number of events dispatched."""
             nonlocal sessions_dispatched, last_dispatch_time, next_dispatch_time
 
-            # Get session info
             if not isinstance(self.datagen, SessionGenerator):
                 raise TypeError("Expected SessionGenerator for session-based operations")
+
+            # Skip sessions whose graph couldn't be built (malformed spans, or all calls
+            # errored with include_errors=False). This matches the eager path, which dropped
+            # such sessions at load time. NOTE: skipped sessions are currently UNREPORTED —
+            # they are counted as complete (so the pool drains and the stage finishes) but do
+            # NOT appear in the session lifecycle metrics. To surface them later, record a
+            # skipped/failed session metric here instead of only marking them complete.
+            if hasattr(self.datagen, "is_session_buildable") and not self.datagen.is_session_buildable(session_idx):
+                session_info = self.datagen.get_session_info(session_idx)
+                completed_session_ids.add(session_info["session_id"])
+                return 0
+
+            # Get session info
             session_info = self.datagen.get_session_info(session_idx)
             session_id = session_info["session_id"]
 
