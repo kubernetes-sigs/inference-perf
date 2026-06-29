@@ -37,6 +37,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
+from inference_perf.datagen.replay_graph_types import InputSegment
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +298,8 @@ class TestReasoningRegistryIntegration:
         msg = registry.get_message_by_event_id("session_1:event_0")
         assert msg is not None
         assert msg["role"] == "assistant"
-        assert msg["content"] == "Reasoning. The answer."
+        assert msg["content"] == "The answer."
         assert msg["reasoning_content"] == "Reasoning. "
-        assert msg["output_content"] == "The answer."
 
     @pytest.mark.asyncio
     async def test_streaming_output_message_has_separate_fields(self) -> None:
@@ -317,9 +317,8 @@ class TestReasoningRegistryIntegration:
         msg = registry.get_message_by_event_id("session_1:event_0")
         assert msg is not None
         assert msg["role"] == "assistant"
-        assert msg["content"] == "Think. Result."
+        assert msg["content"] == "Result."
         assert msg["reasoning_content"] == "Think. "
-        assert msg["output_content"] == "Result."
 
     @pytest.mark.asyncio
     async def test_registry_message_without_reasoning_has_no_extra_fields(self) -> None:
@@ -335,7 +334,172 @@ class TestReasoningRegistryIntegration:
         assert msg["role"] == "assistant"
         assert msg["content"] == "Plain answer."
         assert "reasoning_content" not in msg
-        assert "output_content" not in msg
+
+
+# ---------------------------------------------------------------------------
+# ChatMessage.to_dict() tests — verify reasoning_content survives serialization
+# ---------------------------------------------------------------------------
+
+
+class TestChatMessageToDict:
+    """Test that ChatMessage.to_dict() correctly includes reasoning_content."""
+
+    def test_to_dict_includes_reasoning_content(self) -> None:
+        msg = ChatMessage(role="assistant", content="Answer", reasoning_content="Thinking")
+        d = msg.to_dict()
+        assert d["role"] == "assistant"
+        assert d["content"] == "Answer"
+        assert d["reasoning_content"] == "Thinking"
+
+    def test_to_dict_omits_reasoning_content_when_none(self) -> None:
+        msg = ChatMessage(role="assistant", content="Answer")
+        d = msg.to_dict()
+        assert "reasoning_content" not in d
+
+    def test_to_dict_with_tool_calls_and_reasoning(self) -> None:
+        tool_calls = [{"id": "call_1", "type": "function", "function": {"name": "fn", "arguments": "{}"}}]
+        msg = ChatMessage(role="assistant", content="Text", reasoning_content="Think", tool_calls=tool_calls)
+        d = msg.to_dict()
+        assert d["tool_calls"] == tool_calls
+        assert d["content"] == "Text"
+        assert d["reasoning_content"] == "Think"
+
+
+# ---------------------------------------------------------------------------
+# Substitution tests — verify reasoning_content survives ChatMessage conversion
+# ---------------------------------------------------------------------------
+
+
+class TestSubstitutionPreservesReasoning:
+    """Test that reasoning_content from registry survives the substitution → ChatMessage conversion."""
+
+    @pytest.mark.asyncio
+    async def test_substitution_preserves_reasoning_content(self) -> None:
+        """After substitution, ChatMessage should carry reasoning_content through to to_dict()."""
+        registry = EventOutputRegistry()
+        # Simulate predecessor completing with reasoning
+        registry.record(
+            "session_1:event_0",
+            "Think. Answer.",
+            [],
+            output_message={"role": "assistant", "content": "Answer.", "reasoning_content": "Think. "},
+        )
+
+        # Build a successor that references the predecessor
+        tracker = WorkerSessionTracker()
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Hello")],
+            max_tokens=500,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
+            input_segments=[
+                InputSegment(type="output", message_count=1, token_count=10, source_event_id="session_1:event_0"),
+                InputSegment(type="unique", message_count=1, token_count=5, source_event_id=None),
+            ],
+            original_messages=[
+                {"role": "assistant", "content": "placeholder"},
+                {"role": "user", "content": "Hello"},
+            ],
+        )
+
+        # Run substitution
+        substituted = api_data._build_messages_with_substitution()
+
+        # Convert to ChatMessage (same as production code line 348-356)
+        chat_messages = [
+            ChatMessage(
+                role=m["role"],
+                content=m.get("content"),
+                reasoning_content=m.get("reasoning") or m.get("reasoning_content"),
+                tool_calls=m.get("tool_calls"),
+                tool_call_id=m.get("tool_call_id"),
+            )
+            for m in substituted
+        ]
+
+        # Verify the substituted assistant message has reasoning_content
+        assistant_msg = chat_messages[0]
+        assert assistant_msg.role == "assistant"
+        assert assistant_msg.content == "Answer."
+        assert assistant_msg.reasoning_content == "Think. "
+
+        # Verify it survives to_dict()
+        d = assistant_msg.to_dict()
+        assert d["content"] == "Answer."
+        assert d["reasoning_content"] == "Think. "
+
+
+# ---------------------------------------------------------------------------
+# "reasoning" field fallback tests — verify new vLLM field name is supported
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningFieldFallback:
+    """Test that the new 'reasoning' field name (vLLM migration) is correctly handled."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_field_name(self) -> None:
+        """Streaming: 'reasoning' field in delta should be captured."""
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+        deltas = [
+            {"reasoning": "New field. "},
+            {"content": "Result."},
+        ]
+        response = _make_streaming_response(deltas, completion_tokens=4)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "New field. Result."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["content"] == "Result."
+        assert msg["reasoning_content"] == "New field. "
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_reasoning_field_name(self) -> None:
+        """Non-streaming: 'reasoning' field in message should be captured."""
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+
+        # Build response with "reasoning" instead of "reasoning_content"
+        message = {"role": "assistant", "content": "Answer.", "reasoning": "Thinking. "}
+        response = MagicMock()
+        response.json = AsyncMock(return_value={"choices": [{"message": message}]})
+
+        info = await api_data.process_response(response, _make_config(), _make_tokenizer())
+
+        assert info.output_text == "Thinking. Answer."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["content"] == "Answer."
+        assert msg["reasoning_content"] == "Thinking. "
+
+    @pytest.mark.asyncio
+    async def test_reasoning_preferred_over_reasoning_content(self) -> None:
+        """When both fields present, 'reasoning' takes precedence."""
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+
+        message = {
+            "role": "assistant",
+            "content": "Answer.",
+            "reasoning": "New field wins.",
+            "reasoning_content": "Old field ignored.",
+        }
+        response = MagicMock()
+        response.json = AsyncMock(return_value={"choices": [{"message": message}]})
+
+        info = await api_data.process_response(response, _make_config(), _make_tokenizer())
+
+        assert info.output_text == "New field wins.Answer."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["reasoning_content"] == "New field wins."
 
 
 if __name__ == "__main__":
