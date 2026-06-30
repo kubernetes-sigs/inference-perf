@@ -33,7 +33,7 @@ from inference_perf.payloads import (
     SyntheticImageSpec,
     SyntheticMp4VideoSpec,
 )
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import parse_sse_stream, resolve_output_token_count
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
 from inference_perf.mediagen.synthesis import generate_jpeg_bytes, generate_mp4_bytes, generate_png_bytes, generate_wav_bytes
@@ -543,7 +543,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
             prompt_len = self._count_prompt_tokens(tokenizer)
-            output_len = tokenizer.count_tokens(output_text)
+            output_len = resolve_output_token_count(server_usage, output_text, tokenizer)
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
@@ -566,7 +566,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                 lora_adapter=lora_adapter,
             )
         output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
-        output_len = tokenizer.count_tokens(output_text)
+        output_len = resolve_output_token_count(data.get("usage"), output_text, tokenizer)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len),

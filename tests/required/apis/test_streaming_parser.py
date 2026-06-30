@@ -14,7 +14,7 @@
 
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
-from inference_perf.apis.streaming_parser import parse_sse_stream, StreamInterruptedError
+from inference_perf.apis.streaming_parser import parse_sse_stream, resolve_output_token_count, StreamInterruptedError
 import pytest
 
 
@@ -136,3 +136,31 @@ async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
     # The bytes received before the break are retained, not discarded.
     assert "Hello" in err.raw_content
     assert "world" in err.raw_content
+
+
+def test_resolve_output_token_count_prefers_server_usage() -> None:
+    """When the server reports usage, the exact completion_tokens wins over
+    client-side re-tokenization (which the mock tokenizer must therefore not do)."""
+    tokenizer = Mock()
+    tokenizer.count_tokens = Mock(return_value=999)
+
+    assert resolve_output_token_count({"completion_tokens": 7}, "some text", tokenizer) == 7
+    tokenizer.count_tokens.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "server_usage",
+    [
+        None,  # server omitted usage entirely
+        {},  # usage present but no completion_tokens key
+        {"completion_tokens": 0},  # falsy count — treat as unreported
+        {"completion_tokens": None},
+    ],
+)
+def test_resolve_output_token_count_falls_back_to_retokenization(server_usage: Optional[dict[str, Any]]) -> None:
+    """No usable server count -> fall back to re-tokenizing the output text."""
+    tokenizer = Mock()
+    tokenizer.count_tokens = Mock(return_value=4)
+
+    assert resolve_output_token_count(server_usage, "four token text", tokenizer) == 4
+    tokenizer.count_tokens.assert_called_once_with("four token text")
