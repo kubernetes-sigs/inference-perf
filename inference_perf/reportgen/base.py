@@ -616,9 +616,7 @@ def summarize_requests(
     )
 
 
-def build_per_request_lifecycle_entry(
-    metric: RequestLifecycleMetric, fields: PerRequestFieldsConfig
-) -> dict[str, Any]:
+def build_per_request_lifecycle_entry(metric: RequestLifecycleMetric, fields: PerRequestFieldsConfig) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "start_time": metric.start_time,
         "end_time": metric.end_time,
