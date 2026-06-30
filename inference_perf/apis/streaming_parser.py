@@ -21,12 +21,9 @@ LLM APIs, reducing code duplication across different API types.
 
 import json
 import time
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from aiohttp import ClientResponse
-
-if TYPE_CHECKING:
-    from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
 class StreamInterruptedError(Exception):
@@ -116,18 +113,3 @@ async def parse_sse_stream(
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
     return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
-
-
-def resolve_output_token_count(
-    server_usage: Optional[dict[str, Any]], output_text: str, tokenizer: "CustomTokenizer"
-) -> int:
-    """The server's `completion_tokens` is exact; re-tokenizing the text may not be.
-
-    Use the reported usage when present, and fall back to re-tokenization only when
-    the server does not report it.
-    """
-    if server_usage:
-        completion_tokens = server_usage.get("completion_tokens")
-        if completion_tokens:
-            return int(completion_tokens)
-    return tokenizer.count_tokens(output_text)

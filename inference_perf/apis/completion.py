@@ -20,7 +20,7 @@ from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMe
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
-from inference_perf.apis.streaming_parser import parse_sse_stream, resolve_output_token_count
+from inference_perf.apis.streaming_parser import parse_sse_stream
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -58,7 +58,7 @@ class CompletionAPIData(InferenceAPIData):
             )
 
             prompt_len = tokenizer.count_tokens(self.prompt)
-            output_len = resolve_output_token_count(server_usage, output_text, tokenizer)
+            output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
@@ -82,7 +82,7 @@ class CompletionAPIData(InferenceAPIData):
                     lora_adapter=lora_adapter,
                 )
             output_text = choices[0].get("text", "")
-            output_len = resolve_output_token_count(data.get("usage"), output_text, tokenizer)
+            output_len = tokenizer.count_tokens(output_text)
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),

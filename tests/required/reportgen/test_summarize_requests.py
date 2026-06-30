@@ -253,6 +253,52 @@ def test_summarize_requests_token_mismatch() -> None:
     assert successes["token_count_mismatches"] == 1
 
 
+def test_use_server_output_tokens_flag_switches_tpot_ntpot_divisor() -> None:
+    """The flag normalizes TPOT/NTPOT by the server's completion_tokens instead of
+    the client re-tokenized count, while both raw counts stay reported."""
+
+    def make_metric() -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=10,  # client re-tokenized count
+                output_token_times=[1.0, 3.0],  # duration 2.0s
+                server_usage={"completion_tokens": 5},  # exact server count
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None
+        )
+
+    # Default: divide by the client count (10).
+    default = summarize_requests([make_metric()], [50])
+    assert default.successes["latency"]["time_per_output_token"]["mean"] == pytest.approx(2.0 / 9.0)
+    assert default.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(10.0 / 10.0)
+
+    # Flag on: divide by the server count (5).
+    server = summarize_requests([make_metric()], [50], use_server_output_tokens=True)
+    assert server.successes["latency"]["time_per_output_token"]["mean"] == pytest.approx(2.0 / 4.0)
+    assert server.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(10.0 / 5.0)
+
+    # Both raw counts remain reported regardless of the flag: output_len is the
+    # client count, output_tokens is the server count.
+    assert server.successes["output_len"]["mean"] == pytest.approx(10.0)
+    assert server.successes["output_tokens"] == {"total": 5.0}
+
+
+def test_use_server_output_tokens_falls_back_without_usage() -> None:
+    """With the flag on but no server usage, normalization uses the client count."""
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(output_tokens=10, output_token_times=[1.0, 3.0]),  # no server_usage
+    )
+    metric = RequestLifecycleMetric(scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None)
+
+    result = summarize_requests([metric], [50], use_server_output_tokens=True)
+
+    assert result.successes["latency"]["time_per_output_token"]["mean"] == pytest.approx(2.0 / 9.0)
+
+
 def test_summarize_requests_surfaces_prompt_cache_usage() -> None:
     info = InferenceInfo(
         request_metrics=RequestMetrics(text=Text(input_tokens=10)),

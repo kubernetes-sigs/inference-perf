@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel
 
-from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -105,6 +105,22 @@ def summarize_output_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[
         output_tokens_total += safe_float(completion_tokens)
 
     return {"total": output_tokens_total}
+
+
+def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_server_output_tokens: bool) -> int:
+    """Output token count used to normalize per-token latency metrics (TPOT, NTPOT).
+
+    Defaults to the client-side re-tokenized count (`output_tokens`). When
+    `use_server_output_tokens` is set and the server reported an exact
+    `usage.completion_tokens`, that count is used instead.
+    """
+    if response_metrics is None:
+        return 0
+    if use_server_output_tokens and isinstance(response_metrics, StreamedResponseMetrics) and response_metrics.server_usage:
+        completion_tokens = response_metrics.server_usage.get("completion_tokens")
+        if completion_tokens:
+            return int(completion_tokens)
+    return response_metrics.output_tokens
 
 
 class ResponsesSummary(BaseModel):
@@ -397,6 +413,7 @@ def summarize_requests(
     stage_concurrency: Optional[int] = None,
     goodput_config: Optional[GoodputConfig] = None,
     tokenizer: Optional[CustomTokenizer] = None,
+    use_server_output_tokens: bool = False,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
@@ -487,8 +504,9 @@ def summarize_requests(
                 mismatched_requests += 1
 
         # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
-        if m.info.response_metrics and m.info.response_metrics.output_tokens and m.info.response_metrics.output_tokens > 0:
-            ntpot_values.append((m.end_time - m.start_time) / m.info.response_metrics.output_tokens)
+        ntpot_output_tokens = effective_output_tokens(m.info.response_metrics, use_server_output_tokens)
+        if ntpot_output_tokens > 0:
+            ntpot_values.append((m.end_time - m.start_time) / ntpot_output_tokens)
         else:
             ntpot_values.append(0.0)
 
@@ -501,8 +519,9 @@ def summarize_requests(
 
             # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
             duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
-            if response_metrics.output_tokens > 1:
-                tpot = duration / (response_metrics.output_tokens - 1)
+            tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+            if tpot_output_tokens > 1:
+                tpot = duration / (tpot_output_tokens - 1)
             else:
                 tpot = None
             tpot_values.append(tpot)
@@ -680,6 +699,7 @@ class ReportGenerator:
         logger.info("Generating Reports...")
         lifecycle_reports = []
         percentiles = report_config.request_lifecycle.percentiles
+        use_server_output_tokens = report_config.request_lifecycle.use_server_output_tokens
 
         tokenizer = None
         if self.config.tokenizer:
@@ -697,7 +717,11 @@ class ReportGenerator:
                 report_file = ReportFile(
                     name="summary_lifecycle_metrics",
                     contents=summarize_requests(
-                        request_metrics, percentiles, goodput_config=report_config.goodput, tokenizer=tokenizer
+                        request_metrics,
+                        percentiles,
+                        goodput_config=report_config.goodput,
+                        tokenizer=tokenizer,
+                        use_server_output_tokens=use_server_output_tokens,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -720,13 +744,19 @@ class ReportGenerator:
                             concurrency_level,
                             goodput_config=report_config.goodput,
                             tokenizer=tokenizer,
+                            use_server_output_tokens=use_server_output_tokens,
                         ).model_dump(),
                     )
                 else:
                     report_file = ReportFile(
                         name=f"stage_{stage_id}_lifecycle_metrics",
                         contents=summarize_requests(
-                            metrics, percentiles, stage_rate, goodput_config=report_config.goodput, tokenizer=tokenizer
+                            metrics,
+                            percentiles,
+                            stage_rate,
+                            goodput_config=report_config.goodput,
+                            tokenizer=tokenizer,
+                            use_server_output_tokens=use_server_output_tokens,
                         ).model_dump(),
                     )
                 lifecycle_reports.append(report_file)
@@ -757,7 +787,11 @@ class ReportGenerator:
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_lifecycle_metrics",
                     contents=summarize_requests(
-                        metrics, percentiles, goodput_config=report_config.goodput, tokenizer=tokenizer
+                        metrics,
+                        percentiles,
+                        goodput_config=report_config.goodput,
+                        tokenizer=tokenizer,
+                        use_server_output_tokens=use_server_output_tokens,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -773,7 +807,12 @@ class ReportGenerator:
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
                     contents=summarize_requests(
-                        metrics, percentiles, stage_rate, goodput_config=report_config.goodput, tokenizer=tokenizer
+                        metrics,
+                        percentiles,
+                        stage_rate,
+                        goodput_config=report_config.goodput,
+                        tokenizer=tokenizer,
+                        use_server_output_tokens=use_server_output_tokens,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
