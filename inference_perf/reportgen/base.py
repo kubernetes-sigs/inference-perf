@@ -686,7 +686,7 @@ def summarize_requests(
 def build_per_request_lifecycle_entry(
     metric: RequestLifecycleMetric, fields: PerRequestFieldsConfig
 ) -> dict[str, Any]:
-    entry = {
+    entry: dict[str, Any] = {
         "start_time": metric.start_time,
         "end_time": metric.end_time,
         "error": metric.error.model_dump() if metric.error else None,
