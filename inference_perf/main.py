@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
 import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
@@ -70,16 +69,12 @@ from inference_perf.metrics.request_collector import (
     MultiprocessRequestMetricCollector,
 )
 from inference_perf.circuit_breaker import init_circuit_breakers
-from inference_perf.observability.metrics import PrometheusMetricsServer
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
 from inference_perf.observability.logging import setup_logging
 import asyncio
 import time
-
-
-logger = logging.getLogger(__name__)
 
 
 class InferencePerfRunner:
@@ -103,9 +98,6 @@ class InferencePerfRunner:
                 await self.loadgen.run(self.client)
 
         asyncio.run(_run())
-
-        requests_sent = len(self.reportgen.get_metrics_collector().get_metrics())
-        logger.info("Total requests sent to the model server: %d", requests_sent)
 
     def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
@@ -400,19 +392,6 @@ def main_cli() -> None:
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
-    # Start inference-perf's own Prometheus exposition surface. It observes the
-    # request metric collector, so wire it up before the run begins. A bind
-    # failure (e.g. port already in use) is logged but does not abort the benchmark.
-    metrics_server = PrometheusMetricsServer()
-    reportgen.get_metrics_collector().add_observer(metrics_server.observe_request)
-    metrics_server_started = False
-    try:
-        metrics_server.start()
-        metrics_server_started = True
-        logger.info("Prometheus metrics server listening on :%d/metrics", metrics_server.bound_port)
-    except OSError as e:
-        logger.warning("Could not start Prometheus metrics server: %s", e)
-
     start_time = time.time()
 
     # Run Perf Test
@@ -420,9 +399,6 @@ def main_cli() -> None:
         perfrunner.run()
     except KeyboardInterrupt:
         pass
-    finally:
-        if metrics_server_started:
-            metrics_server.stop()
 
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test
