@@ -35,6 +35,7 @@ from inference_perf.config import (
     ReportConfig,
     SessionLifecycleReportConfig,
     GoodputConfig,
+    PerRequestFieldsConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
@@ -663,6 +664,30 @@ def summarize_requests(
     )
 
 
+def build_per_request_lifecycle_entry(metric: RequestLifecycleMetric, fields: PerRequestFieldsConfig) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "start_time": metric.start_time,
+        "end_time": metric.end_time,
+        "error": metric.error.model_dump() if metric.error else None,
+    }
+
+    if fields.request:
+        entry["request"] = metric.request_data
+
+    if fields.response:
+        entry["response"] = metric.response_data
+
+    if fields.info:
+        info = metric.info.model_dump() if metric.info else None
+        if info and not fields.response_chunks:
+            response_metrics = info.get("response_metrics")
+            if isinstance(response_metrics, dict):
+                response_metrics.pop("response_chunks", None)
+        entry["info"] = info
+
+    return entry
+
+
 class ReportGenerator:
     def __init__(
         self,
@@ -762,19 +787,10 @@ class ReportGenerator:
                 lifecycle_reports.append(report_file)
 
         if report_config.request_lifecycle.per_request:
+            fields = report_config.request_lifecycle.per_request_fields
             report_file = ReportFile(
                 name="per_request_lifecycle_metrics",
-                contents=[
-                    {
-                        "start_time": metric.start_time,
-                        "end_time": metric.end_time,
-                        "request": metric.request_data,
-                        "response": metric.response_data,
-                        "info": metric.info.model_dump() if metric.info else None,
-                        "error": metric.error.model_dump() if metric.error else None,
-                    }
-                    for metric in request_metrics
-                ],
+                contents=[build_per_request_lifecycle_entry(metric, fields) for metric in request_metrics],
             )
             lifecycle_reports.append(report_file)
 

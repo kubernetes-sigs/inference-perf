@@ -13,13 +13,21 @@
 # limitations under the License.
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class PerRequestFieldsConfig(BaseModel):
+    request: bool = True
+    response: bool = True
+    info: bool = True
+    response_chunks: bool = True
 
 
 class RequestLifecycleMetricsReportConfig(BaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
+    per_request_fields: PerRequestFieldsConfig = Field(default_factory=PerRequestFieldsConfig)
     per_adapter: Optional[bool] = True
     per_adapter_stage: Optional[bool] = False
     percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]

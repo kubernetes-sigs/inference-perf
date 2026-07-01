@@ -244,6 +244,11 @@ report:
     summary: true             # Generate high-level summary
     per_stage: true           # Include breakdown by load stage
     per_request: false        # Enable detailed per-request logs (verbose)
+    per_request_fields:       # Control fields included in per_request_lifecycle_metrics.json
+      request: true           # Include raw request payloads
+      response: true          # Include raw response payloads
+      info: true              # Include structured request/response metadata
+      response_chunks: true   # Include raw streaming chunks inside info.response_metrics
     per_adapter: false        # Generate metrics grouped by LoRA adapter
     per_adapter_stage: false  # Generate metrics grouped by adapter and stage
     percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
@@ -252,6 +257,24 @@ report:
     summary: true             # Include Prometheus metrics summary
     per_stage: false          # Disable Prometheus stage breakdown
 ```
+
+For smaller per-request reports that preserve structured timing data such as
+`output_token_times`, disable raw request/response payloads and streaming chunks
+while keeping `info` enabled:
+
+```yaml
+report:
+  request_lifecycle:
+    per_request: true
+    per_request_fields:
+      request: false
+      response: false
+      info: true
+      response_chunks: false
+```
+
+Setting `info: false` removes the entire `info` block, including
+`response_chunks`; in that case `response_chunks` has no effect.
 
 ### Storage
 
