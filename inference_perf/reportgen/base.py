@@ -64,9 +64,16 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
     return result
 
 
-def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[str, float]:
+def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
+    """Input tokens as reported by the server (usage.prompt_tokens).
+
+    Reports the aggregate total/cached/uncached split alongside the per-request
+    distribution (min/mean/max/percentiles). Falls back to the client-side
+    input_tokens when the server does not report usage.
+    """
     prompt_tokens_total = 0.0
     prompt_tokens_cached = 0.0
+    per_request: List[float] = []
 
     for metric in metrics:
         response_metrics = metric.info.response_metrics
@@ -74,25 +81,32 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[
         prompt_tokens = server_usage.get("prompt_tokens") if server_usage else metric.info.request_metrics.text.input_tokens
         prompt_tokens_details = server_usage.get("prompt_tokens_details", {}) if server_usage else {}
 
-        prompt_tokens_total += safe_float(prompt_tokens)
+        prompt_tokens_value = safe_float(prompt_tokens)
+        prompt_tokens_total += prompt_tokens_value
+        per_request.append(prompt_tokens_value)
         prompt_tokens_cached += safe_float(prompt_tokens_details.get("cached_tokens"))
 
-    return {
+    result = {
         "total": prompt_tokens_total,
         "cached": prompt_tokens_cached,
         "uncached": max(prompt_tokens_total - prompt_tokens_cached, 0.0),
     }
+    if distribution := summarize(per_request, percentiles):
+        result.update(distribution)
+    return result
 
 
-def summarize_output_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[str, float]:
-    """Total output tokens as reported by the server (usage.completion_tokens).
+def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
+    """Output tokens as reported by the server (usage.completion_tokens).
 
     The server-side count is exact (a count of decode steps), unlike a
-    client-side re-tokenization of the streamed text. Falls back to the
-    client-side output_tokens when the server does not report usage. Mirrors
-    summarize_prompt_token_usage on the input side.
+    client-side re-tokenization of the streamed text. Reports the aggregate
+    total alongside the per-request distribution (min/mean/max/percentiles).
+    Falls back to the client-side output_tokens when the server does not report
+    usage. Mirrors summarize_prompt_token_usage on the input side.
     """
     output_tokens_total = 0.0
+    per_request: List[float] = []
 
     for metric in metrics:
         response_metrics = metric.info.response_metrics
@@ -102,9 +116,14 @@ def summarize_output_token_usage(metrics: List[RequestLifecycleMetric]) -> dict[
             if server_usage
             else (response_metrics.output_tokens if response_metrics else None)
         )
-        output_tokens_total += safe_float(completion_tokens)
+        completion_tokens_value = safe_float(completion_tokens)
+        output_tokens_total += completion_tokens_value
+        per_request.append(completion_tokens_value)
 
-    return {"total": output_tokens_total}
+    result = {"total": output_tokens_total}
+    if distribution := summarize(per_request, percentiles):
+        result.update(distribution)
+    return result
 
 
 def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_server_output_tokens: bool) -> int:
@@ -634,7 +653,7 @@ def summarize_requests(
             "seconds": summarize([safe_float(inst.seconds) for inst in all_audios], percentiles),
             "bytes": summarize([safe_float(inst.bytes) for inst in all_audios], percentiles),
         },
-        "prompt_tokens": summarize_prompt_token_usage(all_successful),
+        "prompt_tokens": summarize_prompt_token_usage(all_successful, percentiles),
         "output_len": summarize(
             [
                 float(v)
@@ -643,7 +662,7 @@ def summarize_requests(
             ],
             percentiles,
         ),
-        "output_tokens": summarize_output_token_usage(all_successful),
+        "output_tokens": summarize_output_token_usage(all_successful, percentiles),
         "token_count_mismatches": mismatched_requests,
     }
     if goodput_metrics:
