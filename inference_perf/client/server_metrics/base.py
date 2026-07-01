@@ -13,13 +13,15 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from enum import Enum, auto
-from typing import Optional, TypedDict
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, Field
 
-
-# Base class for accumulating metrics objects on
-class MetricsMetadata(TypedDict):
-    pass
+from inference_perf.client.modelserver.metrics import (
+    BaseMetrics,
+    HistogramResult,
+    GaugeResult,
+    CounterResult,
+)
 
 
 class StageStatus(Enum):
@@ -41,7 +43,11 @@ class StageRuntimeInfo(BaseModel):
 
 class PerfRuntimeParameters:
     def __init__(
-        self, start_time: float, duration: float, model_server_metrics: MetricsMetadata, stages: dict[int, StageRuntimeInfo]
+        self,
+        start_time: float,
+        duration: float,
+        model_server_metrics: BaseMetrics,
+        stages: dict[int, StageRuntimeInfo],
     ) -> None:
         self.start_time = start_time
         self.duration = duration
@@ -50,123 +56,55 @@ class PerfRuntimeParameters:
 
 
 class ModelServerMetrics(BaseModel):
-    # Throughput
-    prompt_tokens_per_second: float = 0.0
-    output_tokens_per_second: float = 0.0
-    requests_per_second: float = 0.0
+    # --- Common to every model server: required (each client's metadata always declares them) ---
+    # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
+    prompt_tokens: CounterResult | HistogramResult
+    output_tokens: CounterResult | HistogramResult
+    requests: CounterResult
+    request_latency: HistogramResult
+    queue_length: GaugeResult
+    time_per_output_token: HistogramResult
 
+    # --- Server-specific: optional (only some model servers expose these) ---
     # Latency
-    avg_request_latency: float = 0.0
-    median_request_latency: float = 0.0
-    p90_request_latency: float = 0.0
-    p99_request_latency: float = 0.0
-    avg_time_to_first_token: float = 0.0
-    median_time_to_first_token: float = 0.0
-    p90_time_to_first_token: float = 0.0
-    p99_time_to_first_token: float = 0.0
-    avg_time_per_output_token: float = 0.0
-    median_time_per_output_token: float = 0.0
-    p90_time_per_output_token: float = 0.0
-    p99_time_per_output_token: float = 0.0
-    avg_inter_token_latency: float = 0.0
-    median_inter_token_latency: float = 0.0
-    p90_inter_token_latency: float = 0.0
-    p99_inter_token_latency: float = 0.0
+    time_to_first_token: HistogramResult = Field(default_factory=HistogramResult)
+    inter_token_latency: HistogramResult = Field(default_factory=HistogramResult)
 
-    # Request
-    total_requests: int = 0
-    avg_prompt_tokens: int = 0
-    avg_output_tokens: int = 0
-    avg_queue_length: int = 0
-    num_preemptions_total: int = 0
-    num_requests_swapped: int = 0
+    # Gauges
+    num_requests_running: GaugeResult = Field(default_factory=GaugeResult)
+    kv_cache_usage: GaugeResult = Field(default_factory=GaugeResult)
 
-    # Usage
-    avg_kv_cache_usage: float = 0.0
-    median_kv_cache_usage: float = 0.0
-    p90_kv_cache_usage: float = 0.0
-    p99_kv_cache_usage: float = 0.0
+    # Tally counters: only the windowed total (.total) is read.
+    num_requests_swapped: CounterResult = Field(default_factory=CounterResult)
+    num_preemptions_total: CounterResult = Field(default_factory=CounterResult)
+    prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)
+    prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
+    request_success_count: CounterResult = Field(default_factory=CounterResult)
+    prompt_tokens_cached: CounterResult = Field(default_factory=CounterResult)
+    prompt_tokens_recomputed: CounterResult = Field(default_factory=CounterResult)
+    external_prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)
+    external_prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
+    mm_cache_hits: CounterResult = Field(default_factory=CounterResult)
+    mm_cache_queries: CounterResult = Field(default_factory=CounterResult)
+    corrupted_requests: CounterResult = Field(default_factory=CounterResult)
 
-    # Prefix Cache
-    prefix_cache_hits: float = 0.0
-    prefix_cache_queries: float = 0.0
+    # Request lifecycle histograms
+    request_queue_time: HistogramResult = Field(default_factory=HistogramResult)
+    request_inference_time: HistogramResult = Field(default_factory=HistogramResult)
+    request_prefill_time: HistogramResult = Field(default_factory=HistogramResult)
+    request_decode_time: HistogramResult = Field(default_factory=HistogramResult)
+    request_prompt_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    request_generation_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    request_max_num_generation_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    request_params_n: HistogramResult = Field(default_factory=HistogramResult)
+    request_params_max_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    iteration_tokens: HistogramResult = Field(default_factory=HistogramResult)
 
-    # Running Requests
-    avg_num_requests_running: float = 0.0
-
-    # Request Lifecycle Latency Breakdown
-    avg_request_queue_time: float = 0.0
-    median_request_queue_time: float = 0.0
-    p90_request_queue_time: float = 0.0
-    p99_request_queue_time: float = 0.0
-    avg_request_inference_time: float = 0.0
-    median_request_inference_time: float = 0.0
-    p90_request_inference_time: float = 0.0
-    p99_request_inference_time: float = 0.0
-    avg_request_prefill_time: float = 0.0
-    median_request_prefill_time: float = 0.0
-    p90_request_prefill_time: float = 0.0
-    p99_request_prefill_time: float = 0.0
-    avg_request_decode_time: float = 0.0
-    median_request_decode_time: float = 0.0
-    p90_request_decode_time: float = 0.0
-    p99_request_decode_time: float = 0.0
-
-    # Request Metadata
-    avg_request_prompt_tokens: float = 0.0
-    median_request_prompt_tokens: float = 0.0
-    p90_request_prompt_tokens: float = 0.0
-    p99_request_prompt_tokens: float = 0.0
-    avg_request_generation_tokens: float = 0.0
-    median_request_generation_tokens: float = 0.0
-    p90_request_generation_tokens: float = 0.0
-    p99_request_generation_tokens: float = 0.0
-    avg_request_max_num_generation_tokens: float = 0.0
-    median_request_max_num_generation_tokens: float = 0.0
-    p90_request_max_num_generation_tokens: float = 0.0
-    p99_request_max_num_generation_tokens: float = 0.0
-    avg_request_params_n: float = 0.0
-    median_request_params_n: float = 0.0
-    p90_request_params_n: float = 0.0
-    p99_request_params_n: float = 0.0
-    avg_request_params_max_tokens: float = 0.0
-    median_request_params_max_tokens: float = 0.0
-    p90_request_params_max_tokens: float = 0.0
-    p99_request_params_max_tokens: float = 0.0
-    request_success_count: float = 0.0
-
-    # Iteration Stats
-    avg_iteration_tokens: float = 0.0
-    median_iteration_tokens: float = 0.0
-    p90_iteration_tokens: float = 0.0
-    p99_iteration_tokens: float = 0.0
-
-    # Token Cache Stats
-    prompt_tokens_cached: float = 0.0
-    prompt_tokens_recomputed: float = 0.0
-    external_prefix_cache_hits: float = 0.0
-    external_prefix_cache_queries: float = 0.0
-    mm_cache_hits: float = 0.0
-    mm_cache_queries: float = 0.0
-    corrupted_requests: float = 0.0
-
-    # KV Block Metrics
-    avg_request_prefill_kv_computed_tokens: float = 0.0
-    median_request_prefill_kv_computed_tokens: float = 0.0
-    p90_request_prefill_kv_computed_tokens: float = 0.0
-    p99_request_prefill_kv_computed_tokens: float = 0.0
-    avg_kv_block_idle_before_evict: float = 0.0
-    median_kv_block_idle_before_evict: float = 0.0
-    p90_kv_block_idle_before_evict: float = 0.0
-    p99_kv_block_idle_before_evict: float = 0.0
-    avg_kv_block_lifetime: float = 0.0
-    median_kv_block_lifetime: float = 0.0
-    p90_kv_block_lifetime: float = 0.0
-    p99_kv_block_lifetime: float = 0.0
-    avg_kv_block_reuse_gap: float = 0.0
-    median_kv_block_reuse_gap: float = 0.0
-    p90_kv_block_reuse_gap: float = 0.0
-    p99_kv_block_reuse_gap: float = 0.0
+    # KV block stats
+    request_prefill_kv_computed_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    kv_block_idle_before_evict: HistogramResult = Field(default_factory=HistogramResult)
+    kv_block_lifetime: HistogramResult = Field(default_factory=HistogramResult)
+    kv_block_reuse_gap: HistogramResult = Field(default_factory=HistogramResult)
 
 
 class ServerMetricsClient(ABC):
