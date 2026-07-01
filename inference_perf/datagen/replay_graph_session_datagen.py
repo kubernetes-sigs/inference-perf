@@ -336,6 +336,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     # `none` (default) is byte-identical to upstream main; `use_recorded`
     # substitutes the recorded assistant message at the affected slot.
     bad_tool_call_handling: BadToolCallHandling = BadToolCallHandling.NONE
+    # When True, output/shared segments are NOT substituted with live predecessor
+    # output; the recorded assistant messages are sent as-is. Predecessor wait
+    # timing is still enforced.
+    disable_output_substitution: bool = False
     # Set by _build_messages_with_substitution when it calls record_failure
     # early (e.g. recorded fallback also malformed). Lets the caller pass the
     # right reason string to _fail_and_notify instead of a generic fallback.
@@ -473,7 +477,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             await asyncio.sleep(wait_sec)
 
         # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
-        needs_substitution = any(seg.type == "output" or seg.type == "shared" for seg in self.input_segments)
+        needs_substitution = (not self.disable_output_substitution) and any(
+            seg.type == "output" or seg.type == "shared" for seg in self.input_segments
+        )
         # Inject random string if flag is enabled OR session is a duplicate
         is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session_id)
         needs_random_injection = (self.inject_random_session_id or is_duplicate) and any(
@@ -1528,11 +1534,17 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 reasoning_content = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
 
             if tool_calls is not None:
-                chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls, reasoning_content=reasoning_content))
-                orig_msg: Dict[str, Any] = {"role": role, "tool_calls": tool_calls}
+                # Preserve any assistant preamble content alongside the tool calls
+                # so chat_messages (which becomes the wire payload when no
+                # substitution/injection runs) is not lossy.
+                tc_content = content if isinstance(content, str) and content else None
+                chat_messages.append(ChatMessage(role=role, content=tc_content, tool_calls=tool_calls, reasoning_content=reasoning_content))
+                tc_msg: Dict[str, Any] = {"role": role, "tool_calls": tool_calls}
+                if tc_content is not None:
+                    tc_msg["content"] = tc_content
                 if reasoning_content:
-                    orig_msg["reasoning_content"] = reasoning_content
-                original_messages.append(orig_msg)
+                    tc_msg["reasoning_content"] = reasoning_content
+                original_messages.append(tc_msg)
                 continue
 
             if isinstance(content, list):
@@ -1548,10 +1560,15 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 content = " ".join(content_parts)
 
             content_str = str(content)
-            chat_messages.append(ChatMessage(role=role, content=content_str, reasoning_content=reasoning_content))
-            orig_msg = {"role": role, "content": content_str}
-            if tool_call_id is not None:
-                orig_msg["tool_call_id"] = tool_call_id
+            # Carry tool_call_id onto the ChatMessage too (not just original_messages),
+            # so role:tool linkage survives on the wire when substitution is disabled.
+            # tool_call_id belongs on a role:tool message only — don't leak it onto
+            # user/assistant messages even if the recorded message carried one.
+            wire_tool_call_id = tool_call_id if role == "tool" else None
+            chat_messages.append(ChatMessage(role=role, content=content_str, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content))
+            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            if wire_tool_call_id is not None:
+                orig_msg["tool_call_id"] = wire_tool_call_id
             if reasoning_content:
                 orig_msg["reasoning_content"] = reasoning_content
             original_messages.append(orig_msg)
@@ -1593,6 +1610,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)
             if self.replay_config
             else BadToolCallHandling.NONE,
+            disable_output_substitution=getattr(self.replay_config, "disable_output_substitution", False)
+            if self.replay_config
+            else False,
             # Back-reference so the event can evict this session from the worker once drained.
             generator=self,
         )

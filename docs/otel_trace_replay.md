@@ -116,6 +116,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `skip_invalid_files` | boolean | No (default: `false`) | Skip invalid traces instead of failing. Covers both file-level parse errors (bad JSON, missing file) and graph-build errors (malformed spans). Skipped sessions are logged and silently omitted from the run. |
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
+| `disable_output_substitution` | boolean | No (default: `false`) | When `true`, replay each call with its recorded assistant output (text and tool calls) instead of substituting the live output from predecessor calls. Predecessor wait timing is still enforced. Cannot be combined with `inject_random_session_id` or `duplicate_sessions_target` (those trigger substitution and would contradict this flag — config validation rejects the combination) |
 
 **Examples:**
 

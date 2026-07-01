@@ -41,6 +41,7 @@ from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -57,7 +58,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
-from inference_perf.config.datagen.replay import BadToolCallHandling
+from inference_perf.config.datagen.replay import BadToolCallHandling, OTelTraceReplayConfig
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
@@ -419,6 +420,48 @@ class TestSessionChatCompletionAPIData:
         # Messages should be substituted
         assert len(api_data.messages) == 2
         assert api_data.messages[1].content == "Predecessor output"
+
+    @pytest.mark.asyncio
+    async def test_disable_output_substitution_keeps_recorded(self) -> None:
+        """With disable_output_substitution=True, predecessors are still awaited
+        but the recorded assistant message is sent as-is (no live substitution)."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        # Predecessor produced a *different* live output than what was recorded.
+        registry.record("session_1:event_0", "Predecessor output", [])
+
+        messages = [
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": "RECORDED"},
+        ]
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=5),
+            InputSegment(type="output", message_count=1, token_count=10, source_event_id="session_1:event_0"),
+        ]
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Question"), ChatMessage(role="assistant", content="RECORDED")],
+            max_tokens=50,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
+            input_segments=segments,
+            original_messages=messages,
+            disable_output_substitution=True,
+        )
+
+        await api_data.wait_for_predecessors_and_substitute()
+
+        # Predecessor was awaited (no failure / skip) ...
+        assert api_data.skip_request is False
+        assert tracker.is_session_failed("session_1") is False
+        # ... but the recorded assistant content is preserved, NOT substituted
+        # with the live "Predecessor output".
+        assert api_data.messages[1].content == "RECORDED"
 
 
 # ---------------------------------------------------------------------------
@@ -1919,3 +1962,348 @@ class TestUnbuildableSessionSlot:
             "is_session_buildable returned True for a zero-event session — "
             "dispatch would add it to active_session_indices with nothing to complete it"
         )
+
+
+# ---------------------------------------------------------------------------
+# Structured tool-call preservation through the real graph-build path.
+#
+# These tests exercise extract_messages -> build_graph (via build_raw_calls)
+# and assert on GraphCall.messages — the dicts that become the wire payload.
+# They guard against _replay_message_to_dict flattening recorded tool calls
+# into the internal "<|tool_call|>...<|end|>" marker string, which would drop
+# structured tool_calls and tool-result tool_call_id linkage.
+# ---------------------------------------------------------------------------
+
+
+def _graph_messages_from_input(input_messages: List[dict[str, Any]]) -> List[dict[str, Any]]:
+    """Run input messages through the real span-extraction + graph builder and
+    return the resulting GraphCall.messages (the wire dicts)."""
+    span = {
+        "trace_id": "t",
+        "span_id": "s",
+        "parent_span_id": None,
+        "name": "chat gpt-4",
+        "start_time": "2026-01-01T00:00:00.000000",
+        "end_time": "2026-01-01T00:00:01.000000",
+        "attributes": {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.request.model": "gpt-4",
+            "gen_ai.input.messages": json.dumps(input_messages),
+            "gen_ai.output.text": "ok",
+        },
+        "resource_attributes": {"service.name": "t"},
+        "status": {"code": 1, "message": ""},
+    }
+    raw_calls = build_raw_calls([span])
+    graph = build_graph(raw_calls, source_file="t")
+    return next(iter(graph.events.values())).call.messages
+
+
+class TestStructuredToolCallPreservation:
+    """GraphCall.messages must carry structured tool_calls / tool_call_id."""
+
+    def test_assistant_tool_calls_only_openai_format(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                        }
+                    ],
+                },
+            ]
+        )
+        assistant = msgs[1]
+        assert "<|tool_call|>" not in json.dumps(assistant), "tool call must not be flattened to marker text"
+        assert assistant["tool_calls"][0]["id"] == "c1"
+        assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert assistant["tool_calls"][0]["function"]["arguments"] == '{"city": "Paris"}'
+
+    def test_assistant_content_plus_tool_calls(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Let me check.",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                        }
+                    ],
+                },
+            ]
+        )
+        assistant = msgs[0]
+        assert "<|tool_call|>" not in json.dumps(assistant)
+        assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+        # Preamble text is preserved alongside the structured call.
+        assert "Let me check." in assistant.get("content", "")
+
+    def test_assistant_tool_calls_direct_format(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "c1", "name": "get_weather", "arguments": '{"city": "Paris"}'}],
+                },
+            ]
+        )
+        assistant = msgs[0]
+        assert "<|tool_call|>" not in json.dumps(assistant)
+        assert assistant["tool_calls"][0]["function"]["name"] == "get_weather"
+        assert assistant["tool_calls"][0]["function"]["arguments"] == '{"city": "Paris"}'
+
+    def test_tool_result_parts_list_keeps_tool_call_id(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "tool",
+                    "content": [{"type": "tool_call_response", "id": "c1", "result": '{"temp_c": 18}'}],
+                },
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "c1"
+        assert "18" in tool_msg.get("content", "")
+
+    def test_tool_result_string_content_keeps_tool_call_id(self) -> None:
+        # A role:tool result with STRING content + a sibling tool_call_id must
+        # retain tool_call_id on the wire (previously it became a plain
+        # ReplayMessage in extract_messages and the id was dropped).
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "tool", "tool_call_id": "c1", "content": '{"temp_c": 18}'},
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "c1"
+        assert "18" in tool_msg.get("content", "")
+
+    def test_tool_call_object_arguments_serialized_to_json_string(self) -> None:
+        # OpenAI/vLLM require function.arguments to be a JSON string. Recorded
+        # traces often carry it as a parsed object; it must be serialised, not
+        # passed through as an object (which triggers a 400 on the server).
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "make_todos", "arguments": {"todos": ["a", "b"]}},
+                        }
+                    ],
+                },
+            ]
+        )
+        args = msgs[0]["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(args, str), "arguments must be a JSON string, not an object"
+        assert json.loads(args) == {"todos": ["a", "b"]}
+
+    def test_tool_result_with_nested_block_list_result(self) -> None:
+        # A tool_call_response whose `result` is itself a list of content blocks
+        # (e.g. [{"type": "text", "text": "..."}]) must flatten to string content,
+        # not crash the "".join and not leave a list on the wire.
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "tool",
+                    "content": [
+                        {
+                            "type": "tool_call_response",
+                            "id": "c1",
+                            "result": [{"type": "text", "text": '{"temp_c": 18}'}],
+                        }
+                    ],
+                },
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["tool_call_id"] == "c1"
+        assert isinstance(tool_msg.get("content"), str)
+        assert "18" in tool_msg["content"]
+
+    def test_tool_call_missing_id_skips_trace(self) -> None:
+        # A tool_call with no id cannot be replayed faithfully (OpenAI/vLLM reject
+        # tool_calls[].id=null with a 400, and the role:tool result is linked by
+        # that id). build_graph's caller wraps build_graph in try/except and skips
+        # the trace, so _normalize_tool_call must raise rather than emit id:null.
+        with pytest.raises(ValueError, match="no id"):
+            _graph_messages_from_input(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"type": "function", "function": {"name": "get_weather", "arguments": "{}"}}],
+                    },
+                ]
+            )
+
+    def test_tool_call_non_dict_function_does_not_crash(self) -> None:
+        # A malformed tool_call whose `function` is a bare string (not a nested
+        # dict) must not raise AttributeError; it falls back to the direct/parts
+        # shape (top-level name/arguments).
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "c1", "function": "get_weather", "name": "get_weather", "arguments": "{}"}],
+                },
+            ]
+        )
+        assert msgs[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    def test_multiple_tool_results_keeps_first(self) -> None:
+        # One OpenAI wire message answers exactly one tool_call_id. A message that
+        # bundles several tool_call_response parts keeps the FIRST (id + result)
+        # and drops the rest, rather than concatenating results under one id.
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "tool",
+                    "content": [
+                        {"type": "tool_call_response", "id": "c1", "result": "first"},
+                        {"type": "tool_call_response", "id": "c2", "result": "second"},
+                    ],
+                },
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["tool_call_id"] == "c1"
+        assert tool_msg["content"] == "first"
+        assert "second" not in tool_msg["content"]
+
+    def test_tool_call_id_not_leaked_onto_user_message(self) -> None:
+        # tool_call_id belongs on a role:tool message only. A role:user message
+        # carrying a stray tool_call_id must not emit it on the wire (OpenAI/vLLM
+        # reject tool_call_id on non-tool roles).
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "tool_call_id": "c1", "content": "hello"},
+            ]
+        )
+        assert "tool_call_id" not in msgs[0]
+
+
+class TestLoadLazyDataPreservesToolLinkage:
+    """load_lazy_data must build ChatMessages (the wire payload when no
+    substitution runs, e.g. disable_output_substitution=true) that retain
+    tool_call_id and structured tool_calls — not just original_messages."""
+
+    def _make_gen_from_input(self, input_messages: List[dict[str, Any]]) -> Any:
+        span = {
+            "trace_id": "t",
+            "span_id": "s",
+            "parent_span_id": None,
+            "name": "chat gpt-4",
+            "start_time": "2026-01-01T00:00:00.000000",
+            "end_time": "2026-01-01T00:00:01.000000",
+            "attributes": {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": "gpt-4",
+                "gen_ai.input.messages": json.dumps(input_messages),
+                "gen_ai.output.text": "ok",
+            },
+            "resource_attributes": {"service.name": "t"},
+            "status": {"code": 1, "message": ""},
+        }
+        graph = build_graph(build_raw_calls([span]), source_file="t")
+        session_id = "session_0"
+        gc = next(iter(graph.events.values()))
+        event = ReplaySessionEvent(
+            call_id=gc.call.call_id,
+            event_id=f"{session_id}:{gc.event_id}",
+            session_index=0,
+            t_start_ms=gc.t_start_ms,
+            t_end_ms=gc.t_end_ms,
+            model=gc.call.model,
+            messages=gc.call.messages,
+            expected_output=gc.call.expected_output,
+            input_segments=gc.call.input_segments,
+            expected_output_tokens=gc.call.expected_output_tokens,
+            temperature=gc.call.temperature,
+            max_tokens_recorded=gc.call.max_tokens_recorded,
+            predecessor_event_ids=[],
+            wait_ms=0,
+        )
+        gen = object.__new__(OTelTraceReplayDataGenerator)
+        gen.all_events = [event]
+        gen.output_registry = EventOutputRegistry()
+        gen.worker_tracker = WorkerSessionTracker()
+        gen.session_completion_queue = None
+        gen.api_config = make_api_config()
+        cfg = MagicMock()
+        cfg.attribute_to_header_map = {}
+        cfg.attribute_to_label_map = {}
+        cfg.bad_tool_call_handling = BadToolCallHandling.NONE
+        gen.otel_config = cfg
+        gen.replay_config = cfg
+        gen.session_graph_state = {session_id: MagicMock(graph=graph, random_string=None)}
+        return gen
+
+    def test_tool_result_chatmessage_keeps_tool_call_id(self) -> None:
+        from inference_perf.apis import LazyLoadInferenceAPIData
+
+        gen = self._make_gen_from_input(
+            [
+                {"role": "user", "content": "weather?"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": '{"temp_c": 18}'},
+            ]
+        )
+        api_data = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
+        # The role:tool ChatMessage must carry tool_call_id (the wire payload
+        # when disable_output_substitution=true skips the substitution rebuild).
+        tool_cm = next(m for m in api_data.messages if m.role == "tool")
+        assert tool_cm.tool_call_id == "c1"
+        assert "tool_call_id" in tool_cm.to_dict()
+        # The assistant ChatMessage must carry structured tool_calls.
+        asst_cm = next(m for m in api_data.messages if m.role == "assistant")
+        assert asst_cm.tool_calls is not None
+        assert asst_cm.tool_calls[0]["function"]["name"] == "get_weather"
+
+
+class TestDisableOutputSubstitutionValidation:
+    """disable_output_substitution contradicts random session-ID injection, so
+    the config validator must reject the combination up front rather than let
+    the substitution pass run anyway (and silently ignore the flag)."""
+
+    def test_disable_substitution_alone_is_valid(self) -> None:
+        cfg = OTelTraceReplayConfig(trace_files=["/tmp/t.json"], disable_output_substitution=True)
+        assert cfg.disable_output_substitution is True
+
+    def test_disable_substitution_with_random_injection_raises(self) -> None:
+        with pytest.raises(ValidationError, match="inject_random_session_id"):
+            OTelTraceReplayConfig(
+                trace_files=["/tmp/t.json"],
+                disable_output_substitution=True,
+                inject_random_session_id=True,
+            )
+
+    def test_disable_substitution_with_duplicate_sessions_raises(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate_sessions_target"):
+            OTelTraceReplayConfig(
+                trace_files=["/tmp/t.json"],
+                disable_output_substitution=True,
+                duplicate_sessions_target=10,
+            )
+
+    def test_random_injection_without_disable_substitution_is_valid(self) -> None:
+        cfg = OTelTraceReplayConfig(
+            trace_files=["/tmp/t.json"],
+            inject_random_session_id=True,
+            duplicate_sessions_target=10,
+        )
+        assert cfg.disable_output_substitution is False
