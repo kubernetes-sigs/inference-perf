@@ -45,9 +45,10 @@ from inference_perf.apis import (
     UnaryResponseMetrics,
 )
 from inference_perf.apis.anthropic_messages import (
-    _build_anthropic_request_body,
-    _count_anthropic_prompt_tokens,
-    _parse_anthropic_content,
+    build_anthropic_request_body,
+    count_anthropic_prompt_tokens,
+    parse_anthropic_content,
+    parse_anthropic_stream_response,
 )
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
@@ -1025,7 +1026,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
 
-        payload = _build_anthropic_request_body(
+        payload = build_anthropic_request_body(
             self.messages,
             self.tool_definitions,
             effective_model_name,
@@ -1056,14 +1057,14 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
         logger.debug(f"process_response called for event {self.event_id}")
 
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response,
-                extract_content=lambda data: (
-                    data.get("delta", {}).get("text")
-                    if data.get("type") == "content_block_delta" and data.get("delta", {}).get("type") == "text_delta"
-                    else None
-                ),
-            )
+            (
+                output_text,
+                output_message,
+                chunk_times,
+                raw_content,
+                response_chunks,
+                server_usage,
+            ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
@@ -1072,7 +1073,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
-                        else _count_anthropic_prompt_tokens(self.messages, tokenizer)
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
                     )
                 ),
                 response_metrics=StreamedResponseMetrics(
@@ -1083,13 +1084,12 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     server_usage=server_usage,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content, "output_text": output_text},
+                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
             )
-            output_message: Optional[Dict[str, Any]] = {"role": "assistant", "content": output_text}
         else:
             data = await response.json()
             usage = data.get("usage") or {}
-            output_text, output_message = _parse_anthropic_content(data.get("content"))
+            output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_tokens = usage.get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
@@ -1098,7 +1098,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
-                        else _count_anthropic_prompt_tokens(self.messages, tokenizer)
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
                     )
                 ),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len),

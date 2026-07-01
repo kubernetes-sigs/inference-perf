@@ -22,7 +22,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     StreamedResponseMetrics,
 )
-from inference_perf.apis.anthropic_messages import _parse_anthropic_content
+from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
@@ -247,7 +247,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 if self.client.api_config.type == APIType.AnthropicMessages and response and response.status == 200:
                     if not self.client.api_config.streaming and response_content:
                         response_json = json.loads(response_content)
-                        output_text, output_message = _parse_anthropic_content(response_json.get("content"))
+                        output_text, output_message = parse_anthropic_content(response_json.get("content"))
                         if output_text:
                             otel_response_info["output_text"] = output_text
                         if output_message and output_message.get("tool_calls"):
@@ -341,7 +341,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if self.client.api_key:
             if self.client.api_config.type == APIType.AnthropicMessages:
                 headers["x-api-key"] = self.client.api_key
-                headers["anthropic-version"] = "2023-06-01"
+                headers["anthropic-version"] = ANTHROPIC_VERSION
             else:
                 headers["Authorization"] = f"Bearer {self.client.api_key}"
 
