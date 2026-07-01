@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import json
-from typing import Any, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from aiohttp import ClientResponse
 
@@ -25,7 +26,10 @@ from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
-def _content_text(content: Optional[str | list[dict[str, Any]]]) -> str:
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _content_text(content: str | list[dict[str, Any]] | None) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
@@ -53,7 +57,7 @@ def _tool_arguments(tool_input: Any) -> str:
     return json.dumps(tool_input if isinstance(tool_input, dict) else {}, ensure_ascii=False)
 
 
-def _anthropic_content(content: Optional[str | list[dict[str, Any]]]) -> str | list[dict[str, Any]]:
+def _anthropic_content(content: str | list[dict[str, Any]] | None) -> str | list[dict[str, Any]]:
     if content is None:
         return ""
     if isinstance(content, str):
@@ -71,7 +75,7 @@ def _anthropic_content(content: Optional[str | list[dict[str, Any]]]) -> str | l
     return blocks
 
 
-def _anthropic_message(message: ChatMessage) -> Optional[dict[str, Any]]:
+def _anthropic_message(message: ChatMessage) -> dict[str, Any] | None:
     if message.role == "system":
         return None
 
@@ -121,7 +125,7 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _parse_anthropic_content(content: Any) -> tuple[str, Optional[dict[str, Any]]]:
+def parse_anthropic_content(content: Any) -> tuple[str, dict[str, Any] | None]:
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
 
@@ -154,9 +158,9 @@ def _parse_anthropic_content(content: Any) -> tuple[str, Optional[dict[str, Any]
     return output_text, {"role": "assistant", "content": output_text}
 
 
-def _build_anthropic_request_body(
-    messages: List[ChatMessage],
-    tool_definitions: Optional[List[Dict[str, Any]]],
+def build_anthropic_request_body(
+    messages: list[ChatMessage],
+    tool_definitions: list[dict[str, Any]] | None,
     effective_model_name: str,
     max_tokens: int,
     streaming: bool,
@@ -164,7 +168,7 @@ def _build_anthropic_request_body(
     system_prompt = "\n\n".join(_content_text(message.content) for message in messages if message.role == "system")
     anthropic_messages = [converted for message in messages if (converted := _anthropic_message(message)) is not None]
 
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "model": effective_model_name,
         "messages": anthropic_messages,
         "max_tokens": max_tokens,
@@ -177,14 +181,97 @@ def _build_anthropic_request_body(
     return payload
 
 
-def _count_anthropic_prompt_tokens(messages: List[ChatMessage], tokenizer: CustomTokenizer) -> int:
+def count_anthropic_prompt_tokens(messages: list[ChatMessage], tokenizer: CustomTokenizer) -> int:
     return sum(tokenizer.count_tokens(_content_text(message.content)) for message in messages)
 
 
+def _event_index(data: dict[str, Any], fallback: int) -> int:
+    index = data.get("index")
+    return index if isinstance(index, int) else fallback
+
+
+def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str | None], Callable[[str], dict[str, Any]]]:
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    tool_argument_parts: dict[int, list[str]] = {}
+
+    def extract_content(data: dict[str, Any]) -> str | None:
+        event_type = data.get("type")
+        if event_type == "content_block_start":
+            block = data.get("content_block") or {}
+            if not isinstance(block, dict):
+                return None
+
+            index = _event_index(data, len(tool_calls_by_index))
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                tool_calls_by_index[index] = {
+                    "id": block.get("id", ""),
+                    "type": "function",
+                    "function": {"name": block.get("name", ""), "arguments": ""},
+                }
+                tool_input = block.get("input")
+                if tool_input:
+                    tool_argument_parts.setdefault(index, []).append(_tool_arguments(tool_input))
+            elif block_type == "text" and block.get("text"):
+                return str(block["text"])
+
+        elif event_type == "content_block_delta":
+            delta = data.get("delta") or {}
+            if not isinstance(delta, dict):
+                return None
+
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                text = delta.get("text", "")
+                return str(text) if text else None
+            if delta_type == "input_json_delta":
+                partial_json = delta.get("partial_json", "")
+                if partial_json:
+                    index = _event_index(data, 0)
+                    tool_argument_parts.setdefault(index, []).append(str(partial_json))
+
+        return None
+
+    def output_message(output_text: str) -> dict[str, Any]:
+        tool_calls: list[dict[str, Any]] = []
+        for index in sorted(tool_calls_by_index):
+            tool_call = tool_calls_by_index[index]
+            function = dict(tool_call["function"])
+            function["arguments"] = "".join(tool_argument_parts.get(index, []))
+            tool_calls.append(
+                {
+                    "id": tool_call["id"],
+                    "type": tool_call["type"],
+                    "function": function,
+                }
+            )
+
+        if tool_calls:
+            message: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
+            if output_text:
+                message["content"] = output_text
+            return message
+
+        return {"role": "assistant", "content": output_text}
+
+    return extract_content, output_message
+
+
+async def parse_anthropic_stream_response(
+    response: ClientResponse,
+) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
+    extract_content, build_output_message = _build_anthropic_stream_handlers()
+    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+        response,
+        extract_content=extract_content,
+    )
+    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
+
+
 class AnthropicMessagesAPIData(InferenceAPIData):
-    messages: List[ChatMessage]
+    messages: list[ChatMessage]
     max_tokens: int = 0
-    tool_definitions: Optional[List[Dict[str, Any]]] = None
+    tool_definitions: list[dict[str, Any]] | None = None
 
     def get_api_type(self) -> APIType:
         return APIType.AnthropicMessages
@@ -197,7 +284,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
     ) -> RequestBody:
         if self.max_tokens == 0:
             self.max_tokens = max_tokens
-        return _build_anthropic_request_body(
+        return build_anthropic_request_body(
             self.messages,
             self.tool_definitions,
             effective_model_name,
@@ -206,20 +293,20 @@ class AnthropicMessagesAPIData(InferenceAPIData):
         )
 
     def _count_prompt_tokens(self, tokenizer: CustomTokenizer) -> int:
-        return _count_anthropic_prompt_tokens(self.messages, tokenizer)
+        return count_anthropic_prompt_tokens(self.messages, tokenizer)
 
     async def process_response(
-        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
+        self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: str | None = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response,
-                extract_content=lambda data: (
-                    data.get("delta", {}).get("text")
-                    if data.get("type") == "content_block_delta" and data.get("delta", {}).get("type") == "text_delta"
-                    else None
-                ),
-            )
+            (
+                output_text,
+                output_message,
+                chunk_times,
+                raw_content,
+                response_chunks,
+                server_usage,
+            ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
@@ -237,12 +324,12 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     server_usage=server_usage,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content, "output_text": output_text},
+                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
             )
 
         data = await response.json()
         usage = data.get("usage") or {}
-        output_text, output_message = _parse_anthropic_content(data.get("content"))
+        output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
         output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)

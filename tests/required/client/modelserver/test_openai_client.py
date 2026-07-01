@@ -17,6 +17,7 @@ import aiohttp
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
 from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage, ErrorResponseInfo, InferenceInfo
+from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
 from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -191,7 +192,7 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
     assert session.session.post.call_args.args[0] == "http://test-uri/v1/messages"
     headers_passed = session.session.post.call_args.kwargs["headers"]
     assert headers_passed["x-api-key"] == "test-key"
-    assert headers_passed["anthropic-version"] == "2023-06-01"
+    assert headers_passed["anthropic-version"] == ANTHROPIC_VERSION
     assert "Authorization" not in headers_passed
     assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
 
