@@ -54,7 +54,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
                 break
 
             metrics.append(item)
-            self.request_sent_counter.observe(item)
+            self._notify_observers(item)
             feed_breakers(item)
             self.queue.task_done()
 

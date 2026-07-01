@@ -27,7 +27,7 @@ class LocalRequestMetricCollector(RequestMetricCollector):
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.metrics.append(metric)
-        self.request_sent_counter.observe(metric)
+        self._notify_observers(metric)
         feed_breakers(metric)
 
     def get_metrics(self) -> List[RequestLifecycleMetric]:

@@ -18,7 +18,7 @@ from typing import Iterator
 import pytest
 
 from inference_perf.apis.base import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric
-from inference_perf.metrics.request_counter import RequestSentCounter
+from inference_perf.metrics.request_collector import LocalRequestMetricCollector
 from inference_perf.observability.metrics import PrometheusMetricsServer
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -42,18 +42,11 @@ def _scrape(port: int) -> str:
 
 
 @pytest.fixture
-def counter() -> RequestSentCounter:
-    c = RequestSentCounter()
-    c.observe(_metric(stage_id=0, failed=False))
-    c.observe(_metric(stage_id=0, failed=False))
-    c.observe(_metric(stage_id=0, failed=True))
-    return c
-
-
-@pytest.fixture
-def server(counter: RequestSentCounter) -> Iterator[PrometheusMetricsServer]:
+def server() -> Iterator[PrometheusMetricsServer]:
     s = PrometheusMetricsServer(port=0)
-    s.register_requests_sent(counter)
+    s.observe_request(_metric(stage_id=0, failed=False))
+    s.observe_request(_metric(stage_id=0, failed=False))
+    s.observe_request(_metric(stage_id=0, failed=True))
     s.start()
     yield s
     s.stop()
@@ -67,10 +60,29 @@ def test_exposes_requests_sent_total_with_labels(server: PrometheusMetricsServer
     assert 'inference_perf_requests_sent_total{stage="0",status="failure"} 1.0' in body
 
 
-def test_reflects_live_counter_updates(server: PrometheusMetricsServer, counter: RequestSentCounter) -> None:
-    # The collector reads the counter at scrape time, so post-registration updates show up.
+def test_reflects_live_updates(server: PrometheusMetricsServer) -> None:
+    # The counter is incremented live, so post-start observations show up.
     assert server.bound_port is not None
-    counter.observe(_metric(stage_id=1, failed=False))
+    server.observe_request(_metric(stage_id=1, failed=False))
 
     body = _scrape(server.bound_port)
     assert 'inference_perf_requests_sent_total{stage="1",status="success"} 1.0' in body
+
+
+def test_collector_observer_feeds_counter() -> None:
+    # End to end: recording a metric on the collector increments the served counter.
+    server = PrometheusMetricsServer(port=0)
+    collector = LocalRequestMetricCollector()
+    collector.add_observer(server.observe_request)
+
+    collector.record_metric(_metric(stage_id=0, failed=False))
+    collector.record_metric(_metric(stage_id=0, failed=True))
+
+    server.start()
+    try:
+        assert server.bound_port is not None
+        body = _scrape(server.bound_port)
+        assert 'inference_perf_requests_sent_total{stage="0",status="success"} 1.0' in body
+        assert 'inference_perf_requests_sent_total{stage="0",status="failure"} 1.0' in body
+    finally:
+        server.stop()

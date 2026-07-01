@@ -29,7 +29,6 @@ from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntim
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
-from inference_perf.metrics.request_counter import RequestSentCounter
 from inference_perf.config import (
     Config,
     PrometheusMetricsReportConfig,
@@ -649,10 +648,6 @@ def summarize_requests(
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
-
-    # Total number of requests sent to the model server, broken down by
-    # stage and success-or-failure status.
-    load_summary["requests_sent"] = RequestSentCounter.from_metrics(metrics).snapshot()
 
     return ResponsesSummary(
         benchmark_time_seconds=total_time,

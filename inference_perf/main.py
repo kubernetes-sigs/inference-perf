@@ -104,8 +104,8 @@ class InferencePerfRunner:
 
         asyncio.run(_run())
 
-        requests_sent = self.reportgen.get_metrics_collector().get_request_sent_counter()
-        logger.info("Total requests sent to the model server: %d", requests_sent.total)
+        requests_sent = len(self.reportgen.get_metrics_collector().get_metrics())
+        logger.info("Total requests sent to the model server: %d", requests_sent)
 
     def generate_reports(self, report_config: ReportConfig, runtime_parameters: PerfRuntimeParameters) -> List[ReportFile]:
         return asyncio.run(self.reportgen.generate_reports(report_config=report_config, runtime_parameters=runtime_parameters))
@@ -400,11 +400,11 @@ def main_cli() -> None:
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
-    # Start inference-perf's own Prometheus exposition surface. It reads the request
-    # metric collector's live counters, so register it before the run begins. A bind
+    # Start inference-perf's own Prometheus exposition surface. It observes the
+    # request metric collector, so wire it up before the run begins. A bind
     # failure (e.g. port already in use) is logged but does not abort the benchmark.
     metrics_server = PrometheusMetricsServer()
-    metrics_server.register_requests_sent(reportgen.get_metrics_collector().get_request_sent_counter())
+    reportgen.get_metrics_collector().add_observer(metrics_server.observe_request)
     metrics_server_started = False
     try:
         metrics_server.start()
