@@ -16,6 +16,7 @@ from typing import List, AsyncIterator
 from contextlib import asynccontextmanager
 
 from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.metrics.request_counter import RequestSentCounter
 
 
 class RequestMetricCollector(ABC):
@@ -23,9 +24,16 @@ class RequestMetricCollector(ABC):
     Responsible for collecting request information
     """
 
+    def __init__(self) -> None:
+        # Running count of requests sent to the model server (see RequestSentCounter).
+        self.request_sent_counter = RequestSentCounter()
+
     @abstractmethod
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         raise NotImplementedError
+
+    def get_request_sent_counter(self) -> RequestSentCounter:
+        return self.request_sent_counter
 
     @abstractmethod
     def get_metrics(self) -> List[RequestLifecycleMetric]:

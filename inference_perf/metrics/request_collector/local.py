@@ -22,10 +22,12 @@ class LocalRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
+        super().__init__()
         self.metrics: List[RequestLifecycleMetric] = []
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.metrics.append(metric)
+        self.request_sent_counter.observe(metric)
         feed_breakers(metric)
 
     def get_metrics(self) -> List[RequestLifecycleMetric]:

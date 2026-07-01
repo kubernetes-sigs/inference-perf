@@ -28,8 +28,10 @@ from typing import Iterator, Optional
 from wsgiref.simple_server import WSGIServer
 
 from prometheus_client import CollectorRegistry, start_http_server
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 from prometheus_client.registry import Collector
+
+from inference_perf.metrics.request_counter import RequestSentCounter
 
 DEFAULT_PORT = 9464
 
@@ -48,6 +50,29 @@ class _RunElapsedCollector(Collector):
             "Wall-clock seconds elapsed since the metrics server started.",
             value=elapsed,
         )
+
+
+class _RequestsSentCollector(Collector):
+    """Exposes the total number of requests sent to the model server under test.
+
+    Reads the live ``RequestSentCounter`` at scrape time and emits
+    ``inference_perf_requests_sent_total`` labelled by stage and success/failure
+    status.
+    """
+
+    def __init__(self, counter: RequestSentCounter) -> None:
+        self._counter = counter
+
+    def collect(self) -> Iterator[CounterMetricFamily]:
+        family = CounterMetricFamily(
+            "inference_perf_requests_sent",
+            "Total number of requests sent to the model server under test.",
+            labels=["stage", "status"],
+        )
+        for stage_id, status, count in self._counter.iter_counts():
+            stage = "" if stage_id is None else str(stage_id)
+            family.add_metric([stage, status], count)
+        yield family
 
 
 class PrometheusMetricsServer:
@@ -69,6 +94,14 @@ class PrometheusMetricsServer:
         self.registry.register(self._elapsed)
         self._server: Optional[WSGIServer] = None
         self._thread: Optional[Thread] = None
+
+    def register_requests_sent(self, counter: RequestSentCounter) -> None:
+        """Expose ``inference_perf_requests_sent_total`` sourced from ``counter``.
+
+        The collector reads ``counter`` live at scrape time, so pass the
+        long-lived instance owned by the request metric collector.
+        """
+        self.registry.register(_RequestsSentCollector(counter))
 
     def start(self) -> None:
         if self._server is not None:

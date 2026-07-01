@@ -31,6 +31,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
+        super().__init__()
         self.queue: "mp.JoinableQueue[Optional[RequestLifecycleMetric]]" = mp.JoinableQueue()
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
@@ -53,6 +54,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
                 break
 
             metrics.append(item)
+            self.request_sent_counter.observe(item)
             feed_breakers(item)
             self.queue.task_done()
 
