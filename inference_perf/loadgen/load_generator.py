@@ -517,8 +517,7 @@ class LoadGenerator:
             # NOT appear in the session lifecycle metrics. To surface them later, record a
             # skipped/failed session metric here instead of only marking them complete.
             if hasattr(self.datagen, "is_session_buildable") and not self.datagen.is_session_buildable(session_idx):
-                session_info = self.datagen.get_session_info(session_idx)
-                completed_session_ids.add(session_info["session_id"])
+                completed_session_ids.add(self.datagen._session_ids[session_idx])  # type: ignore[attr-defined]
                 return 0
 
             # Get session info

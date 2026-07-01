@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:ad0a9b9b45fa6d53e538dd10a4fe08e539ae6acb7ab9807611aae659b8b49079"
+content_hash = "sha256:1310735b719954fa0da2209c5aa21e26d86305b9ebac04b2631299129efbdb50"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -3299,7 +3299,7 @@ name = "types-pyyaml"
 version = "6.0.12.20260408"
 requires_python = ">=3.10"
 summary = "Typing stubs for PyYAML"
-groups = ["types"]
+groups = ["dev", "types"]
 files = [
     {file = "types_pyyaml-6.0.12.20260408-py3-none-any.whl", hash = "sha256:fbc42037d12159d9c801ebfcc79ebd28335a7c13b08a4cfbc6916df78fee9384"},
     {file = "types_pyyaml-6.0.12.20260408.tar.gz", hash = "sha256:92a73f2b8d7f39ef392a38131f76b970f8c66e4c42b3125ae872b7c93b556307"},
