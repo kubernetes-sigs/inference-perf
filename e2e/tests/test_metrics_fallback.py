@@ -134,11 +134,11 @@ def _benchmark_config(prometheus_url: str, port: int) -> dict:
 @pytest.mark.skipif(not is_prometheus_available(), reason="local environment missing prometheus")
 async def test_legacy_metric_name(prometheus_server):
     """Verifies that inference-perf can collect metrics using the legacy name 'vllm:request_success'."""
-    server = start_mock_server(18000, "vllm:request_success")
+    server = start_mock_server(prometheus_server.sim_port, "vllm:request_success")
 
     try:
         result = await run_benchmark_minimal(
-            _benchmark_config(prometheus_server, 18000),
+            _benchmark_config(prometheus_server.url, prometheus_server.sim_port),
             executable=[sys.executable, str(MAIN_PY_PATH)],
             extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
         )
@@ -159,11 +159,11 @@ async def test_legacy_metric_name(prometheus_server):
 @pytest.mark.skipif(not is_prometheus_available(), reason="local environment missing prometheus")
 async def test_new_metric_name(prometheus_server):
     """Verifies that inference-perf can collect metrics using the new name 'vllm:request_success_total'."""
-    server = start_mock_server(18001, "vllm:request_success_total")
+    server = start_mock_server(prometheus_server.sim_port, "vllm:request_success_total")
 
     try:
         result = await run_benchmark_minimal(
-            _benchmark_config(prometheus_server, 18001),
+            _benchmark_config(prometheus_server.url, prometheus_server.sim_port),
             executable=[sys.executable, str(MAIN_PY_PATH)],
             extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
         )

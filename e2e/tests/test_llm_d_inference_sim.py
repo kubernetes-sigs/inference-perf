@@ -30,6 +30,7 @@ import pytest
 
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.benchmark import run_benchmark_minimal
+from utils.net import get_free_port
 from utils.testdata import extract_tarball
 
 TEST_MODEL_NAME = "google/gemma-3-270m"
@@ -115,7 +116,7 @@ async def test_completion_successful_run(data: dict, load: dict):
     model_name = TEST_MODEL_NAME
     model_path = extract_tarball(TEST_MODEL_TARBALL)
 
-    async with LLMDInferenceSimRunner(model_name, port=18000) as sim:
+    async with LLMDInferenceSimRunner(model_name, port=get_free_port()) as sim:
         result = await run_benchmark_minimal(
             {
                 "data": data,
@@ -170,7 +171,7 @@ async def test_chat_successful_run():
         "num_workers": 1,
     }
 
-    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+    async with LLMDInferenceSimRunner(model_name, port=get_free_port()) as sim:
         result = await run_benchmark_minimal(
             {
                 "data": {"type": "mock"},
