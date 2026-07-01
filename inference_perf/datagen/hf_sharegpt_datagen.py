@@ -63,8 +63,12 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
+        # initialize data collection — guard against empty datasets
+        try:
+            next(self.sharegpt_dataset)
+        except StopIteration:
+            logger.warning("ShareGPT dataset is empty; data generation will be a no-op")
+            self.sharegpt_dataset = None
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
