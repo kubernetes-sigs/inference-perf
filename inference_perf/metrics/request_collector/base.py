@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, AsyncIterator
 from contextlib import asynccontextmanager
 
 from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.circuit_breaker import feed_breakers
 
 
 class RequestMetricCollector(ABC):
@@ -24,6 +25,7 @@ class RequestMetricCollector(ABC):
     """
 
     def __init__(self) -> None:
+        self.metrics: List[RequestLifecycleMetric] = []
         # Callbacks invoked once per collected metric, in the process that
         # aggregates metrics (the parent process for multiprocess runs). Used by
         # runtime observability surfaces (e.g. Prometheus) to count requests live.
@@ -40,17 +42,23 @@ class RequestMetricCollector(ABC):
         state["_observers"] = []
         return state
 
-    def _notify_observers(self, metric: RequestLifecycleMetric) -> None:
+    def _collect(self, metric: RequestLifecycleMetric) -> None:
+        """Ingest one metric: store it, notify observers, feed circuit breakers.
+
+        Call this exactly once per metric, and only in the process that
+        aggregates metrics (never in load generator workers).
+        """
+        self.metrics.append(metric)
         for observer in self._observers:
             observer(metric)
+        feed_breakers(metric)
 
     @abstractmethod
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         raise NotImplementedError
 
-    @abstractmethod
     def get_metrics(self) -> List[RequestLifecycleMetric]:
-        raise NotImplementedError
+        return self.metrics
 
     @asynccontextmanager
     async def start(self) -> AsyncIterator[None]:
