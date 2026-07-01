@@ -766,6 +766,7 @@ class TestEndToEndSimpleChain:
         queue: mp.Queue[Any] = mp.Queue()
         gen = object.__new__(OTelTraceReplayDataGenerator)
         gen.all_events = events
+        gen._session_events = {0: events}
         gen.output_registry = registry
         gen.worker_tracker = tracker
         gen.session_completion_queue = queue
@@ -1751,3 +1752,126 @@ class TestWorkerSessionEviction:
 
         # All three events have now drained — session must be evicted.
         assert not self._session_is_resident(gen, "s", 0), "session not evicted after failure + skips"
+
+
+class TestUnbuildableSessionSlot:
+    """Regression tests for the three bugs around un-buildable lazy session slots.
+
+    Bug 1 (dispatch crash): dispatch_session calls get_session_info after is_session_buildable
+    returns False; get_session_info → _get_session raises RuntimeError for a None slot.
+
+    Bug 2 (eviction never fires): total_events_in_session is taken from len(state.graph.events)
+    but _build_session_schedule skips empty-message events, so the drain counter never reaches
+    the inflated total and evict_worker_session never fires.
+
+    Bug 3 (repeated _build_session): _ensure_session_built short-circuits on
+    `sessions[idx] is not None` only; un-buildable slots stay None so _build_session is
+    re-invoked on every subsequent call.
+    """
+
+    def test_ensure_session_built_does_not_repeat_for_unbuildable_slot(self) -> None:
+        """Bug 3: _build_session must be called at most once per slot even if it returns None."""
+        gen = _make_generator()
+        gen.initialize_sessions_lazy(["bad_session"])
+
+        build_calls = 0
+
+        def failing_build(idx: int) -> None:
+            nonlocal build_calls
+            build_calls += 1
+            return None
+
+        gen._build_session = failing_build  # type: ignore[assignment]
+
+        # First call — attempts build, finds nothing.
+        gen._ensure_session_built(0)
+        assert build_calls == 1
+
+        # Subsequent calls — slot already attempted, must NOT re-invoke _build_session.
+        gen._ensure_session_built(0)
+        gen._ensure_session_built(0)
+        assert build_calls == 1, f"_build_session re-invoked {build_calls} times for an un-buildable slot"
+
+    def test_is_session_buildable_returns_false_without_crashing(self) -> None:
+        """Bug 3 + Bug 1 precondition: is_session_buildable must return False cleanly."""
+        gen = _make_generator()
+        gen.initialize_sessions_lazy(["bad_session"])
+        gen._build_session = lambda idx: None  # type: ignore[assignment]
+
+        assert not gen.is_session_buildable(0)
+        # _session_ids must still be intact after a failed build (used by dispatch to
+        # add the session to completed_session_ids without touching the None slot).
+        assert gen._session_ids[0] == "bad_session"
+
+    def test_eviction_fires_despite_empty_message_event(self) -> None:
+        """Bug 2: evict_worker_session must fire even when one graph event has no messages.
+
+        _build_session_schedule skips empty-message events (they are never dispatched),
+        so total_events_in_session must be derived from the scheduled count — not from
+        len(state.graph.events) — otherwise the drain counter never reaches the total
+        and the session is never evicted.
+        """
+        # Build a graph where event_0 has no messages (will be skipped by schedule builder)
+        # and event_1 has messages (will be dispatched and drained).
+        events: dict[str, GraphEvent] = {
+            "event_0": GraphEvent(
+                event_id="event_0",
+                call=GraphCall(
+                    call_id="call_0",
+                    model="test-model",
+                    messages=[],  # empty — skipped by _build_session_schedule
+                    expected_output="",
+                    input_segments=[],
+                    total_input_tokens=0,
+                    expected_output_tokens=0,
+                    temperature=None,
+                    max_tokens_recorded=None,
+                ),
+                predecessor_event_ids=[],
+                predecessor_dependency_types={},
+                wait_ms=0,
+                t_start_ms=0,
+                t_end_ms=500,
+            ),
+            "event_1": GraphEvent(
+                event_id="event_1",
+                call=GraphCall(
+                    call_id="call_1",
+                    model="test-model",
+                    messages=[{"role": "user", "content": "hello"}],
+                    expected_output="ok",
+                    input_segments=[InputSegment(type="unique", message_count=1, token_count=5)],
+                    total_input_tokens=5,
+                    expected_output_tokens=2,
+                    temperature=None,
+                    max_tokens_recorded=None,
+                ),
+                predecessor_event_ids=[],
+                predecessor_dependency_types={},
+                wait_ms=0,
+                t_start_ms=1000,
+                t_end_ms=1500,
+            ),
+        }
+        graph = ReplayGraph(events=events, root_event_ids=["event_0", "event_1"], source_file="test")
+
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+
+        # Only event_1 is scheduled (event_0 has no messages).
+        scheduled = gen.get_session_events(0)
+        assert len(scheduled) == 1, f"expected 1 scheduled event, got {len(scheduled)}"
+
+        data = gen.load_lazy_data(scheduled[0])
+        assert data.generator is gen
+
+        # total_events_in_session must equal the scheduled count (1), not len(graph.events) (2).
+        assert data.total_events_in_session == 1, (
+            f"total_events_in_session is {data.total_events_in_session}; "
+            "should be 1 (scheduled) not 2 (raw graph) — otherwise eviction never fires"
+        )
+
+        # Draining the one scheduled event must trigger eviction.
+        info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
+        data.on_completion(info)
+        assert "s" not in gen.session_graph_state, "session not evicted after its only scheduled event completed"

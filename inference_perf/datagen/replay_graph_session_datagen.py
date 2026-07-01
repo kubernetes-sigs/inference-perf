@@ -178,6 +178,7 @@ class WorkerSessionTracker:
         self._event_completions.pop(session_id, None)
         self._failed_sessions.discard(session_id)
         self._drained_events.pop(session_id, None)
+        self._recorded_substitution_event_ids.pop(session_id, None)
 
     def record_event_completed(self, session_id: str, event_id: str, completion_time: float) -> None:
         if session_id not in self._event_completions:
@@ -1135,13 +1136,13 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         """Build and register session_index's graph if not already done. Idempotent."""
         if session_index < 0 or session_index >= len(self.sessions):
             raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
-        if self.sessions[session_index] is not None:
+        if self.sessions[session_index] is not None or session_index in self._session_events:
             return
         session = self._build_session(session_index)
         if session is None:
             # No graph (e.g. malformed spans, or all calls errored with include_errors=False).
-            # Leave the slot None and register an empty event list so accessors don't rebuild
-            # repeatedly. The dispatcher skips these slots (see is_session_buildable).
+            # Register an empty event list as the "already attempted" sentinel so this slot is
+            # not retried on subsequent calls. The dispatcher skips it (see is_session_buildable).
             self._session_events[session_index] = []
             return
         session.session_index = session_index
@@ -1319,10 +1320,6 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
     def get_session_count(self) -> int:
         return len(self._session_ids)
-
-    def get_session_id(self, session_index: int) -> str:
-        """Return the session_id for a slot without requiring its graph to be built."""
-        return self._session_ids[session_index]
 
     def _get_session(self, session_index: int) -> ReplaySession:
         """Return the built session at session_index, building it on demand if needed."""
@@ -1550,7 +1547,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
         raw_event_id = event.event_id.split(":", 1)[1] if ":" in event.event_id else event.event_id
         state = self.session_graph_state.get(session_id)
-        total_events = len(state.graph.events) if state else 0
+        session_index = event.session_index
+        total_events = len(self._session_events.get(session_index, [])) if state else 0
 
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
 
