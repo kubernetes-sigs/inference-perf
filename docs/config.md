@@ -247,6 +247,7 @@ report:
     per_adapter: false        # Generate metrics grouped by LoRA adapter
     per_adapter_stage: false  # Generate metrics grouped by adapter and stage
     percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
+    use_server_output_tokens: false # Normalize TPOT/NTPOT by the server's usage.completion_tokens instead of the client re-tokenized count (both counts stay reported as output_tokens/output_len)
   prometheus:
     summary: true             # Include Prometheus metrics summary
     per_stage: false          # Disable Prometheus stage breakdown

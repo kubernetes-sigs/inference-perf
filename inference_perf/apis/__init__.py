@@ -18,6 +18,7 @@ from .base import (
     ErrorResponseInfo,
     LazyLoadInferenceAPIData,
     SessionLifecycleMetric,
+    ResponseMetrics,
     UnaryResponseMetrics,
     StreamedResponseMetrics,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "ChatCompletionAPIData",
     "ChatMessage",
     "CompletionAPIData",
+    "ResponseMetrics",
     "UnaryResponseMetrics",
     "StreamedResponseMetrics",
 ]
