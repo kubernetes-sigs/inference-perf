@@ -22,7 +22,6 @@ from functools import partial
 import logging
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.circuit_breaker import feed_breakers
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +30,15 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
+        super().__init__()
         self.queue: "mp.JoinableQueue[Optional[RequestLifecycleMetric]]" = mp.JoinableQueue()
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
+        # Called in load generator workers; ingestion happens in the parent
+        # process drain loop (collect_metrics), which calls _collect.
         self.queue.put(metric)
 
-    async def collect_metrics(self) -> list[RequestLifecycleMetric]:
-        metrics: list[RequestLifecycleMetric] = []
+    async def collect_metrics(self) -> None:
         event_loop = get_event_loop()
         # prevent get from blocking the executor for too long:
         get_queue = partial(self.queue.get, timeout=0.5)
@@ -52,11 +53,8 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
                 self.queue.task_done()
                 break
 
-            metrics.append(item)
-            feed_breakers(item)
+            self._collect(item)
             self.queue.task_done()
-
-        return metrics
 
     @asynccontextmanager
     async def start(self) -> AsyncIterator[None]:
@@ -65,8 +63,5 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
         yield
 
         self.queue.put(None)
-        self.metrics = await collector_task
+        await collector_task
         logger.debug(f"Collector collected {len(self.metrics)} metrics")
-
-    def get_metrics(self) -> list[RequestLifecycleMetric]:
-        return self.metrics

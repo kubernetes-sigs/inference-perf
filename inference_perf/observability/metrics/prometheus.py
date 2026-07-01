@@ -14,8 +14,9 @@
 
 """Minimal Prometheus exposition surface for inference-perf runtime observability.
 
-Seed of kubernetes-sigs/inference-perf#489. Exposes a single gauge,
-``inference_perf_run_elapsed_seconds``, over an HTTP ``/metrics`` endpoint.
+Seed of kubernetes-sigs/inference-perf#489. Exposes
+``inference_perf_run_elapsed_seconds`` and
+``inference_perf_requests_sent_total`` over an HTTP ``/metrics`` endpoint.
 The full metric set and naming conventions are intentionally out of scope here;
 expect this surface to grow once the conventions are agreed upon.
 """
@@ -27,9 +28,11 @@ from threading import Thread
 from typing import Iterator, Optional
 from wsgiref.simple_server import WSGIServer
 
-from prometheus_client import CollectorRegistry, start_http_server
+from prometheus_client import CollectorRegistry, Counter, start_http_server
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.registry import Collector
+
+from inference_perf.apis import RequestLifecycleMetric
 
 DEFAULT_PORT = 9464
 
@@ -53,9 +56,10 @@ class _RunElapsedCollector(Collector):
 class PrometheusMetricsServer:
     """Serves inference-perf's own metrics over an HTTP ``/metrics`` endpoint.
 
-    Currently emits only ``inference_perf_run_elapsed_seconds``. Use a fresh
-    ``CollectorRegistry`` per instance (not the default global one) so multiple
-    runs in the same process do not collide.
+    Emits ``inference_perf_run_elapsed_seconds`` and
+    ``inference_perf_requests_sent_total``. Use a fresh ``CollectorRegistry``
+    per instance (not the default global one) so multiple runs in the same
+    process do not collide.
 
     Pass ``port=0`` to bind to an ephemeral port; the actual port is then
     available via :attr:`bound_port`.
@@ -67,8 +71,25 @@ class PrometheusMetricsServer:
         self.registry = CollectorRegistry()
         self._elapsed = _RunElapsedCollector()
         self.registry.register(self._elapsed)
+        self._requests_sent = Counter(
+            "inference_perf_requests_sent",
+            "Total number of requests sent to the model server under test.",
+            labelnames=["stage", "status"],
+            registry=self.registry,
+        )
         self._server: Optional[WSGIServer] = None
         self._thread: Optional[Thread] = None
+
+    def observe_request(self, metric: RequestLifecycleMetric) -> None:
+        """Count one request toward ``inference_perf_requests_sent_total``.
+
+        Wire this as an observer on the request metric collector
+        (``collector.add_observer(server.observe_request)``) so every collected
+        request lifecycle metric increments the counter.
+        """
+        stage = "" if metric.stage_id is None else str(metric.stage_id)
+        status = "failure" if metric.error is not None else "success"
+        self._requests_sent.labels(stage, status).inc()
 
     def start(self) -> None:
         if self._server is not None:

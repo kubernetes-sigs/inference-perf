@@ -12,21 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.circuit_breaker import feed_breakers
 
 
 class LocalRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
-    def __init__(self) -> None:
-        self.metrics: List[RequestLifecycleMetric] = []
-
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
-        self.metrics.append(metric)
-        feed_breakers(metric)
-
-    def get_metrics(self) -> List[RequestLifecycleMetric]:
-        return self.metrics
+        self._collect(metric)
