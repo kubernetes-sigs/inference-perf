@@ -40,9 +40,11 @@ from typing import Any, Dict, List, Optional
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
+    extract_messages,
     print_graph,
     summarize_graph,
 )
+from inference_perf.datagen.replay_graph_types import ComplexReplayMessage
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +175,7 @@ def test_sequential_chain() -> None:
         span_C: SHARED(3msg ← event_001) + OUTPUT(1msg ← event_001) + UNIQUE(1msg)
     """
     spans = [SPAN_A, SPAN_B, SPAN_C]
-    calls = build_raw_calls(spans)
+    calls, _ = build_raw_calls(spans)
     graph = build_graph(calls)
 
     # Print for visual inspection when running with pytest -s or debugger
@@ -373,7 +375,7 @@ def test_parallel_fan_out() -> None:
         OUTPUT(1msg ← event_002)               [assistant: OUTPUT_P2]
     """
     spans = [SPAN_ROOT, SPAN_P1, SPAN_P2, SPAN_FINAL]
-    calls = build_raw_calls(spans)
+    calls, _ = build_raw_calls(spans)
     graph = build_graph(calls)
 
     print("\n" + "=" * 70)
@@ -547,7 +549,7 @@ def test_growing_prefix() -> None:
     KEY PROPERTY: shared prefix message count grows monotonically: 2 < 4 < 6
     """
     spans = [SPAN_T1, SPAN_T2, SPAN_T3, SPAN_T4]
-    calls = build_raw_calls(spans)
+    calls, _ = build_raw_calls(spans)
     graph = build_graph(calls)
 
     print("\n" + "=" * 70)
@@ -612,7 +614,7 @@ def test_tool_definitions_flow() -> None:
         "status": {"code": 1, "message": ""},
     }
 
-    calls = build_raw_calls([span])
+    calls, _ = build_raw_calls([span])
     assert len(calls) == 1
     assert calls[0].tool_definitions == tool_defs
 
@@ -637,9 +639,110 @@ def test_tool_definitions_absent() -> None:
         "status": {"code": 1, "message": ""},
     }
 
-    calls = build_raw_calls([span])
+    calls, _ = build_raw_calls([span])
     assert calls[0].tool_definitions is None
 
     graph = build_graph(calls)
     event = list(graph.events.values())[0]
     assert event.call.tool_definitions is None
+
+
+class TestDeveloperRoleNormalization:
+    """Tests for normalizing 'developer' role to 'system'."""
+
+    def test_developer_role_normalized_to_system(self) -> None:
+        """Messages with role 'developer' are normalized to 'system'."""
+        span = {
+            "attributes": {
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "developer", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": "Hello"},
+                    ]
+                ),
+            },
+        }
+        messages, normalized_count = extract_messages(span)
+        assert len(messages) == 2
+        assert messages[0].role == "system"
+        assert messages[1].role == "user"
+        assert normalized_count == 1
+
+    def test_no_normalization_for_standard_roles(self) -> None:
+        """Standard roles are not modified and count is zero."""
+        span = {
+            "attributes": {
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": "Hello"},
+                    ]
+                ),
+            },
+        }
+        messages, normalized_count = extract_messages(span)
+        assert len(messages) == 2
+        assert messages[0].role == "system"
+        assert messages[1].role == "user"
+        assert normalized_count == 0
+
+    def test_multiple_developer_roles_counted(self) -> None:
+        """Multiple 'developer' messages are all normalized and counted."""
+        span = {
+            "attributes": {
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "developer", "content": "System instruction 1"},
+                        {"role": "developer", "content": "System instruction 2"},
+                        {"role": "user", "content": "Hello"},
+                    ]
+                ),
+            },
+        }
+        messages, normalized_count = extract_messages(span)
+        assert messages[0].role == "system"
+        assert messages[1].role == "system"
+        assert normalized_count == 2
+
+    def test_developer_role_normalized_in_build_raw_calls(self) -> None:
+        """build_raw_calls returns the total normalized count."""
+        span = {
+            "trace_id": "trace_dev",
+            "span_id": "span_dev",
+            "name": "chat gpt-4",
+            "start_time": "2024-01-01T00:00:00Z",
+            "end_time": "2024-01-01T00:00:01Z",
+            "attributes": {
+                "gen_ai.request.model": "gpt-4",
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "developer", "content": "Be concise."},
+                        {"role": "user", "content": "Hi"},
+                    ]
+                ),
+                "gen_ai.output.text": "Hello!",
+            },
+            "status": {"code": 1, "message": ""},
+        }
+        calls, normalized_count = build_raw_calls([span])
+        assert len(calls) == 1
+        assert calls[0].messages[0].role == "system"
+        assert normalized_count == 1
+
+    def test_developer_role_in_complex_message_info(self) -> None:
+        """message_info dict also has role normalized (not just ComplexReplayMessage.role)."""
+        span = {
+            "attributes": {
+                "gen_ai.input.messages": json.dumps(
+                    [
+                        {"role": "developer", "content": {"text": "system prompt", "metadata": "extra"}},
+                    ]
+                ),
+            },
+        }
+        messages, normalized_count = extract_messages(span)
+        msg = messages[0]
+        assert msg.role == "system"
+        assert isinstance(msg, ComplexReplayMessage)
+        assert msg.message_info["role"] == "system"
+        assert normalized_count == 1
