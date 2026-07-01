@@ -50,9 +50,9 @@ async def test_prometheus_metrics_collection(prometheus_server):
     model_name = TEST_MODEL_NAME
     model_path = extract_tarball(TEST_MODEL_TARBALL)
 
-    prometheus_url = prometheus_server
+    prometheus_url = prometheus_server.url
 
-    async with LLMDInferenceSimRunner(model_name, port=18000) as sim:
+    async with LLMDInferenceSimRunner(model_name, port=prometheus_server.sim_port) as sim:
         # Run a short benchmark
         result = await run_benchmark_minimal(
             {
@@ -109,7 +109,7 @@ async def test_prometheus_metrics_collection(prometheus_server):
 
         # Debug and verify metrics exposed by simulator
         try:
-            resp = requests.get("http://127.0.0.1:18000/metrics", timeout=1)
+            resp = requests.get(f"http://127.0.0.1:{sim.port}/metrics", timeout=1)
             metrics_content = resp.text
             logger.debug(f"Simulator Metrics Content: {format_content(metrics_content)}")
 
@@ -168,9 +168,9 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
     model_name = TEST_MODEL_NAME
     model_path = extract_tarball(TEST_MODEL_TARBALL)
 
-    prometheus_url = prometheus_server
+    prometheus_url = prometheus_server.url
 
-    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+    async with LLMDInferenceSimRunner(model_name, port=prometheus_server.sim_port) as sim:
         # Run a short benchmark with chat API
         result = await run_benchmark_minimal(
             {
@@ -220,7 +220,7 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
 
         # Debug and verify metrics exposed by simulator
         try:
-            resp = requests.get("http://127.0.0.1:18001/metrics", timeout=1)
+            resp = requests.get(f"http://127.0.0.1:{sim.port}/metrics", timeout=1)
             metrics_content = resp.text
             logger.debug(f"Simulator Metrics Content: {format_content(metrics_content)}")
 
