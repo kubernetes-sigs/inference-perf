@@ -62,7 +62,7 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
@@ -70,7 +70,6 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
     SessionChatCompletionAPIData,
 )
-import inference_perf.datagen.otel_trace_to_replay_graph as otel_graph
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
@@ -443,10 +442,12 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """Process loaded trace data into sessions."""
         logger.info(f"Processing {len(self.trace_data_list)} trace records")
         sessions: List[ReplaySession] = []
+        total_normalized = 0
 
         for trace_index, trace_info in enumerate(self.trace_data_list):
             try:
-                session = self._process_trace_data(trace_info, trace_index)
+                session, normalized_count = self._process_trace_data(trace_info, trace_index)
+                total_normalized += normalized_count
                 if session:
                     sessions.append(session)
                     event_count = len(session.graph.events)
@@ -462,18 +463,19 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         random.shuffle(sessions)
         logger.info(f"Randomized session order using seed: {self.base_seed}")
 
-        msg_count = otel_graph._developer_role_normalized_count
-        if msg_count > 0:
+        if total_normalized > 0:
             logger.warning(
-                f"Normalized {msg_count} 'developer' role message(s) to 'system' "
+                f"Normalized {total_normalized} 'developer' role message(s) to 'system' "
                 f"for compatibility with model servers that only accept standard roles."
             )
-            otel_graph._developer_role_normalized_count = 0
 
         return sessions
 
-    def _process_trace_data(self, trace_info: Dict[str, Any], trace_index: int) -> Optional[ReplaySession]:
-        """Process a single trace data dict into a ReplayGraph session."""
+    def _process_trace_data(self, trace_info: Dict[str, Any], trace_index: int) -> Tuple[Optional[ReplaySession], int]:
+        """Process a single trace data dict into a ReplayGraph session.
+
+        Returns a tuple of (session, developer_role_normalized_count).
+        """
         data = trace_info["data"]
         source_id = trace_info["source_id"]
         source_name = trace_info["source_name"]
@@ -481,13 +483,13 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         spans = data.get("spans") or []
         if not spans:
             logger.warning(f"No spans found in {source_name}")
-            return None
+            return None, 0
 
         try:
-            raw_calls = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
+            raw_calls, normalized_count = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
             if not raw_calls:
                 logger.warning(f"No LLM calls found in {source_name}")
-                return None
+                return None, 0
 
             graph = build_graph(
                 raw_calls,
@@ -495,7 +497,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             )
         except Exception as e:
             logger.error(f"Error building graph from {source_name}: {e}")
-            return None
+            return None, 0
 
         # Use trace_id from first call as session_id, but make it unique by adding trace_index
         # to handle cases where multiple sources have the same trace_id
@@ -507,7 +509,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             source_id=source_id,
             session_index=trace_index,
             graph=graph,
-        )
+        ), normalized_count
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
         api_data = super().load_lazy_data(data)

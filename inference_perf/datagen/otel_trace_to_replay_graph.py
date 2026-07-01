@@ -56,7 +56,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from inference_perf.datagen.export_replay_graph_to_dot import export_to_dot
 from inference_perf.datagen.otel_trace_utils import (
@@ -74,7 +74,6 @@ from inference_perf.datagen.replay_graph_types import (
 )
 
 logger = logging.getLogger(__name__)
-_developer_role_normalized_count = 0
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +206,17 @@ def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[st
     return result
 
 
-def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Extract messages from span attributes. Returns empty list if not found."""
-    global _developer_role_normalized_count
+def extract_messages(span: Dict[str, Any]) -> Tuple[List["ReplayMessage"], int]:
+    """Extract messages from span attributes.
+
+    Returns a tuple of (messages, developer_role_normalized_count).
+    """
     attrs = span.get("attributes") or {}
     raw = attrs.get("gen_ai.input.messages")
     res = []
+    normalized_count = 0
     if raw is None:
-        return []
+        return [], 0
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -227,7 +229,8 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
             role = x["role"]
             if role == "developer":
                 role = "system"
-                _developer_role_normalized_count += 1
+                x["role"] = "system"
+                normalized_count += 1
             if "content" in x:
                 content = x["content"]
                 # Check if message also has tool_calls - convert to parts format
@@ -260,10 +263,10 @@ def extract_messages(span: Dict[str, Any]) -> List[Dict[str, Any]]:
 
                 """
                 res.append(ComplexReplayMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x)))
-        return res  # type: ignore[return-value]
+        return res, normalized_count  # type: ignore[return-value]
     else:
-        return []
-    return []
+        return [], 0
+    return [], 0
 
 
 def extract_output_message(span: Dict[str, Any]) -> Optional[ReplayMessage]:
@@ -367,26 +370,30 @@ def filter_duplicate_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique_spans
 
 
-def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -> List[RawCall]:
+def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -> Tuple[List[RawCall], int]:
     """Extract and sort raw LLM calls from spans.
 
     First filters out duplicate spans (identical start_time, end_time, and attributes),
     then extracts LLM calls from the remaining unique spans.
+
+    Returns a tuple of (calls, developer_role_normalized_count).
     """
     # Filter out duplicate spans first
     unique_spans = filter_duplicate_spans(spans)
 
     llm_spans = [s for s in unique_spans if is_llm_span(s, include_errors=include_errors)]
     if not llm_spans:
-        return []
+        return [], 0
 
     t0 = min(parse_iso(s["start_time"]) for s in llm_spans)
     llm_spans.sort(key=lambda s: (parse_iso(s["start_time"]), s.get("span_id", "")))
 
     calls: List[RawCall] = []
+    total_normalized = 0
     for s in llm_spans:
         attrs = s.get("attributes") or {}
-        messages = extract_messages(s)
+        messages, normalized_count = extract_messages(s)
+        total_normalized += normalized_count
         out_message = extract_output_message(s)
         t_start = int(round((parse_iso(s["start_time"]) - t0) * 1000))
         t_end = int(round((parse_iso(s["end_time"]) - t0) * 1000)) if s.get("end_time") else t_start
@@ -430,7 +437,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 t_start_ms=t_start,
                 t_end_ms=t_end,
                 model=str(attrs.get("gen_ai.request.model") or ""),
-                messages=messages,  # type: ignore[arg-type]
+                messages=messages,
                 out_message=out_message,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -440,7 +447,7 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 extra_attributes=extra_attrs,
             )
         )
-    return calls
+    return calls, total_normalized
 
 
 # ---------------------------------------------------------------------------
@@ -1361,7 +1368,7 @@ def main() -> None:
     if not spans:
         raise SystemExit("No spans found in trace JSON")
 
-    calls = build_raw_calls(spans, include_errors=args.include_errors)
+    calls, _ = build_raw_calls(spans, include_errors=args.include_errors)
     if not calls:
         raise SystemExit("No LLM spans found in trace file")
 

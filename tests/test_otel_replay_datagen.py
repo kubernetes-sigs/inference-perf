@@ -700,7 +700,7 @@ class TestEndToEndSimpleChain:
             pytest.skip(f"Test trace not found: {SIMPLE_CHAIN_JSON}")
         data = json.loads(SIMPLE_CHAIN_JSON.read_text())
         spans = data.get("spans", [])
-        calls = build_raw_calls(spans)
+        calls, _ = build_raw_calls(spans)
         graph = build_graph(calls)
         return graph, calls
 
