@@ -189,11 +189,11 @@ def _extract_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
         for tc in message["tool_calls"]:
             if isinstance(tc, dict):
                 # OpenAI format: {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
-                if "function" in tc:
-                    tool_calls.append(
-                        {"id": tc.get("id"), "name": tc["function"].get("name"), "arguments": tc["function"].get("arguments")}
-                    )
-                # Direct format: {"name": "...", "arguments": "..."}
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    tool_calls.append({"id": tc.get("id"), "name": fn.get("name"), "arguments": fn.get("arguments")})
+                # Direct format: {"name": "...", "arguments": "..."} (also the
+                # fallback when `function` is present but malformed/non-dict).
                 elif "name" in tc:
                     tool_calls.append(tc)
 
