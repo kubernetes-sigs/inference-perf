@@ -168,6 +168,15 @@ class OTelTraceReplayConfig(SessionReplayConfig):
             "Security: Filter expressions use eval() and should only contain trusted input."
         ),
     )
+    disable_output_substitution: bool = Field(
+        False,
+        description=(
+            "When True, replay each call with its recorded assistant output "
+            "(text and tool calls) instead of substituting the live output from "
+            "predecessor calls. Dependency timing (waiting for predecessors) is "
+            "still enforced. Default False preserves faithful live-output replay."
+        ),
+    )
     attribute_to_header_map: Optional[Dict[str, str]] = Field(None, description="Map OTel span attributes to HTTP headers")
     attribute_to_label_map: Optional[Dict[str, str]] = Field(
         None, description="Map OTel span attributes to metrics reporting labels"
@@ -207,6 +216,33 @@ class OTelTraceReplayConfig(SessionReplayConfig):
             raise ValueError(
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_output_substitution(self) -> "OTelTraceReplayConfig":
+        # disable_output_substitution sends recorded assistant outputs verbatim.
+        # Random session-ID injection (via inject_random_session_id or session
+        # duplication) rewrites 'unique' segments, which runs the substitution
+        # pass that also replaces 'output'/'shared' segments with live predecessor
+        # output — the exact behavior disable_output_substitution asks to turn off.
+        # The two settings contradict, so reject the combination up front rather
+        # than silently substituting anyway.
+        if self.disable_output_substitution:
+            conflicting = []
+            if self.inject_random_session_id:
+                conflicting.append("inject_random_session_id")
+            if self.duplicate_sessions_target is not None:
+                conflicting.append("duplicate_sessions_target")
+            if conflicting:
+                raise ValueError(
+                    "disable_output_substitution=True cannot be combined with "
+                    f"{' or '.join(conflicting)}: those options trigger random "
+                    "session-ID injection, which substitutes live predecessor "
+                    "output into output/shared segments — the opposite of replaying "
+                    "recorded outputs as-is. Disable "
+                    f"{' and '.join(conflicting)} to replay recorded outputs, or "
+                    "set disable_output_substitution=False to allow substitution."
+                )
         return self
 
 

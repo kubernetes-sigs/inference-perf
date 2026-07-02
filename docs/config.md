@@ -444,6 +444,9 @@ data:
     # Tool-call mitigation (client-side, default disabled)
     bad_tool_call_handling: none                  # none|use_recorded — see docs/otel_trace_replay.md#bad-tool-call-handling
 
+    # Output replay fidelity (default disabled)
+    disable_output_substitution: false            # true = send recorded assistant outputs as-is (no live substitution); conflicts with inject_random_session_id / duplicate_sessions_target
+
 load:
   type: trace_session_replay                      # Required for otel_trace_replay
   stages:
