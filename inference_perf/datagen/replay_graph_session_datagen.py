@@ -1330,8 +1330,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 reasoning_content = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
 
             if tool_calls is not None:
-                chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls))
-                original_messages.append({"role": role, "tool_calls": tool_calls})
+                chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls, reasoning_content=reasoning_content))
+                orig_msg: Dict[str, Any] = {"role": role, "tool_calls": tool_calls}
+                if reasoning_content:
+                    orig_msg["reasoning_content"] = reasoning_content
+                original_messages.append(orig_msg)
                 continue
 
             if isinstance(content, list):
@@ -1348,7 +1351,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
             content_str = str(content)
             chat_messages.append(ChatMessage(role=role, content=content_str, reasoning_content=reasoning_content))
-            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            orig_msg = {"role": role, "content": content_str}
             if tool_call_id is not None:
                 orig_msg["tool_call_id"] = tool_call_id
             if reasoning_content:
