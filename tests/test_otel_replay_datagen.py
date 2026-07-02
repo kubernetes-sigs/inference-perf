@@ -766,6 +766,7 @@ class TestEndToEndSimpleChain:
         queue: mp.Queue[Any] = mp.Queue()
         gen = object.__new__(OTelTraceReplayDataGenerator)
         gen.all_events = events
+        gen._session_events = {0: events}
         gen.output_registry = registry
         gen.worker_tracker = tracker
         gen.session_completion_queue = queue
@@ -1380,8 +1381,11 @@ def _make_generator(
     gen.output_registry = EventOutputRegistry()
     gen.worker_tracker = WorkerSessionTracker()
     gen.session_completion_queue = None
+    gen.num_workers = 1
     gen.sessions = []
+    gen._session_ids = []
     gen.session_graph_state = {}
+    gen._session_events = {}
     gen.all_events = []
     return gen
 
@@ -1685,3 +1689,189 @@ class TestBadToolCallHandling:
         assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
         # No failure reason set
         assert api_data._substitution_failure_reason is None
+
+
+class TestWorkerSessionEviction:
+    """Verify a worker frees a session's built graph once all its events drain.
+
+    In the lazy path each worker builds its own graphs and the parent's cleanup_session
+    never runs in the worker, so without per-worker eviction a worker retains every graph
+    it ever built for the whole stage. evict_worker_session (triggered when the last event
+    of a session drains) must free the graph, event list, traversal state, registry entries,
+    and worker-tracker bookkeeping. Every event drains exactly once via completion, skip, or
+    request failure — eviction fires only after the last of them.
+    """
+
+    def _session_is_resident(self, gen: ReplayGraphSessionGeneratorBase, session_id: str, idx: int) -> bool:
+        return (
+            session_id in gen.session_graph_state
+            or idx in gen._session_events
+            or (idx < len(gen.sessions) and gen.sessions[idx] is not None)
+        )
+
+    def test_evicted_after_all_events_complete(self) -> None:
+        """A 2-event session is freed only after both events complete, not after the first."""
+        graph = _make_simple_graph(event_count=2)
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+        assert self._session_is_resident(gen, "s", 0)
+
+        events = gen.get_session_events(0)
+        assert len(events) == 2
+        datas = [gen.load_lazy_data(e) for e in events]
+        for d in datas:
+            assert d.generator is gen  # back-reference wired
+
+        info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
+        # First event completes — session must still be resident.
+        datas[0].on_completion(info)
+        assert self._session_is_resident(gen, "s", 0), "session evicted too early (before last event)"
+
+        # Last event completes — now fully drained, must be evicted.
+        datas[1].on_completion(info)
+        assert not self._session_is_resident(gen, "s", 0), "session not evicted after all events completed"
+        assert "s" not in gen.worker_tracker._drained_events
+
+    def test_evicted_after_failure_and_skips_drain(self) -> None:
+        """Root failure + successor skips still drain every event, so the session is freed."""
+        graph = _make_simple_graph(event_count=3)
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+
+        events = gen.get_session_events(0)
+        datas = [gen.load_lazy_data(e) for e in events]
+
+        # Root event fails (request failure path).
+        asyncio.run(datas[0].process_failure(None, make_mock_api_config_streaming(), make_mock_tokenizer(), Exception("boom")))
+        assert self._session_is_resident(gen, "s", 0), "evicted before successors drained"
+
+        # The two successors are dequeued and skip via the session-already-failed path.
+        for d in datas[1:]:
+            asyncio.run(d.wait_for_predecessors_and_substitute())
+            assert d.skip_request is True
+
+        # All three events have now drained — session must be evicted.
+        assert not self._session_is_resident(gen, "s", 0), "session not evicted after failure + skips"
+
+
+class TestUnbuildableSessionSlot:
+    """Regression tests for the three bugs around un-buildable lazy session slots.
+
+    Bug 1 (dispatch crash): dispatch_session calls get_session_info after is_session_buildable
+    returns False; get_session_info → _get_session raises RuntimeError for a None slot.
+
+    Bug 2 (eviction never fires): total_events_in_session is taken from len(state.graph.events)
+    but _build_session_schedule skips empty-message events, so the drain counter never reaches
+    the inflated total and evict_worker_session never fires.
+
+    Bug 3 (repeated _build_session): _ensure_session_built short-circuits on
+    `sessions[idx] is not None` only; un-buildable slots stay None so _build_session is
+    re-invoked on every subsequent call.
+    """
+
+    def test_ensure_session_built_does_not_repeat_for_unbuildable_slot(self) -> None:
+        """Bug 3: _build_session must be called at most once per slot even if it returns None."""
+        gen = _make_generator()
+        gen.initialize_sessions_lazy(["bad_session"])
+
+        build_calls = 0
+
+        def failing_build(idx: int) -> None:
+            nonlocal build_calls
+            build_calls += 1
+            return None
+
+        gen._build_session = failing_build  # type: ignore[assignment]
+
+        # First call — attempts build, finds nothing.
+        gen._ensure_session_built(0)
+        assert build_calls == 1
+
+        # Subsequent calls — slot already attempted, must NOT re-invoke _build_session.
+        gen._ensure_session_built(0)
+        gen._ensure_session_built(0)
+        assert build_calls == 1, f"_build_session re-invoked {build_calls} times for an un-buildable slot"
+
+    def test_is_session_buildable_returns_false_without_crashing(self) -> None:
+        """Bug 3 + Bug 1 precondition: is_session_buildable must return False cleanly."""
+        gen = _make_generator()
+        gen.initialize_sessions_lazy(["bad_session"])
+        gen._build_session = lambda idx: None  # type: ignore[assignment]
+
+        assert not gen.is_session_buildable(0)
+        # _session_ids must still be intact after a failed build (used by dispatch to
+        # add the session to completed_session_ids without touching the None slot).
+        assert gen._session_ids[0] == "bad_session"
+
+    def test_eviction_fires_despite_empty_message_event(self) -> None:
+        """Bug 2: evict_worker_session must fire even when one graph event has no messages.
+
+        _build_session_schedule skips empty-message events (they are never dispatched),
+        so total_events_in_session must be derived from the scheduled count — not from
+        len(state.graph.events) — otherwise the drain counter never reaches the total
+        and the session is never evicted.
+        """
+        # Build a graph where event_0 has no messages (will be skipped by schedule builder)
+        # and event_1 has messages (will be dispatched and drained).
+        events: dict[str, GraphEvent] = {
+            "event_0": GraphEvent(
+                event_id="event_0",
+                call=GraphCall(
+                    call_id="call_0",
+                    model="test-model",
+                    messages=[],  # empty — skipped by _build_session_schedule
+                    expected_output="",
+                    input_segments=[],
+                    total_input_tokens=0,
+                    expected_output_tokens=0,
+                    temperature=None,
+                    max_tokens_recorded=None,
+                ),
+                predecessor_event_ids=[],
+                predecessor_dependency_types={},
+                wait_ms=0,
+                t_start_ms=0,
+                t_end_ms=500,
+            ),
+            "event_1": GraphEvent(
+                event_id="event_1",
+                call=GraphCall(
+                    call_id="call_1",
+                    model="test-model",
+                    messages=[{"role": "user", "content": "hello"}],
+                    expected_output="ok",
+                    input_segments=[InputSegment(type="unique", message_count=1, token_count=5)],
+                    total_input_tokens=5,
+                    expected_output_tokens=2,
+                    temperature=None,
+                    max_tokens_recorded=None,
+                ),
+                predecessor_event_ids=[],
+                predecessor_dependency_types={},
+                wait_ms=0,
+                t_start_ms=1000,
+                t_end_ms=1500,
+            ),
+        }
+        graph = ReplayGraph(events=events, root_event_ids=["event_0", "event_1"], source_file="test")
+
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+
+        # Only event_1 is scheduled (event_0 has no messages).
+        scheduled = gen.get_session_events(0)
+        assert len(scheduled) == 1, f"expected 1 scheduled event, got {len(scheduled)}"
+
+        data = gen.load_lazy_data(scheduled[0])
+        assert data.generator is gen
+
+        # total_events_in_session must equal the scheduled count (1), not len(graph.events) (2).
+        assert data.total_events_in_session == 1, (
+            f"total_events_in_session is {data.total_events_in_session}; "
+            "should be 1 (scheduled) not 2 (raw graph) — otherwise eviction never fires"
+        )
+
+        # Draining the one scheduled event must trigger eviction.
+        info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
+        data.on_completion(info)
+        assert "s" not in gen.session_graph_state, "session not evicted after its only scheduled event completed"

@@ -54,6 +54,20 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
 
+
+class SessionReplayLazyLoadData(LazyLoadInferenceAPIData):
+    """LazyLoadInferenceAPIData extended with per-session addressing for OTel trace replay.
+
+    Instead of a global data_index into all_events, the worker identifies the
+    request by (session_index, local_event_index) so it can build only the
+    requested session's graph on demand without materializing all sessions upfront.
+    """
+
+    data_index: int = -1
+    session_index: int
+    local_event_index: int
+
+
 # --- bad_tool_call_handling ------------------------------------------------
 # Server-side tool-call parsers can emit malformed JSON in
 # tool_calls[i].function.arguments — for example vLLM's `qwen3_xml` parser
@@ -141,6 +155,30 @@ class WorkerSessionTracker:
         # predecessor with multiple downstream consumers (DAG fan-out) is
         # counted once, not once per consumer.
         self._recorded_substitution_event_ids: Dict[str, Set[str]] = {}
+        # Per-session set of event_ids that have reached a terminal state on this worker —
+        # whether they completed, were skipped, or failed. Used to detect when a session is
+        # fully drained so the worker can evict its (otherwise never-freed) built graph.
+        # A set (not a counter) makes drain accounting idempotent: an event that passes
+        # through more than one terminal path is counted at most once.
+        self._drained_events: Dict[str, Set[str]] = {}
+
+    def record_event_drained(self, session_id: str, event_id: str) -> int:
+        """Mark one event as drained (terminal) and return the session's drained count.
+
+        Called from every terminal path (completion, skip, request failure). Idempotent
+        per event_id. The caller compares the returned count against the session's total
+        event count to decide whether the session is fully drained and can be evicted.
+        """
+        drained = self._drained_events.setdefault(session_id, set())
+        drained.add(event_id)
+        return len(drained)
+
+    def forget_session(self, session_id: str) -> None:
+        """Drop all per-worker tracking for a session (called after eviction)."""
+        self._event_completions.pop(session_id, None)
+        self._failed_sessions.discard(session_id)
+        self._drained_events.pop(session_id, None)
+        self._recorded_substitution_event_ids.pop(session_id, None)
 
     def record_event_completed(self, session_id: str, event_id: str, completion_time: float) -> None:
         if session_id not in self._event_completions:
@@ -278,6 +316,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     worker_tracker: WorkerSessionTracker
     completion_queue: Any
     total_events_in_session: int
+    # Back-reference to the worker's datagen so the last event of a session can evict the
+    # session's lazily-built graph from this worker (the worker never calls cleanup_session
+    # otherwise, so built graphs would accumulate for the whole stage). Set in load_lazy_data.
+    generator: Optional["ReplayGraphSessionGeneratorBase"] = None
     predecessor_event_ids: List[str] = field(default_factory=list)
     wait_ms: int = 0
     input_segments: List[InputSegment] = field(default_factory=list)
@@ -373,6 +415,36 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 logger.debug(f"Pushed skip-failure notification for session {session_id} (cancelled_events={cancelled})")
             except Exception as e:
                 logger.error(f"Failed to push skip-failure notification for session {session_id}: {e}")
+
+        # This event is now terminal (skipped). Count it toward the worker drain so the
+        # session is evicted once its last event drains.
+        self._mark_drained_and_maybe_evict(session_id)
+
+    def _mark_drained_and_maybe_evict(self, session_id: str) -> None:
+        """Record this event as drained on the worker; evict the session once all drain.
+
+        Every event ends in exactly one terminal state on the worker — completed, skipped,
+        or request-failed — and each terminal path calls this exactly once. When the number
+        of drained events reaches total_events_in_session, the session is fully done on this
+        worker and its lazily-built graph can be freed.
+
+        This is what keeps a worker's resident memory bounded to roughly the concurrent
+        working set. Without it, each worker retains every session's graph it ever built for
+        the lifetime of the stage (the parent calls cleanup_session, but workers never do),
+        so memory grows with the number of sessions processed — catastrophically for large
+        corpora or high duplicate_sessions_target, especially when sessions fail fast and the
+        session pool churns quickly.
+
+        Eviction is safe here precisely because the session is fully drained: no further
+        events for it remain in flight or in the worker's queue, so nothing will try to read
+        the freed graph. (A session that fails mid-way still drains every event — the
+        successors flow through the skip path and are counted here too.)
+        """
+        if self.generator is None:
+            return
+        drained = self.worker_tracker.record_event_drained(session_id, self.event_id)
+        if drained >= self.total_events_in_session:
+            self.generator.evict_worker_session(session_id)
 
     async def wait_for_predecessors_and_substitute(self) -> None:
         session_id = self._extract_session_id()
@@ -709,6 +781,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 except Exception as e:
                     logger.error(f"Failed to push session {session_id} completion to queue: {e}")
 
+        # This event is now terminal (completed). Count it toward the worker drain and evict
+        # the session once its last event drains. Done last: eviction clears worker_tracker
+        # state for the session, so the completion-queue notification above must be built first.
+        self._mark_drained_and_maybe_evict(session_id)
+
     async def process_response(
         self,
         response: ClientResponse,
@@ -905,6 +982,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             except Exception as e:
                 logger.error(f"Failed to push session {session_id} failure notification to queue: {e}")
 
+        # This event is now terminal (request failed). Count it toward the worker drain. Note
+        # that when an event fails, its successors are still queued; they will be dequeued and
+        # flow through the skip path, each counted there. Eviction therefore only fires when
+        # the last of them drains — after which nothing re-reads the session — so the graph is
+        # never rebuilt by a late successor.
+        self._mark_drained_and_maybe_evict(session_id)
+
         return SessionInferenceInfo(
             request_metrics=RequestMetrics(text=Text(input_tokens=0)),
             response_metrics=UnaryResponseMetrics(output_tokens=0),
@@ -996,26 +1080,90 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         else:
             self.session_completion_queue = None
 
-        self.sessions: List[ReplaySession] = []
+        self.sessions: List[Optional[ReplaySession]] = []
+        self._session_ids: List[str] = []
+        self._session_id_to_index: Dict[str, int] = {}
         self.session_graph_state: Dict[str, ReplaySessionState] = {}
+        # Per-session event lists keyed by session_index. Populated on demand by
+        # _ensure_session_built (lazy path) or all at once by initialize_sessions (eager path).
+        self._session_events: Dict[int, List[ReplaySessionEvent]] = {}
+        # Flat list kept only for the eager initialize_sessions() path / back-compat.
         self.all_events: List[ReplaySessionEvent] = []
 
     def initialize_sessions(self, sessions: List[ReplaySession]) -> None:
-        """Finalize generator state from prepared sessions."""
+        """Finalize generator state from fully-built sessions (eager path)."""
         # Duplicate sessions if needed to meet total session requirements
         if self.replay_config and self.replay_config.duplicate_sessions_target is not None:
             sessions = self._duplicate_sessions_if_needed(sessions, self.replay_config.duplicate_sessions_target)
 
-        self.sessions = sessions
-        if not self.sessions:
+        if not sessions:
             raise ValueError("No valid replay sessions found")
 
         # Assign session_index to match position in list after shuffling/duplication
-        for i, session in enumerate(self.sessions):
+        for i, session in enumerate(sessions):
             session.session_index = i
 
+        self.sessions = list(sessions)
         self._build_replay_schedule()
-        logger.debug("Loaded %d sessions with %d total events", len(self.sessions), len(self.all_events))
+        logger.info(
+            "Built replay schedule: %d events across %d sessions (eager)",
+            len(self.all_events),
+            len(self.sessions),
+        )
+
+    def initialize_sessions_lazy(self, session_ids: List[str]) -> None:
+        """Set up placeholder slots for on-demand graph building (lazy path).
+
+        Allocates None session slots and records their IDs so get_session_count()
+        works immediately. Each session's graph is built later by _ensure_session_built,
+        triggered the first time the session is dispatched (parent) or replayed (worker).
+        """
+        if not session_ids:
+            raise ValueError("No valid trace records found after filtering")
+        self.sessions = [None] * len(session_ids)
+        self._session_ids = list(session_ids)
+        self._session_id_to_index = {sid: i for i, sid in enumerate(session_ids)}
+        self._session_events = {}
+        self.all_events = []
+        logger.info("Lazy init: %d session slots allocated", len(session_ids))
+
+    def _build_session(self, session_index: int) -> Optional[ReplaySession]:
+        """Build the ReplaySession for one slot. Implemented by lazy subclasses."""
+        raise NotImplementedError("Lazy generators must implement _build_session()")
+
+    def _ensure_session_built(self, session_index: int) -> None:
+        """Build and register session_index's graph if not already done. Idempotent."""
+        if session_index < 0 or session_index >= len(self.sessions):
+            raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
+        if self.sessions[session_index] is not None or session_index in self._session_events:
+            return
+        session = self._build_session(session_index)
+        if session is None:
+            # No graph (e.g. malformed spans, or all calls errored with include_errors=False).
+            # Register an empty event list as the "already attempted" sentinel so this slot is
+            # not retried on subsequent calls. The dispatcher skips it (see is_session_buildable).
+            self._session_events[session_index] = []
+            return
+        session.session_index = session_index
+        self.sessions[session_index] = session
+        events = self._build_session_schedule(session)
+        self._session_events[session_index] = events
+        logger.debug("Built session %s: %d events", session.session_id, len(events))
+
+    def is_session_buildable(self, session_index: int) -> bool:
+        """Return True if session_index has (or can build) a graph, False if it produced none.
+
+        Builds the session on demand (idempotent). Lets the dispatcher skip un-buildable
+        slots without raising — matching the eager path, which dropped such sessions at
+        load time. Skipped sessions are not reported anywhere (see dispatch_session).
+        """
+        self._ensure_session_built(session_index)
+        session = self.sessions[session_index]
+        if session is None:
+            logger.warning(f"Skipping session {session_index} ({self._session_ids[session_index]!r}): no graph could be built")
+            return False
+        logger.info("Dispatching session %s: %d events", session.session_id, len(self._session_events.get(session_index, [])))
+        return True
 
     @staticmethod
     def _duplicate_sessions_if_needed(sessions: List[ReplaySession], target_sessions: int) -> List[ReplaySession]:
@@ -1093,107 +1241,124 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         return True
 
     def _build_replay_schedule(self) -> None:
+        """Build the full schedule from self.sessions (eager path / tests)."""
         self.all_events = []
-
+        self._session_events = {}
+        self._session_ids = [s.session_id for s in self.sessions if s is not None]
+        self._session_id_to_index = {sid: i for i, sid in enumerate(self._session_ids)}
         for session in self.sessions:
-            # Always generate random string for each session
-            # Used for KV-cache invalidation when:
-            # 1. inject_random_session_id flag is enabled, OR
-            # 2. Session is a duplicate (contains "_dup" in session_id)
-            random_string = None
-            is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session.session_id)
-            if (self.replay_config and self.replay_config.inject_random_session_id) or is_duplicate:
-                random_string = uuid.uuid4().hex[:16]
-                logger.debug(f"Generated random string for session {session.session_id}: {random_string}")
+            if session is None:
+                continue
+            events = self._build_session_schedule(session)
+            self._session_events[session.session_index] = events
+            self.all_events.extend(events)
 
-            # Initialize session graph state
-            state = ReplaySessionState(
-                session_id=session.session_id,
-                graph=session.graph,
-                ready_events=set(),  # Will be populated when session is activated
-                dispatched_events=set(),
-                completed_events=set(),
-                event_completion_times={},
-                is_active=False,
-                is_complete=False,
-                random_string=random_string,
-            )
-            self.session_graph_state[session.session_id] = state
+    def _build_session_schedule(self, session: ReplaySession) -> List[ReplaySessionEvent]:
+        """Register one session's graph state and return its qualified events.
 
-            for event in session.graph.events.values():
-                gc = event.call
+        Builds the per-session ReplaySessionState (incl. the KV-cache-invalidation
+        random_string, which is generated for duplicate sessions or when
+        inject_random_session_id is set) and stores it in session_graph_state.
+        """
+        random_string = None
+        is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session.session_id)
+        if (self.replay_config and self.replay_config.inject_random_session_id) or is_duplicate:
+            random_string = uuid.uuid4().hex[:16]
+            logger.debug(f"Generated random string for session {session.session_id}: {random_string}")
 
-                if not gc.messages:
-                    logger.warning("Call %s in event %s has no messages, skipping", gc.call_id, event.event_id)
-                    continue
-
-                qualified_event_id = f"{session.session_id}:{event.event_id}"
-                qualified_predecessor_ids = [f"{session.session_id}:{pid}" for pid in event.predecessor_event_ids]
-                qualified_segments = [
-                    dc_replace(seg, source_event_id=f"{session.session_id}:{seg.source_event_id}")
-                    if seg.source_event_id is not None
-                    else seg
-                    for seg in gc.input_segments
-                ]
-
-                self.all_events.append(
-                    ReplaySessionEvent(
-                        call_id=gc.call_id,
-                        event_id=qualified_event_id,
-                        session_index=session.session_index,
-                        t_start_ms=event.t_start_ms,
-                        t_end_ms=event.t_end_ms,
-                        model=gc.model,
-                        messages=gc.messages,
-                        expected_output=gc.expected_output,
-                        input_segments=qualified_segments,
-                        expected_output_tokens=gc.expected_output_tokens,
-                        temperature=gc.temperature,
-                        max_tokens_recorded=gc.max_tokens_recorded,
-                        predecessor_event_ids=qualified_predecessor_ids,
-                        wait_ms=min(event.wait_ms, self.replay_config.max_wait_ms) if self.replay_config else event.wait_ms,
-                        tool_definitions=gc.tool_definitions,
-                    )
-                )
-
-        logger.info(
-            "Built replay schedule: %d events across %d sessions (graph-based traversal)",
-            len(self.all_events),
-            len(self.sessions),
+        state = ReplaySessionState(
+            session_id=session.session_id,
+            graph=session.graph,
+            ready_events=set(),
+            dispatched_events=set(),
+            completed_events=set(),
+            event_completion_times={},
+            is_active=False,
+            is_complete=False,
+            random_string=random_string,
         )
+        self.session_graph_state[session.session_id] = state
+
+        events: List[ReplaySessionEvent] = []
+        for event in session.graph.events.values():
+            gc = event.call
+
+            if not gc.messages:
+                logger.warning("Call %s in event %s has no messages, skipping", gc.call_id, event.event_id)
+                continue
+
+            qualified_event_id = f"{session.session_id}:{event.event_id}"
+            qualified_predecessor_ids = [f"{session.session_id}:{pid}" for pid in event.predecessor_event_ids]
+            qualified_segments = [
+                dc_replace(seg, source_event_id=f"{session.session_id}:{seg.source_event_id}")
+                if seg.source_event_id is not None
+                else seg
+                for seg in gc.input_segments
+            ]
+
+            events.append(
+                ReplaySessionEvent(
+                    call_id=gc.call_id,
+                    event_id=qualified_event_id,
+                    session_index=session.session_index,
+                    t_start_ms=event.t_start_ms,
+                    t_end_ms=event.t_end_ms,
+                    model=gc.model,
+                    messages=gc.messages,
+                    expected_output=gc.expected_output,
+                    input_segments=qualified_segments,
+                    expected_output_tokens=gc.expected_output_tokens,
+                    temperature=gc.temperature,
+                    max_tokens_recorded=gc.max_tokens_recorded,
+                    predecessor_event_ids=qualified_predecessor_ids,
+                    wait_ms=min(event.wait_ms, self.replay_config.max_wait_ms) if self.replay_config else event.wait_ms,
+                    tool_definitions=gc.tool_definitions,
+                )
+            )
+        return events
 
     def get_session_count(self) -> int:
-        return len(self.sessions)
+        return len(self._session_ids)
+
+    def _get_session(self, session_index: int) -> ReplaySession:
+        """Return the built session at session_index, building it on demand if needed."""
+        if session_index < 0 or session_index >= len(self._session_ids):
+            raise IndexError(f"Session index {session_index} out of range (total: {len(self._session_ids)})")
+        self._ensure_session_built(session_index)
+        session = self.sessions[session_index]
+        if session is None:
+            raise RuntimeError(f"Session {session_index} ({self._session_ids[session_index]!r}) produced no graph")
+        return session
 
     def get_session_event_indices(self, session_index: int) -> List[int]:
-        if session_index < 0 or session_index >= len(self.sessions):
-            raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
-
-        session = self.sessions[session_index]
-        return [i for i, event in enumerate(self.all_events) if event.session_index == session.session_index]
+        self._ensure_session_built(session_index)
+        return list(range(len(self._session_events.get(session_index, []))))
 
     def get_session_info(self, session_index: int) -> Dict[str, Any]:
-        if session_index < 0 or session_index >= len(self.sessions):
-            raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
-
-        session = self.sessions[session_index]
-        event_indices = self.get_session_event_indices(session_index)
-
+        session = self._get_session(session_index)
+        num_events = len(self._session_events.get(session_index, []))
         return {
             "session_id": session.session_id,
             "file_path": session.source_id,
             "source_id": session.source_id,
             "session_index": session.session_index,
-            "num_events": len(event_indices),
+            "num_events": num_events,
             "num_graph_events": len(session.graph.events),
             "start_offset_ms": session.start_offset_ms,
         }
 
     def get_session_events(self, session_index: int) -> List[LazyLoadInferenceAPIData]:
-        session = self.sessions[session_index]
-        event_indices = self.get_session_event_indices(session_index)
+        session = self._get_session(session_index)
+        events = self._session_events.get(session_index, [])
         session_worker_id = abs(hash(session.session_id)) % self.num_workers
-        return [LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=session_worker_id) for idx in event_indices]
+        return [
+            SessionReplayLazyLoadData(
+                session_index=session_index,
+                local_event_index=local,
+                preferred_worker_id=session_worker_id,
+            )
+            for local in range(len(events))
+        ]
 
     def build_session_metric(
         self,
@@ -1208,7 +1373,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         source_id = ""
         for session in self.sessions:
-            if session.session_id == session_id:
+            if session is not None and session.session_id == session_id:
                 source_id = session.source_id
                 break
 
@@ -1309,12 +1474,28 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         return False
 
-    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
-        n = data.data_index
-        if n >= len(self.all_events):
-            raise IndexError(f"Event index {n} out of range (total: {len(self.all_events)})")
+    def _resolve_event(self, data: LazyLoadInferenceAPIData) -> ReplaySessionEvent:
+        """Resolve a queued lazy item to its ReplaySessionEvent.
 
-        event = self.all_events[n]
+        Per-session addressing (lazy path): build session_index on demand, index
+        local_event_index. Legacy global addressing (eager path): index all_events.
+        """
+        if isinstance(data, SessionReplayLazyLoadData):
+            self._ensure_session_built(data.session_index)
+            events = self._session_events.get(data.session_index, [])
+            if data.local_event_index >= len(events):
+                raise IndexError(
+                    f"Local event index {data.local_event_index} out of range for session {data.session_index} (total: {len(events)})"
+                )
+            return events[data.local_event_index]
+
+        n = data.data_index
+        if n < 0 or n >= len(self.all_events):
+            raise IndexError(f"Event index {n} out of range (total: {len(self.all_events)})")
+        return self.all_events[n]
+
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
+        event = self._resolve_event(data)
 
         chat_messages = []
         original_messages: List[Dict[str, Any]] = []
@@ -1358,7 +1539,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
         raw_event_id = event.event_id.split(":", 1)[1] if ":" in event.event_id else event.event_id
         state = self.session_graph_state.get(session_id)
-        total_events = len(state.graph.events) if state else 0
+        session_index = event.session_index
+        total_events = len(self._session_events.get(session_index, [])) if state else 0
 
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
 
@@ -1390,6 +1572,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)
             if self.replay_config
             else BadToolCallHandling.NONE,
+            # Back-reference so the event can evict this session from the worker once drained.
+            generator=self,
         )
 
     def cleanup_session(self, session_id: str) -> None:
@@ -1408,4 +1592,35 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             self.output_registry._failed_event_ids.discard(qualified_event_id)
 
         del self.session_graph_state[session_id]
+
+        # Free the lazily-built graph and event list so a completed session's memory is
+        # released (it was only retained between dispatch and completion). Without this the
+        # parent accumulates every dispatched session's graph for the whole run, which blows
+        # up RAM for large corpora / high duplicate_sessions_target. Re-access (if it ever
+        # happened) would rebuild on demand via _ensure_session_built.
+        idx = self._session_id_to_index.get(session_id)
+        if idx is not None:
+            if idx < len(self.sessions):
+                self.sessions[idx] = None
+            self._session_events.pop(idx, None)
+
         logger.debug("Cleaned up session %s: removed %d events from memory", session_id, event_count)
+
+    def evict_worker_session(self, session_id: str) -> None:
+        """Free a fully-drained session's memory inside a worker process.
+
+        The parent process frees sessions via cleanup_session in its dispatch loop, but
+        workers never call cleanup_session — so in the lazy path each worker would retain
+        every graph it ever built for the whole stage. This is called by the data object
+        (_mark_drained_and_maybe_evict) when a session's last event drains on this worker,
+        making per-worker memory track the concurrent working set instead of the full corpus.
+
+        Reuses cleanup_session to drop the built graph, event list, traversal state, and
+        output-registry entries, then clears the per-worker WorkerSessionTracker bookkeeping
+        for the session (which cleanup_session does not touch).
+        """
+        self.cleanup_session(session_id)
+        tracker = getattr(self, "worker_tracker", None)
+        if tracker is not None:
+            tracker.forget_session(session_id)
+        logger.debug("Worker evicted fully-drained session %s", session_id)
