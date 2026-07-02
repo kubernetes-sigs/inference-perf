@@ -426,6 +426,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 ChatMessage(
                     role=m["role"],
                     content=m.get("content"),
+                    reasoning_content=m.get("reasoning") or m.get("reasoning_content"),
                     tool_calls=m.get("tool_calls"),
                     tool_call_id=m.get("tool_call_id"),
                 )
@@ -758,8 +759,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     if chunk.get("id"):
                         tool_call_chunks[idx]["id"] = chunk["id"]
 
-                # Accumulate reasoning_content chunks
-                reasoning_chunk = delta.get("reasoning_content")
+                # Accumulate reasoning chunks (prefer "reasoning", fall back to "reasoning_content")
+                reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content")
                 if reasoning_chunk is not None:
                     reasoning_content_chunks.append(str(reasoning_chunk))
 
@@ -781,15 +782,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             if tool_call_chunks:
                 live_tool_calls = [tool_call_chunks[i] for i in sorted(tool_call_chunks)]
                 streaming_output_message = {"role": "assistant", "tool_calls": live_tool_calls}
-                if output_text:
-                    streaming_output_message["content"] = output_text
+                if text_content:
+                    streaming_output_message["content"] = text_content
             else:
-                streaming_output_message = {"role": "assistant", "content": output_text}
+                streaming_output_message = {"role": "assistant", "content": text_content}
 
-            # Keep separate reasoning_content and output_content fields
             if reasoning_text:
                 streaming_output_message["reasoning_content"] = reasoning_text
-                streaming_output_message["output_content"] = text_content
 
             prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
             prompt_len = tokenizer.count_tokens(prompt_text)
@@ -825,7 +824,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 msg_dict = choices[0].get("message", {})
                 text_content = msg_dict.get("content", "") or ""
                 tool_calls = msg_dict.get("tool_calls")
-                reasoning_content = msg_dict.get("reasoning_content")
+                reasoning_content = msg_dict.get("reasoning") or msg_dict.get("reasoning_content")
 
                 # Combine reasoning_content with output text for the content field
                 if reasoning_content:
@@ -835,15 +834,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
                 if tool_calls:
                     output_message = {"role": "assistant", "tool_calls": tool_calls}
-                    if output_text:
-                        output_message["content"] = output_text
+                    if text_content:
+                        output_message["content"] = text_content
                 else:
-                    output_message = {"role": "assistant", "content": output_text}
+                    output_message = {"role": "assistant", "content": text_content}
 
-                # Keep separate reasoning_content and output_content fields
                 if reasoning_content:
                     output_message["reasoning_content"] = reasoning_content
-                    output_message["output_content"] = text_content
             usage = data.get("usage") or {}
             server_completion_tokens = usage.get("completion_tokens")
             if server_completion_tokens is not None:
@@ -1324,15 +1321,20 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 content = msg.get("content", "")
                 tool_calls = msg.get("tool_calls")
                 tool_call_id = msg.get("tool_call_id")
+                reasoning_content = msg.get("reasoning") or msg.get("reasoning_content")
             else:
                 role = getattr(msg, "role", "user")
                 content = getattr(msg, "text", "")
                 tool_calls = getattr(msg, "tool_calls", None)
                 tool_call_id = getattr(msg, "tool_call_id", None)
+                reasoning_content = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None)
 
             if tool_calls is not None:
-                chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls))
-                original_messages.append({"role": role, "tool_calls": tool_calls})
+                chat_messages.append(ChatMessage(role=role, tool_calls=tool_calls, reasoning_content=reasoning_content))
+                orig_msg: Dict[str, Any] = {"role": role, "tool_calls": tool_calls}
+                if reasoning_content:
+                    orig_msg["reasoning_content"] = reasoning_content
+                original_messages.append(orig_msg)
                 continue
 
             if isinstance(content, list):
@@ -1348,10 +1350,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 content = " ".join(content_parts)
 
             content_str = str(content)
-            chat_messages.append(ChatMessage(role=role, content=content_str))
-            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            chat_messages.append(ChatMessage(role=role, content=content_str, reasoning_content=reasoning_content))
+            orig_msg = {"role": role, "content": content_str}
             if tool_call_id is not None:
                 orig_msg["tool_call_id"] = tool_call_id
+            if reasoning_content:
+                orig_msg["reasoning_content"] = reasoning_content
             original_messages.append(orig_msg)
 
         max_tokens = event.expected_output_tokens
