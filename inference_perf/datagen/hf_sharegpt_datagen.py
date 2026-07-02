@@ -13,7 +13,13 @@
 # limitations under the License.
 import itertools
 import logging
-from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
+from inference_perf.apis import (
+    AnthropicMessagesAPIData,
+    ChatCompletionAPIData,
+    ChatMessage,
+    CompletionAPIData,
+    InferenceAPIData,
+)
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from .base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
@@ -67,7 +73,7 @@ class HFShareGPTDataGenerator(DataGenerator):
         next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
+        return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.sharegpt_dataset is None:
@@ -76,6 +82,8 @@ class HFShareGPTDataGenerator(DataGenerator):
             yield from self.get_completion_data()
         elif self.api_config.type == APIType.Chat:
             yield from self.get_chat_data()
+        elif self.api_config.type == APIType.AnthropicMessages:
+            yield from self.get_anthropic_messages_data()
         raise Exception("Unsupported API type")
 
     def get_completion_data(self) -> Generator[InferenceAPIData, None, None]:
@@ -155,6 +163,14 @@ class HFShareGPTDataGenerator(DataGenerator):
                 messages.append(ChatMessage(role=role, content=content))
 
             yield ChatCompletionAPIData(messages=messages)
+
+    def get_anthropic_messages_data(self) -> Generator[InferenceAPIData, None, None]:
+        if self.tokenizer is None:
+            raise Exception("Tokenizer is required for Anthropic Messages API of HFShareGPTDataGenerator")
+
+        for data in self.get_chat_data():
+            if isinstance(data, ChatCompletionAPIData):
+                yield AnthropicMessagesAPIData(messages=data.messages, max_tokens=data.max_tokens)
 
     def is_io_distribution_supported(self) -> bool:
         return True

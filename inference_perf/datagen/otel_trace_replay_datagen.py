@@ -68,14 +68,13 @@ from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
     ReplaySession,
     ReplayGraphSessionGeneratorBase,
-    SessionChatCompletionAPIData,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.apis import LazyLoadInferenceAPIData
+from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 
 logger = logging.getLogger(__name__)
 
@@ -500,7 +499,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             graph=graph,
         )
 
-    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         api_data = super().load_lazy_data(data)
 
         n = data.data_index

@@ -37,11 +37,18 @@ from aiohttp import ClientResponse
 from inference_perf.apis import (
     ChatCompletionAPIData,
     ErrorResponseInfo,
+    InferenceAPIData,
     InferenceInfo,
     LazyLoadInferenceAPIData,
     SessionLifecycleMetric,
     StreamedResponseMetrics,
     UnaryResponseMetrics,
+)
+from inference_perf.apis.anthropic_messages import (
+    build_anthropic_request_body,
+    count_anthropic_prompt_tokens,
+    parse_anthropic_content,
+    parse_anthropic_stream_response,
 )
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
@@ -913,6 +920,123 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         )
 
 
+class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
+    """Anthropic Messages APIData subclass for graph-backed session replay."""
+
+    def get_api_type(self) -> APIType:
+        return APIType.AnthropicMessages
+
+    def get_route(self) -> str:
+        return "/v1/messages"
+
+    async def to_request_body(
+        self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
+    ) -> Dict[str, Any]:
+        if self.max_tokens == 0:
+            self.max_tokens = max_tokens
+
+        payload = build_anthropic_request_body(
+            self.messages,
+            self.tool_definitions,
+            effective_model_name,
+            self.max_tokens,
+            streaming,
+        )
+
+        if self.expected_output_is_tool_call and self.tool_definitions:
+            if self.override_tool_call_max_tokens:
+                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+
+            names = self.expected_output_tool_names or []
+            available = {t["name"] for t in payload.get("tools", []) if "name" in t}
+            if len(names) == 1 and names[0] in available:
+                payload["tool_choice"] = {"type": "tool", "name": names[0]}
+            else:
+                payload["tool_choice"] = {"type": "any"}
+
+        return payload
+
+    async def process_response(
+        self,
+        response: ClientResponse,
+        config: APIConfig,
+        tokenizer: CustomTokenizer,
+        lora_adapter: Optional[str] = None,
+    ) -> SessionInferenceInfo:
+        logger.debug(f"process_response called for event {self.event_id}")
+
+        if config.streaming:
+            (
+                output_text,
+                output_message,
+                chunk_times,
+                raw_content,
+                response_chunks,
+                server_usage,
+            ) = await parse_anthropic_stream_response(response)
+            input_tokens = (server_usage or {}).get("input_tokens")
+            output_tokens = (server_usage or {}).get("output_tokens")
+            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            base_info = InferenceInfo(
+                request_metrics=RequestMetrics(
+                    text=Text(
+                        input_tokens=int(input_tokens)
+                        if input_tokens is not None
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
+                    )
+                ),
+                response_metrics=StreamedResponseMetrics(
+                    response_chunks=response_chunks,
+                    chunk_times=chunk_times,
+                    output_tokens=output_len,
+                    output_token_times=chunk_times,
+                    server_usage=server_usage,
+                ),
+                lora_adapter=lora_adapter,
+                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
+            )
+        else:
+            data = await response.json()
+            usage = data.get("usage") or {}
+            output_text, output_message = parse_anthropic_content(data.get("content"))
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            base_info = InferenceInfo(
+                request_metrics=RequestMetrics(
+                    text=Text(
+                        input_tokens=int(input_tokens)
+                        if input_tokens is not None
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
+                    )
+                ),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                lora_adapter=lora_adapter,
+                extra_info={
+                    "stop_reason": data.get("stop_reason"),
+                    "output_message": output_message,
+                    "output_text": output_text,
+                },
+            )
+
+        info = SessionInferenceInfo(
+            request_metrics=base_info.request_metrics,
+            response_metrics=base_info.response_metrics,
+            lora_adapter=lora_adapter,
+            output_text=output_text or None,
+            output_message=output_message,
+            extra_info=base_info.extra_info,
+        )
+        self.on_completion(info)
+
+        if output_text:
+            logger.debug(f"Registered output for event {self.event_id}: {len(output_text)} chars : {output_text}")
+        else:
+            logger.debug(f"Registered empty output for event {self.event_id}")
+
+        return info
+
+
 @dataclass
 class ReplaySessionState:
     """Tracks graph traversal state for one session."""
@@ -1087,7 +1211,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         return bool(re.search(r"_dup\d+$", session_id))
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat]
+        return [APIType.Chat, APIType.AnthropicMessages]
 
     def is_preferred_worker_requested(self) -> bool:
         return True
@@ -1309,7 +1433,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         return False
 
-    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
+    def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
         n = data.data_index
         if n >= len(self.all_events):
             raise IndexError(f"Event index {n} out of range (total: {len(self.all_events)})")
@@ -1362,7 +1486,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
 
-        return SessionChatCompletionAPIData(
+        api_data_class: type[SessionChatCompletionAPIData] = SessionChatCompletionAPIData
+        if self.api_config.type == APIType.AnthropicMessages:
+            api_data_class = SessionAnthropicMessagesAPIData
+
+        return api_data_class(
             messages=chat_messages,
             max_tokens=max_tokens,
             tool_definitions=event.tool_definitions,

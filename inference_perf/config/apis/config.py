@@ -20,6 +20,7 @@ from pydantic import BaseModel
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
+    AnthropicMessages = "anthropic_messages"
 
 
 class ResponseFormatType(Enum):
