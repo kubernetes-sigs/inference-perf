@@ -223,3 +223,71 @@ async def test_session_id_header_not_injected_when_header_key_is_none(mock_clien
 
     headers_passed = session.session.post.call_args.kwargs["headers"]
     assert "x-session-id" not in headers_passed
+
+
+def _session_token_test_setup(
+    mock_client: MagicMock, mock_data: MagicMock, response_token: str
+) -> tuple[openAIModelServerClientSession, MagicMock]:
+    """Configure client/data mocks for session token tests and return a client session
+    whose mocked POST responds with the given session token header, along with the
+    mocked HTTP session for inspecting sent requests."""
+    mock_client.otel.enabled = False
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_config.session_token_header_key = "x-session-token"
+    mock_data.session_id = "trace0_session0"
+    mock_data.headers = None
+
+    session = openAIModelServerClientSession(mock_client)
+    mock_http_session = MagicMock()
+    session.session = mock_http_session
+
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.text = AsyncMock(return_value="{}")
+    mock_response.headers = {"x-session-token": response_token}
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_http_session.post.return_value = mock_post_ctx
+    return session, mock_http_session
+
+
+@pytest.mark.asyncio
+async def test_session_token_captured_and_replayed(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session, mock_http_session = _session_token_test_setup(mock_client, mock_data, response_token="encoded-pod-a")
+
+    # First request of the session: no token captured yet, header must be absent.
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    first_headers = mock_http_session.post.call_args.kwargs["headers"]
+    assert "x-session-token" not in first_headers
+
+    # Second request of the same session replays the token from the first response.
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    second_headers = mock_http_session.post.call_args.kwargs["headers"]
+    assert second_headers["x-session-token"] == "encoded-pod-a"
+
+
+@pytest.mark.asyncio
+async def test_session_token_not_shared_across_sessions(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session, mock_http_session = _session_token_test_setup(mock_client, mock_data, response_token="encoded-pod-a")
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    # A different session must not inherit the first session's token.
+    mock_data.session_id = "trace0_session1"
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    headers_passed = mock_http_session.post.call_args.kwargs["headers"]
+    assert "x-session-token" not in headers_passed
+
+
+@pytest.mark.asyncio
+async def test_session_token_not_captured_when_header_key_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session, mock_http_session = _session_token_test_setup(mock_client, mock_data, response_token="encoded-pod-a")
+    mock_client.api_config.session_token_header_key = None
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = mock_http_session.post.call_args.kwargs["headers"]
+    assert "x-session-token" not in headers_passed

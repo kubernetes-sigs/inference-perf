@@ -179,6 +179,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         self.client = client
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        # Server-assigned session tokens keyed by session_id, captured from the
+        # response header named by api_config.session_token_header_key. Sessions
+        # are pinned to a worker (preferred_worker_id), so a per-worker store
+        # sees every request of its sessions.
+        self._session_tokens: dict[str, str] = {}
 
     def _get_session_otel_context(self, data: InferenceAPIData) -> Optional[Dict[str, str]]:
         """Get session OTEL context if available (for OTel trace replay)."""
@@ -339,6 +344,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.session_id and self.client.api_config.session_id_header_key:
             headers[self.client.api_config.session_id_header_key] = data.session_id
 
+        session_token_header = self.client.api_config.session_token_header_key
+        if data.session_id and session_token_header:
+            session_token = self._session_tokens.get(data.session_id)
+            if session_token:
+                headers[session_token_header] = session_token
+
         request_data = json.dumps(payload)
 
         # Determine operation name based on API type
@@ -364,6 +375,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             try:
                 async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                     response = resp
+                    if data.session_id and session_token_header:
+                        received_token = resp.headers.get(session_token_header)
+                        if received_token:
+                            self._session_tokens[data.session_id] = received_token
                     try:
                         if self.client.api_config.streaming and response.status == 200:
                             info = await data.process_response(
