@@ -12,6 +12,7 @@ deterministically seeded for reproducible A/B comparisons.
 - [Configuration Guide](#configuration-guide)
 - [Distribution types](#distribution-types)
 - [Tool call latency simulation](#tool-call-latency-simulation)
+- [Router session affinity](#router-session-affinity)
 - [How it fits together](#how-it-fits-together)
 
 ## When to use conversation replay
@@ -143,6 +144,24 @@ models offline agentic workloads without artificially lowering throughput.
 
 Omit `tool_call_latency_sec` (or set it to a `fixed` distribution with `mean: 0`) to measure
 pure back-to-back GPU throughput.
+
+## Router session affinity
+
+When benchmarking through a router that implements token-based session affinity — such as the
+[llm-d-router session affinity plugins](https://github.com/llm-d/llm-d-router/tree/main/pkg/epp/framework/plugins/scheduling/scorer/sessionaffinity)
+— set `api.session_token_header_key` so each conversation replays the router's session token on
+its later turns:
+
+```yaml
+api:
+  type: chat
+  session_token_header_key: x-session-token  # header carrying the router's session token
+```
+
+The first turn of a conversation goes out without the header, the router picks an endpoint and
+returns the token, and every later turn of that conversation carries it so the router keeps the
+whole conversation on the same endpoint. See
+[Router Session Affinity](otel_trace_replay.md#router-session-affinity) for the full description.
 
 ## How it fits together
 

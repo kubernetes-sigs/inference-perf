@@ -211,6 +211,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         self.client = client
         self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        # Server-assigned session tokens keyed by session identity, captured from
+        # the response header named by api_config.session_token_header_key.
+        # Sessions are pinned to a worker (preferred_worker_id), so a per-worker
+        # store sees every request of its sessions.
+        self._session_tokens: dict[str, str] = {}
 
     def _get_session_otel_context(self, data: InferenceAPIData) -> Optional[Dict[str, str]]:
         """Get session OTEL context if available (for OTel trace replay)."""
@@ -382,10 +387,18 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.headers:
             _update_headers_case_insensitive(headers, data.headers)
 
-        if self.client.api_config.session_id_header_key:
-            session_id = getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
-            if session_id:
-                headers[self.client.api_config.session_id_header_key] = session_id
+        # Trace replay carries session identity as session_id (stamped by the loadgen);
+        # conversation_replay and shared_prefix carry it as user_session_id.
+        session_id = getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
+
+        if self.client.api_config.session_id_header_key and session_id:
+            headers[self.client.api_config.session_id_header_key] = session_id
+
+        session_token_header = self.client.api_config.session_token_header_key
+        if session_id and session_token_header:
+            session_token = self._session_tokens.get(session_id)
+            if session_token:
+                headers[session_token_header] = session_token
 
         request_data = json.dumps(payload)
 
@@ -417,6 +430,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
             try:
                 async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
                     response = resp
+                    if session_id and session_token_header:
+                        received_token = resp.headers.get(session_token_header)
+                        if received_token:
+                            self._session_tokens[session_id] = received_token
                     try:
                         if self.client.api_config.streaming and response.status == 200:
                             info = await data.process_response(

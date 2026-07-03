@@ -82,3 +82,11 @@ class APIConfig(StrictBaseModel):
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
+    # Response header carrying a server-assigned session token (e.g. x-session-token
+    # from the llm-d-router session affinity plugin). When set, the token received in
+    # a session's response is echoed as a request header on subsequent requests of
+    # the same session so the router can maintain session affinity.
+    session_token_header_key: Optional[str] = Field(
+        default=None,
+        description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
+    )
