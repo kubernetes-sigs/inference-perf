@@ -33,6 +33,7 @@ import pytest
 
 from utils.benchmark import run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
+from utils.net import get_free_port
 from utils.testdata import extract_tarball
 
 TEST_MODEL_NAME = "google/gemma-3-270m"
@@ -94,7 +95,7 @@ async def test_multimodal_synthetic_against_sim(case_id: str, multimodal: Dict[s
     rate = 1
     duration = 5
 
-    async with LLMDInferenceSimRunner(model_name, port=18001) as sim:
+    async with LLMDInferenceSimRunner(model_name, port=get_free_port()) as sim:
         result = await run_benchmark_minimal(
             {
                 "data": {

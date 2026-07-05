@@ -63,6 +63,7 @@ test = [
     "pytest-asyncio>=1.2.0",
     "ipykernel>=6.29.5",
     "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.6.0",
 ]
 types = [
     "types-PyYAML>=6.0.12.20241230",
@@ -90,7 +91,7 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 
 "test" = "pytest tests"
 "test:picked" = "pytest --picked"
-"test:e2e" = "pytest e2e tests/optional {args}"
+"test:e2e" = "pytest e2e tests/optional -n auto {args}"
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
 
 "check:cov" = "python scripts/check_coverage_regression.py"
