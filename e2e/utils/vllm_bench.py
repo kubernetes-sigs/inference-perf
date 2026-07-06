@@ -129,6 +129,43 @@ def _isolated_env() -> Dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
 
 
+# The `vllm` CLI cannot run `bench serve` on a machine with no accelerator:
+# main() eagerly builds every subparser, and the `vllm serve` (server) one
+# instantiates a default DeviceConfig, whose platform inference raises
+# "Failed to infer device type" when no device is present -- true of CI
+# runners and GPU-less workstations. The bench serve code itself is a pure
+# HTTP client that never touches a device, so run it directly instead. This
+# shim reproduces exactly what the CLI subcommand does
+# (vllm/entrypoints/cli/benchmark/serve.py: add_cli_args + main), minus the
+# unrelated broken subparsers.
+_BENCH_SERVE_SHIM = (
+    "import argparse\n"
+    "try:\n"
+    "    from vllm.utils import FlexibleArgumentParser as Parser\n"
+    "except Exception:\n"
+    "    Parser = argparse.ArgumentParser\n"
+    "from vllm.benchmarks.serve import add_cli_args, main\n"
+    "parser = Parser(description='vllm bench serve (direct module invocation)')\n"
+    "add_cli_args(parser)\n"
+    "main(parser.parse_args())\n"
+)
+
+
+def _bench_serve_cmd(vllm_bin: str, args: List[str]) -> List[str]:
+    """Build the argv for `vllm bench serve <args>` semantics.
+
+    Prefer the shim above under the vllm install's own interpreter (the
+    `python` sibling of the `vllm` executable, present in any venv or
+    setup-python install). Fall back to the real CLI when no sibling python
+    exists, e.g. if $VLLM_BENCH_BIN points at a wrapper script.
+    """
+    resolved = shutil.which(vllm_bin) or vllm_bin
+    python = Path(resolved).parent / "python"
+    if python.exists():
+        return [str(python), "-c", _BENCH_SERVE_SHIM, *args]
+    return [vllm_bin, "bench", "serve", *args]
+
+
 def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
     logger.debug("running: %s", " ".join(cmd))
     return subprocess.run(cmd, capture_output=True, text=True, check=True, env=_isolated_env())
@@ -215,7 +252,7 @@ async def run_vllm_bench(
     wd = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="vllm-bench-e2e-"))
     wd.mkdir(parents=True, exist_ok=True)
 
-    full = [vllm_bin, "bench", "serve", *args]
+    full = _bench_serve_cmd(vllm_bin, args)
     logger.debug("starting vllm bench: %s", " ".join(full))
     proc = await asyncio.create_subprocess_exec(
         *full,
