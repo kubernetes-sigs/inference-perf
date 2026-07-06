@@ -23,8 +23,11 @@ vectorised path for structured ``Distribution`` configs.
 Grammar: constants, the single time variable ``t``, standard math, and
 ``sympy.stats`` distribution constructors (``Normal(512, 200)``,
 ``Uniform(10, 50)``, ``Poisson(10)``, ...). Each call site decides whether ``t``
-and random variables are permitted, and may constrain the value range so that,
-for example, a request-rate expression can never evaluate negative.
+and random variables are permitted, and may constrain the value range. Bounds
+are assertions by default: a value that can provably escape them is rejected at
+construction, and an escape only detectable at sample time raises there. A call
+site that would rather truncate random draws, e.g. so a request-rate expression
+can never go negative, opts in with ``clip=True``.
 """
 
 from __future__ import annotations
@@ -56,7 +59,7 @@ try:
 
     _NO_NUMPY_SAMPLER = do_sample_numpy.dispatch(object)
 except Exception:  # pragma: no cover - defensive: sympy internal layout changed
-    do_sample_numpy = None  # type: ignore[assignment]
+    do_sample_numpy = None
     _NO_NUMPY_SAMPLER = None
 
 # The single time variable the grammar ever permits.
@@ -123,8 +126,18 @@ class Expression:
             only variable the grammar permits; when ``False`` the expression
             must be constant (and/or random).
         allow_random: Whether ``sympy.stats`` random variables may appear.
-        minimum: Lower bound for sampled values, or ``None`` for unbounded.
-        maximum: Upper bound for sampled values, or ``None`` for unbounded.
+        minimum: Lower bound for the value, or ``None`` for unbounded. Bounds
+            are assertions: a value that can provably escape them is rejected
+            at construction, and an escape only detectable at sample time
+            raises there. See ``clip`` for the truncating alternative.
+        maximum: Upper bound for the value, or ``None`` for unbounded.
+        clip: Truncate instead of assert for *random* draws: samples are
+            clamped into ``[minimum, maximum]``. This piles the out-of-range
+            probability mass onto the bounds, which is why it is opt-in.
+            Requires at least one bound, and rejects at construction an
+            expression whose value provably never intersects the bounds
+            (every draw would collapse onto a single bound). Deterministic
+            values are always asserted, never clamped, even with ``clip``.
         duration: The upper end of the ``t`` domain (stage duration, seconds).
             Required to statically bound a time-varying expression; without it
             a bounded time-varying expression is checked at sample time instead.
@@ -138,14 +151,18 @@ class Expression:
         allow_random: bool = True,
         minimum: Optional[float] = None,
         maximum: Optional[float] = None,
+        clip: bool = False,
         duration: Optional[float] = None,
     ) -> None:
         if minimum is not None and maximum is not None and minimum > maximum:
             raise ValueError(f"minimum ({minimum}) cannot be greater than maximum ({maximum}).")
+        if clip and minimum is None and maximum is None:
+            raise ValueError("clip=True requires minimum and/or maximum to clip to.")
 
         self.raw = raw
         self.minimum = minimum
         self.maximum = maximum
+        self.clip = clip
         self._expr = self._parse(raw)
 
         # Reject unknown functions, e.g. a misspelled distribution InvalidDist(10).
@@ -168,7 +185,7 @@ class Expression:
             raise ValueError(f"Expression {raw!r} uses disallowed symbol(s) {sorted(disallowed)}; permitted: {permitted}.")
 
         # Resolve the range policy once, raising now for provable violations.
-        self._clip_random = self._is_random and (minimum is not None or maximum is not None)
+        self._clip_random = clip and self._is_random
         self._runtime_check = False
         self._validate_range(duration)
         self._compile_random_sampler()
@@ -217,6 +234,9 @@ class Expression:
         if isinstance(raw, (int, float)):
             return sympy.sympify(raw)
         if isinstance(raw, str):
+            # parse_expr ultimately eval()s the transformed string, so an
+            # expression is only as trustworthy as the config it came from.
+            # These strings are config-author input, never end-user input.
             try:
                 return parse_expr(raw, local_dict=_parse_namespace([0]))
             except (SyntaxError, TypeError, AttributeError, sympy.SympifyError) as e:
@@ -234,22 +254,32 @@ class Expression:
         static_range = self._static_range(duration)
 
         if static_range is None:
-            # Undecided: defer to sample time. Random draws are clamped; a
-            # deterministic value out of range is a config error and raises.
-            if not self._is_random:
-                self._runtime_check = True
+            # Undecided: defer to sample time. With ``clip`` random draws are
+            # clamped; otherwise any out-of-range value raises when sampled.
+            self._runtime_check = not self._clip_random
+            return
+
+        if self._clip_random:
+            # Truncation is opted into, so a support wider than the bounds is
+            # fine; only a support entirely outside them is rejected, because
+            # every draw would collapse onto a single bound.
+            if static_range.intersect(bounds) == sympy.S.EmptySet:
+                raise ValueError(
+                    f"Expression {self.raw!r} evaluates within {static_range}, which never "
+                    f"intersects the permitted range {bounds}; clipping would collapse every draw to a bound."
+                )
             return
 
         contained = static_range.is_subset(bounds)
         if contained is True:
             return
         if contained is False:
+            hint = " Pass clip=True to clamp random draws into range instead." if self._is_random else ""
             raise ValueError(
-                f"Expression {self.raw!r} can evaluate to {static_range}, which is outside the permitted range {bounds}."
+                f"Expression {self.raw!r} can evaluate to {static_range}, which is outside the permitted range {bounds}.{hint}"
             )
         # is_subset returned None (couldn't decide): treat as undecided.
-        if not self._is_random:
-            self._runtime_check = True
+        self._runtime_check = True
 
     def _static_range(self, duration: Optional[float]) -> Any:
         """Best-effort provable value range, or ``None`` when undecidable."""
@@ -349,7 +379,9 @@ class Expression:
             # sampler (independent draws, since the shared rng advances between
             # leaves), then evaluate the lambdified deterministic skeleton over
             # the drawn arrays.
-            leaf_draws = [np.asarray(do_sample_numpy(dist, (size,), rng), dtype=np.float64) for _ph, dist in self._random_leaves]
+            leaf_draws = [
+                np.asarray(do_sample_numpy(dist, (size,), rng), dtype=np.float64) for _ph, dist in self._random_leaves
+            ]
             tval = 0.0 if t is None else float(t)
             out = self._lambdified(*leaf_draws, tval)  # type: ignore[misc]
             samples = np.asarray(out, dtype=np.float64)
@@ -362,6 +394,16 @@ class Expression:
                 self.minimum if self.minimum is not None else -np.inf,
                 self.maximum if self.maximum is not None else np.inf,
             )
+        elif self._runtime_check:
+            lo = self.minimum if self.minimum is not None else -np.inf
+            hi = self.maximum if self.maximum is not None else np.inf
+            out_of_range = (samples < lo) | (samples > hi)
+            if bool(np.any(out_of_range)):
+                offender = float(samples.reshape(-1)[np.argmax(out_of_range.reshape(-1))])
+                raise ValueError(
+                    f"Expression {self.raw!r} drew {offender}, outside the permitted range "
+                    f"[{self.minimum}, {self.maximum}]. Pass clip=True to clamp draws into range instead."
+                )
         # The fallback yields a 0-d scalar for size==1 while the numpy fast path
         # yields a shape-(1,) array; flatten before scalarising so both work.
         return float(samples.reshape(-1)[0]) if size == 1 else samples
