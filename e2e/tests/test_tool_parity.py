@@ -200,7 +200,7 @@ async def test_inference_perf_vs_vllm_bench_parity(case: ParityCase, vllm_bin: s
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
 
-    async with LLMDInferenceSimRunner(scenario.model_name, *scenario.sim_latency_args(), port=port):
+    async with LLMDInferenceSimRunner(scenario.model_name, *scenario.sim_args(), port=port):
         # --- inference-perf ---
         ip_result = await run_benchmark_minimal(
             scenario.inference_perf_config(base_url=base_url, tokenizer_path=tokenizer),

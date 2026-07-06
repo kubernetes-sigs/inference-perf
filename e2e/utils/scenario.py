@@ -126,13 +126,22 @@ class Scenario:
 
     # ------------------------------------------------------------------ mocks
 
-    def sim_latency_args(self) -> List[str]:
-        """CLI flags for llm-d-inference-sim to emulate this scenario's latency.
+    def sim_args(self) -> List[str]:
+        """CLI flags for llm-d-inference-sim to emulate this scenario.
 
         Flag names verified against llm-d-inference-sim v0.6.1 (the version
         pinned in flake.nix). See its README "latency simulation" section.
         """
+        # The sim's context window defaults to 1024 tokens and it 400s any
+        # request where prompt + completion exceeds it, so size it to the
+        # scenario. Doubled for headroom: the sim counts prompt tokens with its
+        # own tokenizer, which can exceed the client's intended input_len when
+        # the client tokenizer differs (and chat adds template tokens). The sim
+        # is a mock, so an oversized window costs nothing.
+        max_model_len = max(1024, 2 * (self.input_len + self.output_len))
         args = [
+            "--max-model-len",
+            str(max_model_len),
             "--time-to-first-token",
             str(int(self.ttft_ms)),
             "--inter-token-latency",

@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 # drives the offline staleness warning (no network needed). The optional
 # upstream check (see warn_if_pin_stale) is best-effort on top of this.
 VLLM_PINNED_REF = "v0.10.0"  # TODO: confirm the tag whose `vllm bench serve` CLI we target
+# Extra pip specs installed alongside the pinned vllm (space-separated; the CI
+# workflow greps this constant too). vllm leaves transformers unbounded above,
+# and transformers 5 removed tokenizer attrs (all_special_tokens_extended)
+# that this vllm still reads at bench startup. Review when bumping the pin.
+VLLM_COMPAT_PINS = "transformers<5"
 VLLM_PIN_DATE = datetime.date(2026, 1, 15)
 VLLM_STALENESS_WARN_DAYS = 180
 VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
@@ -227,7 +232,7 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
         # CPU-only client bench: no GPU needed to drive an OpenAI-compatible
         # server. This is still a large install (torch); it is cached above.
         _run([pip, "install", "--upgrade", "pip"])
-        _run([pip, "install", str(clone_dir)])
+        _run([pip, "install", str(clone_dir), *VLLM_COMPAT_PINS.split()])
     except subprocess.CalledProcessError as e:
         raise VllmUnavailable(f"failed to provision vllm: {e.stderr or e}") from e
 

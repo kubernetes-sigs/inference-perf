@@ -46,11 +46,13 @@ jobs:
         continue-on-error: true
         run: |
           set -euxo pipefail
-          # Single source of truth for the version is vllm_bench.py.
+          # Single source of truth for the version and compat pins is vllm_bench.py.
           VLLM_REF="$(grep -oP 'VLLM_PINNED_REF = "\K[^"]+' e2e/utils/vllm_bench.py)"
+          VLLM_COMPAT_PINS="$(grep -oP 'VLLM_COMPAT_PINS = "\K[^"]+' e2e/utils/vllm_bench.py)"
           python -m pip install --upgrade pip
           # CPU-only client bench: it just drives an OpenAI-compatible server.
-          python -m pip install "vllm==${VLLM_REF#v}"
+          # Word-splitting of the pin list is intentional.
+          python -m pip install "vllm==${VLLM_REF#v}" $VLLM_COMPAT_PINS
           echo "VLLM_BENCH_BIN=$(python -c 'import shutil; print(shutil.which("vllm") or "")')" >> "$GITHUB_ENV"
 
       - name: Run end-to-end tests
