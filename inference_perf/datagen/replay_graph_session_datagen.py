@@ -771,7 +771,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 response, extract_content=_extract_streaming_content
             )
 
-            # Combine reasoning_content with output text for the content field
+            # Combine reasoning_content with text_content in output_text (used for token count)
             reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
             if reasoning_text:
                 output_text = reasoning_text + text_content
