@@ -123,6 +123,7 @@ class TestRandom:
         assert expr.is_random
         assert not expr._fallback
         result = expr.sample(size=200, rng=np.random.default_rng(7))
+        assert isinstance(result, np.ndarray)
         assert result.min() >= 0
 
 
@@ -154,14 +155,6 @@ class TestRangeValidation:
         expr = Expression("Uniform(10, 50)", minimum=0, maximum=100)
         assert 10 <= expr.sample(rng=np.random.default_rng(0)) <= 50
 
-    def test_random_undecided_support_is_clamped(self) -> None:
-        # Mixed random support is undecidable statically, so values are clamped.
-        expr = Expression("100 + 50*Normal(0, 1)", minimum=0, maximum=120)
-        result = expr.sample(size=500, rng=np.random.default_rng(3))
-        assert isinstance(result, np.ndarray)
-        assert result.min() >= 0
-        assert result.max() <= 120
-
     def test_deterministic_undecided_raises_at_sample_time(self) -> None:
         # No duration given, so the t range can't be proven up front; the
         # negative value surfaces when sampled.
@@ -173,3 +166,80 @@ class TestRangeValidation:
     def test_min_greater_than_max_rejected(self) -> None:
         with pytest.raises(ValueError):
             Expression("5", minimum=10, maximum=0)
+
+
+class TestClipPolicy:
+    """Bounds assert by default; ``clip=True`` opts random draws into truncation."""
+
+    def test_clip_clamps_bare_rv_with_unbounded_support(self) -> None:
+        # Without clip this exact expression is rejected at construction
+        # (see test_unbounded_support_random_rejected).
+        expr = Expression("Normal(512, 200)", minimum=0, clip=True)
+        result = expr.sample(size=500, rng=np.random.default_rng(0))
+        assert isinstance(result, np.ndarray)
+        assert result.min() >= 0
+
+    def test_clip_clamps_transformed_rv(self) -> None:
+        expr = Expression("100 + 50*Normal(0, 1)", minimum=0, maximum=120, clip=True)
+        result = expr.sample(size=500, rng=np.random.default_rng(3))
+        assert isinstance(result, np.ndarray)
+        assert result.min() >= 0
+        assert result.max() <= 120
+
+    def test_random_undecided_without_clip_raises_on_out_of_range_draw(self) -> None:
+        # Transformed randomness is statically undecidable, so construction
+        # succeeds; every draw lands in [10, 11] and violates maximum=5.
+        expr = Expression("Uniform(0, 1) + 10", maximum=5)
+        with pytest.raises(ValueError, match="clip=True"):
+            expr.sample(size=10, rng=np.random.default_rng(0))
+
+    def test_random_undecided_without_clip_in_range_ok(self) -> None:
+        expr = Expression("Uniform(0, 1) + 10", minimum=0, maximum=20)
+        val = expr.sample(rng=np.random.default_rng(0))
+        assert 10 <= val <= 11
+
+    def test_clip_rejects_provably_disjoint_support(self) -> None:
+        # Uniform(10, 20) never intersects (-oo, 5]; clipping would collapse
+        # every draw to the bound, which is a config error even with clip.
+        with pytest.raises(ValueError):
+            Expression("Uniform(10, 20)", maximum=5, clip=True)
+
+    def test_clip_requires_bounds(self) -> None:
+        with pytest.raises(ValueError):
+            Expression("Normal(0, 1)", clip=True)
+
+    def test_clip_never_clamps_deterministic_values(self) -> None:
+        # A deterministic out-of-range value is a config error regardless of
+        # clip: provable violations raise at construction, time-varying ones
+        # at sample time.
+        with pytest.raises(ValueError):
+            Expression("-5", minimum=0, clip=True)
+        expr = Expression("10 - t", minimum=0, clip=True)
+        assert expr.sample(t=5) == 5.0
+        with pytest.raises(ValueError):
+            expr.sample(t=20)
+
+
+class TestSympyInternalsFence:
+    """Fail loudly if a sympy upgrade breaks the internals the fast path leans on.
+
+    Both fences guard silent degradation: if sympy moves ``do_sample_numpy``
+    or reshapes its distribution constructors, Expression would still work but
+    every random draw would take the slow symbolic path.
+    """
+
+    def test_numpy_fast_path_compiled(self) -> None:
+        from inference_perf.utils.numeric.expression import expression as mod
+
+        # getattr rather than attribute access: do_sample_numpy is an import,
+        # not a definition, so mypy --strict flags cross-module access to it.
+        assert getattr(mod, "do_sample_numpy", None) is not None
+        expr = Expression("Normal(0, 1) + Uniform(0, 1) + t")
+        assert not expr._fallback
+        assert expr._lambdified is not None
+
+    def test_distribution_constructors_discovered(self) -> None:
+        from inference_perf.utils.numeric.expression import expression as mod
+
+        for name in ("Normal", "Uniform", "Poisson", "Exponential", "LogNormal", "Gamma"):
+            assert name in mod._DISTRIBUTION_CTORS, f"sympy.stats constructor discovery lost {name}"
