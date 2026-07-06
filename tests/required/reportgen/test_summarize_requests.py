@@ -1,7 +1,11 @@
 import pytest
 from inference_perf.reportgen.base import summarize_requests
 from inference_perf.apis.base import RequestLifecycleMetric, InferenceInfo, StreamedResponseMetrics
+from inference_perf.config.reportgen.config import RequestLifecycleMetricsReportConfig
 from inference_perf.payloads import RequestMetrics, Text
+
+# The percentile list real reports use; the token-usage metrics must surface all of these.
+DEFAULT_PERCENTILES = RequestLifecycleMetricsReportConfig().percentiles
 
 
 def test_summarize_requests_tpot_calculation() -> None:
@@ -168,7 +172,9 @@ def test_summarize_requests_surfaces_output_token_usage() -> None:
     count surfaced separately from the client-side output_len distribution.
     """
     metrics = []
-    for completion_tokens in (3, 7):
+    # Values (0, 100) make every percentile p interpolate exactly to p, so the
+    # full default percentile list maps to a known dict.
+    for completion_tokens in (0, 100):
         info = InferenceInfo(
             request_metrics=RequestMetrics(text=Text(input_tokens=10)),
             response_metrics=StreamedResponseMetrics(
@@ -180,9 +186,44 @@ def test_summarize_requests_surfaces_output_token_usage() -> None:
             RequestLifecycleMetric(scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None)
         )
 
-    result = summarize_requests(metrics, [50])
+    result = summarize_requests(metrics, DEFAULT_PERCENTILES)
 
-    assert result.successes["output_tokens"] == {"total": 10.0}
+    expected = {"total": 100.0, "mean": 50.0, "min": 0.0, "max": 100.0}
+    for p in DEFAULT_PERCENTILES:
+        expected["median" if p == 50 else f"p{p:g}"] = float(p)
+    assert result.successes["output_tokens"] == pytest.approx(expected)
+
+
+def test_summarize_requests_token_usage_propagates_percentile_keys() -> None:
+    """The requested percentiles surface on both server-sourced token metrics.
+
+    output_tokens / prompt_tokens carry the same per-request distribution keys
+    as output_len / prompt_len: mean/min/max plus one key per requested
+    percentile (p50 -> 'median'). Locks in that whatever percentile list the
+    run passes feeds these metrics too.
+    """
+    metrics = []
+    for completion_tokens in range(1, 101):  # 1..100
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=completion_tokens,
+                server_usage={"prompt_tokens": 10, "completion_tokens": completion_tokens},
+            ),
+        )
+        metrics.append(
+            RequestLifecycleMetric(scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None)
+        )
+
+    result = summarize_requests(metrics, [0.1, 1, 5, 50, 90, 99, 99.9])
+
+    expected_keys = {"mean", "min", "max", "p0.1", "p1", "p5", "median", "p90", "p99", "p99.9"}
+    assert expected_keys <= result.successes["output_tokens"].keys()
+    assert expected_keys <= result.successes["prompt_tokens"].keys()
+    # p50 is keyed as 'median', never 'p50'.
+    assert "p50" not in result.successes["output_tokens"]
+    # Distribution keys mirror output_len exactly (same summarize() call).
+    assert result.successes["output_tokens"].keys() - {"total"} == result.successes["output_len"].keys()
 
 
 def test_summarize_requests_output_tokens_falls_back_to_client_count() -> None:
@@ -193,9 +234,13 @@ def test_summarize_requests_output_tokens_falls_back_to_client_count() -> None:
     )
     metric = RequestLifecycleMetric(scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None)
 
-    result = summarize_requests([metric], [50])
+    # Single value: every percentile collapses to it.
+    result = summarize_requests([metric], DEFAULT_PERCENTILES)
 
-    assert result.successes["output_tokens"] == {"total": 4.0}
+    expected = {"total": 4.0, "mean": 4.0, "min": 4.0, "max": 4.0}
+    for p in DEFAULT_PERCENTILES:
+        expected["median" if p == 50 else f"p{p:g}"] = 4.0
+    assert result.successes["output_tokens"] == pytest.approx(expected)
 
 
 def test_output_len_not_recomputed_from_chunks() -> None:
@@ -316,10 +361,10 @@ def test_summarize_requests_surfaces_prompt_cache_usage() -> None:
         scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="test_request", info=info, error=None
     )
 
-    result = summarize_requests([metric], [50])
+    # Single value: every percentile collapses to it.
+    result = summarize_requests([metric], DEFAULT_PERCENTILES)
 
-    assert result.successes["prompt_tokens"] == {
-        "total": 10.0,
-        "cached": 6.0,
-        "uncached": 4.0,
-    }
+    expected = {"total": 10.0, "cached": 6.0, "uncached": 4.0, "mean": 10.0, "min": 10.0, "max": 10.0}
+    for p in DEFAULT_PERCENTILES:
+        expected["median" if p == 50 else f"p{p:g}"] = 10.0
+    assert result.successes["prompt_tokens"] == pytest.approx(expected)
