@@ -539,6 +539,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         logger.debug(
                             f"Registry get for event {self.event_id} output segment from {seg.source_event_id} generated: {actual_output}"
                         )
+                        logger.warning(
+                            f"Event {self.event_id}: unable to get the actual output message from {seg.source_event_id}. "
+                            f"Using output text instead. "
+                        )
                         if actual_output:
                             if self.expected_output_is_tool_call:
                                 # The live model returned plain text where a tool call was
