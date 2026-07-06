@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:5f8164a94745122183abeb521c0080133b0eee9a66cc8596caafd232712682b2"
+content_hash = "sha256:97dafa07cf7d28f27b928595a45f23058148a897445d5c846f4c7065645eaf80"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
