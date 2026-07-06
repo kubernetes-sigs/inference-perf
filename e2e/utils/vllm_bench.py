@@ -105,9 +105,33 @@ def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
         logger.debug("upstream vllm staleness check skipped: %s", e)
 
 
+# Env vars that redirect a Python process's module resolution. The e2e suite
+# typically runs inside this repo's dev environment (nix devshell + venv, which
+# exports PYTHONPATH entries for its own interpreter), while vllm runs under a
+# separate interpreter. PYTHONPATH outranks the child's site-packages, so
+# inheriting these makes vllm import packages built for the wrong CPython ABI
+# (e.g. the devshell's torch) and crash on startup. LD_LIBRARY_PATH is left
+# alone: CI's hosted Python needs its entry to find libpython.
+_HOST_PYTHON_ENV_VARS = frozenset(
+    {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "NIX_PYTHONPATH",
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+    }
+)
+
+
+def _isolated_env() -> Dict[str, str]:
+    """os.environ minus the vars that leak the host Python's packages into vllm's."""
+    return {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
+
+
 def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
     logger.debug("running: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return subprocess.run(cmd, capture_output=True, text=True, check=True, env=_isolated_env())
 
 
 def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
@@ -196,6 +220,7 @@ async def run_vllm_bench(
     proc = await asyncio.create_subprocess_exec(
         *full,
         cwd=str(wd),
+        env=_isolated_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
