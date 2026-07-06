@@ -235,7 +235,10 @@ class Scenario:
             raise ValueError(f"unknown load_mode: {self.load_mode!r}")
 
         if not self.streaming:
-            args.append("--disable-stream")  # TODO: verify flag name for the pinned ref
+            # The pinned vllm bench cannot disable response streaming: its
+            # request funcs hardcode "stream": True, and its only stream
+            # flag (--no-stream) controls HF dataset loading, not responses.
+            raise ValueError("vllm bench serve (pinned ref) only supports streaming scenarios")
         return args
 
 
