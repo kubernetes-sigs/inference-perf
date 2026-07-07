@@ -62,7 +62,7 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
@@ -499,15 +499,13 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             return None
 
         try:
-            raw_calls, normalized_count = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
+            raw_calls, _ = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
             if not raw_calls:
                 logger.warning(f"No LLM calls found in {session_id}")
                 return None
             graph = build_graph(raw_calls, source_file=source_id)
         except Exception as e:
-            logger.error(f"Error building graph from {session_id}: {e}")
-            if not self.otel_config.skip_invalid_files:
-                raise
+            logger.error(f"Error building graph from {session_id}: {e}", exc_info=True)
             return None
 
         return ReplaySession(
@@ -515,7 +513,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             source_id=source_id,
             session_index=trace_index,
             graph=graph,
-        ), normalized_count
+        )
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
         api_data = super().load_lazy_data(data)

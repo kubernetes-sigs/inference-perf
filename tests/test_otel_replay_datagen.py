@@ -1387,6 +1387,7 @@ def _make_generator(
     gen.session_graph_state = {}
     gen._session_events = {}
     gen.all_events = []
+    gen._skipped_session_count = 0
     return gen
 
 
@@ -1875,3 +1876,46 @@ class TestUnbuildableSessionSlot:
         info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
         data.on_completion(info)
         assert "s" not in gen.session_graph_state, "session not evicted after its only scheduled event completed"
+
+    def test_is_session_buildable_returns_false_for_zero_event_session(self) -> None:
+        """Bug 5: a session whose graph builds but schedules zero events must not be dispatched.
+
+        If is_session_buildable returns True for such a session, dispatch adds it to
+        active_session_indices but no worker events ever fire, so check_session_completed
+        never returns True and the stage stalls until timeout.
+        """
+        # All events have empty messages — _build_session_schedule will skip every one.
+        events: dict[str, GraphEvent] = {
+            "event_0": GraphEvent(
+                event_id="event_0",
+                call=GraphCall(
+                    call_id="call_0",
+                    model="test-model",
+                    messages=[],
+                    expected_output="",
+                    input_segments=[],
+                    total_input_tokens=0,
+                    expected_output_tokens=0,
+                    temperature=None,
+                    max_tokens_recorded=None,
+                ),
+                predecessor_event_ids=[],
+                predecessor_dependency_types={},
+                wait_ms=0,
+                t_start_ms=0,
+                t_end_ms=500,
+            ),
+        }
+        graph = ReplayGraph(events=events, root_event_ids=["event_0"], source_file="test")
+        gen = _make_generator()
+        gen.initialize_sessions([ReplaySession(session_id="s", source_id="src", session_index=0, graph=graph)])
+
+        # Graph built successfully (session is not None) but zero events scheduled.
+        assert gen.sessions[0] is not None, "session should have been built"
+        assert gen._session_events.get(0, []) == [], "expected zero scheduled events"
+
+        # is_session_buildable must return False to prevent a stalled stage.
+        assert not gen.is_session_buildable(0), (
+            "is_session_buildable returned True for a zero-event session — "
+            "dispatch would add it to active_session_indices with nothing to complete it"
+        )

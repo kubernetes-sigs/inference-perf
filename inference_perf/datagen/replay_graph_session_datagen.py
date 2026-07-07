@@ -1090,6 +1090,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         self._session_events: Dict[int, List[ReplaySessionEvent]] = {}
         # Flat list kept only for the eager initialize_sessions() path / back-compat.
         self.all_events: List[ReplaySessionEvent] = []
+        self._skipped_session_count: int = 0
 
     def initialize_sessions(self, sessions: List[ReplaySession]) -> None:
         """Finalize generator state from fully-built sessions (eager path)."""
@@ -1144,6 +1145,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             # Register an empty event list as the "already attempted" sentinel so this slot is
             # not retried on subsequent calls. The dispatcher skips it (see is_session_buildable).
             self._session_events[session_index] = []
+            self._skipped_session_count += 1
             return
         session.session_index = session_index
         self.sessions[session_index] = session
@@ -1155,15 +1157,21 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         """Return True if session_index has (or can build) a graph, False if it produced none.
 
         Builds the session on demand (idempotent). Lets the dispatcher skip un-buildable
-        slots without raising — matching the eager path, which dropped such sessions at
-        load time. Skipped sessions are not reported anywhere (see dispatch_session).
+        slots without raising. Skipped sessions are not reported anywhere (see dispatch_session).
         """
         self._ensure_session_built(session_index)
         session = self.sessions[session_index]
         if session is None:
             logger.warning(f"Skipping session {session_index} ({self._session_ids[session_index]!r}): no graph could be built")
             return False
-        logger.info("Dispatching session %s: %d events", session.session_id, len(self._session_events.get(session_index, [])))
+        events = self._session_events.get(session_index, [])
+        if not events:
+            logger.warning(
+                f"Skipping session {session_index} ({self._session_ids[session_index]!r}): graph built but no schedulable events"
+            )
+            self._skipped_session_count += 1
+            return False
+        logger.info("Dispatching session %s: %d events", session.session_id, len(events))
         return True
 
     @staticmethod
@@ -1378,7 +1386,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 source_id = session.source_id
                 break
 
-        num_events = len(state.graph.events)
+        session_index = self._session_id_to_index.get(session_id)
+        num_events = (
+            len(self._session_events[session_index])
+            if session_index is not None and session_index in self._session_events
+            else len(state.graph.events)
+        )
         num_events_completed = len(state.completed_events)
         num_events_cancelled = state.cancelled_events if state.failed else 0
 

@@ -674,6 +674,9 @@ class LoadGenerator:
             # Check if we're done
             if len(completed_session_ids) >= effective_num_sessions:
                 logger.info(f"All {effective_num_sessions} sessions completed")
+                skipped = getattr(self.datagen, "_skipped_session_count", 0)
+                if skipped:
+                    logger.warning(f"{skipped} session(s) were skipped (failed to build or had no schedulable events)")
                 break
 
             # Check if we should stop (no more sessions to start or wait for)

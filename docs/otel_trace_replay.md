@@ -489,7 +489,7 @@ The lazy path uses `SessionReplayLazyLoadData` (a subclass of `LazyLoadInference
 | `local_event_index` | Index into `_session_events[session_index]` |
 | `preferred_worker_id` | `hash(session_id) % num_workers` |
 
-`_resolve_event` dispatches on the type: `SessionReplayLazyLoadData` instances use per-session addressing; anything else falls back to the legacy `data_index` path (a global index into `all_events`), which is used by the eager `initialize_sessions` path and by other datagen implementations.
+`_resolve_event` dispatches on the type: `SessionReplayLazyLoadData` instances use per-session addressing.
 
 #### Memory lifecycle
 
