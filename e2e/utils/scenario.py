@@ -142,6 +142,15 @@ class Scenario:
         args = [
             "--max-model-len",
             str(max_model_len),
+            # The sim also caps in-flight requests (--max-num-seqs, default 5)
+            # well below what these scenarios offer (~7-16 in flight), so with
+            # the default the requests queue and measured TTFT becomes queue
+            # wait -- which depends on each tool's arrival process (Poisson for
+            # vllm bench, constant for inference-perf), not on the measurement
+            # under test. Give the mock vLLM's own default (256) so both tools
+            # observe the configured ttft_ms rather than the queue.
+            "--max-num-seqs",
+            "256",
             "--time-to-first-token",
             str(int(self.ttft_ms)),
             "--inter-token-latency",
