@@ -326,9 +326,12 @@ def test_use_server_output_tokens_flag_switches_tpot_ntpot_divisor() -> None:
     assert server.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(10.0 / 5.0)
 
     # Both raw counts remain reported regardless of the flag: output_len is the
-    # client count, output_tokens is the server count.
+    # client count, output_tokens is the server count (a single request, so its
+    # per-request distribution collapses to that count).
     assert server.successes["output_len"]["mean"] == pytest.approx(10.0)
-    assert server.successes["output_tokens"] == {"total": 5.0}
+    assert server.successes["output_tokens"] == pytest.approx(
+        {"total": 5.0, "mean": 5.0, "min": 5.0, "max": 5.0, "median": 5.0}
+    )
 
 
 def test_use_server_output_tokens_falls_back_without_usage() -> None:
