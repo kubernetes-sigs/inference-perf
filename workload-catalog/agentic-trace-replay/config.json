@@ -1,43 +1,67 @@
 {
   "input_sequence_length": {
-    "min": 9100,
-    "max": 63100,
-    "mean": 28273,
-    "standard_deviation": 17000,
-    "distribution_type": "log_normal"
+    "min": 0.0,
+    "max": 3403502.0,
+    "mean": 49141.36907104073,
+    "standard_deviation": 138889.17673037984
   },
   "output_sequence_length": {
-    "min": 50,
-    "max": 2000,
-    "mean": 233,
-    "standard_deviation": 135,
-    "distribution_type": "log_normal"
+    "min": 0.0,
+    "max": 146112.0,
+    "mean": 659.4164118408796,
+    "standard_deviation": 3072.701911706664
   },
   "number_of_turns": {
-    "min": 7,
-    "max": 158,
-    "mean": 21,
-    "standard_deviation": 27,
-    "distribution_type": "log_normal"
+    "min": 1.0,
+    "max": 300.0,
+    "mean": 21.88593874303898,
+    "standard_deviation": 23.41381768880812
   },
-  "system_prompt": {
-    "min": 2000,
-    "max": 2000,
-    "mean": 2000,
-    "standard_deviation": 0,
-    "distribution_type": "normal"
+  "time_between_turns": {
+    "min": 0.001,
+    "max": 7199.569,
+    "mean": 13.028349060174717,
+    "standard_deviation": 176.44644604066423
   },
+  "multi_turn": true,
   "input_sequence_type_token_ratio": 0.08,
+  "shared_prefix_tokens_per_call": {
+    "min": 0.0,
+    "max": 3306363.0,
+    "mean": 44636.407774269035,
+    "standard_deviation": 135279.49297253875
+  },
+  "cacheable_tokens_per_call": {
+    "min": 0.0,
+    "max": 3314419.0,
+    "mean": 45122.07362609901,
+    "standard_deviation": 136580.50439731946
+  },
+  "session_duration_sec": {
+    "min": 0.0,
+    "max": 7777.925,
+    "mean": 405.6700053699284,
+    "standard_deviation": 997.5749029776471
+  },
   "metadata": {
-    "suitable_optimizations": ["Prefix aware routing", "KV cache offloading", "P/D disaggregation"],
-    "prefill_decode_ratio": 121.0,
+    "suitable_optimizations": [
+      "Prefix aware routing",
+      "KV cache offloading",
+      "P/D disaggregation"
+    ],
+    "prefill_decode_ratio": 74.52,
     "agentic_characteristics": {
-      "_comment": "Agentic-specific properties of the trace corpus. Values are placeholders pending computation from the raw Exgentic traces; review and fill before relying on them.",
-      "tool_calls_per_session": null,
-      "tool_wait_call_ratio": null,
-      "mean_inter_call_wait_sec": null,
-      "independent_call_ratio": null,
-      "shared_prefix_ratio": null
+      "avg_tool_calls_per_session": 20.51,
+      "sessions_with_tool_calls_ratio": 0.659,
+      "sessions_with_tool_definitions_ratio": 0.765,
+      "tool_call_turn_ratio": 0.617,
+      "tool_wait_call_ratio": 0.538,
+      "shared_prefix_ratio": 0.92,
+      "sessions_with_independent_calls_ratio": 0.088,
+      "causally_dependent_calls": true,
+      "mixed_conversation_and_independent_calls": true,
+      "growing_shared_context": true,
+      "tool_call_overhead": true
     }
   }
 }

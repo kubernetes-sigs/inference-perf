@@ -41,24 +41,32 @@ Used by entries that replay a recorded trace corpus (`agentic-trace-replay`). He
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `input_sequence_length` | Object | Observed distribution of per-call input tokens across the corpus. |
-| `output_sequence_length` | Object | Observed distribution of per-call output tokens across the corpus. |
-| `number_of_turns` | Object | Observed distribution of LLM calls per session. |
-| `system_prompt` | Object | Observed distribution of the system prompt length. |
+| `input_sequence_length` | Object | Observed distribution of per-call input tokens. Contains `min`, `max`, `mean`, `standard_deviation`. |
+| `output_sequence_length` | Object | Observed distribution of per-call output tokens. Contains `min`, `max`, `mean`, `standard_deviation`. |
+| `number_of_turns` | Object | Observed distribution of LLM calls per session. Contains `min`, `max`, `mean`, `standard_deviation`. |
+| `time_between_turns` | Object | Observed distribution of inter-call wait times in seconds (tool/agent execution time between a call ending and the next starting). Contains `min`, `max`, `mean`, `standard_deviation`. Derived from span timestamps; treat as approximate. |
+| `multi_turn` | Boolean | Always `true` for trace-replay entries. |
 | `input_sequence_type_token_ratio` | Float | Observed unique-to-total token ratio (vocabulary diversity). |
+| `shared_prefix_tokens_per_call` | Object | Observed distribution of shared-prefix token counts per call (tokens repeated from the previous call's input). Contains `min`, `max`, `mean`, `standard_deviation`. |
+| `cacheable_tokens_per_call` | Object | Observed distribution of cacheable token counts per call (shared prefix plus cacheable output segments). Contains `min`, `max`, `mean`, `standard_deviation`. |
+| `session_duration_sec` | Object | Observed distribution of session wall-clock durations in seconds. Contains `min`, `max`, `mean`, `standard_deviation`. |
 | `metadata` | Object | Workload classification, plus `agentic_characteristics` (see below). |
 
-The `metadata.agentic_characteristics` block holds agentic-specific corpus statistics, all extractable from the traces:
+The `metadata.agentic_characteristics` block holds agentic-specific corpus statistics:
 
-- `tool_calls_per_session` — mean tool invocations per session.
-- `tool_wait_call_ratio` — fraction of calls whose input includes a tool result (i.e. the call is gated on a tool finishing). Derived from message roles, so it is robust.
-- `mean_inter_call_wait_sec` — mean wall-clock gap between a call ending and the next starting (tool/agent execution time). Derived from span timestamps, which are noisy in the corpus, so treat as approximate.
-- `independent_call_ratio` — fraction of calls that do not carry the running conversation history (standalone, stateless calls).
-- `shared_prefix_ratio` — mean fraction of a call's input that repeats its predecessor's prefix.
+- `avg_tool_calls_per_session` — mean tool invocations per session (averaged over sessions that have at least one tool call).
+- `sessions_with_tool_calls_ratio` — fraction of sessions that contain at least one tool call.
+- `sessions_with_tool_definitions_ratio` — fraction of sessions whose requests include tool definitions.
+- `tool_call_turn_ratio` — fraction of all calls whose output is a tool call.
+- `tool_wait_call_ratio` — fraction of all calls whose input contains a tool result message (i.e. the call is gated on a tool finishing).
+- `shared_prefix_ratio` — fraction of all calls that share a prefix with their predecessor.
+- `sessions_with_independent_calls_ratio` — fraction of sessions that contain at least one non-first call with no shared prefix (standalone, stateless calls mixed into the session).
+- `causally_dependent_calls` — boolean; true when call N depends on call N-1's output.
+- `mixed_conversation_and_independent_calls` — boolean; true when sessions mix growing-context calls with stateless standalone calls.
+- `growing_shared_context` — boolean; true when the shared prefix grows across turns.
+- `tool_call_overhead` — boolean; true when tool-call turns carry tool schemas and forced `tool_choice`.
 
-Values may be `null` placeholders pending computation from the raw traces.
-
-`multi_turn`, `time_between_turns`, and `input_sequence_length_per_turn` from the synthetic schema are not used: whether a session has one call or many, its inter-call timing, and its per-call inputs are all reconstructed directly from the trace rather than sampled.
+`input_sequence_length_per_turn` from the synthetic schema is not present: per-call inputs are reconstructed directly from the trace rather than sampled.
 
 ### Metadata and Workload Classification
 

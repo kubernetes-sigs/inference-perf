@@ -24,11 +24,11 @@ server:
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    hf_dataset_path: Exgentic/agent-llm-traces
+    hf_dataset_path: Exgentic/agent-llm-traces-v2
     # Pin a specific revision when one is available, e.g.:
     # hf_dataset_path:
-    #   path: Exgentic/agent-llm-traces
-    #   revision: v1
+    #   path: Exgentic/agent-llm-traces-v2
+    #   revision: v2
     use_static_model: true
     static_model_name: Qwen/Qwen3-8B
     include_errors: false
