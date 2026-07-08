@@ -10,6 +10,8 @@ aliases:
 
   inference-perf-reviewers:
   - Bslabe123
+  - alonh
+  - lenadankin
 
   wg-serving-leads:
   - ArangoGutierrez
