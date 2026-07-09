@@ -7,11 +7,14 @@ aliases:
   - wangchen615
   - SachinVarghese
   - jjk-g
+  - lenadankin
+
+  inference-perf-approvers:
+  - alonh
 
   inference-perf-reviewers:
   - Bslabe123
   - alonh
-  - lenadankin
 
   wg-serving-leads:
   - ArangoGutierrez
