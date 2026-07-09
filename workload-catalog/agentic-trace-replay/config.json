@@ -23,8 +23,6 @@
     "mean": 13.028349060174717,
     "standard_deviation": 176.44644604066423
   },
-  "multi_turn": true,
-  "input_sequence_type_token_ratio": 0.08,
   "shared_prefix_tokens_per_call": {
     "min": 0.0,
     "max": 3306363.0,
@@ -57,11 +55,7 @@
       "tool_call_turn_ratio": 0.617,
       "tool_wait_call_ratio": 0.538,
       "shared_prefix_ratio": 0.92,
-      "sessions_with_independent_calls_ratio": 0.088,
-      "causally_dependent_calls": true,
-      "mixed_conversation_and_independent_calls": true,
-      "growing_shared_context": true,
-      "tool_call_overhead": true
+      "sessions_with_independent_calls_ratio": 0.088
     }
   }
 }

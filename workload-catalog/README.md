@@ -45,8 +45,6 @@ Used by entries that replay a recorded trace corpus (`agentic-trace-replay`). He
 | `output_sequence_length` | Object | Observed distribution of per-call output tokens. Contains `min`, `max`, `mean`, `standard_deviation`. |
 | `number_of_turns` | Object | Observed distribution of LLM calls per session. Contains `min`, `max`, `mean`, `standard_deviation`. |
 | `time_between_turns` | Object | Observed distribution of inter-call wait times in seconds (tool/agent execution time between a call ending and the next starting). Contains `min`, `max`, `mean`, `standard_deviation`. Derived from span timestamps; treat as approximate. |
-| `multi_turn` | Boolean | Always `true` for trace-replay entries. |
-| `input_sequence_type_token_ratio` | Float | Observed unique-to-total token ratio (vocabulary diversity). |
 | `shared_prefix_tokens_per_call` | Object | Observed distribution of shared-prefix token counts per call (tokens repeated from the previous call's input). Contains `min`, `max`, `mean`, `standard_deviation`. |
 | `cacheable_tokens_per_call` | Object | Observed distribution of cacheable token counts per call (shared prefix plus cacheable output segments). Contains `min`, `max`, `mean`, `standard_deviation`. |
 | `session_duration_sec` | Object | Observed distribution of session wall-clock durations in seconds. Contains `min`, `max`, `mean`, `standard_deviation`. |
@@ -59,14 +57,8 @@ The `metadata.agentic_characteristics` block holds agentic-specific corpus stati
 - `sessions_with_tool_definitions_ratio` — fraction of sessions whose requests include tool definitions.
 - `tool_call_turn_ratio` — fraction of all calls whose output is a tool call.
 - `tool_wait_call_ratio` — fraction of all calls whose input contains a tool result message (i.e. the call is gated on a tool finishing).
-- `shared_prefix_ratio` — fraction of all calls that share a prefix with their predecessor.
+- `shared_prefix_ratio` — fraction of all calls that share a prefix with any of their predecessors.
 - `sessions_with_independent_calls_ratio` — fraction of sessions that contain at least one non-first call with no shared prefix (standalone, stateless calls mixed into the session).
-- `causally_dependent_calls` — boolean; true when call N depends on call N-1's output.
-- `mixed_conversation_and_independent_calls` — boolean; true when sessions mix growing-context calls with stateless standalone calls.
-- `growing_shared_context` — boolean; true when the shared prefix grows across turns.
-- `tool_call_overhead` — boolean; true when tool-call turns carry tool schemas and forced `tool_choice`.
-
-`input_sequence_length_per_turn` from the synthetic schema is not present: per-call inputs are reconstructed directly from the trace rather than sampled.
 
 ### Metadata and Workload Classification
 
