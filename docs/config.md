@@ -249,6 +249,7 @@ report:
       response: true          # Include raw response payloads
       info: true              # Include structured request/response metadata
       response_chunks: true   # Include raw streaming chunks inside info.response_metrics
+      computed_metrics: false # Include computed per-request latency metrics (TTFT/TPOT/ITL/...)
     per_adapter: false        # Generate metrics grouped by LoRA adapter
     per_adapter_stage: false  # Generate metrics grouped by adapter and stage
     percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
@@ -258,9 +259,9 @@ report:
     per_stage: false          # Disable Prometheus stage breakdown
 ```
 
-For smaller per-request reports that preserve structured timing data such as
-`output_token_times`, disable raw request/response payloads and streaming chunks
-while keeping `info` enabled:
+For metrics-only per-request reports, disable the raw fields and enable
+`computed_metrics` instead — this removes the multi-GB raw payloads while
+keeping full per-request latency analysis:
 
 ```yaml
 report:
@@ -269,12 +270,23 @@ report:
     per_request_fields:
       request: false
       response: false
-      info: true
+      info: false
       response_chunks: false
+      computed_metrics: true
 ```
 
 Setting `info: false` removes the entire `info` block, including
 `response_chunks`; in that case `response_chunks` has no effect.
+
+`computed_metrics` (off by default) adds a `computed_metrics` block to each
+successful entry with `request_latency`, `normalized_time_per_output_token`,
+`time_to_first_token`, `time_per_output_token`, `inter_token_latency` (mean),
+`inter_token_latencies` (per-token deltas), `input_tokens`, `output_tokens`,
+and the request's `ttft_slo_sec`/`tpot_slo_sec` SLOs — the same values (and
+the same tokenizer-based correction from raw streaming chunks) used to compute
+the `summary_lifecycle_metrics.json` / `stage_*_lifecycle_metrics.json`
+aggregates. Non-streamed or non-streamable requests report `null` for
+`time_to_first_token`, `time_per_output_token`, and `inter_token_latency`.
 
 ### Storage
 
