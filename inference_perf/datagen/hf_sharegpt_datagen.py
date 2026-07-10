@@ -171,6 +171,8 @@ class HFShareGPTDataGenerator(DataGenerator):
         for data in self.get_chat_data():
             if isinstance(data, ChatCompletionAPIData):
                 yield AnthropicMessagesAPIData(messages=data.messages, max_tokens=data.max_tokens)
+            else:
+                raise Exception(f"Expected ChatCompletionAPIData, got {type(data).__name__}")
 
     def is_io_distribution_supported(self) -> bool:
         return True
