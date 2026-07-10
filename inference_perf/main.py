@@ -363,8 +363,31 @@ def main_cli() -> None:
         elif config.data.type == DataGenType.VisionArena:
             datagen = VisionArenaDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.OTelTraceReplay:
+            # Optimization: when total session demand across stages is bounded, cap the
+            # corpus so the datagen only builds sessions the loadgen will actually dispatch.
+            # Disabled (None) if duplication is requested, if any stage is unbounded, or if
+            # there are no trace-session-replay stages to read num_sessions from.
+            max_sessions: Optional[int] = None
+            otel_cfg = config.data.otel_trace_replay
+            duplication = otel_cfg.duplicate_sessions_target if otel_cfg is not None else None
+            if (
+                duplication is None
+                and config.load.type == LoadType.TRACE_SESSION_REPLAY
+                and config.load.stages
+            ):
+                # Only TraceSessionReplayLoadStage carries num_sessions; read defensively
+                # (getattr) so this stays valid regardless of the stages Union member type.
+                stage_counts = [getattr(stage, "num_sessions", None) for stage in config.load.stages]
+                if all(count is not None for count in stage_counts):
+                    max_sessions = sum(count for count in stage_counts if count is not None)
             datagen = OTelTraceReplayDataGenerator(
-                config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
+                config.api,
+                config.data,
+                tokenizer,
+                mp_manager,
+                config.load.base_seed,
+                num_workers=config.load.num_workers,
+                max_sessions=max_sessions,
             )
         elif config.data.type == DataGenType.WekaTraceReplay:
             datagen = WekaTraceReplayDataGenerator(

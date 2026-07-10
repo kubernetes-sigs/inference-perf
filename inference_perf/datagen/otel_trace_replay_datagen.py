@@ -343,6 +343,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         mp_manager: Optional[SyncManager] = None,
         base_seed: Optional[int] = None,
         num_workers: int = 1,
+        max_sessions: Optional[int] = None,
     ) -> None:
         if not hasattr(config, "otel_trace_replay") or config.otel_trace_replay is None:
             raise ValueError("otel_trace_replay configuration is required for OTelTraceReplayDataGenerator")
@@ -363,6 +364,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
+        self.max_sessions = max_sessions
 
         filter_func = _compile_filter(self.otel_config.filter)
         if filter_func:
@@ -420,6 +422,15 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             original_size = len(dataset)
             dataset = dataset.filter(filter_func)
             logger.info(f"Filter applied: {original_size} -> {len(dataset)} records")
+
+        # Step 2b: if the run only replays a bounded number of sessions, sample the
+        # corpus down to that size BEFORE the expensive per-trace graph build below.
+        # The subset is a reproducible random slice (seeded by base_seed); it differs
+        # from the post-build shuffle order but preserves "random reproducible subset"
+        # semantics, and avoids building/holding sessions the loadgen would never dispatch.
+        if self.max_sessions is not None and self.max_sessions < len(dataset):
+            dataset = dataset.shuffle(seed=self.base_seed).select(range(self.max_sessions))
+            logger.info(f"Sampled corpus down to {len(dataset)} records (max_sessions={self.max_sessions})")
 
         # Convert to list-of-dicts for downstream processing
         trace_data_list: List[Dict[str, Any]] = []

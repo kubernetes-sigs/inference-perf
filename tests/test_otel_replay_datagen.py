@@ -65,7 +65,14 @@ from inference_perf.datagen.otel_trace_to_replay_graph import (
 )
 from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
 from inference_perf.apis.chat import ChatMessage
-from inference_perf.config import APIConfig, APIType, SessionReplayConfig
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    DataGenType,
+    OTelTraceReplayConfig,
+    SessionReplayConfig,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1685,3 +1692,99 @@ class TestBadToolCallHandling:
         assert tracker.get_session_recorded_substitution_event_ids("session_0") == []
         # No failure reason set
         assert api_data._substitution_failure_reason is None
+
+
+# ---------------------------------------------------------------------------
+# max_sessions corpus truncation (sample-before-build optimization)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxSessionsTruncation:
+    """
+    Verify the max_sessions optimization: when a bounded number of sessions will be
+    replayed, the datagen samples the filtered corpus down to that size BEFORE building
+    graphs, so it only builds (and holds) sessions that will actually be dispatched.
+
+    The subset is a reproducible random slice seeded by base_seed.
+    """
+
+    NUM_TRACES = 12
+
+    def _write_corpus(self, tmp_path: Path) -> Path:
+        """Write NUM_TRACES copies of simple_chain.json, each with a unique session id."""
+        if not SIMPLE_CHAIN_JSON.exists():
+            pytest.skip(f"Test trace not found: {SIMPLE_CHAIN_JSON}")
+        base = json.loads(SIMPLE_CHAIN_JSON.read_text())
+        corpus_dir = tmp_path / "traces"
+        corpus_dir.mkdir()
+        for i in range(self.NUM_TRACES):
+            trace = json.loads(json.dumps(base))  # deep copy
+            # The built session_id is derived from the span trace_id (see _process_trace_data);
+            # give each file a unique trace_id so sessions are distinguishable.
+            trace["trace_id"] = f"trace_{i:03d}"
+            for span in trace.get("spans", []):
+                span["trace_id"] = f"trace_{i:03d}"
+            (corpus_dir / f"trace_{i:03d}.json").write_text(json.dumps(trace))
+        return corpus_dir
+
+    def _make_generator(
+        self, corpus_dir: Path, max_sessions: Optional[int], base_seed: int = 42
+    ) -> OTelTraceReplayDataGenerator:
+        data_config = DataConfig(
+            type=DataGenType.OTelTraceReplay,
+            otel_trace_replay=OTelTraceReplayConfig(
+                trace_directory=str(corpus_dir),
+                use_static_model=True,
+                static_model_name="test-model",
+                skip_invalid_files=True,
+            ),
+        )
+        return OTelTraceReplayDataGenerator(
+            make_api_config(),
+            data_config,
+            make_mock_tokenizer(),
+            base_seed=base_seed,
+            max_sessions=max_sessions,
+        )
+
+    def test_no_cap_builds_full_corpus(self, tmp_path: Path) -> None:
+        """max_sessions=None builds every trace (baseline behavior)."""
+        corpus_dir = self._write_corpus(tmp_path)
+        gen = self._make_generator(corpus_dir, max_sessions=None)
+        assert gen.get_session_count() == self.NUM_TRACES
+
+    def test_cap_truncates_corpus(self, tmp_path: Path) -> None:
+        """max_sessions < corpus size builds exactly max_sessions sessions."""
+        corpus_dir = self._write_corpus(tmp_path)
+        cap = 5
+        gen = self._make_generator(corpus_dir, max_sessions=cap)
+        assert gen.get_session_count() == cap
+
+    def test_cap_at_least_corpus_size_is_noop(self, tmp_path: Path) -> None:
+        """A cap >= corpus size leaves the corpus intact (no truncation)."""
+        corpus_dir = self._write_corpus(tmp_path)
+        gen = self._make_generator(corpus_dir, max_sessions=self.NUM_TRACES + 100)
+        assert gen.get_session_count() == self.NUM_TRACES
+
+    def test_truncated_subset_is_reproducible(self, tmp_path: Path) -> None:
+        """Same base_seed + cap selects the identical subset of sessions across runs."""
+        corpus_dir = self._write_corpus(tmp_path)
+        cap = 5
+        gen_a = self._make_generator(corpus_dir, max_sessions=cap, base_seed=123)
+        gen_b = self._make_generator(corpus_dir, max_sessions=cap, base_seed=123)
+        ids_a = sorted(s.session_id for s in gen_a.sessions)
+        ids_b = sorted(s.session_id for s in gen_b.sessions)
+        assert ids_a == ids_b
+        assert len(ids_a) == cap
+
+    def test_different_seed_can_select_different_subset(self, tmp_path: Path) -> None:
+        """Different base_seed values may select different subsets (still a random sample)."""
+        corpus_dir = self._write_corpus(tmp_path)
+        cap = 5
+        # With 12 traces choosing 5, two well-separated seeds are overwhelmingly unlikely
+        # to yield the identical set; this guards against the seed being ignored entirely.
+        ids_seed1 = {s.session_id for s in self._make_generator(corpus_dir, max_sessions=cap, base_seed=1).sessions}
+        ids_seed2 = {s.session_id for s in self._make_generator(corpus_dir, max_sessions=cap, base_seed=99999).sessions}
+        assert len(ids_seed1) == cap
+        assert len(ids_seed2) == cap
+        assert ids_seed1 != ids_seed2
