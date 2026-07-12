@@ -569,6 +569,6 @@ class ChatCompletionAPIData(InferenceAPIData):
         output_len = tokenizer.count_tokens(output_text)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
             lora_adapter=lora_adapter,
         )

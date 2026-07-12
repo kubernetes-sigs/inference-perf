@@ -77,7 +77,7 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percenti
 
     for metric in metrics:
         response_metrics = metric.info.response_metrics
-        server_usage = response_metrics.server_usage if isinstance(response_metrics, StreamedResponseMetrics) else None
+        server_usage = response_metrics.server_usage if response_metrics else None
         prompt_tokens = server_usage.get("prompt_tokens") if server_usage else metric.info.request_metrics.text.input_tokens
         prompt_tokens_details = server_usage.get("prompt_tokens_details", {}) if server_usage else {}
 
@@ -110,7 +110,7 @@ def summarize_output_token_usage(metrics: List[RequestLifecycleMetric], percenti
 
     for metric in metrics:
         response_metrics = metric.info.response_metrics
-        server_usage = response_metrics.server_usage if isinstance(response_metrics, StreamedResponseMetrics) else None
+        server_usage = response_metrics.server_usage if response_metrics else None
         completion_tokens = (
             server_usage.get("completion_tokens")
             if server_usage
@@ -135,7 +135,7 @@ def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_ser
     """
     if response_metrics is None:
         return 0
-    if use_server_output_tokens and isinstance(response_metrics, StreamedResponseMetrics) and response_metrics.server_usage:
+    if use_server_output_tokens and response_metrics.server_usage:
         completion_tokens = response_metrics.server_usage.get("completion_tokens")
         if completion_tokens:
             return int(completion_tokens)
@@ -157,6 +157,7 @@ def calculate_goodput_metrics(
     ntpot_values: List[float],
     request_latency_values: List[float],
     itl_values: List[Optional[float]],
+    use_server_output_tokens: bool = False,
 ) -> Optional[dict[str, Any]]:
     has_constraints = False
     if goodput_config and goodput_config.constraints:
@@ -238,11 +239,7 @@ def calculate_goodput_metrics(
         if is_good:
             good_requests_count += 1
             in_tokens = m.info.request_metrics.text.input_tokens
-            out_tokens = (
-                m.info.response_metrics.output_tokens
-                if m.info.response_metrics and m.info.response_metrics.output_tokens is not None
-                else 0
-            )
+            out_tokens = effective_output_tokens(m.info.response_metrics, use_server_output_tokens)
             good_total_tokens += in_tokens + out_tokens
 
     goodput_percentage = (good_requests_count / total * 100) if total > 0 else 0.0
@@ -563,7 +560,14 @@ def summarize_requests(
 
     # --- Calculate Goodput Metrics ---
     goodput_metrics = calculate_goodput_metrics(
-        all_successful, goodput_config, ttft_values, tpot_values, ntpot_values, request_latency_values, itl_values
+        all_successful,
+        goodput_config,
+        ttft_values,
+        tpot_values,
+        ntpot_values,
+        request_latency_values,
+        itl_values,
+        use_server_output_tokens=use_server_output_tokens,
     )
 
     # --- Filter lists for summarization (remove Nones) ---
@@ -608,10 +612,7 @@ def summarize_requests(
                 else 0.0
             ),
             "output_tokens_per_sec": (
-                sum(
-                    safe_float(x.info.response_metrics.output_tokens) if x.info.response_metrics else 0.0
-                    for x in all_successful
-                )
+                sum(effective_output_tokens(x.info.response_metrics, use_server_output_tokens) for x in all_successful)
                 / total_time
                 if total_time > 0
                 else 0.0
@@ -619,7 +620,7 @@ def summarize_requests(
             "total_tokens_per_sec": (
                 sum(
                     safe_float(x.info.request_metrics.text.input_tokens)
-                    + (safe_float(x.info.response_metrics.output_tokens) if x.info.response_metrics else 0.0)
+                    + effective_output_tokens(x.info.response_metrics, use_server_output_tokens)
                     for x in all_successful
                 )
                 / total_time
@@ -842,7 +843,7 @@ class ReportGenerator:
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
             session_metrics = self.session_metrics_collector.get_metrics()
-            self._enrich_sessions(session_metrics, request_metrics)
+            self._enrich_sessions(session_metrics, request_metrics, use_server_output_tokens)
             session_reports = self.generate_session_reports(
                 session_metrics,
                 report_config.session_lifecycle,
@@ -906,6 +907,7 @@ class ReportGenerator:
         self,
         session_metrics: List[SessionLifecycleMetric],
         request_metrics: List[RequestLifecycleMetric],
+        use_server_output_tokens: bool = False,
     ) -> None:
         """Aggregate per-request token totals and error status onto each session.
 
@@ -921,7 +923,7 @@ class ReportGenerator:
                 inp, out = token_by_session[m.session_id]
                 token_by_session[m.session_id] = (
                     inp + m.info.request_metrics.text.input_tokens,
-                    out + (m.info.response_metrics.output_tokens if m.info.response_metrics else 0),
+                    out + effective_output_tokens(m.info.response_metrics, use_server_output_tokens),
                 )
                 if m.session_id not in error_by_session and m.error is not None:
                     error_by_session[m.session_id] = m.error

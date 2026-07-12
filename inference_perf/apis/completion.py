@@ -86,6 +86,6 @@ class CompletionAPIData(InferenceAPIData):
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
                 lora_adapter=lora_adapter,
             )

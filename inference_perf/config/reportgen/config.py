@@ -23,8 +23,6 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     per_adapter: Optional[bool] = True
     per_adapter_stage: Optional[bool] = False
     percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
-    # Normalize the per-output-token latency metrics (TPOT, NTPOT) by the server's
-    # reported usage.completion_tokens instead of the client-side re-tokenized count.
     use_server_output_tokens: bool = False
 
 
