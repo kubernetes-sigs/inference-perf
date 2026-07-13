@@ -1,6 +1,12 @@
 import pytest
-from inference_perf.reportgen.base import summarize_requests
-from inference_perf.apis.base import RequestLifecycleMetric, InferenceInfo, StreamedResponseMetrics
+from inference_perf.reportgen.base import summarize_requests, ReportGenerator
+from inference_perf.apis.base import (
+    RequestLifecycleMetric,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    SessionLifecycleMetric,
+)
 from inference_perf.config.reportgen.config import RequestLifecycleMetricsReportConfig
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -332,6 +338,125 @@ def test_use_server_output_tokens_flag_switches_tpot_ntpot_divisor() -> None:
     assert server.successes["output_tokens"] == pytest.approx(
         {"total": 5.0, "mean": 5.0, "min": 5.0, "max": 5.0, "median": 5.0}
     )
+
+
+def test_use_server_output_tokens_switches_output_throughput() -> None:
+    """The aggregate output/total tokens_per_sec honor the flag: server
+    completion_tokens when on, client re-tokenized output_tokens when off."""
+
+    def make_metric() -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=10,  # client re-tokenized count
+                output_token_times=[1.0, 3.0],
+                server_usage={"completion_tokens": 5},  # exact server count
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None
+        )
+
+    # total_time = 10.0s (max end - min start).
+    default = summarize_requests([make_metric()], [50])
+    assert default.successes["throughput"]["output_tokens_per_sec"] == pytest.approx(10.0 / 10.0)
+    assert default.successes["throughput"]["total_tokens_per_sec"] == pytest.approx((5.0 + 10.0) / 10.0)
+
+    server = summarize_requests([make_metric()], [50], use_server_output_tokens=True)
+    assert server.successes["throughput"]["output_tokens_per_sec"] == pytest.approx(5.0 / 10.0)
+    assert server.successes["throughput"]["total_tokens_per_sec"] == pytest.approx((5.0 + 5.0) / 10.0)
+
+
+def test_use_server_output_tokens_works_for_non_streaming() -> None:
+    """The flag applies to unary (non-streaming) responses too: NTPOT and the
+    output throughput use the server's completion_tokens when it's available."""
+
+    def make_metric() -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=10,  # client re-tokenized count
+                server_usage={"completion_tokens": 5},  # exact server count
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None
+        )
+
+    # NTPOT = (end - start) / output_tokens over all successful requests.
+    default = summarize_requests([make_metric()], [50])
+    assert default.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(10.0 / 10.0)
+    assert default.successes["throughput"]["output_tokens_per_sec"] == pytest.approx(10.0 / 10.0)
+
+    server = summarize_requests([make_metric()], [50], use_server_output_tokens=True)
+    assert server.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(10.0 / 5.0)
+    assert server.successes["throughput"]["output_tokens_per_sec"] == pytest.approx(5.0 / 10.0)
+
+
+def test_use_server_output_tokens_switches_goodput_token_total() -> None:
+    """Goodput's token_goodput counts server completion_tokens when the flag is on."""
+    from inference_perf.config.reportgen.config import GoodputConfig
+
+    def make_metric() -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=10,  # client count
+                output_token_times=[1.0, 3.0],
+                server_usage={"completion_tokens": 5},  # server count
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="r", info=info, error=None
+        )
+
+    # A lenient latency constraint keeps the single request "good"; benchmark
+    # window is 10s, so token_goodput == good_total_tokens / 10.
+    goodput_config = GoodputConfig(constraints={"request_latency": 100.0})
+
+    default = summarize_requests([make_metric()], [50], goodput_config=goodput_config)
+    assert default.successes["goodput_metrics"]["token_goodput"] == pytest.approx((5.0 + 10.0) / 10.0)
+
+    server = summarize_requests([make_metric()], [50], goodput_config=goodput_config, use_server_output_tokens=True)
+    assert server.successes["goodput_metrics"]["token_goodput"] == pytest.approx((5.0 + 5.0) / 10.0)
+
+
+def test_enrich_sessions_honors_use_server_output_tokens() -> None:
+    """Per-session total_output_tokens uses the server count when the flag is on."""
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(output_tokens=10, server_usage={"completion_tokens": 5}),
+    )
+    request_metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=10.0,
+        request_data="r",
+        info=info,
+        error=None,
+        session_id="s1",
+    )
+
+    def make_session() -> SessionLifecycleMetric:
+        return SessionLifecycleMetric(
+            session_id="s1",
+            stage_id=0,
+            file_path="s1.json",
+            start_time=0.0,
+            end_time=10.0,
+            duration_sec=10.0,
+            num_events=1,
+            num_events_completed=1,
+        )
+
+    # _enrich_sessions doesn't use `self`, so call it unbound with a dummy self.
+    default_session = make_session()
+    ReportGenerator._enrich_sessions(None, [default_session], [request_metric])  # type: ignore[arg-type]
+    assert default_session.total_output_tokens == 10
+
+    server_session = make_session()
+    ReportGenerator._enrich_sessions(None, [server_session], [request_metric], use_server_output_tokens=True)  # type: ignore[arg-type]
+    assert server_session.total_output_tokens == 5
 
 
 def test_use_server_output_tokens_falls_back_without_usage() -> None:

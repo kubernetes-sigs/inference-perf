@@ -23,6 +23,9 @@ from inference_perf.config import APIConfig, APIType
 
 class ResponseMetrics(BaseModel):
     output_tokens: int = 0
+    # Last-seen `usage` dict reported by the server (streaming: the trailing
+    # usage chunk; non-streaming: the response body's `usage`).
+    server_usage: Optional[dict[str, Any]] = None
 
 
 class UnaryResponseMetrics(ResponseMetrics):
@@ -33,7 +36,6 @@ class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
     output_token_times: List[float] = []
-    server_usage: Optional[dict[str, Any]] = None
 
 
 class InferenceInfo(BaseModel):
