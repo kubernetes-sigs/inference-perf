@@ -164,6 +164,7 @@ class Worker(mp.Process):
                     get = partial(self.request_queue.get, timeout=timeout)
                     item = await event_loop.run_in_executor(None, get)
                     if item is None:
+                        self.request_queue.task_done()
                         semaphore.release()
                         continue
                 except TimeoutError:
@@ -397,6 +398,7 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         progress_ctx: Optional[Progress] = None,
+        stage_barrier: Optional[SyncBarrier] = None,
     ) -> None:
         """Run a session-based trace replay stage.
 
@@ -693,21 +695,19 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
-        # Cancel in-flight tasks and drain stranded queue items.
-        # In the happy path this is a no-op (all items already processed).
-        # In the failure path, process_failure sends a completion notification
-        # immediately — before the worker picks up all items from the queue.
-        # Without this, request_queue.join() hangs on items that never got task_done().
+        # Cancel in-flight tasks so process_failure completions don't strand queued
+        # items with no task_done(), which would hang request_queue.join().
         if cancel_signal is not None:
             cancel_signal.set()
-            await sleep(1)
-            while active_requests_counter.value > 0:
-                await sleep(1)
+
+        # Stop workers consuming, then rendezvous so every worker has run task_done()
+        # on all items it pulled before we drain/join (avoids orphaned untasked items).
+        request_phase.clear()
+        if stage_barrier:
+            stage_barrier.wait()
+        if cancel_signal is not None:
             request_queue.drain()
             cancel_signal.clear()
-
-        # Clear the request_phase event to force worker gather
-        request_phase.clear()
         request_queue.join()
 
         # End stage-level span if trace_per_stage is enabled
@@ -742,6 +742,7 @@ class LoadGenerator:
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
         progress_ctx: Optional[Progress] = None,
+        stage_barrier: Optional[SyncBarrier] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -818,19 +819,19 @@ class LoadGenerator:
 
         # Trigger cleanup if timed out or received SIGINT
         if (timed_out or self.interrupt_sig) and cancel_signal:
-            # Cancel signal must be set before request_phase
-            # Allow time for workers to process the signal
             cancel_signal.set()
-            await sleep(1)
-            while active_requests_counter.value > 0:
-                await sleep(1)
-            request_queue.drain()
-            cancel_signal.clear()
             stage_status = StageStatus.FAILED
         else:
             stage_status = StageStatus.COMPLETED
-        # Clear the request_phase event to force worker gather
+
+        # Stop workers consuming, then rendezvous so every worker has run task_done()
+        # on all items it pulled before we drain/join (avoids orphaned untasked items).
         request_phase.clear()
+        if stage_barrier:
+            stage_barrier.wait()
+        if stage_status == StageStatus.FAILED and cancel_signal:
+            request_queue.drain()
+            cancel_signal.clear()
         request_queue.join()
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
@@ -851,6 +852,7 @@ class LoadGenerator:
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: SyncEvent,
+        stage_barrier: Optional[SyncBarrier] = None,
     ) -> None:
         """
         Runs a preliminary load test to automatically determine the server's saturation point
@@ -889,6 +891,7 @@ class LoadGenerator:
             request_phase,
             timeout=timeout,
             cancel_signal=cancel_signal,
+            stage_barrier=stage_barrier,
         )
 
         aggregator_task.cancel()
@@ -973,7 +976,13 @@ class LoadGenerator:
         if self.sweep_config:
             try:
                 await self.preprocess(
-                    client, request_queue, active_requests_counter, finished_requests_counter, request_phase, cancel_signal
+                    client,
+                    request_queue,
+                    active_requests_counter,
+                    finished_requests_counter,
+                    request_phase,
+                    cancel_signal,
+                    stage_barrier=stage_barrier,
                 )
             except Exception as e:
                 logger.error(f"Preprocessing exception: {e}")
@@ -1024,6 +1033,7 @@ class LoadGenerator:
                         request_phase,
                         cancel_signal,
                         progress_ctx=progress,
+                        stage_barrier=stage_barrier,
                     )
                 # Update worker concurrency for concurrent load type
                 elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
@@ -1045,6 +1055,7 @@ class LoadGenerator:
                         cancel_signal,
                         concurrency_level=concurrency_level,
                         progress_ctx=progress,
+                        stage_barrier=stage_barrier,
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
@@ -1061,11 +1072,10 @@ class LoadGenerator:
                         cancel_signal,
                         concurrency_level=concurrency_level,
                         progress_ctx=progress,
+                        stage_barrier=stage_barrier,
                     )
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
-
-                stage_barrier.wait()
 
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
