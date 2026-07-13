@@ -12,9 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Metric exposition surfaces (Prometheus, pushgateway, etc.) for inference-perf."""
+"""Aggregation point for the exported metric sets.
 
-from .prometheus import PrometheusMetricsServer
-from .registry import MetricSpec, MetricsHub, PrometheusMetric, build_metrics
+``core.py`` holds the specs exported on every run. Config-conditional sets
+(streaming latency histograms, per-stage gauges, and so on) should live in
+sibling modules and be appended to ``ALL_SPECS`` here as they are added.
+"""
 
-__all__ = ["MetricSpec", "MetricsHub", "PrometheusMetric", "PrometheusMetricsServer", "build_metrics"]
+from typing import Any, Tuple
+
+from inference_perf.observability.metrics.registry import MetricSpec
+
+from .core import CORE_SPECS
+
+ALL_SPECS: Tuple[MetricSpec[Any], ...] = (*CORE_SPECS,)
+
+__all__ = ["ALL_SPECS", "CORE_SPECS"]

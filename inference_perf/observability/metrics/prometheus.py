@@ -12,68 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal Prometheus exposition surface for inference-perf runtime observability.
+"""Prometheus exposition surface for inference-perf runtime observability.
 
-Seed of kubernetes-sigs/inference-perf#489. Exposes a single gauge,
-``inference_perf_run_elapsed_seconds``, over an HTTP ``/metrics`` endpoint.
-The full metric set and naming conventions are intentionally out of scope here;
-expect this surface to grow once the conventions are agreed upon.
+Serves a caller-provided ``CollectorRegistry`` over an HTTP ``/metrics``
+endpoint. Which metrics exist is decided by
+:func:`inference_perf.observability.metrics.registry.build_metrics`, not here.
 """
 
 from __future__ import annotations
 
-import time
 from threading import Thread
-from typing import Iterator, Optional
+from typing import Optional
 from wsgiref.simple_server import WSGIServer
 
 from prometheus_client import CollectorRegistry, start_http_server
-from prometheus_client.core import GaugeMetricFamily
-from prometheus_client.registry import Collector
 
 DEFAULT_PORT = 9464
 
 
-class _RunElapsedCollector(Collector):
-    def __init__(self) -> None:
-        self._start_time: Optional[float] = None
-
-    def mark_start(self) -> None:
-        self._start_time = time.monotonic()
-
-    def collect(self) -> Iterator[GaugeMetricFamily]:
-        elapsed = 0.0 if self._start_time is None else time.monotonic() - self._start_time
-        yield GaugeMetricFamily(
-            "inference_perf_run_elapsed_seconds",
-            "Wall-clock seconds elapsed since the metrics server started.",
-            value=elapsed,
-        )
-
-
 class PrometheusMetricsServer:
-    """Serves inference-perf's own metrics over an HTTP ``/metrics`` endpoint.
+    """Serves a ``CollectorRegistry`` over an HTTP ``/metrics`` endpoint.
 
-    Currently emits only ``inference_perf_run_elapsed_seconds``. Use a fresh
-    ``CollectorRegistry`` per instance (not the default global one) so multiple
-    runs in the same process do not collide.
+    Pass the registry of a :class:`~inference_perf.observability.metrics.registry.MetricsHub`
+    built by ``build_metrics`` (a fresh registry per run, never the global
+    default one, so multiple runs in the same process do not collide).
 
     Pass ``port=0`` to bind to an ephemeral port; the actual port is then
     available via :attr:`bound_port`.
     """
 
-    def __init__(self, port: int = DEFAULT_PORT, addr: str = "0.0.0.0") -> None:
+    def __init__(self, registry: CollectorRegistry, port: int = DEFAULT_PORT, addr: str = "0.0.0.0") -> None:
+        self.registry = registry
         self.port = port
         self.addr = addr
-        self.registry = CollectorRegistry()
-        self._elapsed = _RunElapsedCollector()
-        self.registry.register(self._elapsed)
         self._server: Optional[WSGIServer] = None
         self._thread: Optional[Thread] = None
 
     def start(self) -> None:
         if self._server is not None:
             raise RuntimeError("PrometheusMetricsServer is already running")
-        self._elapsed.mark_start()
         self._server, self._thread = start_http_server(
             port=self.port,
             addr=self.addr,
