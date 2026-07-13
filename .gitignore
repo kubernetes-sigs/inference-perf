@@ -184,5 +184,8 @@ reports-*/
 # VSCode settings (keep local configurations)
 .vscode/
 
+# Claude Code local settings and worktrees
+.claude/
+
 # Optional live-test per-case reports
 tests/optional/**/output/

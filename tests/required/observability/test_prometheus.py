@@ -12,19 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
 import urllib.request
 from typing import Iterator
 
 import pytest
+from prometheus_client import CollectorRegistry, Counter
 
 from inference_perf.observability.metrics import PrometheusMetricsServer
 from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
 
 
+def _registry_with_counter() -> CollectorRegistry:
+    registry = CollectorRegistry()
+    Counter("test_scrapeable", "A counter the server should expose.", registry=registry)
+    return registry
+
+
 @pytest.fixture
 def server() -> Iterator[PrometheusMetricsServer]:
-    s = PrometheusMetricsServer(port=0)
+    s = PrometheusMetricsServer(_registry_with_counter(), port=0)
     s.start()
     yield s
     s.stop()
@@ -36,30 +42,15 @@ def _scrape(port: int) -> str:
     return body.decode()
 
 
-def _parse_elapsed(body: str) -> float:
-    for line in body.splitlines():
-        if line.startswith("inference_perf_run_elapsed_seconds "):
-            return float(line.split()[1])
-    raise AssertionError(f"inference_perf_run_elapsed_seconds not found in:\n{body}")
-
-
 def test_default_port_constant() -> None:
     assert DEFAULT_PORT == 9464
+    assert PrometheusMetricsServer(_registry_with_counter()).port == DEFAULT_PORT
 
 
-def test_server_starts_and_exposes_elapsed_gauge(server: PrometheusMetricsServer) -> None:
+def test_server_exposes_given_registry(server: PrometheusMetricsServer) -> None:
     assert server.bound_port is not None
     body = _scrape(server.bound_port)
-    assert "inference_perf_run_elapsed_seconds" in body
-    assert _parse_elapsed(body) >= 0.0
-
-
-def test_elapsed_gauge_advances_between_scrapes(server: PrometheusMetricsServer) -> None:
-    assert server.bound_port is not None
-    first = _parse_elapsed(_scrape(server.bound_port))
-    time.sleep(0.1)
-    second = _parse_elapsed(_scrape(server.bound_port))
-    assert second > first
+    assert "test_scrapeable_total 0.0" in body
 
 
 def test_double_start_raises(server: PrometheusMetricsServer) -> None:
@@ -68,7 +59,7 @@ def test_double_start_raises(server: PrometheusMetricsServer) -> None:
 
 
 def test_stop_is_idempotent() -> None:
-    s = PrometheusMetricsServer(port=0)
+    s = PrometheusMetricsServer(_registry_with_counter(), port=0)
     s.start()
     s.stop()
     s.stop()
