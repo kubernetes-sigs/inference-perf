@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import json
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -40,6 +41,120 @@ from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
+
+# Labels derived purely from the HTTP status code. These are authoritative: the
+# code comes from response.status, not from free-text, so a 400 can never be
+# mislabeled as "Internal Server Error" because its message happens to contain
+# "500". Code-specific semantics belong here, NOT in _HTTP_ERROR_LABELS.
+_HTTP_CODE_LABELS: dict[str, str] = {
+    "429": "Rate Limit",
+    "500": "Internal Server Error",
+    "502": "Bad Gateway",
+    "503": "Service Unavailable",
+    "504": "Gateway Timeout",
+}
+
+# Labels inferred from the error message body. Only include semantics that the
+# status code alone does NOT determine.
+_HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"context.window|context length|maximum context|max.?tokens|token.?limit", re.I), "Context Window"),
+    (
+        re.compile(
+            r"invalid.?json|json.?parse|malformed.?json|unexpected.?token|expecting value|unterminated string|expecting ',' delimiter",
+            re.I,
+        ),
+        "Invalid JSON",
+    ),
+    (re.compile(r"timeout|timed.?out", re.I), "Timeout"),
+    (re.compile(r"model.?not.?found|no such model", re.I), "Model Not Found"),
+]
+
+_NON_HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"timeout|timed.?out", re.I), "Timeout"),
+    (re.compile(r"connection.?refused|connect", re.I), "Connection Error"),
+]
+
+
+def parse_error_message(raw: str) -> str:
+    """Extract the human-readable message from a raw error_msg string.
+
+    error_msg is typically a JSON body like:
+      {"error": {"message": "...", "type": "...", ...}}
+    Returns the inner message string when present, otherwise raw as-is.
+    """
+    try:
+        body = json.loads(raw)
+        if isinstance(body, dict):
+            error = body.get("error") or body
+            if isinstance(error, dict) and "message" in error:
+                return str(error["message"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return raw
+
+
+def make_concise_label(error_type: str, error_msg: str) -> str:
+    """Produce a short human-readable label for an error entry.
+
+    For HTTP errors (error_type == "HTTP Error <code>"), returns "<code> - <label>".
+    The label is derived, in order, from: the status code itself
+    (_HTTP_CODE_LABELS), then message-specific patterns (_HTTP_ERROR_LABELS),
+    else "other".
+    For non-HTTP errors, matches against _NON_HTTP_ERROR_LABELS, falling back to a
+    lowercased error_type.
+    """
+    if error_type.startswith("HTTP Error "):
+        try:
+            code = error_type.split()[-1]
+        except IndexError:
+            code = "?"
+        code_label = _HTTP_CODE_LABELS.get(code)
+        if code_label is not None:
+            return f"{code} - {code_label}"
+        for pattern, label in _HTTP_ERROR_LABELS:
+            if pattern.search(error_msg):
+                return f"{code} - {label}"
+        return f"{code} - other"
+    for pattern, label in _NON_HTTP_ERROR_LABELS:
+        if pattern.search(error_msg):
+            return label
+    return error_type.lower().strip()
+
+
+def build_error_counts(metrics_errors: list[tuple[str, str, Optional[str]]], max_error_messages: int) -> dict[str, Any]:
+    """Build a {<label>: {count, messages}} dict from (error_type, error_msg, id) triples.
+
+    ``count`` reflects the true total number of errors for each label.
+    Identical messages within a label are merged into a single entry of the form
+    ``{"message": <text>, "session_ids": [...]}``; ``session_ids`` collects the ids
+    of every occurrence (omitted when no ids are present). The number of distinct
+    messages retained per label is capped at ``max_error_messages``.
+    Entries are sorted by descending count.
+    """
+    label_counts: dict[str, int] = defaultdict(int)
+    # Per label, merge by message text: message -> ordered list of session ids.
+    label_messages: dict[str, dict[str, list[str]]] = defaultdict(dict)
+    for error_type, error_msg, entity_id in metrics_errors:
+        parsed_msg = parse_error_message(error_msg)
+        label = make_concise_label(error_type, parsed_msg)
+        label_counts[label] += 1
+        merged = label_messages[label]
+        if parsed_msg in merged:
+            if entity_id is not None:
+                merged[parsed_msg].append(entity_id)
+        elif len(merged) < max_error_messages:
+            merged[parsed_msg] = [entity_id] if entity_id is not None else []
+
+    result: dict[str, Any] = {}
+    for label in sorted(label_counts, key=lambda k: -label_counts[k]):
+        messages: list[dict[str, Any]] = []
+        for message, session_ids in label_messages[label].items():
+            entry: dict[str, Any] = {"message": message}
+            if session_ids:
+                entry["session_ids"] = session_ids
+            messages.append(entry)
+        result[label] = {"count": label_counts[label], "messages": messages}
+    return result
 
 
 def safe_float(value: Any) -> float:
@@ -430,6 +545,7 @@ def summarize_requests(
     goodput_config: Optional[GoodputConfig] = None,
     tokenizer: Optional[CustomTokenizer] = None,
     use_server_output_tokens: bool = False,
+    max_error_messages: int = 100,
 ) -> ResponsesSummary:
     all_successful: List[RequestLifecycleMetric] = [x for x in metrics if x.error is None]
     all_failed: List[RequestLifecycleMetric] = [x for x in metrics if x.error is not None]
@@ -679,6 +795,10 @@ def summarize_requests(
             "prompt_len": summarize(
                 [safe_float(failed.info.request_metrics.text.input_tokens) for failed in all_failed], percentiles
             ),
+            "by_label": build_error_counts(
+                [(m.error.error_type, m.error.error_msg, m.session_id) for m in all_failed if m.error is not None],
+                max_error_messages,
+            ),
         },
     )
 
@@ -720,6 +840,7 @@ class ReportGenerator:
         lifecycle_reports = []
         percentiles = report_config.request_lifecycle.percentiles
         use_server_output_tokens = report_config.request_lifecycle.use_server_output_tokens
+        max_error_messages = report_config.request_lifecycle.max_error_messages
 
         tokenizer = None
         if self.config.tokenizer:
@@ -742,6 +863,7 @@ class ReportGenerator:
                         goodput_config=report_config.goodput,
                         tokenizer=tokenizer,
                         use_server_output_tokens=use_server_output_tokens,
+                        max_error_messages=max_error_messages,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -765,6 +887,7 @@ class ReportGenerator:
                             goodput_config=report_config.goodput,
                             tokenizer=tokenizer,
                             use_server_output_tokens=use_server_output_tokens,
+                            max_error_messages=max_error_messages,
                         ).model_dump(),
                     )
                 else:
@@ -777,6 +900,7 @@ class ReportGenerator:
                             goodput_config=report_config.goodput,
                             tokenizer=tokenizer,
                             use_server_output_tokens=use_server_output_tokens,
+                            max_error_messages=max_error_messages,
                         ).model_dump(),
                     )
                 lifecycle_reports.append(report_file)
@@ -812,6 +936,7 @@ class ReportGenerator:
                         goodput_config=report_config.goodput,
                         tokenizer=tokenizer,
                         use_server_output_tokens=use_server_output_tokens,
+                        max_error_messages=max_error_messages,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -833,6 +958,7 @@ class ReportGenerator:
                         goodput_config=report_config.goodput,
                         tokenizer=tokenizer,
                         use_server_output_tokens=use_server_output_tokens,
+                        max_error_messages=max_error_messages,
                     ).model_dump(),
                 )
                 lifecycle_reports.append(report_file)
@@ -849,13 +975,16 @@ class ReportGenerator:
                 report_config.session_lifecycle,
                 percentiles,
                 runtime_parameters,
+                max_error_messages,
             )
             lifecycle_reports.extend(session_reports)
 
         lifecycle_reports.append(self.generate_config_report())
         return lifecycle_reports
 
-    def summarize_sessions(self, metrics: List[SessionLifecycleMetric], percentiles: List[float]) -> Dict[str, Any]:
+    def summarize_sessions(
+        self, metrics: List[SessionLifecycleMetric], percentiles: List[float], max_error_messages: int = 100
+    ) -> Dict[str, Any]:
         """Compute aggregated stats across a list of session lifecycle metrics."""
         num_sessions = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)
@@ -870,9 +999,23 @@ class ReportGenerator:
         sessions_with_recorded_substitution = sum(
             1 for m in metrics if m.n_recorded_substitutions is not None and m.n_recorded_substitutions > 0
         )
-        total_recorded_substitutions = sum(
-            m.n_recorded_substitutions for m in metrics if m.n_recorded_substitutions is not None
-        )
+        sessions_with_substitutions = [
+            m for m in metrics if m.n_recorded_substitutions is not None and m.n_recorded_substitutions > 0
+        ]
+        # total_recorded_substitutions carries the aggregate count plus a capped
+        # sample of per-session example messages
+        total_recorded_substitutions = {
+            "count": sum(
+                m.n_recorded_substitutions for m in sessions_with_substitutions if m.n_recorded_substitutions is not None
+            ),
+            "messages": [
+                {
+                    "message": f"substitutions={m.n_recorded_substitutions} event_ids={m.recorded_substitution_event_ids}",
+                    "session_ids": [m.session_id],
+                }
+                for m in sessions_with_substitutions[:max_error_messages]
+            ],
+        }
 
         sessions_per_second = 0.0
         if num_sessions > 0:
@@ -943,6 +1086,7 @@ class ReportGenerator:
         report_config: SessionLifecycleReportConfig,
         percentiles: List[float],
         runtime_parameters: PerfRuntimeParameters,
+        max_error_messages: int,
     ) -> List[ReportFile]:
         """Generate session-level lifecycle reports."""
         reports: List[ReportFile] = []
@@ -954,7 +1098,7 @@ class ReportGenerator:
             reports.append(
                 ReportFile(
                     name="summary_session_lifecycle_metrics",
-                    contents=self.summarize_sessions(session_metrics, percentiles),
+                    contents=self.summarize_sessions(session_metrics, percentiles, max_error_messages),
                 )
             )
 
@@ -965,7 +1109,7 @@ class ReportGenerator:
             for stage_id, stage_metrics in stage_buckets.items():
                 # Get stage runtime info and build metadata
                 stage_info = runtime_parameters.stages.get(stage_id)
-                stage_summary = self.summarize_sessions(stage_metrics, percentiles)
+                stage_summary = self.summarize_sessions(stage_metrics, percentiles, max_error_messages)
 
                 if stage_info:
                     # Determine status string

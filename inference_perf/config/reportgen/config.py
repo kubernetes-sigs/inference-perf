@@ -24,6 +24,9 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     per_adapter_stage: Optional[bool] = False
     percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
     use_server_output_tokens: bool = False
+    # Cap on the number of per-error example messages retained per error label
+    # (in failures.by_label) and per substitution entry
+    max_error_messages: int = 100
 
 
 class PrometheusMetricsReportConfig(BaseModel):

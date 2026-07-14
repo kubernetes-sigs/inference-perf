@@ -17,7 +17,7 @@ that should be populated when a mix of multimodal requests is observed."""
 import typing
 from unittest.mock import Mock
 
-from inference_perf.apis import InferenceInfo, StreamedResponseMetrics
+from inference_perf.apis import ErrorResponseInfo, InferenceInfo, StreamedResponseMetrics
 from inference_perf.payloads import (
     RequestMetrics,
     Text,
@@ -214,7 +214,8 @@ def test_lifecycle_report_shape_with_failures() -> None:
     failure.start_time = 1.0
     failure.end_time = 1.2
     failure.scheduled_time = 1.0
-    failure.error = Mock()
+    failure.error = ErrorResponseInfo(error_type="HTTP Error 500", error_msg="Internal Server Error")
+    failure.session_id = None
     failure.ttft_slo_sec = None
     failure.tpot_slo_sec = None
     failure.request_data = "bad"
@@ -230,3 +231,4 @@ def test_lifecycle_report_shape_with_failures() -> None:
     assert report["failures"]["count"] == 1
     _assert_summary(report["failures"]["request_latency"])
     _assert_summary(report["failures"]["prompt_len"])
+    assert report["failures"]["by_label"]["500 - Internal Server Error"]["count"] == 1

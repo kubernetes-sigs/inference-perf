@@ -47,6 +47,8 @@ def print_summary_table(reports: List[ReportFile]) -> None:
 
     if not stage_reports:
         rprint("[yellow]No per-stage lifecycle metrics found to display summary table.[/yellow]")
+        print_session_summary_tables(reports)
+        print_error_summary_table(reports)
         return
 
     # Sort stages by ID
@@ -281,6 +283,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
 
     # Print session-level metrics if available
     print_session_summary_tables(reports)
+    print_error_summary_table(reports)
 
 
 def print_session_summary_tables(reports: List[ReportFile]) -> None:
@@ -352,7 +355,12 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         total_events_completed = contents.get("total_events_completed", 0)
         total_events_cancelled = contents.get("total_events_cancelled", 0)
         sessions_per_second = contents.get("sessions_per_second", 0.0)
-        total_recorded_substitutions = contents.get("total_recorded_substitutions", 0)
+        # total_recorded_substitutions is a {count, messages} dict; fall back to a
+        # bare int for older report shapes.
+        substitutions_entry = contents.get("total_recorded_substitutions", 0)
+        total_recorded_substitutions = (
+            substitutions_entry.get("count", 0) if isinstance(substitutions_entry, dict) else substitutions_entry
+        )
 
         # Color code succeeded/failed sessions
         succeeded_str = f"[green]{num_sessions_succeeded}[/]"
@@ -434,3 +442,79 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     console.print(session_summary_table)
     console.print(session_duration_table)
     console.print(session_tokens_table)
+
+
+def _collect_error_labels(failures_by_stage: Dict[int, Dict[str, Any]]) -> list[str]:
+    """Return the ordered union of error labels (from failures.by_label) across all stages."""
+    seen: list[str] = []
+    for by_label in failures_by_stage.values():
+        for key in by_label:
+            if key not in seen:
+                seen.append(key)
+    return seen
+
+
+def _build_error_table(
+    sorted_stages: list[int],
+    successes_by_stage: Dict[int, int],
+    failures_by_stage: Dict[int, Dict[str, Any]],
+    substitutions_by_stage: Dict[int, int],
+) -> Table:
+    """Build the per-stage error summary table."""
+    labels = _collect_error_labels(failures_by_stage)
+    has_substitutions = any(substitutions_by_stage.get(s, 0) > 0 for s in sorted_stages)
+    table = Table(title="[bold magenta]Request Error Summary[/bold magenta]", show_header=True, header_style="bold cyan")
+    table.add_column("Stage", justify="right")
+    table.add_column("Successes", justify="right")
+    if has_substitutions:
+        table.add_column("Bad Tool Calls Substitutions", justify="right")
+    for label in labels:
+        table.add_column(label, justify="right")
+
+    for stage_id in sorted_stages:
+        successes = successes_by_stage.get(stage_id, 0)
+        row = [str(stage_id), f"[green]{successes}[/green]"]
+        if has_substitutions:
+            sub_count = substitutions_by_stage.get(stage_id, 0)
+            color = "yellow" if sub_count > 0 else "green"
+            row.append(f"[{color}]{sub_count}[/]")
+        by_label = failures_by_stage.get(stage_id, {})
+        for label in labels:
+            entry = by_label.get(label)
+            count = entry["count"] if isinstance(entry, dict) else 0
+            color = "red" if count > 0 else "green"
+            row.append(f"[{color}]{count}[/]")
+        table.add_row(*row)
+    return table
+
+
+def print_error_summary_table(reports: List[ReportFile]) -> None:
+    """Print a per-stage error summary table, joining the folded lifecycle reports.
+
+    Per-stage successes and error-label breakdown come from
+    ``stage_N_lifecycle_metrics`` and substitution counts from
+    ``stage_N_session_lifecycle_metrics``.
+    """
+    successes_by_stage: Dict[int, int] = {}
+    failures_by_stage: Dict[int, Dict[str, Any]] = {}
+    substitutions_by_stage: Dict[int, int] = {}
+
+    for report in reports:
+        stage_id = extract_stage_id(report.name)
+        if stage_id is not None:
+            successes = report.contents.get("successes", {})
+            successes_by_stage[stage_id] = successes.get("count", 0) if isinstance(successes, dict) else 0
+            failures = report.contents.get("failures", {})
+            failures_by_stage[stage_id] = failures.get("by_label", {}) if isinstance(failures, dict) else {}
+            continue
+        session_stage_id = extract_session_stage_id(report.name)
+        if session_stage_id is not None:
+            sub_entry = report.contents.get("total_recorded_substitutions", 0)
+            substitutions_by_stage[session_stage_id] = sub_entry.get("count", 0) if isinstance(sub_entry, dict) else sub_entry
+
+    if not successes_by_stage and not failures_by_stage:
+        return
+
+    sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
+    console = Console()
+    console.print(_build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage))

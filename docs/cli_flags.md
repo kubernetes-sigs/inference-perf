@@ -245,6 +245,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--report.request_lifecycle.per_adapter_stage` | boolean | Matches report.request_lifecycle.per_adapter_stage in config |
 | `--report.request_lifecycle.percentiles` | JSON | Matches report.request_lifecycle.percentiles in config |
 | `--report.request_lifecycle.use_server_output_tokens` | boolean | Matches report.request_lifecycle.use_server_output_tokens in config |
+| `--report.request_lifecycle.max_error_messages` | int | Matches report.request_lifecycle.max_error_messages in config |
 | `--report.prometheus.summary` | boolean | Matches report.prometheus.summary in config |
 | `--report.prometheus.per_stage` | boolean | Matches report.prometheus.per_stage in config |
 | `--report.session_lifecycle.summary` | boolean | Matches report.session_lifecycle.summary in config |

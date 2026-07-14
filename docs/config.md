@@ -248,6 +248,8 @@ report:
     per_adapter_stage: false  # Generate metrics grouped by adapter and stage
     percentiles: [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9] # List of percentiles to calculate
     use_server_output_tokens: false # Treat the server's usage.completion_tokens as the source of truth for output tokens.
+    max_error_messages: 100   # Max number of unique error messages retained per error label (failures.by_label) and per bad tool call substitution entry
+    use_server_output_tokens: false # Treat the server's usage.completion_tokens as the source of truth for output tokens.
   prometheus:
     summary: true             # Include Prometheus metrics summary
     per_stage: false          # Disable Prometheus stage breakdown
