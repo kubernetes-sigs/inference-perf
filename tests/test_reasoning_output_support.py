@@ -31,13 +31,13 @@ import pytest
 from aiohttp import ClientResponse
 
 from inference_perf.apis.chat import ChatMessage
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
     WorkerSessionTracker,
 )
-from inference_perf.datagen.replay_graph_types import InputSegment
+from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
 
 # ---------------------------------------------------------------------------

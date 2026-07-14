@@ -1,7 +1,7 @@
 import json
 import pytest
 from inference_perf.apis import CompletionAPIData
-from inference_perf.datagen.hf_sharegpt_datagen import HFShareGPTDataGenerator
+from inference_perf.datagen.dataset.hf_sharegpt_datagen import HFShareGPTDataGenerator
 
 
 def test_get_conversation_turn_content_dict() -> None:

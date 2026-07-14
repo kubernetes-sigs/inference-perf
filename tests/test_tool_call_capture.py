@@ -17,12 +17,12 @@
 from typing import Any, Dict, List, Optional
 
 import pytest
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
 )
-from inference_perf.datagen.replay_graph_types import InputSegment
+from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
 
 _TOOL_CALLS = [
@@ -75,7 +75,7 @@ class TestSubstitutionWithToolCalls:
         original_messages: List[Dict[str, Any]],
         input_segments: List[InputSegment],
     ) -> SessionChatCompletionAPIData:
-        from inference_perf.datagen.replay_graph_session_datagen import WorkerSessionTracker
+        from inference_perf.datagen.replay.replay_graph_session_datagen import WorkerSessionTracker
         from inference_perf.apis.chat import ChatMessage
 
         chat_messages = [ChatMessage(role=m["role"], content=m.get("content")) for m in original_messages]
@@ -178,7 +178,7 @@ class TestToolChoiceInjection:
         expected_output_is_tool_call: bool,
         expected_output_tool_names: Optional[List[str]],
     ) -> SessionChatCompletionAPIData:
-        from inference_perf.datagen.replay_graph_session_datagen import WorkerSessionTracker
+        from inference_perf.datagen.replay.replay_graph_session_datagen import WorkerSessionTracker
         from inference_perf.apis.chat import ChatMessage
 
         return SessionChatCompletionAPIData(
@@ -279,7 +279,7 @@ class TestToolCallIdRewriting:
         input_segments: List[InputSegment],
         expected_output_is_tool_call: bool = True,
     ) -> SessionChatCompletionAPIData:
-        from inference_perf.datagen.replay_graph_session_datagen import WorkerSessionTracker
+        from inference_perf.datagen.replay.replay_graph_session_datagen import WorkerSessionTracker
         from inference_perf.apis.chat import ChatMessage
 
         chat_messages = [
@@ -300,8 +300,8 @@ class TestToolCallIdRewriting:
         )
 
     def test_tool_call_ids_rewritten_to_live_ids(self) -> None:
-        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
-        from inference_perf.datagen.replay_graph_types import InputSegment
+        from inference_perf.datagen.replay.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
         registry = EventOutputRegistry()
         live_tool_calls = [
@@ -332,8 +332,8 @@ class TestToolCallIdRewriting:
         assert result[2]["tool_call_id"] == "live_id_1"
 
     def test_multiple_tool_call_ids_rewritten_in_order(self) -> None:
-        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
-        from inference_perf.datagen.replay_graph_types import InputSegment
+        from inference_perf.datagen.replay.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
         registry = EventOutputRegistry()
         live_tool_calls = [
@@ -361,8 +361,8 @@ class TestToolCallIdRewriting:
 
     def test_non_tool_unique_messages_not_rewritten(self) -> None:
         """Messages after the tool results in the unique segment must not be touched."""
-        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
-        from inference_perf.datagen.replay_graph_types import InputSegment
+        from inference_perf.datagen.replay.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
         registry = EventOutputRegistry()
         live_tool_calls = [{"id": "live_1", "type": "function", "function": {"name": "f1", "arguments": "{}"}}]
@@ -389,8 +389,8 @@ class TestToolCallIdRewriting:
     def test_warning_logged_when_plain_text_replaces_tool_call(self, caplog: Any) -> None:
         """A warning must be emitted when the live model returns text where a tool call was expected."""
         import logging
-        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
-        from inference_perf.datagen.replay_graph_types import InputSegment
+        from inference_perf.datagen.replay.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay.replay_graph_types import InputSegment
 
         registry = EventOutputRegistry()
         # Live model returned plain text, no structured message stored
@@ -405,7 +405,7 @@ class TestToolCallIdRewriting:
             InputSegment(type="output", message_count=1, token_count=5, source_event_id="sess:evt1"),
         ]
         api_data = self._make_api_data(registry, original_messages, segments, expected_output_is_tool_call=True)
-        with caplog.at_level(logging.WARNING, logger="inference_perf.datagen.replay_graph_session_datagen"):
+        with caplog.at_level(logging.WARNING, logger="inference_perf.datagen.replay.replay_graph_session_datagen"):
             api_data._build_messages_with_substitution()
 
         assert any("plain text" in r.message for r in caplog.records)
@@ -416,7 +416,7 @@ class TestCausalDepToolCallIds:
     matches OpenAI tool_calls format via shared tool-call IDs."""
 
     def _make_raw_call(self, out_message: Any, messages: List[Any]) -> "Any":
-        from inference_perf.datagen.otel_trace_to_replay_graph import RawCall
+        from inference_perf.datagen.replay.otel_trace_to_replay_graph import RawCall
 
         return RawCall(
             call_id="span1",
@@ -434,8 +434,8 @@ class TestCausalDepToolCallIds:
 
     def test_otel_parts_format_matched_by_id_in_openai_format(self) -> None:
         """OTel parts output (a) is matched against OpenAI tool_calls input (b) via IDs."""
-        from inference_perf.datagen.otel_trace_to_replay_graph import get_causal_dep, DEPENDENCY_TYPE
-        from inference_perf.datagen.replay_graph_types import ComplexReplayMessage, ReplayMessage
+        from inference_perf.datagen.replay.otel_trace_to_replay_graph import get_causal_dep, DEPENDENCY_TYPE
+        from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage, ReplayMessage
 
         # Call A output: OTel "parts" format with a tool call carrying an ID
         out_parts = [{"type": "tool_call", "name": "bash", "id": "call_xyz", "arguments": "{}"}]
@@ -463,8 +463,8 @@ class TestCausalDepToolCallIds:
 
     def test_no_match_when_ids_differ(self) -> None:
         """No dependency when tool-call IDs don't overlap."""
-        from inference_perf.datagen.otel_trace_to_replay_graph import get_causal_dep
-        from inference_perf.datagen.replay_graph_types import ComplexReplayMessage
+        from inference_perf.datagen.replay.otel_trace_to_replay_graph import get_causal_dep
+        from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage
 
         out_parts = [{"type": "tool_call", "name": "bash", "id": "call_aaa", "arguments": "{}"}]
         out_msg = ComplexReplayMessage(
@@ -491,7 +491,7 @@ class TestToolChoiceEmptyDefinitions:
 
     @pytest.mark.asyncio
     async def test_no_tool_choice_when_tool_definitions_is_empty_list(self) -> None:
-        from inference_perf.datagen.replay_graph_session_datagen import (
+        from inference_perf.datagen.replay.replay_graph_session_datagen import (
             SessionChatCompletionAPIData,
             WorkerSessionTracker,
             EventOutputRegistry,
@@ -519,12 +519,12 @@ class TestToolCallIdRewriteWithInterveningMessage:
 
     def test_rewrite_skips_intervening_non_tool_message(self) -> None:
         """A non-tool message between the assistant turn and role:tool must not shift the rewrite index."""
-        from inference_perf.datagen.replay_graph_session_datagen import (
+        from inference_perf.datagen.replay.replay_graph_session_datagen import (
             SessionChatCompletionAPIData,
             WorkerSessionTracker,
             EventOutputRegistry,
         )
-        from inference_perf.datagen.replay_graph_types import InputSegment
+        from inference_perf.datagen.replay.replay_graph_types import InputSegment
         from inference_perf.apis.chat import ChatMessage
 
         registry = EventOutputRegistry()

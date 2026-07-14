@@ -58,13 +58,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from inference_perf.datagen.export_replay_graph_to_dot import export_to_dot
-from inference_perf.datagen.otel_trace_utils import (
+from inference_perf.datagen.replay.export_replay_graph_to_dot import export_to_dot
+from inference_perf.datagen.replay.otel_trace_utils import (
     reconstruct_llm_output,
     reconstruct_llm_input,
     reconstruct_each_part_in_message_info,
 )
-from inference_perf.datagen.replay_graph_types import (
+from inference_perf.datagen.replay.replay_graph_types import (
     ComplexReplayMessage,
     GraphCall,
     GraphEvent,

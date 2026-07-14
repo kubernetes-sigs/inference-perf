@@ -23,8 +23,8 @@ from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInf
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
-from .base import DataGenerator, LazyLoadDataMixin
-from .datagen_utils import converge_to_exact_length_text
+from ..base import DataGenerator, LazyLoadDataMixin
+from ..datagen_utils import converge_to_exact_length_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.config and self.config.corpus_file_path:
             corpus_path = Path(self.config.corpus_file_path)
         else:
-            corpus_path = Path(__file__).resolve().parents[1] / "assets" / "shakespeare.txt"
+            corpus_path = Path(__file__).resolve().parents[2] / "assets" / "shakespeare.txt"
 
         if not corpus_path.is_file():
             raise FileNotFoundError(f"Prompt corpus file not found: {corpus_path}")

@@ -38,7 +38,7 @@ from inference_perf.datagen.multimodal_sampling import (
     sample_video_profile,
 )
 
-from .base import DataGenerator, LazyLoadDataMixin
+from ..base import DataGenerator, LazyLoadDataMixin
 
 
 class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):

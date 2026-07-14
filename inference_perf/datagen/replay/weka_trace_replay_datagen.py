@@ -68,15 +68,15 @@ from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field
 
 from inference_perf.config import APIConfig, DataConfig
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplaySession,
     ReplayGraphSessionGeneratorBase,
 )
-from inference_perf.datagen.otel_trace_to_replay_graph import (
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     RawCall,
     build_graph,
 )
-from inference_perf.datagen.replay_graph_types import ReplayMessage
+from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
@@ -625,7 +625,7 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         if self.config and self.config.corpus_file_path:
             corpus_path = Path(self.config.corpus_file_path)
         else:
-            corpus_path = Path(__file__).resolve().parents[1] / "assets" / "shakespeare.txt"
+            corpus_path = Path(__file__).resolve().parents[2] / "assets" / "shakespeare.txt"
 
         if not corpus_path.is_file():
             raise FileNotFoundError(f"Prompt corpus file not found: {corpus_path}")
