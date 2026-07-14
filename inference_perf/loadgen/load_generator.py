@@ -1115,7 +1115,7 @@ class LoadGenerator:
 
                 async with TaskGroup() as tg:
                     time_generator = timer.start_timer(start_time)
-                    for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=True)):
+                    for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=False)):
                         if progress and stage_task:
                             progress.update(stage_task, completed=count + 1)
                         data.stage_id = stage_id
