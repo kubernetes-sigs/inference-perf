@@ -272,4 +272,5 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--tokenizer.pretrained_model_name_or_path` | str | Matches tokenizer.pretrained_model_name_or_path in config |
 | `--tokenizer.trust_remote_code` | boolean | Matches tokenizer.trust_remote_code in config |
 | `--tokenizer.token` | str | Matches tokenizer.token in config |
+| `--tokenizer.load_timeout` | float | Matches tokenizer.load_timeout in config |
 | `--circuit_breakers` | JSON | Matches circuit_breakers in config |
