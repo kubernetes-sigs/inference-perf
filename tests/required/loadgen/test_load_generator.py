@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import unittest
+from itertools import repeat
 from unittest.mock import MagicMock, AsyncMock, patch
 import multiprocessing as mp
 import asyncio
@@ -212,7 +213,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
 
         mock_data = MagicMock(spec=InferenceAPIData)
         mock_data.preferred_worker_id = -1
-        self.mock_datagen.get_data.return_value = iter([mock_data, mock_data])
+        self.mock_datagen.get_data.return_value = repeat(mock_data)
 
         # Patch LazyLoadDataMixin to just return the object
         with (
