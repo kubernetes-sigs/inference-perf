@@ -5,11 +5,11 @@ from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, Dat
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import UserSessionCompletionAPIData
-from inference_perf.datagen.random_datagen import RandomDataGenerator
-from inference_perf.datagen.synthetic_datagen import SyntheticDataGenerator
+from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
+from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.config import SharedPrefix
 from inference_perf.datagen.base import DataGenerator, LazyLoadDataMixin
-from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.datagen.synthetic.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 

@@ -11,7 +11,7 @@ from inference_perf.config import (
     DataGenType,
     SharedPrefix,
 )
-from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.datagen.synthetic.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.datagen.base import LazyLoadDataMixin
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession

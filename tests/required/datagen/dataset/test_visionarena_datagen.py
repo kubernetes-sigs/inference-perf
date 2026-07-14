@@ -27,8 +27,8 @@ from PIL import Image as PILImage
 from inference_perf.apis.base import LazyLoadInferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData
 from inference_perf.config import Config, DataGenType
-from inference_perf.datagen import visionarena_datagen
-from inference_perf.datagen.visionarena_datagen import VisionArenaDataGenerator
+from inference_perf.datagen.dataset import visionarena_datagen
+from inference_perf.datagen.dataset.visionarena_datagen import VisionArenaDataGenerator
 from inference_perf.payloads import ImageRepresentation, PreEncodedImageSpec
 
 

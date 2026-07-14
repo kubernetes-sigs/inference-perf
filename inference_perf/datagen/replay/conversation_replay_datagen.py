@@ -59,7 +59,7 @@ from inference_perf.config import (
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution
 
-from .base import DataGenerator, LazyLoadDataMixin
+from ..base import DataGenerator, LazyLoadDataMixin
 
 logger = logging.getLogger(__name__)
 

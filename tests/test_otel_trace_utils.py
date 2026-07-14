@@ -16,7 +16,7 @@
 
 """Tests for otel_trace_utils - LLM output/input reconstruction."""
 
-from inference_perf.datagen.otel_trace_utils import (
+from inference_perf.datagen.replay.otel_trace_utils import (
     reconstruct_llm_output,
     reconstruct_llm_input,
     estimate_token_count,

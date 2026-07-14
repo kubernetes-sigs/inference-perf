@@ -28,8 +28,8 @@ from inference_perf.config import (
     LoadType,
     StandardLoadStage,
 )
-from inference_perf.datagen.random_datagen import RandomDataGenerator
-from inference_perf.datagen.synthetic_datagen import SyntheticDataGenerator
+from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
+from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer

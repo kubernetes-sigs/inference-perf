@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType
-from inference_perf.datagen.weka_trace_replay_datagen import (
+from inference_perf.datagen.replay.weka_trace_replay_datagen import (
     HashIdRandomGenerator,
     WekaTraceReplayDataGenerator,
     RoleSegment,

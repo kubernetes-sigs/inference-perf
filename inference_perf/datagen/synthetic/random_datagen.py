@@ -22,8 +22,8 @@ from inference_perf.config import APIConfig, APIType, DataConfig, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
-from .base import DataGenerator, LazyLoadDataMixin
-from .datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
+from ..base import DataGenerator, LazyLoadDataMixin
+from ..datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
 
 logger = logging.getLogger(__name__)
 

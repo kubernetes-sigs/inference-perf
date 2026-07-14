@@ -65,11 +65,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union, cast
 from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplaySession,
     ReplayGraphSessionGeneratorBase,
 )
-from inference_perf.datagen.otel_trace_to_replay_graph import (
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
 )

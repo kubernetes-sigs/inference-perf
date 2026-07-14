@@ -30,7 +30,7 @@ from inference_perf.config import (
     SyntheticMultimodalDatagenConfig,
     VideoDatagenConfig,
 )
-from inference_perf.datagen.multimodal_datagen import MultimodalDataGenerator
+from inference_perf.datagen.synthetic.multimodal_datagen import MultimodalDataGenerator
 
 
 def _make_mock_tokenizer() -> MagicMock:

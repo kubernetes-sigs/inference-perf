@@ -12,19 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import BaseGenerator, DataGenerator, SessionGenerator, LazyLoadDataMixin
-from .mock_datagen import MockDataGenerator
-from .hf_sharegpt_datagen import HFShareGPTDataGenerator
-from .synthetic_datagen import SyntheticDataGenerator
-from .random_datagen import RandomDataGenerator
-from .shared_prefix_datagen import SharedPrefixDataGenerator
-from .cnn_dailymail_datagen import CNNDailyMailDataGenerator
-from .infinity_instruct_datagen import InfinityInstructDataGenerator
-from .hf_billsum_datagen import BillsumConversationsDataGenerator
-from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
-from .weka_trace_replay_datagen import WekaTraceReplayDataGenerator
-from .conversation_replay_datagen import ConversationReplayDataGenerator
-from .multimodal_datagen import MultimodalDataGenerator
-from .visionarena_datagen import VisionArenaDataGenerator
+from .dataset import (
+    BillsumConversationsDataGenerator,
+    CNNDailyMailDataGenerator,
+    HFShareGPTDataGenerator,
+    InfinityInstructDataGenerator,
+    VisionArenaDataGenerator,
+)
+from .replay import (
+    ConversationReplayDataGenerator,
+    OTelTraceReplayDataGenerator,
+    WekaTraceReplayDataGenerator,
+)
+from .synthetic import (
+    MockDataGenerator,
+    MultimodalDataGenerator,
+    RandomDataGenerator,
+    SharedPrefixDataGenerator,
+    SyntheticDataGenerator,
+)
 
 __all__ = [
     "BaseGenerator",

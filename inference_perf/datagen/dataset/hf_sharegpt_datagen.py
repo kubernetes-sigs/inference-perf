@@ -21,7 +21,7 @@ from inference_perf.apis import (
     InferenceAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Any, Generator, List, Optional
 from datasets import load_dataset

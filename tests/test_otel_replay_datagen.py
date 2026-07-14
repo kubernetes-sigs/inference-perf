@@ -46,8 +46,8 @@ from pydantic import ValidationError
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventFailedError,
     EventOutputRegistry,
     ReplayGraphSessionGeneratorBase,
@@ -60,11 +60,11 @@ from inference_perf.datagen.replay_graph_session_datagen import (
 )
 from inference_perf.config.datagen.replay import BadToolCallHandling, OTelTraceReplayConfig
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.datagen.otel_trace_to_replay_graph import (
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
 )
-from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
+from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.config import APIConfig, APIType, SessionReplayConfig
 

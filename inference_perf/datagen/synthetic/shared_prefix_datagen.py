@@ -41,8 +41,8 @@ from inference_perf.payloads import (
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution
 
-from .base import DataGenerator, LazyLoadDataMixin
-from .datagen_utils import (
+from ..base import DataGenerator, LazyLoadDataMixin
+from ..datagen_utils import (
     build_word_start_token_ids,
     converge_to_exact_length_text,
     generate_random_exact_length_text,

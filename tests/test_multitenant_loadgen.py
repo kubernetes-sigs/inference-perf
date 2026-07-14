@@ -33,8 +33,8 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
 )
 from inference_perf.config import APIConfig, APIType, DataConfig, OTelTraceReplayConfig
-from inference_perf.datagen.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
-from inference_perf.datagen.replay_graph_session_datagen import SessionReplayLazyLoadData
+from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay.replay_graph_session_datagen import SessionReplayLazyLoadData
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient, openAIModelServerClientSession
 from inference_perf.payloads import RequestMetrics, Text
 

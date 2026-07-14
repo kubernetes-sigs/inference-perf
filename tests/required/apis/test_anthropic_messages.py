@@ -20,7 +20,7 @@ import pytest
 
 from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionAnthropicMessagesAPIData,
     WorkerSessionTracker,

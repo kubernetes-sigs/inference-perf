@@ -55,7 +55,7 @@ python -m inference_perf.main \
   --config examples/otel/configs/advanced/graph-replay.yml
 
 # Inspect the replay graph for a trace (no server needed)
-python -m inference_perf.datagen.otel_trace_to_replay_graph \
+python -m inference_perf.datagen.replay.otel_trace_to_replay_graph \
   --input  examples/otel/test_traces/simple/simple_chain.json \
   --output /tmp/graph.json \
   --summary

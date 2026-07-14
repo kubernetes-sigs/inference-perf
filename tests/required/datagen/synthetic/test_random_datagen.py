@@ -2,7 +2,7 @@ import numpy as np
 
 from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
-from inference_perf.datagen.random_datagen import RandomDataGenerator
+from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from typing import Any
 

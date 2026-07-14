@@ -20,7 +20,7 @@ from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAP
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
-from .base import DataGenerator
+from ..base import DataGenerator
 
 logger = logging.getLogger(__name__)
 
