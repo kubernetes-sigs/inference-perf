@@ -313,7 +313,7 @@ def test_weka_trace_replay_parallel_matches_serial(tmp_path: Path) -> None:
     """Parallel session building (datagen_workers > 1) must produce output
     identical to the serial path: same sessions, same order, same graphs."""
     from inference_perf.config.datagen.replay import WekaTraceReplayConfig
-    from inference_perf.datagen.otel_trace_to_replay_graph import graph_to_dict
+    from inference_perf.datagen.replay.otel_trace_to_replay_graph import graph_to_dict
 
     trace_files = []
     for i in range(4):
@@ -379,6 +379,71 @@ def test_weka_trace_replay_parallel_matches_serial(tmp_path: Path) -> None:
         assert graph_to_dict(s_serial.graph) == graph_to_dict(s_parallel.graph)
 
 
+def test_find_weka_predecessors_matches_generic_finder() -> None:
+    """_find_weka_predecessors must reproduce find_predecessors_by_text_matching
+    exactly (dependency types, dict insertion order, exact-match cache,
+    temporal fallbacks) across the tricky text-matching edge cases."""
+    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+        RawCall,
+        find_predecessors_by_text_matching,
+    )
+    from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
+    from inference_perf.datagen.replay.weka_trace_replay_datagen import _find_weka_predecessors
+
+    def call(
+        call_id: str,
+        t_start: int,
+        t_end: int,
+        messages: list[tuple[str, str]],
+        out_text: str | None,
+    ) -> RawCall:
+        return RawCall(
+            call_id=call_id,
+            trace_id="t",
+            t_start_ms=t_start,
+            t_end_ms=t_end,
+            model="m",
+            messages=[ReplayMessage(role=r, text=c) for r, c in messages],
+            out_message=ReplayMessage(role="assistant", text=out_text) if out_text is not None else None,
+            prompt_tokens=10,
+            completion_tokens=5,
+            temperature=0.0,
+            max_tokens_recorded=5,
+        )
+
+    calls = [
+        # Chain: c0 -> c1 (exact match of c0's output as assistant message)
+        call("c0", 0, 100, [("user", "hello")], "alpha beta"),
+        call("c1", 150, 250, [("user", "hello"), ("assistant", "alpha beta"), ("user", "next")], "gamma"),
+        # Containment (not exact): c1's output "gamma" inside a longer assistant message
+        call("c2", 300, 400, [("user", "x"), ("assistant", "prefix gamma suffix")], ""),
+        # Empty output of c2 matches the FIRST assistant message of any later call
+        call("c3", 450, 500, [("assistant", "unrelated"), ("user", "y")], "does-not-appear"),
+        # No assistant messages at all: only temporal fallback applies
+        call("c4", 550, 600, [("user", "z")], "omega"),
+        # Duplicate output texts: both c5 and c6 emit "dup"; c7 contains it once
+        call("c5", 650, 700, [("user", "a")], "dup"),
+        call("c6", 750, 800, [("user", "b")], "dup"),
+        call("c7", 850, 900, [("user", "c"), ("assistant", "dup"), ("user", "d")], "tail"),
+        # Overlapping timing: starts before c7 ends -> temporal fallback skips c7
+        call("c8", 880, 950, [("user", "e"), ("assistant", "alpha beta")], None),
+        # Empty assistant message; empty out_text of c8... (None out -> no causal check)
+        call("c9", 1000, 1100, [("assistant", ""), ("user", "f")], "final"),
+    ]
+
+    expected_preds, expected_cache = find_predecessors_by_text_matching(calls)
+    actual_preds, actual_cache = _find_weka_predecessors(calls)
+
+    # Compare with order sensitivity: predecessor_event_ids ordering downstream
+    # follows dict insertion order.
+    assert [list(d.items()) for d in actual_preds] == [list(d.items()) for d in expected_preds]
+    assert actual_cache == expected_cache
+
+    # Sanity: the scenario actually exercised matches (chain, containment, dup).
+    assert any(d for d in expected_preds), "expected at least one dependency"
+    assert expected_cache, "expected at least one exact-match cache entry"
+
+
 def _write_mock_trace(tmp_path: Path, trace_id: str, hash_base: int) -> str:
     trace_data = {
         "id": trace_id,
@@ -423,7 +488,7 @@ def _build_generator(trace_files: list[str], datagen_workers: int, skip_invalid_
 def test_weka_skip_invalid_files_through_parallel_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A trace that fails session building must be skipped (skip_invalid_files=True)
     or fail the run (False), with the error marshaled across pool workers."""
-    from inference_perf.datagen.otel_trace_to_replay_graph import build_graph as original_build_graph
+    from inference_perf.datagen.replay.otel_trace_to_replay_graph import build_graph as original_build_graph
 
     good_files = [_write_mock_trace(tmp_path, f"good_{i}", 10 * (i + 1)) for i in range(3)]
 
@@ -435,7 +500,7 @@ def test_weka_skip_invalid_files_through_parallel_path(tmp_path: Path, monkeypat
             raise ValueError("synthetic reconstruction failure")
         return original_build_graph(calls, source_file=source_file, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("inference_perf.datagen.weka_trace_replay_datagen.build_graph", failing_build_graph)
+    monkeypatch.setattr("inference_perf.datagen.replay.weka_trace_replay_datagen.build_graph", failing_build_graph)
 
     # skip_invalid_files=True: the failing trace is dropped, the rest survive.
     # datagen_workers=2 routes errors through the process-pool marshaling path.
