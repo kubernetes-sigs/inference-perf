@@ -54,13 +54,17 @@ hashes recorded in the trace.
      replay which is what we are trying to emulate.
 """
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import math
+import multiprocessing
+import os
 from pathlib import Path
 import random
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Annotated
 from multiprocessing.managers import SyncManager
 
@@ -582,6 +586,74 @@ def _build_trace_idle_timing(
 
 
 # =============================================================================
+# Parallel Session Building
+# =============================================================================
+
+# Set in the parent process right before the build pool is created and cleared
+# after it is drained. Forked pool workers inherit it via copy-on-write, which
+# avoids pickling the generator (tokenizer, corpus) per task. Holds
+# (generator, traces).
+_build_ctx: Optional[Tuple["WekaTraceReplayDataGenerator", List[WekaTrace]]] = None
+
+
+def _pool_worker_init() -> None:
+    # The parent used the Rust tokenizer before forking, so its internal thread
+    # pool cannot be reused in children. Disable it explicitly to avoid the
+    # "process just got forked, after parallelism has already been used"
+    # warning from every worker.
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+def _estimated_trace_cost(trace: WekaTrace) -> int:
+    """Rough relative cost of building one trace's session, used to order pool
+    submissions largest-first. build_graph's pairwise output/input matching is
+    quadratic in the number of calls, which dominates for large traces."""
+    n = 0
+    for req in trace.requests:
+        if isinstance(req, WekaSubagentEntry):
+            n += len(req.requests)
+        else:
+            n += 1
+    return n * n
+
+
+def _build_session_for_trace(trace_index: int) -> Tuple[int, Optional[ReplaySession], Optional[str]]:
+    """Build one trace's ReplaySession.
+
+    Returns (trace_index, session or None, error message or None). Errors are
+    returned as strings instead of raised so per-trace skip_invalid_files
+    semantics survive the process boundary. Runs inline in the serial path and
+    inside forked pool workers in the parallel path; reconstruction is
+    deterministic per trace (all randomness is content-keyed by
+    base_seed/trace_id/hash_id), so both paths produce identical sessions.
+    """
+    assert _build_ctx is not None, "_build_ctx must be set before building sessions"
+    generator, traces = _build_ctx
+    trace = traces[trace_index]
+    try:
+        raw_calls = generator._reconstruct_raw_calls(trace)
+        if not raw_calls:
+            return (trace_index, None, None)
+
+        graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}")
+
+        # Make session ID unique per trace run
+        session_id = f"wekatrace{trace_index}_{trace.id}"
+        return (
+            trace_index,
+            ReplaySession(
+                session_id=session_id,
+                source_id=trace.id,
+                session_index=trace_index,
+                graph=graph,
+            ),
+            None,
+        )
+    except Exception as e:
+        return (trace_index, None, f"{type(e).__name__}: {e}")
+
+
+# =============================================================================
 # WekaTraceReplayDataGenerator Class
 # =============================================================================
 
@@ -636,9 +708,6 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self._tokenized_corpus = self.tokenizer.get_tokenizer().encode(base_prompt + corpus_text)
         self._corpus_size = len(self._tokenized_corpus)
-
-        self._hash_id_rng = HashIdRandomGenerator(self.base_seed)
-        self._cache: Dict[int, List[int]] = {}
 
         # Load all WekaTrace records
         traces = self._load_weka_traces()
@@ -714,40 +783,71 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         return list(unique_traces.values())
 
     def _build_sessions_from_traces(self, traces: List[WekaTrace]) -> List[ReplaySession]:
+        global _build_ctx
+        num_workers = self._resolve_datagen_workers(len(traces))
+
+        start = time.perf_counter()
+        _build_ctx = (self, traces)
+        try:
+            if num_workers > 1:
+                logger.info(f"Building replay sessions for {len(traces)} traces with {num_workers} processes")
+                # Submit the most expensive traces first so a giant trace does
+                # not become a straggler at the tail of the queue; per-trace
+                # cost is roughly quadratic in turn count. Results are
+                # re-sorted by trace index below, so the output is identical
+                # to the serial path.
+                order = sorted(range(len(traces)), key=lambda i: -_estimated_trace_cost(traces[i]))
+                fork_ctx = multiprocessing.get_context("fork")
+                with ProcessPoolExecutor(max_workers=num_workers, mp_context=fork_ctx, initializer=_pool_worker_init) as pool:
+                    results = list(pool.map(_build_session_for_trace, order))
+            else:
+                results = [_build_session_for_trace(i) for i in range(len(traces))]
+        finally:
+            _build_ctx = None
+
         sessions: List[ReplaySession] = []
-
-        for trace_index, trace in enumerate(traces):
-            try:
-                raw_calls = self._reconstruct_raw_calls(trace)
-                if not raw_calls:
-                    continue
-
-                graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}")
-
-                # Make session ID unique per trace run
-                session_id = f"wekatrace{trace_index}_{trace.id}"
-                sessions.append(
-                    ReplaySession(
-                        session_id=session_id,
-                        source_id=trace.id,
-                        session_index=trace_index,
-                        graph=graph,
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Failed to process Weka trace {trace.id}: {e}")
+        for trace_index, session, error in sorted(results, key=lambda r: r[0]):
+            if error is not None:
+                logger.error(f"Failed to process Weka trace {traces[trace_index].id}: {error}")
                 if not self.weka_config.skip_invalid_files:
-                    raise
+                    raise RuntimeError(f"Failed to process Weka trace {traces[trace_index].id}: {error}")
+            elif session is not None:
+                sessions.append(session)
+
+        logger.info(f"Built {len(sessions)} replay sessions from {len(traces)} traces in {time.perf_counter() - start:.1f}s")
 
         # Shuffle sessions for stress testing
         random.seed(self.base_seed)
         random.shuffle(sessions)
         return sessions
 
+    def _resolve_datagen_workers(self, num_traces: int) -> int:
+        """Resolve the process count for parallel session building.
+
+        Defaults to the number of CPUs available to this process, capped at the
+        trace count. A fork start method is required because pool workers
+        inherit the generator (tokenizer, corpus, traces) by copy-on-write
+        rather than pickling; without fork we fall back to serial.
+        """
+        if self.weka_config.datagen_workers is not None:
+            n = self.weka_config.datagen_workers
+        else:
+            # sched_getaffinity respects container CPU limits but is Linux-only.
+            sched_getaffinity = getattr(os, "sched_getaffinity", None)
+            n = len(sched_getaffinity(0)) if sched_getaffinity is not None else (os.cpu_count() or 1)
+        n = max(1, min(n, num_traces))
+        if n > 1 and "fork" not in multiprocessing.get_all_start_methods():
+            logger.warning("'fork' start method unavailable on this platform; building replay sessions serially")
+            return 1
+        return n
+
     def _reconstruct_raw_calls(self, trace: WekaTrace) -> List[RawCall]:
-        # Reset local cache for deterministic scope
-        self._cache.clear()
-        self._hash_id_rng.set_trace_id(trace.id)
+        # Per-trace deterministic scratch state. Kept local (not on self) so
+        # this method is reentrant and safe to run concurrently for different
+        # traces in parallel worker processes.
+        cache: Dict[int, List[int]] = {}
+        hash_id_rng = HashIdRandomGenerator(self.base_seed)
+        hash_id_rng.set_trace_id(trace.id)
 
         # Build model mappings
         model_map = self._build_model_map(trace)
@@ -796,15 +896,15 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         def decode_block_tokens(hash_ids: List[int]) -> List[int]:
             tokens: List[int] = []
             for h in hash_ids:
-                cached = self._cache.get(h)
+                cached = cache.get(h)
                 if cached is None:
-                    self._hash_id_rng.reseed_for_hash_id(h)
-                    start = self._hash_id_rng.randrange(self._corpus_size)
+                    hash_id_rng.reseed_for_hash_id(h)
+                    start = hash_id_rng.randrange(self._corpus_size)
                     end = start + trace_bs
                     cached = self._tokenized_corpus[start:end]
                     if end > self._corpus_size:
                         cached = cached + self._tokenized_corpus[: end - self._corpus_size]
-                    self._cache[h] = cached
+                    cache[h] = cached
                 tokens.extend(cached)
             return tokens
 
