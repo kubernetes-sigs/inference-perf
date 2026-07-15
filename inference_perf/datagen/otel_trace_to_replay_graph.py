@@ -56,7 +56,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from inference_perf.datagen.export_replay_graph_to_dot import export_to_dot
 from inference_perf.datagen.otel_trace_utils import (
@@ -1071,33 +1071,26 @@ def decompose_input(
 # ---------------------------------------------------------------------------
 
 
-def build_graph(
+# Signature shared by predecessor finders: given the chronologically sorted
+# calls, return (predecessor_indices, output_matches_for_substitutions) —
+# per-call ordered dicts of predecessor index -> dependency type, plus the
+# exact-output-match cache consumed by decompose_input.
+PredecessorFinder = Callable[
+    [List[RawCall]],
+    "tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[tuple[str, str], List[int]]]",
+]
+
+
+def find_predecessors_by_text_matching(
     calls: List[RawCall],
-    source_file: str = "",
-) -> ReplayGraph:
-    """Build a ReplayGraph from a list of raw calls.
+) -> "tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[tuple[str, str], List[int]]]":
+    """Find each call's direct predecessors by output→input text matching.
 
-    Each RawCall becomes exactly one GraphEvent. Predecessor relationships are
-    inferred from causal dependencies (output→input message matching) with a
-    fallback to the immediately preceding call for timing-only chains.
-
-    Steps:
-    1. For each call, find its direct predecessor calls (causal dep or timing fallback).
-    2. Apply transitive reduction: remove predecessors that are already ancestors
-       of another predecessor (keep only direct edges).
-    3. Decompose each call's messages into segments relative to all ancestor calls.
-    4. Build GraphEvent objects with predecessor_event_ids and wait_ms.
+    This is Step 1 of build_graph, factored out so callers that know their
+    calls' structure (e.g. the Weka replay generator, which synthesized the
+    calls itself) can supply a faster, semantics-identical finder.
     """
-    if not calls:
-        return ReplayGraph(events={}, root_event_ids=[], source_file=source_file)
-
     n = len(calls)
-    # Assign event IDs 1:1 with calls, incorporating span_id for traceability
-    event_ids = [f"event_{i:03d}_{calls[i].call_id}" for i in range(n)]
-
-    # ---------------------------------------------------------------------------
-    # Step 1: Find direct predecessors for each call
-    # ---------------------------------------------------------------------------
     # predecessor_indices[i] = dict mapping predecessor index to dependency type
     predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
 
@@ -1168,6 +1161,42 @@ def build_graph(
         # Only add temporal predecessor if one was found and it's not already a predecessor
         if predecessor_index is not None and predecessor_index not in predecessor_indices[i]:
             predecessor_indices[i][predecessor_index] = DEPENDENCY_TYPE.TEMPORAL
+
+    return predecessor_indices, output_matches_for_substitutions
+
+
+def build_graph(
+    calls: List[RawCall],
+    source_file: str = "",
+    predecessor_finder: Optional[PredecessorFinder] = None,
+) -> ReplayGraph:
+    """Build a ReplayGraph from a list of raw calls.
+
+    Each RawCall becomes exactly one GraphEvent. Predecessor relationships are
+    inferred from causal dependencies (output→input message matching) with a
+    fallback to the immediately preceding call for timing-only chains.
+
+    Steps:
+    1. For each call, find its direct predecessor calls (causal dep or timing
+       fallback). Runs find_predecessors_by_text_matching unless the caller
+       supplies a semantics-identical predecessor_finder.
+    2. Apply transitive reduction: remove predecessors that are already ancestors
+       of another predecessor (keep only direct edges).
+    3. Decompose each call's messages into segments relative to all ancestor calls.
+    4. Build GraphEvent objects with predecessor_event_ids and wait_ms.
+    """
+    if not calls:
+        return ReplayGraph(events={}, root_event_ids=[], source_file=source_file)
+
+    n = len(calls)
+    # Assign event IDs 1:1 with calls, incorporating span_id for traceability
+    event_ids = [f"event_{i:03d}_{calls[i].call_id}" for i in range(n)]
+
+    # ---------------------------------------------------------------------------
+    # Step 1: Find direct predecessors for each call
+    # ---------------------------------------------------------------------------
+    finder = predecessor_finder if predecessor_finder is not None else find_predecessors_by_text_matching
+    predecessor_indices, output_matches_for_substitutions = finder(calls)
 
     # ---------------------------------------------------------------------------
     # Step 2: Compute all ancestors per call (for segment decomposition)

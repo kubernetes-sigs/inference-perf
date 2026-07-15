@@ -77,8 +77,10 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
+    DEPENDENCY_TYPE,
     RawCall,
     build_graph,
+    message_content_text,
 )
 from inference_perf.datagen.replay_graph_types import ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -604,6 +606,133 @@ def _pool_worker_init() -> None:
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
+def _first_assistant_match(
+    a_out: str,
+    asst_indices: List[int],
+    asst_texts: List[str],
+    first_exact: Dict[str, int],
+    asst_concat: str,
+    max_asst_len: int,
+) -> Optional[Tuple[int, bool]]:
+    """(message index, is_exact) of the first assistant message that equals or
+    contains a_out, mirroring the generic finder's first-match-in-message-order
+    rule; None when no message matches."""
+    if not asst_indices:
+        return None
+    if a_out == "":
+        # The empty string is contained in every assistant message.
+        return (asst_indices[0], asst_texts[0] == "")
+    if len(a_out) > max_asst_len:
+        return None  # no single message can equal or contain it
+    e_idx = first_exact.get(a_out)
+    if e_idx is None and a_out not in asst_concat:
+        return None  # contained in no message either
+    for k, m_idx in enumerate(asst_indices):
+        if m_idx == e_idx:
+            return (m_idx, True)
+        t = asst_texts[k]
+        if a_out in t:
+            return (m_idx, t == a_out)
+    return None  # concat hit was a cross-boundary false positive
+
+
+def _find_weka_predecessors(
+    calls: List[RawCall],
+) -> Tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[Tuple[str, str], List[int]]]:
+    """Fast, semantics-identical predecessor finder for Weka-synthesized calls.
+
+    Drop-in replacement for find_predecessors_by_text_matching. The generic
+    finder calls output_matches_message for every (candidate, call, message)
+    triple — hundreds of millions of Python-level calls on large traces, and
+    the dominant cost of data generation. Weka-reconstructed calls only ever
+    carry plain-text messages and outputs (never ComplexReplayMessage parts),
+    so the identical result can be computed per call with:
+
+    - a first-index map of assistant message texts for exact matches,
+    - one C-level substring scan over the concatenated assistant texts as an
+      exact reject filter for containment (concatenation cannot produce false
+      negatives; rare cross-boundary false positives fall through to a precise
+      per-message scan), and
+    - a per-call memo so duplicate candidate output texts are resolved once.
+
+    Match indices, dependency-dict insertion order, the exact-match
+    substitution cache, and temporal fallbacks are reproduced exactly;
+    equivalence is asserted against the generic finder in tests.
+    """
+    n = len(calls)
+    predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
+    output_matches_for_substitutions: Dict[Tuple[str, str], List[int]] = {}
+
+    def get_causal_ancestors(node_idx: int) -> set[int]:
+        # Identical to the closure in find_predecessors_by_text_matching.
+        ancestors: set[int] = set()
+        stack = [p for p, d in predecessor_indices[node_idx].items() if d != DEPENDENCY_TYPE.TEMPORAL]
+        while stack:
+            ancestor = stack.pop()
+            if ancestor not in ancestors:
+                ancestors.add(ancestor)
+                stack.extend(p for p, d in predecessor_indices[ancestor].items() if d != DEPENDENCY_TYPE.TEMPORAL)
+        return ancestors
+
+    out_texts: List[Optional[str]] = [(c.out_message.text or "") if c.out_message is not None else None for c in calls]
+
+    for i in range(1, n):
+        b = calls[i]
+
+        # Per-call index over assistant messages, in message order.
+        asst_indices: List[int] = []
+        asst_texts: List[str] = []
+        first_exact: Dict[str, int] = {}
+        for m_idx, msg in enumerate(b.messages):
+            if msg.role == "assistant":
+                t = message_content_text(msg)
+                asst_indices.append(m_idx)
+                asst_texts.append(t)
+                if t not in first_exact:
+                    first_exact[t] = m_idx
+        asst_concat = "".join(asst_texts)
+        max_asst_len = max(map(len, asst_texts), default=0)
+
+        # Memo per call: candidate output text value -> match result.
+        match_memo: Dict[str, Optional[Tuple[int, bool]]] = {}
+
+        curr_causal_preds: Dict[int, DEPENDENCY_TYPE] = {}
+        transitive_preds: set[int] = set()
+        b_has_messages = bool(b.messages)
+
+        for j in range(i - 1, -1, -1):
+            if j in transitive_preds:
+                continue
+            a_out = out_texts[j]
+            if a_out is None or not b_has_messages:
+                continue  # get_causal_dep returns None for these
+            if a_out in match_memo:
+                res = match_memo[a_out]
+            else:
+                res = _first_assistant_match(a_out, asst_indices, asst_texts, first_exact, asst_concat, max_asst_len)
+                match_memo[a_out] = res
+            if res is None:
+                continue
+            m_idx, is_exact = res
+            if is_exact:
+                output_matches_for_substitutions.setdefault((calls[j].call_id, b.call_id), []).append(m_idx)
+            curr_causal_preds[j] = DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
+            transitive_preds.update(get_causal_ancestors(j))
+
+        predecessor_indices[i].update(curr_causal_preds)
+
+        # Temporal fallback: closest earlier call that ended before b started.
+        predecessor_index = None
+        for j in range(i - 1, -1, -1):
+            if not (b.t_start_ms < calls[j].t_end_ms):
+                predecessor_index = j
+                break
+        if predecessor_index is not None and predecessor_index not in predecessor_indices[i]:
+            predecessor_indices[i][predecessor_index] = DEPENDENCY_TYPE.TEMPORAL
+
+    return predecessor_indices, output_matches_for_substitutions
+
+
 def _estimated_trace_cost(trace: WekaTrace) -> int:
     """Rough relative cost of building one trace's session, used to order pool
     submissions largest-first. build_graph's pairwise output/input matching is
@@ -635,7 +764,7 @@ def _build_session_for_trace(trace_index: int) -> Tuple[int, Optional[ReplaySess
         if not raw_calls:
             return (trace_index, None, None)
 
-        graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}")
+        graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}", predecessor_finder=_find_weka_predecessors)
 
         # Make session ID unique per trace run
         session_id = f"wekatrace{trace_index}_{trace.id}"
