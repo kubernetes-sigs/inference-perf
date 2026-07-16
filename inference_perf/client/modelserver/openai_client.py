@@ -336,8 +336,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.headers:
             _update_headers_case_insensitive(headers, data.headers)
 
-        if data.session_id and self.client.api_config.session_id_header_key:
-            headers[self.client.api_config.session_id_header_key] = data.session_id
+        if self.client.api_config.session_id_header_key:
+            session_id = getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
+            if session_id:
+                headers[self.client.api_config.session_id_header_key] = session_id
 
         request_data = json.dumps(payload)
 
