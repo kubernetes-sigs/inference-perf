@@ -1,0 +1,7 @@
+{
+  "object": "error",
+  "message": "Input length 4231 exceeds the maximum allowed length 4096.",
+  "type": "BadRequestError",
+  "param": null,
+  "code": 400
+}

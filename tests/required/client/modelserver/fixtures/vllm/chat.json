@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-3c1a9f7e2b3d4e5f8a7b6c5d4e3f2a1b",
+  "object": "chat.completion",
+  "created": 1750000000,
+  "model": "meta-llama/Llama-3.1-8B-Instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "reasoning_content": null,
+        "content": "The capital of France is Paris.",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop",
+      "stop_reason": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "total_tokens": 19,
+    "completion_tokens": 7,
+    "prompt_tokens_details": null
+  },
+  "prompt_logprobs": null
+}

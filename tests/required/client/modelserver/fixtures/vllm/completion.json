@@ -1,0 +1,22 @@
+{
+  "id": "cmpl-b0f5a3c0e4b94b2f9a2d7c8e1f6a5d43",
+  "object": "text_completion",
+  "created": 1750000000,
+  "model": "meta-llama/Llama-3.1-8B-Instruct",
+  "choices": [
+    {
+      "index": 0,
+      "text": " Paris, the capital of France.",
+      "logprobs": null,
+      "finish_reason": "length",
+      "stop_reason": null,
+      "prompt_logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 7,
+    "total_tokens": 15,
+    "completion_tokens": 8,
+    "prompt_tokens_details": null
+  }
+}
