@@ -13,10 +13,14 @@
 # limitations under the License.
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CustomTokenizerConfig(BaseModel):
-    pretrained_model_name_or_path: Optional[str] = None
-    trust_remote_code: Optional[bool] = None
-    token: Optional[str] = None
+    pretrained_model_name_or_path: Optional[str] = Field(
+        default=None, description="HuggingFace model name or local path of the tokenizer to load."
+    )
+    trust_remote_code: Optional[bool] = Field(
+        default=None, description="Allow the tokenizer to execute code from its repository when loading."
+    )
+    token: Optional[str] = Field(default=None, description="HuggingFace access token used to download the tokenizer.")

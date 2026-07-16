@@ -14,7 +14,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ModelServerType(Enum):
@@ -25,10 +25,15 @@ class ModelServerType(Enum):
 
 
 class ModelServerClientConfig(BaseModel):
-    type: ModelServerType = ModelServerType.VLLM
-    model_name: Optional[str] = None
-    base_url: str
-    ignore_eos: bool = True
-    api_key: Optional[str] = None
-    cert_path: Optional[str] = None
-    key_path: Optional[str] = None
+    type: ModelServerType = Field(default=ModelServerType.VLLM, description="Type of model server being benchmarked.")
+    model_name: Optional[str] = Field(
+        default=None, description="Model name sent in each request. Auto-detected from the server if unset."
+    )
+    base_url: str = Field(description="Base URL of the model server, e.g. 'http://localhost:8000'.")
+    ignore_eos: bool = Field(
+        default=True,
+        description="Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length.",
+    )
+    api_key: Optional[str] = Field(default=None, description="API key sent as a bearer token with each request.")
+    cert_path: Optional[str] = Field(default=None, description="Path to a client TLS certificate file.")
+    key_path: Optional[str] = Field(default=None, description="Path to the private key for the client TLS certificate.")

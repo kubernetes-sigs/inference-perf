@@ -15,8 +15,9 @@ from typing import Dict, List
 
 from pydantic import BaseModel
 
+from inference_perf.config.circuit_breaker import CircuitBreakerConfig
+
 from .base import CircuitBreaker
-from .config import CircuitBreakerConfig
 from .simple_breaker import SimpleCircuitBreaker
 
 _initialized_circuit_breakers: Dict[str, CircuitBreaker] = {}

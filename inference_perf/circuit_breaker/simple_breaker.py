@@ -16,8 +16,9 @@ import jmespath
 from datetime import datetime
 from typing import Any, Dict, List
 from pydantic import BaseModel
+from inference_perf.config.circuit_breaker import CircuitBreakerConfig
+
 from .base import CircuitBreaker
-from .config import CircuitBreakerConfig
 from .triggers import HitSample
 
 

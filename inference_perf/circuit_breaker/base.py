@@ -14,7 +14,8 @@
 from abc import ABC, abstractmethod
 from typing import List
 from pydantic import BaseModel
-from .config import CircuitBreakerConfig
+from inference_perf.config.circuit_breaker import CircuitBreakerConfig
+
 from .triggers.base import Trigger, build_trigger
 
 

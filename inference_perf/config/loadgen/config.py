@@ -141,32 +141,52 @@ class StageGenType(Enum):
 
 
 class SweepConfig(BaseModel):
-    type: StageGenType
-    num_requests: int = 2000
-    timeout: float = 60
-    num_stages: int = 5
-    stage_duration: int = 180
-    saturation_percentile: float = 95
+    type: StageGenType = Field(description="How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'.")
+    num_requests: int = Field(
+        default=2000, description="Number of requests sent in the initial burst used to find the saturation rate."
+    )
+    timeout: float = Field(default=60, description="Time limit in seconds for the saturation probe stage.")
+    num_stages: int = Field(default=5, description="Number of load stages to generate.")
+    stage_duration: int = Field(default=180, description="Duration of each generated stage in seconds.")
+    saturation_percentile: float = Field(
+        default=95, description="Percentile of observed request rates taken as the saturation point."
+    )
 
 
 class MultiLoRAConfig(BaseModel):
-    name: str
-    split: float
+    name: str = Field(description="Name of the LoRA adapter to send requests to.")
+    split: float = Field(description="Fraction of traffic sent to this adapter. All splits must sum to 1.0.")
 
 
 class LoadConfig(BaseModel):
-    type: LoadType = LoadType.CONSTANT
-    interval: float = 1.0
-    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = []
-    sweep: Optional[SweepConfig] = None
-    num_workers: int = max(1, cpu_count())  # type: ignore
-    worker_max_concurrency: int = 100
-    worker_max_tcp_connections: int = 2500
-    trace: Optional[TraceConfig] = None
-    circuit_breakers: List[str] = []
-    request_timeout: Optional[float] = None
-    lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
-    base_seed: int = Field(default_factory=lambda: int(time.time() * 1000))
+    type: LoadType = Field(default=LoadType.CONSTANT, description="Load pattern used to schedule requests.")
+    interval: float = Field(default=1.0, description="Seconds to wait between stages.")
+    stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = Field(
+        default=[], description="Load stages to run in sequence. The stage fields depend on the load type."
+    )
+    sweep: Optional[SweepConfig] = Field(
+        default=None,
+        description="Generate stages automatically up to the server's saturation rate."
+        " Not valid for the 'concurrent' and 'trace_session_replay' load types.",
+    )
+    num_workers: int = Field(
+        default=max(1, cpu_count()),  # type: ignore
+        description="Number of worker processes sending requests. Defaults to the CPU count.",
+    )
+    worker_max_concurrency: int = Field(default=100, description="Maximum concurrent in-flight requests per worker.")
+    worker_max_tcp_connections: int = Field(default=2500, description="Maximum TCP connections per worker.")
+    trace: Optional[TraceConfig] = Field(
+        default=None, description="Request timing trace to replay. Only used by the 'trace_replay' load type."
+    )
+    circuit_breakers: List[str] = Field(default=[], description="Names of configured circuit breakers to enable for the run.")
+    request_timeout: Optional[float] = Field(default=None, description="Per-request timeout in seconds.")
+    lora_traffic_split: Optional[List[MultiLoRAConfig]] = Field(
+        default=None, description="Traffic split across LoRA adapters. Splits must sum to 1.0."
+    )
+    base_seed: int = Field(
+        default_factory=lambda: int(time.time() * 1000),
+        description="Base random seed for load generation. Defaults to the current time.",
+    )
 
     @model_validator(mode="after")
     def validate_load_config(self) -> "LoadConfig":

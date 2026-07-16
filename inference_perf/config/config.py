@@ -16,10 +16,10 @@ from datetime import datetime
 from typing import Any, List, Optional
 
 import yaml
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from inference_perf.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.apis import APIConfig
+from inference_perf.config.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.client.filestorage import StorageConfig
 from inference_perf.config.client.modelserver import ModelServerClientConfig
 from inference_perf.config.datagen import DataConfig, DataGenType
@@ -36,15 +36,27 @@ from inference_perf.config.utils import CustomTokenizerConfig
 
 
 class Config(BaseModel):
-    api: APIConfig = APIConfig()
-    data: DataConfig = DataConfig()
-    load: LoadConfig = LoadConfig()
-    metrics: Optional[MetricsClientConfig] = None
-    report: ReportConfig = ReportConfig()
-    storage: Optional[StorageConfig] = StorageConfig()
-    server: Optional[ModelServerClientConfig] = None
-    tokenizer: Optional[CustomTokenizerConfig] = None
-    circuit_breakers: Optional[List[CircuitBreakerConfig]] = None
+    api: APIConfig = Field(
+        default=APIConfig(), description="API endpoint type and request options used for benchmark requests."
+    )
+    data: DataConfig = Field(default=DataConfig(), description="Dataset selection and prompt generation settings.")
+    load: LoadConfig = Field(default=LoadConfig(), description="Load generation settings: load type, stages, and worker pool.")
+    metrics: Optional[MetricsClientConfig] = Field(
+        default=None, description="Metrics client settings for collecting server-side metrics."
+    )
+    report: ReportConfig = Field(default=ReportConfig(), description="Report generation settings for the benchmark results.")
+    storage: Optional[StorageConfig] = Field(
+        default=StorageConfig(), description="Where generated reports are saved (local path or cloud object storage)."
+    )
+    server: Optional[ModelServerClientConfig] = Field(
+        default=None, description="Model server under test: server type, model name, and base URL."
+    )
+    tokenizer: Optional[CustomTokenizerConfig] = Field(
+        default=None, description="Tokenizer used to count prompt and output tokens. Defaults to the server's model name."
+    )
+    circuit_breakers: Optional[List[CircuitBreakerConfig]] = Field(
+        default=None, description="Circuit breakers that stop the run when observed metrics cross configured thresholds."
+    )
 
     @model_validator(mode="after")
     def validate_trace_replay_load_type(self) -> "Config":

@@ -13,39 +13,61 @@
 # limitations under the License.
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RequestLifecycleMetricsReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = True
-    per_request: Optional[bool] = False
-    per_adapter: Optional[bool] = True
-    per_adapter_stage: Optional[bool] = False
-    percentiles: List[float] = [0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
-    use_server_output_tokens: bool = False
-    # Cap on the number of per-error example messages retained per error label
-    # (in failures.by_label) and per substitution entry
-    max_error_messages: int = 100
+    summary: Optional[bool] = Field(default=True, description="Generate a summary report across the whole run.")
+    per_stage: Optional[bool] = Field(default=True, description="Generate a report for each load stage.")
+    per_request: Optional[bool] = Field(default=False, description="Generate a report with per-request details.")
+    per_adapter: Optional[bool] = Field(default=True, description="Generate a report for each LoRA adapter.")
+    per_adapter_stage: Optional[bool] = Field(
+        default=False, description="Generate a report for each LoRA adapter within each load stage."
+    )
+    percentiles: List[float] = Field(
+        default=[0.1, 1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9], description="Percentiles reported for each metric."
+    )
+    use_server_output_tokens: bool = Field(
+        default=False,
+        description="Use the server-reported output token counts in metrics instead of tokenizing the response text.",
+    )
+    max_error_messages: int = Field(
+        default=100,
+        description="Cap on the number of distinct example error messages retained per error label in the failure "
+        "report, and per substitution entry.",
+    )
 
 
 class PrometheusMetricsReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = False
+    summary: Optional[bool] = Field(default=True, description="Generate a summary report across the whole run.")
+    per_stage: Optional[bool] = Field(default=False, description="Generate a report for each load stage.")
 
 
 class SessionLifecycleReportConfig(BaseModel):
-    summary: Optional[bool] = True
-    per_stage: Optional[bool] = True
-    per_session: Optional[bool] = False
+    summary: Optional[bool] = Field(default=True, description="Generate a summary report across the whole run.")
+    per_stage: Optional[bool] = Field(default=True, description="Generate a report for each load stage.")
+    per_session: Optional[bool] = Field(default=False, description="Generate a report with per-session details.")
 
 
 class GoodputConfig(BaseModel):
-    constraints: Dict[str, float] = {}
+    constraints: Dict[str, float] = Field(
+        default={},
+        description="SLO thresholds in seconds that a request must meet to count as good."
+        " Keys: 'ttft', 'tpot', 'itl', 'ntpot', 'request_latency'.",
+    )
 
 
 class ReportConfig(BaseModel):
-    request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
-    prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
-    session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
-    goodput: Optional[GoodputConfig] = None
+    request_lifecycle: RequestLifecycleMetricsReportConfig = Field(
+        default=RequestLifecycleMetricsReportConfig(),
+        description="Reports on client-observed request metrics (latency, throughput, tokens).",
+    )
+    prometheus: Optional[PrometheusMetricsReportConfig] = Field(
+        default=PrometheusMetricsReportConfig(), description="Reports on server-side metrics collected via Prometheus."
+    )
+    session_lifecycle: SessionLifecycleReportConfig = Field(
+        default=SessionLifecycleReportConfig(), description="Reports on session metrics for multi-turn benchmarks."
+    )
+    goodput: Optional[GoodputConfig] = Field(
+        default=None, description="Goodput reporting: the share of requests meeting the configured SLOs."
+    )
