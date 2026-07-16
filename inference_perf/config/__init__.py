@@ -17,6 +17,13 @@ from inference_perf.config.apis import (
     ResponseFormat,
     ResponseFormatType,
 )
+from inference_perf.config.circuit_breaker import (
+    CircuitBreakerConfig,
+    MetricsSpec,
+    TriggerConsecutive,
+    TriggerRateOverWindow,
+    TriggerSpec,
+)
 from inference_perf.config.client.filestorage import (
     GoogleCloudStorageConfig,
     SimpleStorageServiceConfig,
@@ -82,6 +89,7 @@ __all__ = [
     "APIConfig",
     "APIType",
     "AudioDatagenConfig",
+    "CircuitBreakerConfig",
     "ConcurrentLoadStage",
     "Config",
     "ConversationReplayConfig",
@@ -99,6 +107,7 @@ __all__ = [
     "MediaDatagenConfig",
     "MetricsClientConfig",
     "MetricsClientType",
+    "MetricsSpec",
     "ModelServerClientConfig",
     "ModelServerType",
     "MultiLoRAConfig",
@@ -124,6 +133,9 @@ __all__ = [
     "TraceConfig",
     "TraceFormat",
     "TraceSessionReplayLoadStage",
+    "TriggerConsecutive",
+    "TriggerRateOverWindow",
+    "TriggerSpec",
     "VideoDatagenConfig",
     "VideoProfile",
     "VisionArenaConfig",

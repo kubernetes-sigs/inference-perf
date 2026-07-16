@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Optional
 
 from inference_perf.config.common import StrictBaseModel
+from pydantic import Field
 
 from inference_perf.config.client.server_metrics import PrometheusClientConfig
 
@@ -25,5 +26,7 @@ class MetricsClientType(Enum):
 
 
 class MetricsClientConfig(StrictBaseModel):
-    type: MetricsClientType
-    prometheus: Optional[PrometheusClientConfig] = None
+    type: MetricsClientType = Field(description="Metrics client used to collect server-side metrics.")
+    prometheus: Optional[PrometheusClientConfig] = Field(
+        default=None, description="Prometheus client settings. Required when type is 'prometheus'."
+    )

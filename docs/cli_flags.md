@@ -4,124 +4,124 @@ These command line flags are automatically generated from the internal `Config` 
 
 | Flag | Type | Description |
 | --- | --- | --- |
-| `--api.type` | Enum (completion, chat, anthropic_messages) | Matches api.type in config |
-| `--api.streaming` | boolean | Matches api.streaming in config |
-| `--api.headers` | JSON | Matches api.headers in config |
-| `--api.slo_unit` | str | Matches api.slo_unit in config |
-| `--api.slo_tpot_header` | str | Matches api.slo_tpot_header in config |
-| `--api.slo_ttft_header` | str | Matches api.slo_ttft_header in config |
-| `--api.response_format.type` | Enum (json_schema, json_object) | Matches api.response_format.type in config |
-| `--api.response_format.name` | str | Matches api.response_format.name in config |
-| `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
-| `--api.session_id_header_key` | str | Matches api.session_id_header_key in config |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
-| `--data.path` | str | Matches data.path in config |
+| `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
+| `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
+| `--api.headers` | JSON | Additional HTTP headers to send with every request. |
+| `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
+| `--api.slo_tpot_header` | str | Request header carrying the per-request TPOT SLO threshold. Defaults to 'x-slo-tpot-<slo_unit>'. |
+| `--api.slo_ttft_header` | str | Request header carrying the per-request TTFT SLO threshold. Defaults to 'x-slo-ttft-<slo_unit>'. |
+| `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
+| `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
+| `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
+| `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Dataset or generator used to produce prompts. |
+| `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
-| `--data.input_distribution.min` | int | Matches data.input_distribution.min in config |
-| `--data.input_distribution.max` | int | Matches data.input_distribution.max in config |
-| `--data.input_distribution.mean` | float | Matches data.input_distribution.mean in config |
-| `--data.input_distribution.std_dev` | float | Matches data.input_distribution.std_dev in config |
-| `--data.input_distribution.total_count` | int | Matches data.input_distribution.total_count in config |
-| `--data.input_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.input_distribution.type in config |
-| `--data.input_distribution.variance` | float | Matches data.input_distribution.variance in config |
-| `--data.input_distribution.skew` | float | Matches data.input_distribution.skew in config |
-| `--data.output_distribution.min` | int | Matches data.output_distribution.min in config |
-| `--data.output_distribution.max` | int | Matches data.output_distribution.max in config |
-| `--data.output_distribution.mean` | float | Matches data.output_distribution.mean in config |
-| `--data.output_distribution.std_dev` | float | Matches data.output_distribution.std_dev in config |
-| `--data.output_distribution.total_count` | int | Matches data.output_distribution.total_count in config |
-| `--data.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.output_distribution.type in config |
-| `--data.output_distribution.variance` | float | Matches data.output_distribution.variance in config |
-| `--data.output_distribution.skew` | float | Matches data.output_distribution.skew in config |
-| `--data.shared_prefix.num_groups` | int | Matches data.shared_prefix.num_groups in config |
-| `--data.shared_prefix.num_prompts_per_group` | int | Matches data.shared_prefix.num_prompts_per_group in config |
-| `--data.shared_prefix.system_prompt_len` | string | Matches data.shared_prefix.system_prompt_len in config |
-| `--data.shared_prefix.question_len` | string | Matches data.shared_prefix.question_len in config |
-| `--data.shared_prefix.output_len` | string | Matches data.shared_prefix.output_len in config |
-| `--data.shared_prefix.seed` | int | Matches data.shared_prefix.seed in config |
-| `--data.shared_prefix.question_distribution.min` | int | Matches data.shared_prefix.question_distribution.min in config |
-| `--data.shared_prefix.question_distribution.max` | int | Matches data.shared_prefix.question_distribution.max in config |
-| `--data.shared_prefix.question_distribution.mean` | float | Matches data.shared_prefix.question_distribution.mean in config |
-| `--data.shared_prefix.question_distribution.std_dev` | float | Matches data.shared_prefix.question_distribution.std_dev in config |
-| `--data.shared_prefix.question_distribution.total_count` | int | Matches data.shared_prefix.question_distribution.total_count in config |
-| `--data.shared_prefix.question_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.question_distribution.type in config |
-| `--data.shared_prefix.question_distribution.variance` | float | Matches data.shared_prefix.question_distribution.variance in config |
-| `--data.shared_prefix.question_distribution.skew` | float | Matches data.shared_prefix.question_distribution.skew in config |
-| `--data.shared_prefix.output_distribution.min` | int | Matches data.shared_prefix.output_distribution.min in config |
-| `--data.shared_prefix.output_distribution.max` | int | Matches data.shared_prefix.output_distribution.max in config |
-| `--data.shared_prefix.output_distribution.mean` | float | Matches data.shared_prefix.output_distribution.mean in config |
-| `--data.shared_prefix.output_distribution.std_dev` | float | Matches data.shared_prefix.output_distribution.std_dev in config |
-| `--data.shared_prefix.output_distribution.total_count` | int | Matches data.shared_prefix.output_distribution.total_count in config |
-| `--data.shared_prefix.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.output_distribution.type in config |
-| `--data.shared_prefix.output_distribution.variance` | float | Matches data.shared_prefix.output_distribution.variance in config |
-| `--data.shared_prefix.output_distribution.skew` | float | Matches data.shared_prefix.output_distribution.skew in config |
-| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Matches data.shared_prefix.enable_multi_turn_chat in config |
-| `--data.shared_prefix.multimodal.image.count.min` | int | Matches data.shared_prefix.multimodal.image.count.min in config |
-| `--data.shared_prefix.multimodal.image.count.max` | int | Matches data.shared_prefix.multimodal.image.count.max in config |
-| `--data.shared_prefix.multimodal.image.count.mean` | float | Matches data.shared_prefix.multimodal.image.count.mean in config |
-| `--data.shared_prefix.multimodal.image.count.std_dev` | float | Matches data.shared_prefix.multimodal.image.count.std_dev in config |
-| `--data.shared_prefix.multimodal.image.count.total_count` | int | Matches data.shared_prefix.multimodal.image.count.total_count in config |
-| `--data.shared_prefix.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.image.count.type in config |
-| `--data.shared_prefix.multimodal.image.count.variance` | float | Matches data.shared_prefix.multimodal.image.count.variance in config |
-| `--data.shared_prefix.multimodal.image.count.skew` | float | Matches data.shared_prefix.multimodal.image.count.skew in config |
+| `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.input_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.input_distribution.mean` | float | Mean of the distribution. |
+| `--data.input_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.input_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.input_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.input_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.input_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.output_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.output_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.output_distribution.mean` | float | Mean of the distribution. |
+| `--data.output_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.output_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.shared_prefix.num_groups` | int | Number of unique system prompts (shared prefix groups) to generate. |
+| `--data.shared_prefix.num_prompts_per_group` | int | Number of prompts generated per shared system prompt. |
+| `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
+| `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.question_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.question_distribution.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.question_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.question_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.question_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.question_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.question_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.shared_prefix.output_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.output_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.output_distribution.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.output_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.output_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. |
+| `--data.shared_prefix.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.image.count.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.image.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.image.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.shared_prefix.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
-| `--data.shared_prefix.multimodal.video.count.min` | int | Matches data.shared_prefix.multimodal.video.count.min in config |
-| `--data.shared_prefix.multimodal.video.count.max` | int | Matches data.shared_prefix.multimodal.video.count.max in config |
-| `--data.shared_prefix.multimodal.video.count.mean` | float | Matches data.shared_prefix.multimodal.video.count.mean in config |
-| `--data.shared_prefix.multimodal.video.count.std_dev` | float | Matches data.shared_prefix.multimodal.video.count.std_dev in config |
-| `--data.shared_prefix.multimodal.video.count.total_count` | int | Matches data.shared_prefix.multimodal.video.count.total_count in config |
-| `--data.shared_prefix.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.video.count.type in config |
-| `--data.shared_prefix.multimodal.video.count.variance` | float | Matches data.shared_prefix.multimodal.video.count.variance in config |
-| `--data.shared_prefix.multimodal.video.count.skew` | float | Matches data.shared_prefix.multimodal.video.count.skew in config |
+| `--data.shared_prefix.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.video.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.video.count.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.video.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.video.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.shared_prefix.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.shared_prefix.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
-| `--data.shared_prefix.multimodal.audio.count.min` | int | Matches data.shared_prefix.multimodal.audio.count.min in config |
-| `--data.shared_prefix.multimodal.audio.count.max` | int | Matches data.shared_prefix.multimodal.audio.count.max in config |
-| `--data.shared_prefix.multimodal.audio.count.mean` | float | Matches data.shared_prefix.multimodal.audio.count.mean in config |
-| `--data.shared_prefix.multimodal.audio.count.std_dev` | float | Matches data.shared_prefix.multimodal.audio.count.std_dev in config |
-| `--data.shared_prefix.multimodal.audio.count.total_count` | int | Matches data.shared_prefix.multimodal.audio.count.total_count in config |
-| `--data.shared_prefix.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.shared_prefix.multimodal.audio.count.type in config |
-| `--data.shared_prefix.multimodal.audio.count.variance` | float | Matches data.shared_prefix.multimodal.audio.count.variance in config |
-| `--data.shared_prefix.multimodal.audio.count.skew` | float | Matches data.shared_prefix.multimodal.audio.count.skew in config |
+| `--data.shared_prefix.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.audio.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.audio.count.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.audio.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.audio.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.shared_prefix.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
-| `--data.multimodal.image.count.min` | int | Matches data.multimodal.image.count.min in config |
-| `--data.multimodal.image.count.max` | int | Matches data.multimodal.image.count.max in config |
-| `--data.multimodal.image.count.mean` | float | Matches data.multimodal.image.count.mean in config |
-| `--data.multimodal.image.count.std_dev` | float | Matches data.multimodal.image.count.std_dev in config |
-| `--data.multimodal.image.count.total_count` | int | Matches data.multimodal.image.count.total_count in config |
-| `--data.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.image.count.type in config |
-| `--data.multimodal.image.count.variance` | float | Matches data.multimodal.image.count.variance in config |
-| `--data.multimodal.image.count.skew` | float | Matches data.multimodal.image.count.skew in config |
+| `--data.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.image.count.mean` | float | Mean of the distribution. |
+| `--data.multimodal.image.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.image.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
-| `--data.multimodal.video.count.min` | int | Matches data.multimodal.video.count.min in config |
-| `--data.multimodal.video.count.max` | int | Matches data.multimodal.video.count.max in config |
-| `--data.multimodal.video.count.mean` | float | Matches data.multimodal.video.count.mean in config |
-| `--data.multimodal.video.count.std_dev` | float | Matches data.multimodal.video.count.std_dev in config |
-| `--data.multimodal.video.count.total_count` | int | Matches data.multimodal.video.count.total_count in config |
-| `--data.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.video.count.type in config |
-| `--data.multimodal.video.count.variance` | float | Matches data.multimodal.video.count.variance in config |
-| `--data.multimodal.video.count.skew` | float | Matches data.multimodal.video.count.skew in config |
+| `--data.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.video.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.video.count.mean` | float | Mean of the distribution. |
+| `--data.multimodal.video.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.video.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
-| `--data.multimodal.audio.count.min` | int | Matches data.multimodal.audio.count.min in config |
-| `--data.multimodal.audio.count.max` | int | Matches data.multimodal.audio.count.max in config |
-| `--data.multimodal.audio.count.mean` | float | Matches data.multimodal.audio.count.mean in config |
-| `--data.multimodal.audio.count.std_dev` | float | Matches data.multimodal.audio.count.std_dev in config |
-| `--data.multimodal.audio.count.total_count` | int | Matches data.multimodal.audio.count.total_count in config |
-| `--data.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.multimodal.audio.count.type in config |
-| `--data.multimodal.audio.count.variance` | float | Matches data.multimodal.audio.count.variance in config |
-| `--data.multimodal.audio.count.skew` | float | Matches data.multimodal.audio.count.skew in config |
+| `--data.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.audio.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.audio.count.mean` | float | Mean of the distribution. |
+| `--data.multimodal.audio.count.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.audio.count.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
 | `--data.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
-| `--data.trace.file` | str | Matches data.trace.file in config |
-| `--data.trace.format` | Enum (AzurePublicDataset) | Matches data.trace.format in config |
+| `--data.trace.file` | str | Path to the trace file to replay. |
+| `--data.trace.format` | Enum (AzurePublicDataset) | Format of the trace file. |
 | `--data.otel_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
@@ -169,46 +169,46 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |
-| `--data.conversation_replay.dynamic_system_prompt_len.min` | int | Matches data.conversation_replay.dynamic_system_prompt_len.min in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.max` | int | Matches data.conversation_replay.dynamic_system_prompt_len.max in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.mean` | float | Matches data.conversation_replay.dynamic_system_prompt_len.mean in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.std_dev` | float | Matches data.conversation_replay.dynamic_system_prompt_len.std_dev in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.total_count` | int | Matches data.conversation_replay.dynamic_system_prompt_len.total_count in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.dynamic_system_prompt_len.type in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.variance` | float | Matches data.conversation_replay.dynamic_system_prompt_len.variance in config |
-| `--data.conversation_replay.dynamic_system_prompt_len.skew` | float | Matches data.conversation_replay.dynamic_system_prompt_len.skew in config |
-| `--data.conversation_replay.turns_per_conversation.min` | int | Matches data.conversation_replay.turns_per_conversation.min in config |
-| `--data.conversation_replay.turns_per_conversation.max` | int | Matches data.conversation_replay.turns_per_conversation.max in config |
-| `--data.conversation_replay.turns_per_conversation.mean` | float | Matches data.conversation_replay.turns_per_conversation.mean in config |
-| `--data.conversation_replay.turns_per_conversation.std_dev` | float | Matches data.conversation_replay.turns_per_conversation.std_dev in config |
-| `--data.conversation_replay.turns_per_conversation.total_count` | int | Matches data.conversation_replay.turns_per_conversation.total_count in config |
-| `--data.conversation_replay.turns_per_conversation.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.turns_per_conversation.type in config |
-| `--data.conversation_replay.turns_per_conversation.variance` | float | Matches data.conversation_replay.turns_per_conversation.variance in config |
-| `--data.conversation_replay.turns_per_conversation.skew` | float | Matches data.conversation_replay.turns_per_conversation.skew in config |
-| `--data.conversation_replay.input_tokens_per_turn.min` | int | Matches data.conversation_replay.input_tokens_per_turn.min in config |
-| `--data.conversation_replay.input_tokens_per_turn.max` | int | Matches data.conversation_replay.input_tokens_per_turn.max in config |
-| `--data.conversation_replay.input_tokens_per_turn.mean` | float | Matches data.conversation_replay.input_tokens_per_turn.mean in config |
-| `--data.conversation_replay.input_tokens_per_turn.std_dev` | float | Matches data.conversation_replay.input_tokens_per_turn.std_dev in config |
-| `--data.conversation_replay.input_tokens_per_turn.total_count` | int | Matches data.conversation_replay.input_tokens_per_turn.total_count in config |
-| `--data.conversation_replay.input_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.input_tokens_per_turn.type in config |
-| `--data.conversation_replay.input_tokens_per_turn.variance` | float | Matches data.conversation_replay.input_tokens_per_turn.variance in config |
-| `--data.conversation_replay.input_tokens_per_turn.skew` | float | Matches data.conversation_replay.input_tokens_per_turn.skew in config |
-| `--data.conversation_replay.output_tokens_per_turn.min` | int | Matches data.conversation_replay.output_tokens_per_turn.min in config |
-| `--data.conversation_replay.output_tokens_per_turn.max` | int | Matches data.conversation_replay.output_tokens_per_turn.max in config |
-| `--data.conversation_replay.output_tokens_per_turn.mean` | float | Matches data.conversation_replay.output_tokens_per_turn.mean in config |
-| `--data.conversation_replay.output_tokens_per_turn.std_dev` | float | Matches data.conversation_replay.output_tokens_per_turn.std_dev in config |
-| `--data.conversation_replay.output_tokens_per_turn.total_count` | int | Matches data.conversation_replay.output_tokens_per_turn.total_count in config |
-| `--data.conversation_replay.output_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.output_tokens_per_turn.type in config |
-| `--data.conversation_replay.output_tokens_per_turn.variance` | float | Matches data.conversation_replay.output_tokens_per_turn.variance in config |
-| `--data.conversation_replay.output_tokens_per_turn.skew` | float | Matches data.conversation_replay.output_tokens_per_turn.skew in config |
-| `--data.conversation_replay.tool_call_latency_sec.min` | int | Matches data.conversation_replay.tool_call_latency_sec.min in config |
-| `--data.conversation_replay.tool_call_latency_sec.max` | int | Matches data.conversation_replay.tool_call_latency_sec.max in config |
-| `--data.conversation_replay.tool_call_latency_sec.mean` | float | Matches data.conversation_replay.tool_call_latency_sec.mean in config |
-| `--data.conversation_replay.tool_call_latency_sec.std_dev` | float | Matches data.conversation_replay.tool_call_latency_sec.std_dev in config |
-| `--data.conversation_replay.tool_call_latency_sec.total_count` | int | Matches data.conversation_replay.tool_call_latency_sec.total_count in config |
-| `--data.conversation_replay.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Matches data.conversation_replay.tool_call_latency_sec.type in config |
-| `--data.conversation_replay.tool_call_latency_sec.variance` | float | Matches data.conversation_replay.tool_call_latency_sec.variance in config |
-| `--data.conversation_replay.tool_call_latency_sec.skew` | float | Matches data.conversation_replay.tool_call_latency_sec.skew in config |
+| `--data.conversation_replay.dynamic_system_prompt_len.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.dynamic_system_prompt_len.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.dynamic_system_prompt_len.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.dynamic_system_prompt_len.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.dynamic_system_prompt_len.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.dynamic_system_prompt_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.dynamic_system_prompt_len.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.dynamic_system_prompt_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.conversation_replay.turns_per_conversation.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.turns_per_conversation.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.turns_per_conversation.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.turns_per_conversation.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.turns_per_conversation.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.turns_per_conversation.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.turns_per_conversation.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.turns_per_conversation.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.conversation_replay.input_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.input_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.input_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.input_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.input_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.input_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.input_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.input_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.conversation_replay.output_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.output_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.output_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.output_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.output_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.output_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.output_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.output_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.conversation_replay.tool_call_latency_sec.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.tool_call_latency_sec.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.tool_call_latency_sec.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.tool_call_latency_sec.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.tool_call_latency_sec.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.tool_call_latency_sec.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.tool_call_latency_sec.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.max_model_len` | int | Maximum model context length in tokens |
 | `--data.visionarena.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
 | `--data.visionarena.hf_split` | str | HuggingFace split to stream. |
@@ -216,62 +216,62 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
 | `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
 | `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
-| `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Matches load.type in config |
-| `--load.interval` | float | Matches load.interval in config |
-| `--load.stages` | JSON | Matches load.stages in config |
-| `--load.sweep.type` | Enum (geometric, linear) | Matches load.sweep.type in config |
-| `--load.sweep.num_requests` | int | Matches load.sweep.num_requests in config |
-| `--load.sweep.timeout` | float | Matches load.sweep.timeout in config |
-| `--load.sweep.num_stages` | int | Matches load.sweep.num_stages in config |
-| `--load.sweep.stage_duration` | int | Matches load.sweep.stage_duration in config |
-| `--load.sweep.saturation_percentile` | float | Matches load.sweep.saturation_percentile in config |
-| `--load.num_workers` | int | Matches load.num_workers in config |
-| `--load.worker_max_concurrency` | int | Matches load.worker_max_concurrency in config |
-| `--load.worker_max_tcp_connections` | int | Matches load.worker_max_tcp_connections in config |
-| `--load.trace.file` | str | Matches load.trace.file in config |
-| `--load.trace.format` | Enum (AzurePublicDataset) | Matches load.trace.format in config |
-| `--load.circuit_breakers` | JSON | Matches load.circuit_breakers in config |
-| `--load.request_timeout` | float | Matches load.request_timeout in config |
-| `--load.lora_traffic_split` | JSON | Matches load.lora_traffic_split in config |
-| `--load.base_seed` | int | Matches load.base_seed in config |
-| `--metrics.type` | Enum (prometheus, default) | Matches metrics.type in config |
-| `--metrics.prometheus.scrape_interval` | int | Matches metrics.prometheus.scrape_interval in config |
-| `--metrics.prometheus.url` | string | Matches metrics.prometheus.url in config |
-| `--metrics.prometheus.filters` | JSON | Matches metrics.prometheus.filters in config |
-| `--metrics.prometheus.google_managed` | boolean | Matches metrics.prometheus.google_managed in config |
-| `--report.request_lifecycle.summary` | boolean | Matches report.request_lifecycle.summary in config |
-| `--report.request_lifecycle.per_stage` | boolean | Matches report.request_lifecycle.per_stage in config |
-| `--report.request_lifecycle.per_request` | boolean | Matches report.request_lifecycle.per_request in config |
-| `--report.request_lifecycle.per_adapter` | boolean | Matches report.request_lifecycle.per_adapter in config |
-| `--report.request_lifecycle.per_adapter_stage` | boolean | Matches report.request_lifecycle.per_adapter_stage in config |
-| `--report.request_lifecycle.percentiles` | JSON | Matches report.request_lifecycle.percentiles in config |
-| `--report.request_lifecycle.use_server_output_tokens` | boolean | Matches report.request_lifecycle.use_server_output_tokens in config |
-| `--report.request_lifecycle.max_error_messages` | int | Matches report.request_lifecycle.max_error_messages in config |
-| `--report.prometheus.summary` | boolean | Matches report.prometheus.summary in config |
-| `--report.prometheus.per_stage` | boolean | Matches report.prometheus.per_stage in config |
-| `--report.session_lifecycle.summary` | boolean | Matches report.session_lifecycle.summary in config |
-| `--report.session_lifecycle.per_stage` | boolean | Matches report.session_lifecycle.per_stage in config |
-| `--report.session_lifecycle.per_session` | boolean | Matches report.session_lifecycle.per_session in config |
-| `--report.goodput.constraints` | JSON | Matches report.goodput.constraints in config |
-| `--storage.local_storage.path` | str | Matches storage.local_storage.path in config |
-| `--storage.local_storage.report_file_prefix` | str | Matches storage.local_storage.report_file_prefix in config |
-| `--storage.google_cloud_storage.path` | str | Matches storage.google_cloud_storage.path in config |
-| `--storage.google_cloud_storage.report_file_prefix` | str | Matches storage.google_cloud_storage.report_file_prefix in config |
-| `--storage.google_cloud_storage.bucket_name` | str | Matches storage.google_cloud_storage.bucket_name in config |
-| `--storage.simple_storage_service.path` | str | Matches storage.simple_storage_service.path in config |
-| `--storage.simple_storage_service.report_file_prefix` | str | Matches storage.simple_storage_service.report_file_prefix in config |
-| `--storage.simple_storage_service.bucket_name` | str | Matches storage.simple_storage_service.bucket_name in config |
-| `--storage.simple_storage_service.endpoint_url` | str | Matches storage.simple_storage_service.endpoint_url in config |
-| `--storage.simple_storage_service.region_name` | str | Matches storage.simple_storage_service.region_name in config |
-| `--storage.simple_storage_service.addressing_style` | string | Matches storage.simple_storage_service.addressing_style in config |
-| `--server.type` | Enum (vllm, sglang, tgi, mock) | Matches server.type in config |
-| `--server.model_name` | str | Matches server.model_name in config |
-| `--server.base_url` | str | Matches server.base_url in config |
-| `--server.ignore_eos` | boolean | Matches server.ignore_eos in config |
-| `--server.api_key` | str | Matches server.api_key in config |
-| `--server.cert_path` | str | Matches server.cert_path in config |
-| `--server.key_path` | str | Matches server.key_path in config |
-| `--tokenizer.pretrained_model_name_or_path` | str | Matches tokenizer.pretrained_model_name_or_path in config |
-| `--tokenizer.trust_remote_code` | boolean | Matches tokenizer.trust_remote_code in config |
-| `--tokenizer.token` | str | Matches tokenizer.token in config |
-| `--circuit_breakers` | JSON | Matches circuit_breakers in config |
+| `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
+| `--load.interval` | float | Seconds to wait between stages. |
+| `--load.stages` | JSON | Load stages to run in sequence. The stage fields depend on the load type. |
+| `--load.sweep.type` | Enum (geometric, linear) | How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'. |
+| `--load.sweep.num_requests` | int | Number of requests sent in the initial burst used to find the saturation rate. |
+| `--load.sweep.timeout` | float | Time limit in seconds for the saturation probe stage. |
+| `--load.sweep.num_stages` | int | Number of load stages to generate. |
+| `--load.sweep.stage_duration` | int | Duration of each generated stage in seconds. |
+| `--load.sweep.saturation_percentile` | float | Percentile of observed request rates taken as the saturation point. |
+| `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the CPU count. |
+| `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
+| `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |
+| `--load.trace.file` | str | Path to the trace file to replay. |
+| `--load.trace.format` | Enum (AzurePublicDataset) | Format of the trace file. |
+| `--load.circuit_breakers` | JSON | Names of configured circuit breakers to enable for the run. |
+| `--load.request_timeout` | float | Per-request timeout in seconds. |
+| `--load.lora_traffic_split` | JSON | Traffic split across LoRA adapters. Splits must sum to 1.0. |
+| `--load.base_seed` | int | Base random seed for load generation. Defaults to the current time. |
+| `--metrics.type` | Enum (prometheus, default) | Metrics client used to collect server-side metrics. |
+| `--metrics.prometheus.scrape_interval` | int | Scrape interval of the Prometheus server in seconds. |
+| `--metrics.prometheus.url` | string | URL of the Prometheus server to query. |
+| `--metrics.prometheus.filters` | JSON | PromQL label matchers (e.g. 'namespace="default"') applied to every metric query. |
+| `--metrics.prometheus.google_managed` | boolean | Query Google Cloud Managed Service for Prometheus instead of a self-hosted server. |
+| `--report.request_lifecycle.summary` | boolean | Generate a summary report across the whole run. |
+| `--report.request_lifecycle.per_stage` | boolean | Generate a report for each load stage. |
+| `--report.request_lifecycle.per_request` | boolean | Generate a report with per-request details. |
+| `--report.request_lifecycle.per_adapter` | boolean | Generate a report for each LoRA adapter. |
+| `--report.request_lifecycle.per_adapter_stage` | boolean | Generate a report for each LoRA adapter within each load stage. |
+| `--report.request_lifecycle.percentiles` | JSON | Percentiles reported for each metric. |
+| `--report.request_lifecycle.use_server_output_tokens` | boolean | Use the server-reported output token counts in metrics instead of tokenizing the response text. |
+| `--report.request_lifecycle.max_error_messages` | int | Cap on the number of distinct example error messages retained per error label in the failure report, and per substitution entry. |
+| `--report.prometheus.summary` | boolean | Generate a summary report across the whole run. |
+| `--report.prometheus.per_stage` | boolean | Generate a report for each load stage. |
+| `--report.session_lifecycle.summary` | boolean | Generate a summary report across the whole run. |
+| `--report.session_lifecycle.per_stage` | boolean | Generate a report for each load stage. |
+| `--report.session_lifecycle.per_session` | boolean | Generate a report with per-session details. |
+| `--report.goodput.constraints` | JSON | SLO thresholds in seconds that a request must meet to count as good. Keys: 'ttft', 'tpot', 'itl', 'ntpot', 'request_latency'. |
+| `--storage.local_storage.path` | str | Directory or object key prefix where report files are written. '{timestamp}' is replaced with the run's start time. |
+| `--storage.local_storage.report_file_prefix` | str | Prefix added to every report file name. |
+| `--storage.google_cloud_storage.path` | str | Directory or object key prefix where report files are written. '{timestamp}' is replaced with the run's start time. |
+| `--storage.google_cloud_storage.report_file_prefix` | str | Prefix added to every report file name. |
+| `--storage.google_cloud_storage.bucket_name` | str | Name of the Google Cloud Storage bucket where reports are uploaded. |
+| `--storage.simple_storage_service.path` | str | Directory or object key prefix where report files are written. '{timestamp}' is replaced with the run's start time. |
+| `--storage.simple_storage_service.report_file_prefix` | str | Prefix added to every report file name. |
+| `--storage.simple_storage_service.bucket_name` | str | Name of the S3 bucket where reports are uploaded. |
+| `--storage.simple_storage_service.endpoint_url` | str | Custom endpoint URL, for S3-compatible object stores. |
+| `--storage.simple_storage_service.region_name` | str | AWS region of the bucket. |
+| `--storage.simple_storage_service.addressing_style` | string | S3 addressing style: 'auto', 'virtual' (bucket in hostname) or 'path'. |
+| `--server.type` | Enum (vllm, sglang, tgi, mock) | Type of model server being benchmarked. |
+| `--server.model_name` | str | Model name sent in each request. Auto-detected from the server if unset. |
+| `--server.base_url` | str | Base URL of the model server, e.g. 'http://localhost:8000'. |
+| `--server.ignore_eos` | boolean | Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. |
+| `--server.api_key` | str | API key sent as a bearer token with each request. |
+| `--server.cert_path` | str | Path to a client TLS certificate file. |
+| `--server.key_path` | str | Path to the private key for the client TLS certificate. |
+| `--tokenizer.pretrained_model_name_or_path` | str | HuggingFace model name or local path of the tokenizer to load. |
+| `--tokenizer.trust_remote_code` | boolean | Allow the tokenizer to execute code from its repository when loading. |
+| `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. |
+| `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |

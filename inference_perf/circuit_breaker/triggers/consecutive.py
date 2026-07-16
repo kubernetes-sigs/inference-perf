@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
-from .config import TriggerConsecutive
+from inference_perf.config.circuit_breaker import TriggerConsecutive
 from .base import Trigger, HitSample
 
 

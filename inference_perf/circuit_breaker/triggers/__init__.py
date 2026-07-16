@@ -11,8 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.config.circuit_breaker import TriggerSpec
+
 from .base import build_trigger, Trigger, HitSample
-from .config import TriggerSpec
 
 from pkgutil import walk_packages
 from importlib import import_module
