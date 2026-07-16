@@ -46,7 +46,7 @@ from inference_perf.datagen.replay_graph_session_datagen import (
 
 def _make_tokenizer() -> MagicMock:
     tok = MagicMock()
-    tok.count_tokens = lambda text: max(1, len((text or "").split()))
+    tok.count_tokens = lambda text, **kw: max(1, len((text or "").split()))
     return tok
 
 

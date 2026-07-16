@@ -51,7 +51,7 @@ def test_count_prompt_tokens_includes_prefix_text() -> None:
     tokens — the total reflects the actual prompt sent to the model."""
     tokenizer = MagicMock()
     # One token per whitespace-separated word.
-    tokenizer.count_tokens.side_effect = lambda s: len(s.split())
+    tokenizer.count_tokens.side_effect = lambda s, **kw: len(s.split())
 
     data = ChatCompletionAPIData(
         messages=[ChatMessage(role="user", content="three words here")],
@@ -64,7 +64,7 @@ def test_count_prompt_tokens_includes_prefix_text() -> None:
 def test_count_prompt_tokens_without_prefix_text_unchanged() -> None:
     """Existing behavior holds when prefix_text is unset."""
     tokenizer = MagicMock()
-    tokenizer.count_tokens.side_effect = lambda s: len(s.split())
+    tokenizer.count_tokens.side_effect = lambda s, **kw: len(s.split())
 
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="five tokens in this prompt")])
     assert data._count_prompt_tokens(tokenizer) == 5

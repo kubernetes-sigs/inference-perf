@@ -60,7 +60,7 @@ class TestTraceReplay:
             mock_tokenizer_obj.vocab_size = 1000
             mock_tokenizer_obj.all_special_ids = []
             mock_tokenizer.get_tokenizer.return_value = mock_tokenizer_obj
-            mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split())
+            mock_tokenizer.count_tokens.side_effect = lambda text, **kw: len(text.split())
 
             api_config = APIConfig(type=APIType.Completion)
             trace_config = TraceConfig(file=str(temp_path), format=TraceFormat.AZURE_PUBLIC_DATASET)

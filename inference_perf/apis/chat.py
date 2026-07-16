@@ -543,7 +543,10 @@ class ChatCompletionAPIData(InferenceAPIData):
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
             prompt_len = self._count_prompt_tokens(tokenizer)
-            output_len = tokenizer.count_tokens(output_text)
+            # Generated text is a continuation, not a sequence start: counting it
+            # with special tokens would add a BOS the server's completion_tokens
+            # never contains.
+            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
@@ -566,7 +569,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                 lora_adapter=lora_adapter,
             )
         output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
-        output_len = tokenizer.count_tokens(output_text)
+        output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
