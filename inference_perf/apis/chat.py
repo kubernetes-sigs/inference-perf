@@ -170,6 +170,7 @@ def _clean_parameters(obj: Any) -> Any:
 class ChatMessage(BaseModel):
     role: str
     content: Optional[Union[str, list[dict[str, Any]]]] = None
+    reasoning_content: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
 
@@ -195,6 +196,9 @@ class ChatMessage(BaseModel):
                 msg["content"] = self.content
         else:
             msg["content"] = self.content if self.content is not None else ""
+        if self.reasoning_content is not None:
+            msg["reasoning_content"] = self.reasoning_content
+            msg["reasoning"] = self.reasoning_content
         return msg
 
 

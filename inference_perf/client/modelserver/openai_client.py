@@ -266,13 +266,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
                             delta = choices[0].get("delta", {})
                             if delta.get("content"):
                                 output_parts.append(delta["content"])
-                            if delta.get("reasoning_content"):
-                                reasoning_parts.append(delta["reasoning_content"])
+                            reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content")
+                            if reasoning_chunk:
+                                reasoning_parts.append(reasoning_chunk)
                             if delta.get("tool_calls"):
                                 tool_call_parts.append(delta)
 
-                        if output_parts:
-                            otel_response_info["output_text"] = "".join(output_parts)
+                        otel_response_info["output_text"] = "".join(output_parts)
                         if reasoning_parts:
                             otel_response_info["reasoning_text"] = "".join(reasoning_parts)
                         if tool_call_parts:
@@ -284,7 +284,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                         if "message" in choices[0]:
                             msg_out = choices[0].get("message", {})
                             output_text = msg_out.get("content") or ""
-                            reasoning_content = msg_out.get("reasoning_content")
+                            reasoning_content = msg_out.get("reasoning") or msg_out.get("reasoning_content")
 
                             otel_response_info["output_text"] = output_text
                             if reasoning_content:
