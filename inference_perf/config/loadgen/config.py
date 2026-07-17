@@ -165,6 +165,17 @@ class LoadConfig(BaseModel):
     trace: Optional[TraceConfig] = None
     circuit_breakers: List[str] = []
     request_timeout: Optional[float] = None
+    stage_teardown_grace_seconds: float = Field(
+        default=120.0,
+        ge=0,
+        description=(
+            "How long to let in-flight requests finish after a stage ends or times out, "
+            "before they are cancelled. Teardown is bounded: once the grace (plus a fixed "
+            "margin) expires, remaining work is force-cancelled and unresponsive workers "
+            "are terminated and respawned, so report generation always runs. Set to 0 to "
+            "cancel in-flight requests immediately at stage end."
+        ),
+    )
     lora_traffic_split: Optional[List[MultiLoRAConfig]] = None
     base_seed: int = Field(default_factory=lambda: int(time.time() * 1000))
 
