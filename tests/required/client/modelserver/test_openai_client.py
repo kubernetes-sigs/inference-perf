@@ -188,8 +188,49 @@ async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, 
 
 
 @pytest.mark.asyncio
-async def test_session_id_header_not_injected_when_session_id_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
+async def test_user_session_id_used_when_session_id_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = None
+    mock_data.user_session_id = "conv_0"
+    mock_client.api_config.session_id_header_key = "x-session-id"
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert headers_passed.get("x-session-id") == "conv_0"
+
+
+@pytest.mark.asyncio
+async def test_session_id_takes_precedence_over_user_session_id(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_data.session_id = "trace0_test_session"
+    mock_data.user_session_id = "conv_0"
+    mock_client.api_config.session_id_header_key = "x-session-id"
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    headers_passed = session.session.post.call_args.kwargs["headers"]
+    assert headers_passed.get("x-session-id") == "trace0_test_session"
+
+
+@pytest.mark.asyncio
+async def test_session_id_header_not_injected_when_neither_id_is_set(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    mock_data.session_id = None
+    mock_data.user_session_id = None
     mock_client.api_config.session_id_header_key = "x-session-id"
 
     session = openAIModelServerClientSession(mock_client)
@@ -209,6 +250,7 @@ async def test_session_id_header_not_injected_when_session_id_is_none(mock_clien
 @pytest.mark.asyncio
 async def test_session_id_header_not_injected_when_header_key_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = "trace0_test_session"
+    mock_data.user_session_id = "conv_0"
     mock_client.api_config.session_id_header_key = None
 
     session = openAIModelServerClientSession(mock_client)
