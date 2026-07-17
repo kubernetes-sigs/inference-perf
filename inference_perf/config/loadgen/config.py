@@ -181,6 +181,17 @@ class LoadConfig(StrictBaseModel):
     )
     circuit_breakers: List[str] = Field(default=[], description="Names of configured circuit breakers to enable for the run.")
     request_timeout: Optional[float] = Field(default=None, description="Per-request timeout in seconds.")
+    stage_teardown_grace_seconds: float = Field(
+        default=120.0,
+        ge=0,
+        description=(
+            "How long to let in-flight requests finish after a stage ends or times out, "
+            "before they are cancelled. Teardown is bounded: once the grace (plus a fixed "
+            "margin) expires, remaining work is force-cancelled and unresponsive workers "
+            "are terminated and respawned, so report generation always runs. Set to 0 to "
+            "cancel in-flight requests immediately at stage end."
+        ),
+    )
     lora_traffic_split: Optional[List[MultiLoRAConfig]] = Field(
         default=None, description="Traffic split across LoRA adapters. Splits must sum to 1.0."
     )
