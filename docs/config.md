@@ -38,6 +38,11 @@ api:
   slo_unit: "ms"               # Optional SLO unit (e.g., ms, s), default is ms
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
+  use_server_prompt_tokens: false # Opt-in: record usage.prompt_tokens from the server as input tokens for replay-graph
+                                  # session workloads instead of re-tokenizing the full conversation client-side.
+                                  # Client-side re-tokenization costs O(conversation) CPU on the loadgen event loop per
+                                  # event and can bottleneck long-context replay (issue #648). Falls back to client-side
+                                  # counting when the server does not report usage.
 ```  
 
 ### Data Generation

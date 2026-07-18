@@ -60,3 +60,11 @@ class APIConfig(BaseModel):
     slo_ttft_header: Optional[str] = None
     response_format: Optional[ResponseFormat] = None
     session_id_header_key: Optional[str] = None
+    # Opt-in: record the server-reported usage.prompt_tokens as the request's
+    # input token count instead of re-tokenizing the full conversation
+    # client-side (replay-graph session workloads). Client-side re-tokenization
+    # is O(conversation) CPU on the loadgen event loop per event and can
+    # bottleneck long-context replay; see
+    # https://github.com/kubernetes-sigs/inference-perf/issues/648. Falls back
+    # to client-side counting when the server does not report usage.
+    use_server_prompt_tokens: bool = False

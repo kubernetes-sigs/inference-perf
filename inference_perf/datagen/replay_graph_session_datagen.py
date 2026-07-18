@@ -113,6 +113,25 @@ def _detect_bad_tool_calls(
 # --- end bad_tool_call_handling --------------------------------------------
 
 
+_warned_missing_server_prompt_tokens = False
+
+
+def _warn_missing_server_prompt_tokens(event_id: str) -> None:
+    """Warn once per process when `use_server_prompt_tokens` is enabled but the
+    server response carried no usage.prompt_tokens, forcing the CPU-intensive
+    client-side re-tokenization of the full conversation history."""
+    global _warned_missing_server_prompt_tokens
+    if _warned_missing_server_prompt_tokens:
+        return
+    _warned_missing_server_prompt_tokens = True
+    logger.warning(
+        f"api.use_server_prompt_tokens is enabled but the server response for event {event_id} "
+        "did not include usage.prompt_tokens; falling back to client-side tokenization of the "
+        "full conversation history. This is CPU-intensive for long histories and can bottleneck "
+        "the load generator (https://github.com/kubernetes-sigs/inference-perf/issues/648)."
+    )
+
+
 class EventFailedError(Exception):
     """Raised by EventOutputRegistry.require_async when the awaited event failed."""
 
@@ -877,8 +896,19 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             if reasoning_text:
                 streaming_output_message["reasoning_content"] = reasoning_text
 
-            prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
-            prompt_len = tokenizer.count_tokens(prompt_text)
+            # With api.use_server_prompt_tokens, prefer the server-reported
+            # usage.prompt_tokens: re-tokenizing the full conversation here is
+            # O(history) CPU that blocks the worker's event loop on every event
+            # (quadratic per session), throttling long-context replay. See
+            # https://github.com/kubernetes-sigs/inference-perf/issues/648.
+            server_prompt_tokens = server_usage.get("prompt_tokens") if server_usage else None
+            if config.use_server_prompt_tokens and server_prompt_tokens is not None:
+                prompt_len = int(server_prompt_tokens)
+            else:
+                if config.use_server_prompt_tokens:
+                    _warn_missing_server_prompt_tokens(self.event_id)
+                prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
+                prompt_len = tokenizer.count_tokens(prompt_text)
             server_completion_tokens = server_usage.get("completion_tokens") if server_usage else None
             if server_completion_tokens is not None:
                 output_len = int(server_completion_tokens)
@@ -903,7 +933,16 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             )
         else:
             data = await response.json()
-            prompt_len = tokenizer.count_tokens("".join([_get_text(m.content) for m in self.messages]))
+            usage = data.get("usage") or {}
+            # Prefer server-reported prompt tokens when opted in; see the
+            # streaming branch above for why.
+            server_prompt_tokens = usage.get("prompt_tokens")
+            if config.use_server_prompt_tokens and server_prompt_tokens is not None:
+                prompt_len = int(server_prompt_tokens)
+            else:
+                if config.use_server_prompt_tokens:
+                    _warn_missing_server_prompt_tokens(self.event_id)
+                prompt_len = tokenizer.count_tokens("".join([_get_text(m.content) for m in self.messages]))
             choices = data.get("choices", [])
             output_message: Optional[Dict[str, Any]] = None
             tool_calls = None
@@ -928,7 +967,6 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
                 if reasoning_content:
                     output_message["reasoning_content"] = reasoning_content
-            usage = data.get("usage") or {}
             server_completion_tokens = usage.get("completion_tokens")
             if server_completion_tokens is not None:
                 output_len = int(server_completion_tokens)
@@ -939,7 +977,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=output_message,
