@@ -46,7 +46,7 @@ class TestCliSummary(unittest.TestCase):
         report = ReportFile(name="stage_0_lifecycle_metrics", contents=contents)
         print_summary_table([report])
 
-        self.assertEqual(mock_console_print.call_count, 4)
+        self.assertEqual(mock_console_print.call_count, 5)
 
     def test_extract_session_stage_id(self) -> None:
         self.assertEqual(extract_session_stage_id("stage_0_session_lifecycle_metrics"), 0)
@@ -119,8 +119,8 @@ class TestCliSummary(unittest.TestCase):
             ReportFile(name="stage_0_session_lifecycle_metrics", contents=session_contents),
         ]
         print_summary_table(reports)
-        # 4 request tables + 3 session tables = 7
-        self.assertEqual(mock_console_print.call_count, 7)
+        # 5 request tables (including error table) + 3 session tables = 8
+        self.assertEqual(mock_console_print.call_count, 8)
 
 
 if __name__ == "__main__":
