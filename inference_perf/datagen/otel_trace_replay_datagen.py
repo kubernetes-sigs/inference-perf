@@ -62,7 +62,7 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay_graph_session_datagen import (
@@ -421,101 +421,104 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             dataset = dataset.filter(filter_func)
             logger.info(f"Filter applied: {original_size} -> {len(dataset)} records")
 
-        # Convert to list-of-dicts for downstream processing
-        trace_data_list: List[Dict[str, Any]] = []
-        for idx, row in enumerate(dataset):
-            row_dict = cast(Dict[str, Any], dict(row))
-            session_id = row_dict.get("session_id", f"record_{idx}")
-            trace_data_list.append(
-                {
-                    "data": row_dict,
-                    "source_name": session_id,
-                    "source_id": row_dict.get("source_id", session_id),
-                }
-            )
+        # Keep the dataset memory-mapped and read rows ONE AT A TIME on demand in
+        # _build_session. We deliberately do NOT materialize all rows (their spans) into
+        # Python memory here — for large corpora that is tens of GB resident in the parent
+        # (and inherited by every forked worker). Only the small id columns are read upfront
+        # to derive stable session IDs; the heavy spans stay on disk until a session is built.
+        self._dataset = dataset
+        num_rows = len(dataset)
 
-        self.trace_data_list = trace_data_list
-        sessions = self._load_trace_files()
-        self.initialize_sessions(sessions)
+        cols = dataset.column_names
+        session_id_col = list(dataset["session_id"]) if "session_id" in cols else [None] * num_rows
+        source_id_col = list(dataset["source_id"]) if "source_id" in cols else [None] * num_rows
 
-    def _load_trace_files(self) -> List[ReplaySession]:
-        """Process loaded trace data into sessions."""
-        logger.info(f"Processing {len(self.trace_data_list)} trace records")
-        sessions: List[ReplaySession] = []
-        total_normalized = 0
-
-        for trace_index, trace_info in enumerate(self.trace_data_list):
-            try:
-                session, normalized_count = self._process_trace_data(trace_info, trace_index)
-                total_normalized += normalized_count
-                if session:
-                    sessions.append(session)
-                    event_count = len(session.graph.events)
-                    logger.info(
-                        f"Loaded session {session.session_id} from {trace_info['source_name']} with {event_count} events"
-                    )
-            except Exception as e:
-                logger.error(f"Failed to process trace {trace_info['source_name']}: {e}")
-                if not self.otel_config.skip_invalid_files:
-                    raise
-
+        # Shuffle a permutation of row indices (not the rows themselves) so order is stable
+        # and reproducible without holding any span data.
+        order = list(range(num_rows))
         random.seed(self.base_seed)
-        random.shuffle(sessions)
+        random.shuffle(order)
+        self._row_order = order  # slot -> dataset row index
         logger.info(f"Randomized session order using seed: {self.base_seed}")
 
-        if total_normalized > 0:
+        # Derive session IDs (stable, independent of graph build) so get_session_count()
+        # works immediately and duplicate_sessions_target can expand at the ID level.
+        base_ids = [f"trace{slot}_{session_id_col[row] or f'session_{slot}'}" for slot, row in enumerate(order)]
+        self._source_ids = [source_id_col[row] for row in order]  # slot -> source_id (or None)
+
+        # Expand for duplicate_sessions_target: append (id, source_slot) pairs.
+        # _source_indices[i] is None for real slots, or the source slot to copy for duplicates.
+        session_ids = list(base_ids)
+        self._source_indices: List[Optional[int]] = [None] * len(base_ids)
+        target = self.otel_config.duplicate_sessions_target
+        if target is not None and len(base_ids) < target:
+            original_count = len(base_ids)
+            dup_count = 0
+            while len(session_ids) < target:
+                src = dup_count % original_count
+                dup_count += 1
+                session_ids.append(f"{base_ids[src]}_dup{dup_count}")
+                self._source_indices.append(src)
             logger.warning(
-                f"Normalized {total_normalized} 'developer' role message(s) to 'system' "
-                f"for compatibility with model servers that only accept standard roles."
+                f"Session corpus small: {original_count} sessions available. "
+                f"Duplicating to reach {target} sessions for stress testing."
             )
+            logger.info(f"Duplicated {dup_count} sessions. Total sessions now: {len(session_ids)}")
+        elif target is not None:
+            logger.info(f"Session corpus sufficient: {len(base_ids)} sessions available (target: {target})")
 
-        return sessions
+        self.initialize_sessions_lazy(session_ids)
 
-    def _process_trace_data(self, trace_info: Dict[str, Any], trace_index: int) -> Tuple[Optional[ReplaySession], int]:
-        """Process a single trace data dict into a ReplayGraph session.
+    def _build_session(self, session_index: int) -> Optional[ReplaySession]:
+        """Build one session's graph on demand (called by _ensure_session_built).
 
-        Returns a tuple of (session, developer_role_normalized_count).
+        Reads the single underlying dataset row from disk (memory-mapped) for this slot,
+        builds the graph, and returns it — the row's spans are never retained beyond this
+        call. For a duplicate slot, reads the source slot's row and relabels with the
+        duplicate's session_id (graph content identical; the _dup suffix drives random-string
+        injection in _build_session_schedule).
         """
-        data = trace_info["data"]
-        source_id = trace_info["source_id"]
-        source_name = trace_info["source_name"]
+        source_idx = self._source_indices[session_index]
+        slot = source_idx if source_idx is not None else session_index
+        row_index = self._row_order[slot]
+        row = cast(Dict[str, Any], dict(self._dataset[row_index]))
+        source_id = self._source_ids[slot] or self._session_ids[session_index]
+        return self._process_trace_data(row, session_index, session_id=self._session_ids[session_index], source_id=source_id)
 
+    def _process_trace_data(
+        self,
+        data: Dict[str, Any],
+        trace_index: int,
+        session_id: str,
+        source_id: str,
+    ) -> Optional[ReplaySession]:
+        """Build a ReplaySession from one raw trace row dict."""
         spans = data.get("spans") or []
         if not spans:
-            logger.warning(f"No spans found in {source_name}")
-            return None, 0
+            logger.warning(f"No spans found in {session_id}")
+            return None
 
         try:
-            raw_calls, normalized_count = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
+            raw_calls, _ = build_raw_calls(spans, include_errors=self.otel_config.include_errors)
             if not raw_calls:
-                logger.warning(f"No LLM calls found in {source_name}")
-                return None, 0
-
-            graph = build_graph(
-                raw_calls,
-                source_file=source_id,
-            )
+                logger.warning(f"No LLM calls found in {session_id}")
+                return None
+            graph = build_graph(raw_calls, source_file=source_id)
         except Exception as e:
-            logger.error(f"Error building graph from {source_name}: {e}")
-            return None, 0
-
-        # Use trace_id from first call as session_id, but make it unique by adding trace_index
-        # to handle cases where multiple sources have the same trace_id
-        base_session_id = raw_calls[0].trace_id or f"session_{trace_index}"
-        session_id = f"trace{trace_index}_{base_session_id}"
+            logger.error(f"Error building graph from {session_id}: {e}", exc_info=True)
+            return None
 
         return ReplaySession(
             session_id=session_id,
             source_id=source_id,
             session_index=trace_index,
             graph=graph,
-        ), normalized_count
+        )
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> SessionChatCompletionAPIData:
         api_data = super().load_lazy_data(data)
 
-        n = data.data_index
-        event = self.all_events[n]
+        event = self._resolve_event(data)
         session_id = event.event_id.split(":")[0] if ":" in event.event_id else event.event_id
         raw_event_id = event.event_id.split(":", 1)[1] if ":" in event.event_id else event.event_id
         state = self.session_graph_state.get(session_id)

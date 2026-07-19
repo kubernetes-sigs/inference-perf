@@ -13,6 +13,18 @@ patterns — and drives those calls against the target inference server under te
 - [Session-Level Metrics](#session-level-metrics)
 - [OpenTelemetry Background](#opentelemetry-background)
 - [Developer Guide](#developer-guide)
+  - [Trace File Format](#trace-file-format)
+  - [How It Works: Trace → Replay Graph](#how-it-works-trace--replay-graph)
+  - [Architecture Overview](#architecture-overview)
+  - [Memory & Lazy Loading](#memory--lazy-loading)
+  - [SessionGenerator API](#sessiongenerator-api)
+  - [Segment Decomposition](#segment-decomposition)
+  - [Tool-Call Replay](#tool-call-replay)
+  - [Output-Aware Replay Implementation](#output-aware-replay-implementation)
+  - [Failure Handling Details](#failure-handling-details)
+  - [Load Generator: run_stage vs run_session_stage](#load-generator-run_stage-vs-run_session_stage)
+  - [Dependency Inference Algorithm](#dependency-inference-algorithm)
+  - [Backwards Compatibility](#backwards-compatibility)
 
 ## Why use OTel trace replay?
 
@@ -90,9 +102,9 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`) |
-| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` files will be loaded |
-| `hf_dataset_path` | string \| dict | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier. As a string: `"username/dataset-name"`. As a dict: `{path, revision, split, ...}` — extra keys are forwarded to `datasets.load_dataset()`. Downloaded and cached automatically |
+| `trace_files` | list[string] | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | List of specific trace files. Supports glob patterns (e.g., `"path/*/*.json"`). All files are parsed into RAM at startup; graphs are built on demand. |
+| `trace_directory` | string | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | Directory containing trace files. All `.json` files will be loaded. All files are parsed into RAM at startup; graphs are built on demand. |
+| `hf_dataset_path` | string \| dict | One of `trace_files`, `trace_directory`, or `hf_dataset_path` | HuggingFace dataset identifier. As a string: `"username/dataset-name"`. As a dict: `{path, revision, split, ...}` — extra keys are forwarded to `datasets.load_dataset()`. Downloaded and cached automatically. Raw span data stays memory-mapped on disk; graphs are built on demand. |
 | `use_static_model` | boolean | No (default: `false`) | Override all recorded model names with `static_model_name` |
 | `static_model_name` | string | Required if `use_static_model: true` | Model name to use for all requests |
 | `model_mapping` | dict | No | Map recorded model names to target models (e.g., `"gpt-4": "my-model"`) |
@@ -101,7 +113,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `inject_random_session_id` | boolean | No (default: `false`) | Prepend a random string (`[SESS:<random>] `) to messages in `unique` input segments to defeat KV-cache reuse between sessions. Duplicate sessions (created by `duplicate_sessions_target`) get this injection automatically regardless of this flag, so each duplicate evaluates as a fresh KV-cache miss |
 | `max_wait_ms` | integer | No (default: `15000`) | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace |
 | `include_errors` | boolean | No (default: `true`) | Include spans marked as errors in the trace. Set to `false` to exclude error spans entirely |
-| `skip_invalid_files` | boolean | No (default: `true`) | Skip unparseable trace files instead of failing |
+| `skip_invalid_files` | boolean | No (default: `false`) | Skip invalid traces instead of failing. Covers both file-level parse errors (bad JSON, missing file) and graph-build errors (malformed spans). Skipped sessions are logged and silently omitted from the run. |
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
 
@@ -447,6 +459,80 @@ This architecture enables any generator that produces a `ReplayGraph` to leverag
 - Metrics collection
 
 `OTelTraceReplayDataGenerator` works at the granularity of whole *sessions* (one trace file = one session).
+
+### Memory & Lazy Loading
+
+#### Loading modes
+
+All three trace sources use the same **lazy graph-build** path — session graphs are never all built at startup. The difference is only in how raw trace data is held before graph build:
+
+**Local files** (`trace_files` / `trace_directory`): all JSON files are read and parsed into a `Dataset` object in Python memory at startup. Raw span data for every trace is resident in RAM from the start, but graphs are still built one at a time on demand as sessions are dispatched.
+
+**HuggingFace dataset** (`hf_dataset_path`): the dataset stays memory-mapped on disk (Arrow/parquet format). At startup only the lightweight `session_id` and `source_id` columns are read to derive stable session IDs. Span data for each row is read from disk only when that session is first dispatched, then discarded after the graph is built.
+
+Each session's graph is built exactly once, on demand:
+
+- **At dispatch time**: `is_session_buildable(session_index)` calls `_ensure_session_built`, which reads one row, builds the `ReplayGraph`, and stores it. Subsequent calls are no-ops (idempotent).
+- **On a worker**: `load_lazy_data` calls `_resolve_event`, which also calls `_ensure_session_built` before indexing into the event list.
+
+After a session completes, `cleanup_session` frees the graph, event list, and graph-state dict.
+
+**Memory footprint**: for HF datasets, proportional to the concurrent working set (raw span data stays on disk until a session is dispatched). For local files, raw JSON is in RAM upfront, but graphs are still only held for active sessions.
+
+#### Event addressing: `SessionReplayLazyLoadData`
+
+The lazy path uses `SessionReplayLazyLoadData` (a subclass of `LazyLoadInferenceAPIData`) to address events. Each token carries:
+
+| Field | Description |
+|-------|-------------|
+| `session_index` | Index into the session slots list |
+| `local_event_index` | Index into `_session_events[session_index]` |
+| `preferred_worker_id` | `hash(session_id) % num_workers` |
+
+`_resolve_event` dispatches on the type: `SessionReplayLazyLoadData` instances use per-session addressing.
+
+#### Memory lifecycle
+
+HF dataset path:
+```
+startup          → session IDs loaded, raw span data stays memory-mapped on disk
+first dispatch   → one row read from disk, graph built, row discarded
+events running   → registry holds live outputs; graph retained on worker
+all events done  → worker evicts: graph freed, registry pruned
+main loop acks   → parent evicts: same cleanup (idempotent)
+```
+
+Local files path:
+```
+startup          → all JSON files parsed into Dataset in RAM (spans resident)
+first dispatch   → graph built from in-memory row
+events running   → registry holds live outputs; graph retained on worker
+all events done  → worker evicts: graph freed, registry pruned
+main loop acks   → parent evicts: same cleanup (idempotent)
+```
+
+#### Per-worker session eviction
+
+Without explicit eviction, each worker would retain every graph it ever built for the full duration of the stage. Per-worker eviction bounds this:
+
+- Every terminal event path (completion, skip, failure) calls `_mark_drained_and_maybe_evict`.
+- `WorkerSessionTracker._drained_events[session_id]` tracks drained events as a set (idempotent).
+- When `len(drained_events) >= total_events_in_session`, `evict_worker_session` is called, freeing the graph and clearing tracker state.
+
+This bounds per-worker memory to roughly `concurrent_sessions × avg_events × avg_output_size` regardless of how many total sessions have been processed.
+
+#### `duplicate_sessions_target` and `num_sessions`
+
+`duplicate_sessions_target` expands a small corpus by appending duplicate entries with IDs of the form `{original_id}_dup{N}`.
+
+For the HF lazy path, a `_source_indices` map points each duplicate slot to its source dataset row — no span data is copied at startup; the duplicate reads the same row when its graph is first built. For the local-files path, `_duplicate_sessions_if_needed` creates new `ReplaySession` objects that share the same `ReplayGraph` reference as their source (the graph is not deep-copied).
+
+The `_dup` suffix automatically triggers KV-cache invalidation (a per-session random hex string is injected into unique message segments), preventing the model's KV cache from being reused across replays of the same trace.
+
+`num_sessions` (stage-level) limits how many sessions a stage dispatches, and is applied *after* duplication:
+
+- `duplicate_sessions_target: 30000` + `num_sessions: 3000` → 3,000 sessions are dispatched, drawn from a 30,000-session pool.
+- Omitting `num_sessions` runs all sessions in the pool.
 
 ### SessionGenerator API
 
