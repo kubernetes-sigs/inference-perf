@@ -1,0 +1,104 @@
+name: Merge Gate
+
+# Tide (Prow) merges PRs as soon as they have lgtm + approved, because the
+# only required status check on this repo is EasyCLA. This workflow makes
+# tide wait for CI: it applies the `do-not-merge` label (which tide's query
+# for kubernetes-sigs treats as a merge blocker) whenever a PR is opened or
+# updated, and removes it once the latest run of every CI workflow for the
+# PR's head commit has succeeded.
+#
+# The bare `do-not-merge` label is used (not `do-not-merge/hold`) so this
+# workflow never interferes with a human `/hold`, which Prow manages via the
+# `do-not-merge/hold` label.
+#
+# NOTE: this uses pull_request_target, which runs with write permissions on
+# fork PRs. It must never check out or execute PR code — it only mutates
+# labels via the API.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows:
+      - Unit Tests
+      - Code Coverage
+      - Python Linting and Type Checks
+      - E2E Test on change
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  actions: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply or clear merge-gate label
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const GATE_LABEL = 'do-not-merge';
+            // Must match the `name:` of every workflow listed under
+            // `on.workflow_run.workflows` above.
+            const REQUIRED_WORKFLOWS = [
+              'Unit Tests',
+              'Code Coverage',
+              'Python Linting and Type Checks',
+              'E2E Test on change',
+            ];
+
+            if (context.eventName === 'pull_request_target') {
+              // New or updated PR: hold it until CI passes.
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: [GATE_LABEL],
+              });
+              core.info(`Added ${GATE_LABEL} to #${context.payload.pull_request.number}`);
+              return;
+            }
+
+            // workflow_run completed: check whether every required workflow
+            // succeeded for this head commit.
+            const headSha = context.payload.workflow_run.head_sha;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+              ...context.repo,
+              head_sha: headSha,
+              per_page: 100,
+            });
+            for (const name of REQUIRED_WORKFLOWS) {
+              const wfRuns = runs
+                .filter(r => r.name === name && r.event === 'pull_request')
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              if (wfRuns.length === 0) {
+                core.info(`${name}: no run for ${headSha} yet; keeping label`);
+                return;
+              }
+              const latest = wfRuns[0];
+              if (latest.status !== 'completed' || latest.conclusion !== 'success') {
+                core.info(`${name}: ${latest.status}/${latest.conclusion}; keeping label`);
+                return;
+              }
+            }
+
+            // All required workflows green: unlabel every open PR whose
+            // current head is this commit.
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              ...context.repo,
+              commit_sha: headSha,
+            });
+            for (const pr of prs) {
+              if (pr.state !== 'open' || pr.head.sha !== headSha) continue;
+              if (!pr.labels.some(l => l.name === GATE_LABEL)) continue;
+              try {
+                await github.rest.issues.removeLabel({
+                  ...context.repo,
+                  issue_number: pr.number,
+                  name: GATE_LABEL,
+                });
+                core.info(`Removed ${GATE_LABEL} from #${pr.number}`);
+              } catch (e) {
+                if (e.status !== 404) throw e; // 404: label already gone
+              }
+            }
