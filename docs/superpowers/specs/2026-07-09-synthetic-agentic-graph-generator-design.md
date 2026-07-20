@@ -120,12 +120,15 @@ token ids; semantic meaning is not measured. But these are structurally required
 5. Token-count **shape** must be realistic (Exgentic reference: prompts bimodal —
    a ~800–4000 cluster and a dense ~22K `available_tools` cluster; outputs
    right-skewed with many tiny routing/tool-call turns).
-6. A `tool_calls`-bearing assistant message drops its `content` at load
-   (upstream/main `:1530–1536`) — so reasoning/filler must be its **own** content-only
-   assistant turn, never merged onto a tool-call turn. **(Verified against merged #595.)**
-   Note the merged code now **preserves a `reasoning_content` field on the tool_calls
-   message** (`:1531/:1533`) even though it drops `content` — reasoning is first-class, not
-   collapsed (see §12).
+6. A `tool_calls`-bearing assistant message drops its **`content`** at load (upstream/main
+   `:1530–1535`: the built message keeps only `role` + `tool_calls` + `reasoning_content`,
+   never `content`). So any **prose/filler `content`** must be its **own** content-only
+   assistant turn, never merged onto a tool-call turn. This applies to `content` **only** —
+   `reasoning_content` is a **distinct field that IS preserved** on a tool-call message
+   (`:1531/:1533`). The two are not in tension: the invariant governs `content`, while
+   reasoning (if ever emitted, §12) rides the same tool-call turn as `reasoning_content`,
+   **not** as a separate turn. v1 emits neither reasoning nor inline filler on tool-call
+   turns, so the invariant is simply "filler is its own turn."
 
 ### 2.3a Determinism contract: `_build_session(N)` MUST be a pure, index-addressed function
 The lazy runtime builds each session's graph **twice, in two different processes**:
@@ -207,10 +210,11 @@ derivative file:
 - **Tool-call `arguments` are JSON objects** in the source (must be `json.dumps`-ed to
   a string at emit, inv #1); **tool results are doubly/triply JSON-escaped**.
 - **The dominant real tool-call message bundles `thinking`+`text`+`tool_call` in ONE
-  message.** The runtime drops `content` on `tool_calls` messages (inv #6), so we emit
-  them as **separate** turns — a **runtime-imposed divergence** from the real shape
-  that inflates turn count and reshapes the per-turn token histogram. This is accepted
-  and documented, not a fidelity claim.
+  message.** The runtime drops **`content`** (the `text`) on `tool_calls` messages but keeps
+  `reasoning_content` (the `thinking`) — inv #6. Since v1 emits no reasoning, the only piece
+  that must move to a **separate** turn is the text/filler — a **runtime-imposed divergence**
+  from the real shape that inflates turn count and reshapes the per-turn token histogram.
+  Accepted and documented, not a fidelity claim.
 - **Parallel tool calls per turn are common** (measured across all shards, n=17,733
   tool-call messages): ~88% carry 1 call, ~8% carry 2, and a long tail runs to 20–58
   calls in one message. By harness the multi-call share is substantial — `claude_code`
@@ -416,11 +420,13 @@ every turn:
 - **dispatch/sub-agent** → sub-agent runs its single-dispatch tool-loop (turn count from
   `tool_turns_per_loop`, same knob as root rounds), may recurse, returns one answer consumed
   by the parent's merge.
-- **tool-loop (k calls)** → for each call: `[assistant reasoning (filler)]` +
+- **tool-loop (k calls)** → for each call: `[assistant reasoning-flavored filler]` +
   `[assistant tool_call (structure + entity args)]` + `[tool result (artifact template)]`;
   the loop **ends with an `[assistant answer]` turn** (matches real sessions, which
   terminate a loop with a text answer, often alongside a final finish/submit call).
-  Reasoning filler is its **own** content-only assistant turn (invariant #6).
+  That leading filler is plain **`content`** on its **own** assistant turn — never merged
+  onto the tool-call turn, whose `content` would be dropped (invariant #6). It is ordinary
+  filler prose, not the `reasoning_content` field (which v1 does not emit; §12).
 
 Producers, by role:
 - **user (principal input / sub-agent dispatch prompt)** → **round 1** and every
@@ -439,7 +445,8 @@ Producers, by role:
 - **assistant dispatch / tool_call** → structure (shape) + entity-bound args.
 - **tool (response)** → **artifact template** (§3), one distinct `role:tool` per
   `tool_call_id`.
-- **assistant reasoning / answer** → filler (own turn).
+- **assistant reasoning-flavored / answer prose** → plain-`content` filler on its own turn
+  (never the `reasoning_content` field; §12 / inv #6).
 - **child answer delivery** → the parent's **merge** (continuation) event awaits all K child
   terminals as `predecessor_event_ids` and, per child, carries an `output` segment (the
   child's `assistant dispatch_agent` call, `message_count==1`, source = the dispatch event)
@@ -1324,9 +1331,11 @@ Concrete touch points (verified file:line; line numbers approximate to current t
   recorded on the output message, and **preserved even on `tool_calls` messages**
   (upstream/main `:1531/:1533`, `:872/:924`), and reasoning tokens are sent to the server for
   KV fidelity. So a synthetic reasoning surface would be *natively* supported (emit
-  `reasoning_content` on a turn, distinct from `content`). Still v1-deferred (generic filler
-  carries the token load and inv #6 keeps reasoning on its own turn), but it is a **clean,
-  low-cost** future add via a `thinking_probability` knob that sets `reasoning_content`.
+  `reasoning_content` on a turn, distinct from `content`). Still v1-deferred **only** because
+  generic filler already carries the token load — NOT because of inv #6 (which governs
+  `content`, not `reasoning_content`; reasoning would ride the tool-call turn as
+  `reasoning_content`, no separate turn needed). A **clean, low-cost** future add via a
+  `thinking_probability` knob that sets `reasoning_content`.
 - **`envelope_encoding` on `artifact_kind`** (`none|json_array|double_json`) — reproduce
   the doubly/triply JSON-escaped tool-result strings (§2.5) that inflate result tokens.
 - **`artifact_kind: retrieval`** — ranked `{docid, score, snippet}` bodies for RAG
