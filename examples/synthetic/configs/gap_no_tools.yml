@@ -1,0 +1,18 @@
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agent_sessions
+  synthetic_agent_sessions:
+    num_sessions: 3
+    seed: 200
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 1}
+    fanout_probability: 0.0
+    tool_turns_per_loop: {type: fixed, mean: 0}
+    tool_definitions_per_agent: {type: fixed, mean: 0}   # ZERO tools → bare non-agentic baseline
+    input_tokens_per_turn:  {type: fixed, mean: 120}
+    output_tokens_per_turn: {type: fixed, mean: 40}
+    tool_call_latency_sec:  {type: fixed, mean: 0}
+load: {type: trace_session_replay, stages: [{concurrent_sessions: 2}], worker_max_concurrency: 20}
+server: {type: vllm, base_url: "http://localhost:8000", model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"}
+storage: {local_storage: {path: "reports-synthetic-notools"}}
+report: {request_lifecycle: {summary: true}}

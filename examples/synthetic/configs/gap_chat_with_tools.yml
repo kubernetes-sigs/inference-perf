@@ -1,0 +1,19 @@
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agent_sessions
+  synthetic_agent_sessions:
+    num_sessions: 4
+    seed: 201
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 4}          # 4 human turns
+    fanout_probability: 0.0
+    tool_turns_per_loop: {type: uniform, min: 0, max: 3} # VARYING per round: some k=0 (answer), some k>0 (tools)
+    tool_definitions_per_agent: {type: fixed, mean: 6}
+    input_tokens_per_turn:  {type: fixed, mean: 120}
+    output_tokens_per_turn: {type: fixed, mean: 40}
+    tool_call_latency_sec:  {type: fixed, mean: 0}
+    user_think_time_sec:    {type: fixed, mean: 1}
+load: {type: trace_session_replay, stages: [{concurrent_sessions: 2}], worker_max_concurrency: 20}
+server: {type: vllm, base_url: "http://localhost:8000", model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"}
+storage: {local_storage: {path: "reports-synthetic-cwt"}}
+report: {request_lifecycle: {summary: true}}
