@@ -264,12 +264,13 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     prev_answer_id: Optional[str] = None
 
     for r in range(n_rounds):
-        # A round costs 1 principal + 2*k tool msgs (call event + result event) + 1 answer.
+        # A round costs 1 principal + k tool-turn events (each tool-turn is ONE
+        # event packing [tool_call msg, tool result msg]) + 1 answer = k + 2.
         # Stop STARTING new rounds when the whole round won't fit (§8) — never
         # truncate mid-round.
         k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, r, 100), _FB_TOOL_TURNS)
         k = max(0, k)
-        round_cost = 1 + 2 * k + 1
+        round_cost = 1 + k + 1
         if len(events) + round_cost > budget:
             break
 
@@ -283,7 +284,9 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             principal_wait = 0
         else:
             think_dist = cfg.user_think_time_sec if cfg.user_think_time_sec is not None else cfg.tool_call_latency_sec
-            principal_wait = sample_int(think_dist, child_rng(seed, r, 2), cfg.tool_call_latency_sec) * 1000
+            # Sample as a float and scale to ms BEFORE truncating to int, so a
+            # fractional-second mean (e.g. 0.5s) doesn't collapse to 0/1s.
+            principal_wait = int(sample_from_distribution(think_dist, 1, rng=child_rng(seed, r, 2))[0] * 1000)
         _emit(
             principal_id,
             principal_msgs,
@@ -322,7 +325,9 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 result = "result"
             tool_msg = {"role": "tool", "tool_call_id": tc_id, "content": result}
             turn_id = f"{sid}:r{r}:t{t}"
-            turn_wait = sample_int(cfg.tool_call_latency_sec, child_rng(seed, r, t, 3), cfg.tool_call_latency_sec) * 1000
+            # Sample as a float and scale to ms BEFORE truncating to int (see
+            # principal_wait above) so sub-second latencies aren't lost.
+            turn_wait = int(sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, r, t, 3))[0] * 1000)
             _emit(
                 turn_id,
                 [tool_call_msg, tool_msg],

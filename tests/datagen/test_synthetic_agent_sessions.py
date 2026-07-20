@@ -2,7 +2,6 @@ from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_T
 from inference_perf.datagen.synthetic_agent_sessions import (
     session_seed,
     child_rng,
-    sample_int,  # noqa: F401
     fit_filler,
     FILLER_MARKER,
     TOOL_CALL_MARGIN,
@@ -156,3 +155,19 @@ def test_event_budget_caps_rounds():
     cfg = _cfg(rounds_per_session=Distribution(type="fixed", mean=100), max_events_per_session=6)
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
     assert len(g.events) <= 6
+
+
+def test_event_budget_cost_is_k_plus_2_per_round():
+    # A round emits 1 principal + k tool-turn events (each tool-turn is ONE
+    # event packing [tool_call msg, tool result msg]) + 1 answer = k + 2
+    # events -- NOT 2*k + 2. With tool_turns_per_loop fixed at k=2, each round
+    # costs exactly 4 events. A budget of 8 fits exactly 2 whole rounds: if
+    # the cost formula over-counts (e.g. treats a round as 2*k+2 = 6 events),
+    # the budget would only fit 1 round, and this assertion would catch it.
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=100),
+        max_events_per_session=8,
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    assert len(g.events) == 8  # exactly 2 full rounds of (k + 2) = 4 events
