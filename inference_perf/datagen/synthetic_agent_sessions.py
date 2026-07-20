@@ -220,6 +220,30 @@ def _render_objective(theme, rng: np.random.Generator) -> str:
         return f"{verb}: complete the task."
 
 
+def _render_followup(theme, objective: str, rng: np.random.Generator) -> str:
+    """Render a round-K (K>=1) follow-up principal turn from the theme.
+
+    Uses the theme's followup_templates (optionally prefixed by a
+    followup_connective) when present; otherwise falls back to the objective so
+    the follow-up turn is never empty. The result is the fixed_content that
+    input_tokens_per_turn sizing (fit_filler) later pads.
+    """
+    connective = ""
+    if theme.followup_connectives:
+        connective = theme.followup_connectives[int(rng.integers(0, len(theme.followup_connectives)))]
+    if theme.followup_templates:
+        tpl = theme.followup_templates[int(rng.integers(0, len(theme.followup_templates)))]
+        subs: Dict[str, str] = {}
+        for key, vals in theme.entities.items():
+            if vals:
+                subs[key] = vals[int(rng.integers(0, len(vals)))]
+        try:
+            return connective + tpl.format(**subs)
+        except (KeyError, IndexError):
+            return connective + objective
+    return connective + objective
+
+
 def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
     """Build a single-agent replay graph for one synthetic session.
 
@@ -237,13 +261,14 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
 
     n_rounds = sample_int(cfg.rounds_per_session, child_rng(seed, 0), cfg.rounds_per_session)
     tool_defs_n = sample_int(cfg.tool_definitions_per_agent, child_rng(seed, 1), _FB_TOOL_DEFS)
-    tool_defs = _tool_definitions(theme, max(1, tool_defs_n))
+    # §8: tool_definitions_per_agent=0 is the bare non-agentic / plain-chat
+    # baseline — NO tools advertised at all. Floor at 0 (not 1) so that value
+    # flows through to an empty catalog; `_tool_definitions(theme, 0)` returns [].
+    tool_defs = _tool_definitions(theme, max(0, tool_defs_n))
 
     system_msg: Optional[Dict[str, Any]] = None
     if cfg.shared_system_prompt_len > 0:
-        content = fit_filler(
-            tokenizer, cfg.shared_system_prompt_len, theme.system_prompt or "", rng=child_rng(seed, 2)
-        )
+        content = fit_filler(tokenizer, cfg.shared_system_prompt_len, theme.system_prompt or "", rng=child_rng(seed, 2))
         system_msg = {"role": "system", "content": content}
 
     def _emit(event_id, messages, preds, dep_types, segs, wait_ms, is_tool_call, tool_names):
@@ -284,6 +309,12 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         # cost, guarded separately at the spawn decision.)
         return 2
 
+    # Per-round bookkeeping for §4.1 context growth: _build_agent (when is_root)
+    # publishes the current round's principal event id + its input message count
+    # here so the next round can build the shared/output segments that re-inject
+    # the growing transcript.
+    root_principal_meta: Dict[str, Any] = {}
+
     def _build_agent(
         depth: int,
         agent_prefix: str,
@@ -293,6 +324,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         principal_wait: int,
         is_root: bool,
         agent_seed_path: tuple,
+        principal_segments: Optional[List[InputSegment]] = None,
     ) -> Optional[str]:
         """Build ONE agent's execution and return its terminal (answer) event id.
 
@@ -319,21 +351,36 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         # 7/8 spawn, 200+c children, per-t 3/9). Only the LAST message (the
         # user-role objective) is padded; the system head (if any) is untouched.
         principal_id = f"{agent_prefix}:principal"
-        head = _system_head()
         sized_task_msgs = list(task_msgs)
         if sized_task_msgs and sized_task_msgs[-1].get("role") == "user":
-            in_tokens = sample_int(
-                cfg.input_tokens_per_turn, child_rng(seed, *agent_seed_path, 50), cfg.input_tokens_per_turn
-            )
+            in_tokens = sample_int(cfg.input_tokens_per_turn, child_rng(seed, *agent_seed_path, 50), cfg.input_tokens_per_turn)
             last = dict(sized_task_msgs[-1])
             last["content"] = fit_filler(
                 tokenizer, in_tokens, last.get("content", ""), rng=child_rng(seed, *agent_seed_path, 51)
             )
             sized_task_msgs[-1] = last
-        principal_msgs = ([head] if head else []) + sized_task_msgs
-        _emit(principal_id, principal_msgs, preds, dep_types, [], principal_wait, False, None)
+        if principal_segments is not None:
+            # §4.1 context-growth path: `task_msgs` is the FULL growing transcript
+            # (already includes the system head as its first message, so the shared
+            # segment — which sources the prior round's principal INPUT — covers it).
+            # We must NOT prepend the head again here or it would double and break
+            # the segment cursor math (sum(message_count) == len(principal_msgs)).
+            principal_msgs = sized_task_msgs
+            principal_segs: List[InputSegment] = principal_segments
+        else:
+            head = _system_head()
+            principal_msgs = ([head] if head else []) + sized_task_msgs
+            principal_segs = []
+        _emit(principal_id, principal_msgs, preds, dep_types, principal_segs, principal_wait, False, None)
         if is_root and not root_ids:
             root_ids.append(principal_id)
+        if is_root:
+            # Publish this round's principal id + its INPUT length so the NEXT
+            # round's `shared` segment can source it (§4.1): the shared prefix's
+            # message_count MUST equal len(this principal's input) so the runtime
+            # slice `get_messages_by_event_id(src)[:message_count]` matches exactly.
+            root_principal_meta["id"] = principal_id
+            root_principal_meta["input_len"] = len(principal_msgs)
         last_id = principal_id
 
         obj = task_msgs[-1].get("content", "") if task_msgs else ""
@@ -341,6 +388,15 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         # --- k tool-turns (ordinary single-tool turns) ---
         k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, *agent_seed_path, 100), _FB_TOOL_TURNS)
         k = max(0, k)
+        # §8 bare baseline: with an empty tool catalog (tool_definitions_per_agent=0)
+        # a tool-loop turn cannot emit a valid forced call — the `name` lookup
+        # `tool_defs[j % len(tool_defs)]` would divide by / index an empty list,
+        # and inv #2 (call name must appear in tool_definitions) is unsatisfiable.
+        # A catalog-less agent therefore emits ZERO tool turns and just answers,
+        # which keeps invariants #2 (name-in-defs) and #3 (call/result pairing)
+        # trivially valid.
+        if not tool_defs:
+            k = 0
         for t in range(k):
             if len(events) + 1 + 1 > budget:  # keep room for the answer
                 break
@@ -349,9 +405,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             # under the per-turn path: existing per-turn draws are (t, 3) [wait]
             # and (t, 9) [result n0], so 30 cannot collide. Clamp K >= 1 so a
             # turn always emits at least one call (keeps inv #3 well-defined).
-            n_calls = sample_int(
-                cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL
-            )
+            n_calls = sample_int(cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
             n_calls = max(1, n_calls)
             result_tpl = theme.result_templates.get("default", "result: {entity} {n0} {t0}")
             parallel_calls: List[Dict[str, Any]] = []
@@ -386,8 +440,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             tool_call_msg = {"role": "assistant", "tool_calls": parallel_calls}
             turn_id = f"{agent_prefix}:t{t}"
             turn_wait = int(
-                sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0]
-                * 1000
+                sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000
             )
             _emit(
                 turn_id,
@@ -506,6 +559,12 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         return answer_id
 
     prev_answer_id: Optional[str] = None
+    # The running conversation transcript used to build round K>=1's growing
+    # context (§4.1). After each round it becomes the placeholder prefix the
+    # next round's `shared` segment covers; the shared segment re-injects the
+    # LIVE version at replay, so the exact placeholder content only needs to be
+    # coherent + deterministic and of the RIGHT length.
+    transcript: List[Dict[str, Any]] = []
 
     for r in range(n_rounds):
         # Stop STARTING new rounds when even the minimum agent (principal +
@@ -524,19 +583,62 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             # fractional-second mean (e.g. 0.5s) doesn't collapse to 0/1s.
             principal_wait = int(sample_from_distribution(think_dist, 1, rng=child_rng(seed, r, 2))[0] * 1000)
 
+        if r == 0 or prev_answer_id is None:
+            # Round 0 (or defensive fallback): a fresh single-turn prompt. The
+            # system head is prepended inside _build_agent; no input_segments.
+            task_msgs: List[Dict[str, Any]] = [{"role": "user", "content": obj}]
+            principal_segments: Optional[List[InputSegment]] = None
+            preds = [prev_answer_id] if prev_answer_id else []
+            dep_types = {prev_answer_id: "full_match"} if prev_answer_id else {}
+        else:
+            # Round K>=1 (§4.1 growing context). Layout of the principal's
+            # original_messages and matching segments (cursor-aligned 1:1):
+            #   [ transcript... , answer_placeholder , followup ]
+            #   [ shared(count=len(transcript), src=prev principal)   ]  -> prior turns
+            #   [ output(1, src=prev answer)                          ]  -> prior answer
+            #   [ unique(1)                                           ]  -> new follow-up
+            # sum(message_count) == len(original_messages), so the runtime cursor
+            # math in _build_messages_with_substitution is exact (no IndexError).
+            prev_principal_id = root_principal_meta["id"]
+            prev_principal_len = root_principal_meta["input_len"]
+            followup = _render_followup(theme, obj, child_rng(seed, r, 3))
+            # The `shared` prefix must be exactly prev_principal_len messages; the
+            # accumulated `transcript` is kept at that length as the placeholder.
+            prefix_msgs = list(transcript)
+            answer_placeholder = {"role": "assistant", "content": "PLACEHOLDER_PRIOR_ANSWER"}
+            followup_msg = {"role": "user", "content": followup}
+            task_msgs = [*prefix_msgs, answer_placeholder, followup_msg]
+            principal_segments = [
+                InputSegment(
+                    type="shared", message_count=prev_principal_len, token_count=0, source_event_id=prev_principal_id
+                ),
+                InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_answer_id),
+                InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
+            ]
+            # BOTH sources must also be predecessors so substitution runs after
+            # require_async has awaited them (full_match is DOT-only).
+            preds = [prev_principal_id, prev_answer_id]
+            dep_types = {prev_principal_id: "full_match", prev_answer_id: "full_match"}
+
         terminal = _build_agent(
             0,
             f"{sid}:r{r}",
-            [{"role": "user", "content": obj}],
-            [prev_answer_id] if prev_answer_id else [],
-            {prev_answer_id: "full_match"} if prev_answer_id else {},
+            task_msgs,
+            preds,
+            dep_types,
             principal_wait,
             True,
             (r,),
+            principal_segments,
         )
         if terminal is None:
             break
         prev_answer_id = terminal
+        # The next round's `shared` prefix must equal THIS round's principal
+        # INPUT (its message_count is root_principal_meta["input_len"]). Take the
+        # principal event's own messages verbatim — they ARE that input — as the
+        # placeholder transcript, so len(prefix) == published input_len exactly.
+        transcript = list(events[root_principal_meta["id"]].call.messages)
 
     return ReplayGraph(events=events, root_event_ids=root_ids, source_file="synthetic")
 

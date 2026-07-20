@@ -259,16 +259,12 @@ def test_generator_builds_session_lazily():
     from inference_perf.datagen.synthetic_agent_sessions import SyntheticAgentSessionsDataGenerator
 
     data = DataConfig(type=DataGenType.SyntheticAgentSessions, synthetic_agent_sessions=_cfg(num_sessions=4))
-    gen = SyntheticAgentSessionsDataGenerator(
-        api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1
-    )
+    gen = SyntheticAgentSessionsDataGenerator(api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1)
     assert gen.get_session_count() == 4
     gen._ensure_session_built(0)
     assert gen.sessions[0] is not None
     # determinism: two generators, same index -> same event ids
-    gen2 = SyntheticAgentSessionsDataGenerator(
-        api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1
-    )
+    gen2 = SyntheticAgentSessionsDataGenerator(api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1)
     gen2._ensure_session_built(0)
     assert list(gen.sessions[0].graph.events.keys()) == list(gen2.sessions[0].graph.events.keys())
 
@@ -313,9 +309,7 @@ def test_input_tokens_per_turn_is_honored():
     )
     small_tokens = tok.count_tokens(_principal_user_content(small))
     large_tokens = tok.count_tokens(_principal_user_content(large))
-    assert large_tokens > small_tokens, (
-        f"input_tokens_per_turn had no effect: small={small_tokens} large={large_tokens}"
-    )
+    assert large_tokens > small_tokens, f"input_tokens_per_turn had no effect: small={small_tokens} large={large_tokens}"
     # And the larger one should be in the neighbourhood of its target (not tiny).
     assert large_tokens >= 200, f"large principal turn far below target: {large_tokens}"
 
@@ -438,6 +432,166 @@ def test_parallel_tool_calls_preserves_determinism():
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
+
+
+# --- Gap-fix 1: tool_definitions_per_agent=0 is the bare non-agentic baseline --
+
+
+def test_zero_tool_definitions_is_bare_baseline():
+    # §8: tool_definitions_per_agent=0 -> NO tools advertised at all, and a
+    # catalog-less agent cannot emit a forced tool call, so it just answers.
+    cfg = _cfg(
+        tool_definitions_per_agent=Distribution(type="fixed", mean=0),
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    assert g.events, "graph built"
+    for ev in g.events.values():
+        # every event advertises an EMPTY tool catalog
+        assert ev.call.tool_definitions == [], f"{ev.event_id} advertised tools: {ev.call.tool_definitions}"
+        # zero assistant tool_calls anywhere
+        n_calls = sum(len(m.get("tool_calls", []) or []) for m in ev.call.messages)
+        assert n_calls == 0, f"{ev.event_id} emitted a tool_call with an empty catalog"
+        assert ev.call.expected_output_is_tool_call is False
+    # session is just principal + answer (no tool turns): with fanout 0 and one
+    # round, exactly 2 events and no ':tN' tool-turn event exists.
+    import re
+
+    assert not any(re.search(r":t\d+$", eid) for eid in g.events), "no tool-loop turn emitted"
+    assert len(g.events) == 2, f"expected principal+answer only, got {sorted(g.events)}"
+
+
+# --- Gap-fix 2: round-to-round context growth (spec §4.1) ------------------
+
+
+def _principal_events_by_round(g):
+    """Map round index -> the root principal event for that round."""
+    import re
+
+    out = {}
+    for eid, ev in g.events.items():
+        m = re.match(r"synthN\d+:r(\d+):principal$", eid)
+        if m:
+            out[int(m.group(1))] = ev
+    return out
+
+
+def test_interactive_rounds_carry_growing_context():
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=3),
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    principals = _principal_events_by_round(g)
+    assert set(principals) >= {0, 1, 2}, f"expected 3 rounds, got {sorted(principals)}"
+
+    # Round 0 is a fresh single-turn prompt: no input_segments.
+    assert principals[0].call.input_segments == [], "round 0 must be a fresh prompt (no segments)"
+
+    # Rounds 1 and 2 carry [shared, output, unique] segments.
+    for r in (1, 2):
+        segs = principals[r].call.input_segments
+        types = [s.type for s in segs]
+        assert types == ["shared", "output", "unique"], f"round {r} segment layout: {types}"
+        shared, output, unique = segs
+        # cursor math: message_counts must sum to len(original_messages)
+        assert shared.message_count + output.message_count + unique.message_count == len(principals[r].call.messages), (
+            f"round {r} segment counts don't cover the messages"
+        )
+        assert output.message_count == 1
+        assert unique.message_count == 1
+        # BOTH substitution sources must ALSO be predecessors (require_async).
+        pred_ids = set(principals[r].predecessor_event_ids)
+        assert shared.source_event_id in pred_ids, f"round {r} shared source not a predecessor"
+        assert output.source_event_id in pred_ids, f"round {r} output source not a predecessor"
+
+    # Growing conversation: round-2 principal materializes MORE messages than round-0.
+    assert len(principals[2].call.messages) > len(principals[0].call.messages), "context did not grow"
+    assert len(principals[1].call.messages) > len(principals[0].call.messages)
+    assert len(principals[2].call.messages) > len(principals[1].call.messages)
+
+
+def test_round_k_survives_runtime_substitution():
+    # Build a 3-round session, then run the round-2 principal event through the
+    # ACTUAL runtime substitution (_build_messages_with_substitution) with a
+    # registry populated for its predecessors — mirroring the tool_output tests.
+    from inference_perf.datagen.replay_graph_session_datagen import (
+        EventOutputRegistry,
+        SessionChatCompletionAPIData,
+        WorkerSessionTracker,
+    )
+
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=3),
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    principals = _principal_events_by_round(g)
+    target = principals[2]
+    shared_seg = target.call.input_segments[0]
+    output_seg = target.call.input_segments[1]
+
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    # shared source = round-1 principal: its stored INPUT must BE the growing
+    # prefix. At replay that input is the substituted round-1 messages; here we
+    # populate it with round-1 principal's own build-time messages (same length).
+    round1_principal = principals[1]
+    prior_answer_text = "ROUND-1 ANSWER TEXT MARKER"
+    registry.record(
+        shared_seg.source_event_id,
+        "irrelevant",
+        messages=list(round1_principal.call.messages),
+    )
+    # output source = round-1 answer event -> re-injects the prior answer.
+    registry.record(
+        output_seg.source_event_id,
+        prior_answer_text,
+        messages=[],
+        output_message={"role": "assistant", "content": prior_answer_text},
+    )
+
+    ev = SessionChatCompletionAPIData(
+        messages=[],
+        max_tokens=50,
+        event_id=target.event_id,
+        registry=registry,
+        worker_tracker=tracker,
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=list(target.predecessor_event_ids),
+        input_segments=list(target.call.input_segments),
+        original_messages=list(target.call.messages),
+    )
+
+    result = ev._build_messages_with_substitution()  # must not raise IndexError
+
+    # The reconstructed round-2 input carries the growing transcript: more than
+    # one message, and the prior answer text is present.
+    assert len(result) > 1, "round-2 reconstructed input collapsed to a single message"
+    joined = " ".join(str(m.get("content", "")) for m in result)
+    assert prior_answer_text in joined, "prior answer not re-injected into round-2 context"
+
+
+def test_interactive_rounds_preserve_determinism():
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=3),
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+        max_events_per_session=2048,
+    )
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=4)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=4)
+    assert list(g1.events.keys()) == list(g2.events.keys())
+    for eid in g1.events:
+        assert g1.events[eid].call.messages == g2.events[eid].call.messages
+        assert g1.events[eid].call.input_segments == g2.events[eid].call.input_segments
 
 
 def test_generated_fanout_session_has_no_dangling_tool_call_ids():
