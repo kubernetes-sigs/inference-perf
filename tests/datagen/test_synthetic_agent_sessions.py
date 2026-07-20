@@ -2,11 +2,14 @@ from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_T
 from inference_perf.datagen.synthetic_agent_sessions import (
     session_seed,
     child_rng,
-    sample_int,
+    sample_int,  # noqa: F401
     fit_filler,
     FILLER_MARKER,
     TOOL_CALL_MARGIN,
+    build_graph_for_session,
 )
+from inference_perf.config.common import Distribution
+from inference_perf.config.datagen.replay import SyntheticAgentSessionsConfig
 
 
 def test_load_bundled_theme():
@@ -97,3 +100,59 @@ def test_fit_filler_negative_budget_returns_fixed_only_no_marker():
 
 def test_tool_call_margin_value():
     assert TOOL_CALL_MARGIN == 64
+
+
+# --- Task 8: the seeded single-agent walk ---------------------------------
+
+
+class _WordTok:
+    def count_tokens(self, text, add_special_tokens=True):
+        return max(1, len(str(text).split()))
+
+    def get_tokenizer(self):
+        raise NotImplementedError
+
+
+def _cfg(**kw):
+    base = dict(
+        num_sessions=5,
+        rounds_per_session=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+        theme_mix={"generic": 1.0},
+        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        output_tokens_per_turn=Distribution(type="fixed", mean=10),
+        tool_call_latency_sec=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+    )
+    base.update(kw)
+    return SyntheticAgentSessionsConfig(**base)
+
+
+def test_single_agent_graph_structure():
+    g = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), session_index=0)
+    assert len(g.events) >= 1
+    for ev in g.events.values():
+        assert ev.call.messages, "every event has non-empty messages (inv #4)"
+        # inv #3: #role:tool == #tool_calls in each event's messages
+        n_tool_calls = sum(len(m.get("tool_calls", [])) for m in ev.call.messages if m.get("tool_calls"))
+        n_tool_msgs = sum(1 for m in ev.call.messages if m.get("role") == "tool")
+        assert n_tool_msgs == n_tool_calls
+        # inv #2: each tool_definition has a top-level name
+        for td in ev.call.tool_definitions or []:
+            assert "name" in td
+        # inv #1: tool-call arguments are json.dumps-ed strings
+        for m in ev.call.messages:
+            for tc in m.get("tool_calls", []) or []:
+                assert isinstance(tc["function"]["arguments"], str)
+
+
+def test_determinism_same_index_same_graph():
+    g1 = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), 3)
+    g2 = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), 3)
+    assert list(g1.events.keys()) == list(g2.events.keys())  # same ids, same insertion order
+
+
+def test_event_budget_caps_rounds():
+    cfg = _cfg(rounds_per_session=Distribution(type="fixed", mean=100), max_events_per_session=6)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    assert len(g.events) <= 6

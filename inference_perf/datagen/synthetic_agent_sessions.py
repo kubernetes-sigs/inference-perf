@@ -22,13 +22,15 @@ Python's salted `hash()` entirely and derive all randomness from `numpy`
 """
 
 import hashlib
+import json
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from inference_perf.config.common import Distribution
+from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, ReplayGraph
 from inference_perf.utils.numeric.distribution.utils import sample_from_distribution
 
 logger = logging.getLogger(__name__)
@@ -156,3 +158,197 @@ def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[
         buf = buf + " " + " ".join(chunk)
         idx += len(chunk)
     return best_text
+
+
+# --- The seeded single-agent walk -----------------------------------------
+#
+# build_graph_for_session emits a valid SINGLE-AGENT replay graph for one
+# session: N rounds, each of which is
+#     [principal input] -> k tool-turns -> [answer]
+# where a tool-turn is one assistant tool_call event immediately followed by
+# a role:tool result event, wired via predecessor_event_ids. Fan-out
+# (sub-agent spawning) is a separate task and is deliberately NOT done here.
+#
+# Determinism: every random draw comes from a child_rng derived from the
+# per-session seed and a stable graph-path tuple; no wall-clock, no hash().
+
+# Fallbacks for optional distributions (§8 documented defaults).
+_FB_TOOL_TURNS = Distribution(type="fixed", mean=2)
+_FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
+
+
+def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
+    """Build `n` tool definitions, each with a TOP-LEVEL `name` key (inv #2).
+
+    Cycles the theme's tool_names and suffixes duplicates so names stay
+    unique when the requested catalog is larger than the theme's list.
+    """
+    out: List[Dict[str, Any]] = []
+    names = theme.tool_names or ["noop"]
+    for i in range(n):
+        name = names[i % len(names)] + ("" if i < len(names) else f"_{i}")
+        out.append(
+            {
+                "name": name,
+                "type": "function",
+                "function": {"name": name, "parameters": {"type": "object", "properties": {}}},
+            }
+        )
+    return out
+
+
+def _render_objective(theme, rng: np.random.Generator) -> str:
+    """Render a single principal objective string from the theme templates."""
+    verb = theme.verbs[int(rng.integers(0, len(theme.verbs)))]
+    subs: Dict[str, str] = {"verb": verb}
+    for key, vals in theme.entities.items():
+        if vals:
+            subs[key] = vals[int(rng.integers(0, len(vals)))]
+    try:
+        return theme.objective_template.format(**subs)
+    except (KeyError, IndexError):
+        return f"{verb}: complete the task."
+
+
+def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
+    """Build a single-agent replay graph for one synthetic session.
+
+    Emits N rounds (from `rounds_per_session`); each round is a principal
+    input event, `k` tool-turns (from `tool_turns_per_loop`, fallback fixed 2),
+    and a final answer event. Round r+1's principal depends on round r's
+    answer. Honors `max_events_per_session`: stops STARTING new rounds once the
+    next round would overflow the budget (never truncates mid-round).
+    """
+    seed = session_seed(cfg.seed, session_index)
+    sid = f"synthN{session_index}"
+    events: Dict[str, GraphEvent] = {}
+    root_ids: List[str] = []
+    budget = cfg.max_events_per_session
+
+    n_rounds = sample_int(cfg.rounds_per_session, child_rng(seed, 0), cfg.rounds_per_session)
+    tool_defs_n = sample_int(cfg.tool_definitions_per_agent, child_rng(seed, 1), _FB_TOOL_DEFS)
+    tool_defs = _tool_definitions(theme, max(1, tool_defs_n))
+
+    system_msg: Optional[Dict[str, Any]] = None
+    if cfg.shared_system_prompt_len > 0:
+        content = fit_filler(
+            tokenizer, cfg.shared_system_prompt_len, theme.system_prompt or "", rng=child_rng(seed, 2)
+        )
+        system_msg = {"role": "system", "content": content}
+
+    def _emit(event_id, messages, preds, dep_types, segs, wait_ms, is_tool_call, tool_names):
+        events[event_id] = GraphEvent(
+            event_id=event_id,
+            call=GraphCall(
+                call_id=event_id,
+                model="",
+                messages=messages,
+                expected_output="",
+                input_segments=segs,
+                total_input_tokens=0,
+                expected_output_tokens=0,
+                temperature=0.0,
+                max_tokens_recorded=None,
+                tool_definitions=tool_defs,
+                expected_output_is_tool_call=is_tool_call,
+                expected_output_tool_names=tool_names,
+                attributes=None,
+            ),
+            predecessor_event_ids=preds,
+            predecessor_dependency_types=dep_types,
+            wait_ms=wait_ms,
+            t_start_ms=0,
+            t_end_ms=0,
+        )
+
+    prev_answer_id: Optional[str] = None
+
+    for r in range(n_rounds):
+        # A round costs 1 principal + 2*k tool msgs (call event + result event) + 1 answer.
+        # Stop STARTING new rounds when the whole round won't fit (§8) — never
+        # truncate mid-round.
+        k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, r, 100), _FB_TOOL_TURNS)
+        k = max(0, k)
+        round_cost = 1 + 2 * k + 1
+        if len(events) + round_cost > budget:
+            break
+
+        obj = _render_objective(theme, child_rng(seed, r, 1))
+
+        # --- principal input event ---
+        principal_id = f"{sid}:r{r}:principal"
+        principal_msgs = ([system_msg] if system_msg else []) + [{"role": "user", "content": obj}]
+        # wait_ms: round 1 uses tool_call_latency; rounds 2..N use user_think_time if set.
+        if r == 0:
+            principal_wait = 0
+        else:
+            think_dist = cfg.user_think_time_sec if cfg.user_think_time_sec is not None else cfg.tool_call_latency_sec
+            principal_wait = sample_int(think_dist, child_rng(seed, r, 2), cfg.tool_call_latency_sec) * 1000
+        _emit(
+            principal_id,
+            principal_msgs,
+            [prev_answer_id] if prev_answer_id else [],
+            {prev_answer_id: "full_match"} if prev_answer_id else {},
+            [],
+            principal_wait,
+            False,
+            None,
+        )
+        if not root_ids:
+            root_ids.append(principal_id)
+        last_id = principal_id
+
+        # --- k tool-turns ---
+        for t in range(k):
+            call_name = tool_defs[0]["name"]
+            tc_id = f"call_{r}_{t}"
+            tool_call_msg = {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": tc_id,
+                        "type": "function",
+                        # inv #1: arguments are json.dumps-ed strings.
+                        "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20]})},
+                    }
+                ],
+            }
+            result_tpl = theme.result_templates.get("default", "result: {entity} {n0} {t0}")
+            try:
+                result = result_tpl.format(
+                    entity="x", n0=int(child_rng(seed, r, t, 9).integers(0, 999)), t0="t0"
+                )
+            except (KeyError, IndexError):
+                result = "result"
+            tool_msg = {"role": "tool", "tool_call_id": tc_id, "content": result}
+            turn_id = f"{sid}:r{r}:t{t}"
+            turn_wait = sample_int(cfg.tool_call_latency_sec, child_rng(seed, r, t, 3), cfg.tool_call_latency_sec) * 1000
+            _emit(
+                turn_id,
+                [tool_call_msg, tool_msg],
+                [last_id],
+                {last_id: "full_match"},
+                [],
+                turn_wait,
+                True,
+                [call_name],
+            )
+            last_id = turn_id
+
+        # --- answer event ---
+        answer_id = f"{sid}:r{r}:answer"
+        out_tokens = sample_int(cfg.output_tokens_per_turn, child_rng(seed, r, 4), cfg.output_tokens_per_turn)
+        ans = fit_filler(tokenizer, out_tokens, "Summary:", rng=child_rng(seed, r, 5))
+        _emit(
+            answer_id,
+            [{"role": "assistant", "content": ans}],
+            [last_id],
+            {last_id: "full_match"},
+            [],
+            0,
+            False,
+            None,
+        )
+        prev_answer_id = answer_id
+
+    return ReplayGraph(events=events, root_event_ids=root_ids, source_file="synthetic")
