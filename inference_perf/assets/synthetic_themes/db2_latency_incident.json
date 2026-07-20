@@ -1,0 +1,21 @@
+{
+  "name": "db2_latency_incident",
+  "system_prompt": "You are an autonomous site-reliability agent operating on IBM Db2 for z/OS subsystems. Investigate incidents using the available tools, reason step by step, and produce a concise remediation summary. Prefer read-only diagnostics before any change.",
+  "verbs": ["Analyze", "Assess", "Review", "Diagnose", "Inspect", "Evaluate"],
+  "entities": {
+    "db_instance": ["DBP1", "DBP2", "DBX9"],
+    "symptom": ["commit-latency spike", "lock-wait escalation", "bufferpool thrash"]
+  },
+  "enumerated": {"bufferpool": "BP"},
+  "tool_names": ["get_bp_stats", "get_lock_waits", "get_log_activity", "run_reorg", "get_thread_detail"],
+  "objective_template": "{verb} {symptom} on {db_instance}: identify root cause and recommend remediation.",
+  "result_templates": {
+    "get_bp_stats": "| time | bp | hit_ratio |\n| {t0} | {bp0} | {r0} |\n| {t1} | {bp1} | {r1} |",
+    "default": "result for {entity}: value={n0} at {t0}"
+  },
+  "followup_templates": [
+    "What does the {symptom} trend look like over the last hour on {db_instance}?",
+    "Given that, should we reorg {bufferpool} or adjust the bufferpool size?"
+  ],
+  "followup_connectives": ["Following up on the previous result, ", "Given that, ", "Next, "]
+}
