@@ -308,9 +308,28 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             return None
 
         # --- principal input event (agent's FIRST call: carries system head) ---
+        #
+        # Size the user/text input turn to a sampled `input_tokens_per_turn`
+        # target: the rendered objective/coherence text stays the fixed_content
+        # (kept intact, prepended) and corpus filler pads up to the target. This
+        # is what makes input_tokens_per_turn a real knob rather than a required
+        # no-op. Reserved sub-index 50 (off agent_seed_path) is a FRESH path that
+        # does not collide with any existing draw (100 tool-turns, 4/5 answer,
+        # 7/8 spawn, 200+c children, per-t 3/9). Only the LAST message (the
+        # user-role objective) is padded; the system head (if any) is untouched.
         principal_id = f"{agent_prefix}:principal"
         head = _system_head()
-        principal_msgs = ([head] if head else []) + list(task_msgs)
+        sized_task_msgs = list(task_msgs)
+        if sized_task_msgs and sized_task_msgs[-1].get("role") == "user":
+            in_tokens = sample_int(
+                cfg.input_tokens_per_turn, child_rng(seed, *agent_seed_path, 50), cfg.input_tokens_per_turn
+            )
+            last = dict(sized_task_msgs[-1])
+            last["content"] = fit_filler(
+                tokenizer, in_tokens, last.get("content", ""), rng=child_rng(seed, *agent_seed_path, 51)
+            )
+            sized_task_msgs[-1] = last
+        principal_msgs = ([head] if head else []) + sized_task_msgs
         _emit(principal_id, principal_msgs, preds, dep_types, [], principal_wait, False, None)
         if is_root and not root_ids:
             root_ids.append(principal_id)

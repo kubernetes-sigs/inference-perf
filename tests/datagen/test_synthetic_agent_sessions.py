@@ -288,6 +288,55 @@ def test_dispatch_resolves_synthetic_generator():
 # --- Task 12: end-to-end integration guard (no dangling tool_call_ids) -----
 
 
+# --- Follow-up: input_tokens_per_turn must actually size input turns --------
+
+
+def _principal_user_content(g):
+    """Return the user-role content string of the sole root principal turn."""
+    root_id = g.root_event_ids[0]
+    ev = g.events[root_id]
+    user_msgs = [m for m in ev.call.messages if m.get("role") == "user"]
+    assert user_msgs, "principal turn has a user message"
+    return user_msgs[-1]["content"]
+
+
+def test_input_tokens_per_turn_is_honored():
+    # Two graphs identical except input_tokens_per_turn; a larger target must
+    # produce a larger (>=) principal user-turn token count. fit_filler is
+    # best-candidate/approximate, so tolerate with >= not exact equality.
+    tok = _WordTok()
+    small = build_graph_for_session(
+        _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=20)), GENERIC_THEME, tok, session_index=0
+    )
+    large = build_graph_for_session(
+        _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=300)), GENERIC_THEME, tok, session_index=0
+    )
+    small_tokens = tok.count_tokens(_principal_user_content(small))
+    large_tokens = tok.count_tokens(_principal_user_content(large))
+    assert large_tokens > small_tokens, (
+        f"input_tokens_per_turn had no effect: small={small_tokens} large={large_tokens}"
+    )
+    # And the larger one should be in the neighbourhood of its target (not tiny).
+    assert large_tokens >= 200, f"large principal turn far below target: {large_tokens}"
+
+
+def test_input_sizing_preserves_determinism_and_objective_text():
+    tok = _WordTok()
+    cfg = _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=300))
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
+    # identical event-id list
+    assert list(g1.events.keys()) == list(g2.events.keys())
+    # identical principal-turn content (byte-for-byte)
+    assert _principal_user_content(g1) == _principal_user_content(g2)
+    # objective text is not lost: the rendered objective is still present verbatim
+    # (it is the fixed_content prepended before the FILLER_MARKER).
+    content = _principal_user_content(g1)
+    assert FILLER_MARKER in content, "large target should have padded with a marker"
+    objective_prefix = content.split(FILLER_MARKER)[0].strip()
+    assert objective_prefix, "objective text preserved before the filler marker"
+
+
 def test_generated_fanout_session_has_no_dangling_tool_call_ids():
     """Build a fan-out session and walk every event's messages; assert no
     role:tool message references a tool_call_id absent from a preceding
