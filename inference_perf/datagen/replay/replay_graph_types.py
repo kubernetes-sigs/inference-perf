@@ -52,13 +52,16 @@ class InputSegment:
         "output"  — a single assistant message whose content is a predecessor's output
                     (injected result; at replay time, substitute with actual generated text)
         "unique"  — messages unique to this call (no predecessor shares them)
+        "tool_output" — a single role:"tool" message whose CONTENT (only) is replaced
+                        by a predecessor event's live output TEXT, preserving role +
+                        tool_call_id. Used for sub-agent fan-out merges (§4.1a).
 
     message_count: how many messages this segment covers
     token_count: estimated or recorded token count for this segment
     source_event_id: which predecessor event this segment comes from (shared/output only)
     """
 
-    type: Literal["shared", "output", "unique"]
+    type: Literal["shared", "output", "unique", "tool_output"]
     message_count: int
     token_count: int
     source_event_id: Optional[str] = None

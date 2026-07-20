@@ -493,7 +493,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
         needs_substitution = (not self.disable_output_substitution) and any(
-            seg.type == "output" or seg.type == "shared" for seg in self.input_segments
+            seg.type == "output" or seg.type == "shared" or seg.type == "tool_output" for seg in self.input_segments
         )
         # Inject random string if flag is enabled OR session is a duplicate
         is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session_id)
@@ -682,6 +682,35 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 else:
                     logger.debug(f"Event {self.event_id}: output segment has no source_event_id, using recorded content")
                     result.extend(seg_msgs)
+            elif seg.type == "tool_output":
+                # Inject a child agent's live answer TEXT into a role:"tool" slot,
+                # preserving role + tool_call_id (§4.1a). Content-only replacement.
+                if seg.message_count != 1:
+                    logger.error(
+                        f"Event {self.event_id}: tool_output segment has message_count="
+                        f"{seg.message_count} (expected 1). Using recorded message."
+                    )
+                    result.extend(seg_msgs)
+                    cursor += seg.message_count
+                    continue
+                recorded = seg_msgs[0]
+                if recorded.get("role") != "tool":
+                    logger.error(
+                        f"Event {self.event_id}: tool_output segment target role="
+                        f"{recorded.get('role')!r} (expected 'tool'). Using recorded message."
+                    )
+                    result.append(recorded)
+                    cursor += 1
+                    continue
+                actual_output = self.registry.get_output_by_event_id(seg.source_event_id) if seg.source_event_id else None
+                if actual_output is not None:
+                    substituted = dict(recorded)
+                    substituted["content"] = actual_output
+                    result.append(substituted)
+                else:
+                    # child output unavailable — fall back to recorded placeholder
+                    result.append(recorded)
+                cursor += 1
             elif seg.type == "shared":
                 if seg.source_event_id is None:
                     logger.error(f"CRITICAL: Event {self.event_id} shared segment has no source_event_id")
