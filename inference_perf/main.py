@@ -43,6 +43,7 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     WekaTraceReplayDataGenerator,
+    SyntheticAgentSessionsDataGenerator,
     ConversationReplayDataGenerator,
     VisionArenaDataGenerator,
 )
@@ -268,7 +269,7 @@ def main_cli() -> None:
     mp_manager = None
     if (
         config.data
-        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay)
+        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentSessions)
         and config.load.num_workers > 0
     ):
         mp_manager = mp.Manager()
@@ -286,6 +287,7 @@ def main_cli() -> None:
                 DataGenType.BillsumConversations,
                 DataGenType.OTelTraceReplay,
                 DataGenType.WekaTraceReplay,
+                DataGenType.SyntheticAgentSessions,
                 DataGenType.ConversationReplay,
             }
         ):
@@ -363,6 +365,10 @@ def main_cli() -> None:
             datagen = WekaTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.SyntheticAgentSessions:
+            datagen = SyntheticAgentSessionsDataGenerator(
+                config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
+            )
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:
@@ -370,7 +376,11 @@ def main_cli() -> None:
 
     # Create session metrics collector only for session-replay workflows
     session_metrics_collector = None
-    if config.data and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay):
+    if config.data and config.data.type in (
+        DataGenType.OTelTraceReplay,
+        DataGenType.WekaTraceReplay,
+        DataGenType.SyntheticAgentSessions,
+    ):
         session_metrics_collector = SessionMetricsCollector()
 
     # Define LoadGenerator with session metrics collector

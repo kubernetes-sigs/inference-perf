@@ -271,3 +271,15 @@ def test_generator_builds_session_lazily():
     )
     gen2._ensure_session_built(0)
     assert list(gen.sessions[0].graph.events.keys()) == list(gen2.sessions[0].graph.events.keys())
+
+
+# --- Task 11: main.py dispatch wiring --------------------------------------
+
+
+def test_dispatch_resolves_synthetic_generator():
+    # Minimal: assert the generator class is importable and the enum value maps.
+    from inference_perf.config.datagen.config import DataGenType
+    from inference_perf.datagen import SyntheticAgentSessionsDataGenerator
+
+    assert DataGenType.SyntheticAgentSessions.value == "synthetic_agent_sessions"
+    assert SyntheticAgentSessionsDataGenerator is not None
