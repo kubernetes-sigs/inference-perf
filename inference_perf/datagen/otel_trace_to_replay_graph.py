@@ -194,6 +194,13 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
     which drops structured tool calls and tool-result linkage. ``x.text`` stays
     the flattened form and is still used for token counting and causal dependency
     matching; only the wire dict returned here carries structure.
+
+    A tool result's stored role varies by capture harness: OpenAI-native traces
+    put it on a ``role: "tool"`` message, while Anthropic-native traces put it on a ``role: "user"`` message.
+    Either way the OpenAI-compatible wire target this graph replays against
+    only defines tool results as ``role: "tool"`` messages, so we detect the
+    result by its part type (``tool_call_response``),
+    and normalize the emitted role to ``"tool"``.
     """
     if isinstance(x, ComplexReplayMessage) and isinstance(x.message_info, dict):
         info = x.message_info
@@ -222,10 +229,12 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
                     tool_calls.append(_normalize_tool_call(part))
             if responses:
                 first = responses[0]
-                # tool_call_id belongs on a role:tool message only; don't leak it
-                # onto other roles even if the trace stored one.
-                if role == "tool":
-                    msg["tool_call_id"] = first.get("id", "")
+                # A tool result is identified by its part type, not the stored
+                # role (see docstring) — normalize to role:tool on the wire
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
                 text_parts.append(_coerce_text(first.get("result", "")))
             if tool_calls:
                 msg["tool_calls"] = tool_calls
@@ -240,9 +249,9 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
         msg = {"role": role}
         content = info.get("content")
 
-        # A role:tool message may carry its result as a tool_call_response parts
-        # list under `content` (rather than a string). Reconstruct the tool_call_id
-        # and flatten the result to string content.
+        # A tool result may carry its content as a tool_call_response parts list
+        # (rather than a plain string). Reconstruct the tool_call_id and flatten
+        # the result to string content.
         if isinstance(content, list):
             responses = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_call_response"]
             if responses:
@@ -255,8 +264,10 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
                         responses[0].get("id"),
                     )
                 first = responses[0]
-                if role == "tool":
-                    msg["tool_call_id"] = first.get("id", "")
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
                 msg["content"] = _coerce_text(first.get("result", ""))
                 return msg
 

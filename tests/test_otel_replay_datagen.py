@@ -2162,6 +2162,46 @@ class TestStructuredToolCallPreservation:
         )
         assert msgs[0]["tool_calls"][0]["function"]["name"] == "get_weather"
 
+    def test_tool_result_on_user_role_parts_format_normalizes_to_tool(self) -> None:
+        # Anthropic-native harnesses put a tool result on a
+        # role:user message, rather than a dedicated
+        # role:tool message. The OpenAI-compatible wire target only defines tool results as role:tool
+        # messages, so the emitted role must be normalized.
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "type": "tool_call_response",
+                            "id": "call_cad5f02bc9c8424abdc072de",
+                            "result": '[{"type": "text", "text": "Todos have been modified successfully."}]',
+                        }
+                    ],
+                },
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "call_cad5f02bc9c8424abdc072de"
+        assert "Todos have been modified successfully" in tool_msg["content"]
+
+    def test_tool_result_on_user_role_content_list_format_normalizes_to_tool(self) -> None:
+        # Same normalization as above, but for the raw-dict "content" list shape
+        # (Shape 2) rather than the "parts" shape (Shape 1).
+        msgs = _graph_messages_from_input(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_call_response", "id": "c1", "result": '{"temp_c": 18}'}],
+                },
+            ]
+        )
+        tool_msg = msgs[0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "c1"
+        assert "18" in tool_msg.get("content", "")
+
     def test_multiple_tool_results_keeps_first(self) -> None:
         # One OpenAI wire message answers exactly one tool_call_id. A message that
         # bundles several tool_call_response parts keeps the FIRST (id + result)
