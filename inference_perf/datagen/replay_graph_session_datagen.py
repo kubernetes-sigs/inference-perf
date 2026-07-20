@@ -1713,7 +1713,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
 
         api_data_class: type[SessionChatCompletionAPIData] = SessionChatCompletionAPIData
-        if self.api_config.type == APIType.AnthropicMessages:
+        api_config = getattr(self, "api_config", None)
+        if api_config is not None and api_config.type == APIType.AnthropicMessages:
             api_data_class = SessionAnthropicMessagesAPIData
 
         return api_data_class(
