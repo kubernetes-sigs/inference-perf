@@ -1,0 +1,23 @@
+# Parallel tool calls per turn (K>1) — the best-effort risky shape (may 400 if live model under-emits)
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agent_sessions
+  synthetic_agent_sessions:
+    num_sessions: 5
+    seed: 42
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 1}
+    fanout_probability: 0.0
+    tool_turns_per_loop: {type: fixed, mean: 2}
+    parallel_tool_calls_per_turn: {type: fixed, mean: 3}   # K=3 calls per ordinary tool turn
+    tool_definitions_per_agent: {type: fixed, mean: 8}
+    input_tokens_per_turn:  {type: fixed, mean: 150}
+    output_tokens_per_turn: {type: fixed, mean: 60}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+load:
+  type: trace_session_replay
+  stages: [{concurrent_sessions: 2}]
+  worker_max_concurrency: 20
+server: {type: vllm, base_url: "http://localhost:8000", model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"}
+storage: {local_storage: {path: "reports-synthetic-parallel-calls"}}
+report: {request_lifecycle: {summary: true, per_stage: true}}
