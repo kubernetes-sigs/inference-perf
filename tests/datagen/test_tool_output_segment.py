@@ -149,16 +149,14 @@ def test_output_and_shared_segments_unchanged_by_tool_output_addition():
     registry = EventOutputRegistry()
     tracker = WorkerSessionTracker()
 
-    registry.record("sessY:e1", "live-out", messages=[],
-                    output_message={"role": "assistant", "content": "live-out"})
+    registry.record("sessY:e1", "live-out", messages=[], output_message={"role": "assistant", "content": "live-out"})
     original_messages = [{"role": "assistant", "content": "PLACEHOLDER"}]
     ev = _make_api_data(
         event_id="sessY:e2",
         registry=registry,
         tracker=tracker,
         original_messages=original_messages,
-        input_segments=[InputSegment(type="output", message_count=1, token_count=5,
-                                     source_event_id="sessY:e1")],
+        input_segments=[InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessY:e1")],
         predecessor_event_ids=["sessY:e1"],
     )
     result = ev._build_messages_with_substitution()
@@ -167,7 +165,97 @@ def test_output_and_shared_segments_unchanged_by_tool_output_addition():
     assert result[0]["content"] == "live-out"
 
 
+def test_multiple_tool_output_segments_do_not_double_advance_cursor():
+    """Regression test for the fan-out merge cursor bug.
+
+    A merge event whose input_segments alternate output/tool_output —
+    [output(dispatch1), tool_output(child1), output(dispatch2), tool_output(child2)] —
+    over 4 original_messages. Before the fix, the tool_output branch's success
+    path incremented `cursor` itself AND fell through to the shared loop-tail
+    increment, advancing cursor by 2 instead of 1 per tool_output segment. That
+    mis-slices the later segments in `self.original_messages[cursor : cursor +
+    seg.message_count]`, eventually producing an empty `seg_msgs` list so
+    `seg_msgs[0]` raises IndexError. This reproduces the crash reported for ALL
+    sub-agent fan-out replay.
+    """
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record(
+        "sessZ:dispatch1",
+        "irrelevant",
+        messages=[],
+        output_message={
+            "role": "assistant",
+            "tool_calls": [{"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+    )
+    registry.record(
+        "sessZ:child1",
+        "child1 live answer",
+        messages=[],
+        output_message={"role": "assistant", "content": "child1 live answer"},
+    )
+    registry.record(
+        "sessZ:dispatch2",
+        "irrelevant",
+        messages=[],
+        output_message={
+            "role": "assistant",
+            "tool_calls": [{"id": "call_B", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+    )
+    registry.record(
+        "sessZ:child2",
+        "child2 live answer",
+        messages=[],
+        output_message={"role": "assistant", "content": "child2 live answer"},
+    )
+
+    original_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_A", "content": "PLACEHOLDER_A"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_B", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_B", "content": "PLACEHOLDER_B"},
+    ]
+
+    ev = _make_api_data(
+        event_id="sessZ:merge",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessZ:dispatch1"),
+            InputSegment(type="tool_output", message_count=1, token_count=5, source_event_id="sessZ:child1"),
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessZ:dispatch2"),
+            InputSegment(type="tool_output", message_count=1, token_count=5, source_event_id="sessZ:child2"),
+        ],
+        predecessor_event_ids=["sessZ:dispatch1", "sessZ:child1", "sessZ:dispatch2", "sessZ:child2"],
+    )
+
+    result = ev._build_messages_with_substitution()  # must not raise IndexError
+
+    assert len(result) == 4
+
+    tool_msg_a = result[1]
+    assert tool_msg_a["role"] == "tool"
+    assert tool_msg_a["tool_call_id"] == "call_A"
+    assert tool_msg_a["content"] == "child1 live answer"
+
+    tool_msg_b = result[3]
+    assert tool_msg_b["role"] == "tool"
+    assert tool_msg_b["tool_call_id"] == "call_B"
+    assert tool_msg_b["content"] == "child2 live answer"
+
+
 def test_bad_tool_call_handling_inherited_by_session_replay_base():
     from inference_perf.config.datagen.replay import SessionReplayConfig, BadToolCallHandling
+
     cfg = SessionReplayConfig()
     assert cfg.bad_tool_call_handling == BadToolCallHandling.NONE

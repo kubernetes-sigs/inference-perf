@@ -711,6 +711,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     # child output unavailable — fall back to recorded placeholder
                     result.append(recorded)
                 cursor += 1
+                continue
             elif seg.type == "shared":
                 if seg.source_event_id is None:
                     logger.error(f"CRITICAL: Event {self.event_id} shared segment has no source_event_id")
