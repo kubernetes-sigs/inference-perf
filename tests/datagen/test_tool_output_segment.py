@@ -165,3 +165,9 @@ def test_output_and_shared_segments_unchanged_by_tool_output_addition():
     # output segment still substitutes the WHOLE message (assistant), as before
     assert result[0]["role"] == "assistant"
     assert result[0]["content"] == "live-out"
+
+
+def test_bad_tool_call_handling_inherited_by_session_replay_base():
+    from inference_perf.config.datagen.replay import SessionReplayConfig, BadToolCallHandling
+    cfg = SessionReplayConfig()
+    assert cfg.bad_tool_call_handling == BadToolCallHandling.NONE

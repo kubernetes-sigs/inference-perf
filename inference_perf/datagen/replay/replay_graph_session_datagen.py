@@ -1813,7 +1813,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             predecessor_wait_timeout_sec=self.replay_config.predecessor_wait_timeout_sec if self.replay_config else 3600.0,
             # Mitigation knob: read once per event from replay_config. Default
             # NONE keeps the wire format byte-identical to upstream main.
-            bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)
+            bad_tool_call_handling=self.replay_config.bad_tool_call_handling
             if self.replay_config
             else BadToolCallHandling.NONE,
             disable_output_substitution=getattr(self.replay_config, "disable_output_substitution", False)

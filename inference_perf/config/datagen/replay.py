@@ -145,6 +145,23 @@ class SessionReplayConfig(StrictBaseModel):
     include_errors: bool = Field(True, description="Include spans with error status")
     skip_invalid_files: bool = Field(False, description="Skip invalid trace files instead of failing")
 
+    # Client-side mitigation for server-side tool-call parser bugs (e.g.
+    # vLLM's `qwen3_xml` leaking closing XML markers into the JSON `arguments`
+    # string at decode time). The default `none` preserves upstream behavior
+    # (the bug reproduces). `use_recorded` substitutes the recorded
+    # assistant message at the affected slot. See BadToolCallHandling.
+    bad_tool_call_handling: BadToolCallHandling = Field(
+        BadToolCallHandling.NONE,
+        description=(
+            "How to handle tool_calls whose function.arguments is not valid "
+            "JSON. none (default): no mitigation, bytes propagate and vLLM "
+            "may return HTTP 400 on the next turn. use_recorded: discard "
+            "the live response and substitute the recorded assistant "
+            "message at the affected slot; the recorded tool_call_id flows "
+            "into the recorded role:tool successor unchanged."
+        ),
+    )
+
     @model_validator(mode="after")
     def validate_static_model(self) -> "SessionReplayConfig":
         # Validate static model configuration
@@ -189,23 +206,6 @@ class OTelTraceReplayConfig(SessionReplayConfig):
     attribute_to_header_map: Optional[Dict[str, str]] = Field(None, description="Map OTel span attributes to HTTP headers")
     attribute_to_label_map: Optional[Dict[str, str]] = Field(
         None, description="Map OTel span attributes to metrics reporting labels"
-    )
-
-    # Client-side mitigation for server-side tool-call parser bugs (e.g.
-    # vLLM's `qwen3_xml` leaking closing XML markers into the JSON `arguments`
-    # string at decode time). The default `none` preserves upstream behavior
-    # (the bug reproduces). `use_recorded` substitutes the recorded
-    # assistant message at the affected slot. See BadToolCallHandling.
-    bad_tool_call_handling: BadToolCallHandling = Field(
-        BadToolCallHandling.NONE,
-        description=(
-            "How to handle tool_calls whose function.arguments is not valid "
-            "JSON. none (default): no mitigation, bytes propagate and vLLM "
-            "may return HTTP 400 on the next turn. use_recorded: discard "
-            "the live response and substitute the recorded assistant "
-            "message at the affected slot; the recorded tool_call_id flows "
-            "into the recorded role:tool successor unchanged."
-        ),
     )
 
     @model_validator(mode="after")
