@@ -25,13 +25,21 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 
+from inference_perf.config import APIConfig, DataConfig
+from inference_perf.config.datagen.replay import SyntheticAgentSessionsConfig
 from inference_perf.config.common import Distribution
+from inference_perf.datagen.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
+from inference_perf.datagen.synthetic_themes import GENERIC_THEME, Theme, load_theme
+from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution.utils import sample_from_distribution
+
+if TYPE_CHECKING:
+    from multiprocessing.managers import SyncManager
 
 logger = logging.getLogger(__name__)
 
@@ -483,3 +491,74 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         prev_answer_id = terminal
 
     return ReplayGraph(events=events, root_event_ids=root_ids, source_file="synthetic")
+
+
+# --- The generator class (lazy build + theme weighting) -------------------
+#
+# Ties the pure graph builder above to the shared graph-backed session
+# runtime. Mirrors OTelTraceReplayDataGenerator: require the replay config,
+# pass it to the base as `replay_config=`, and register lazy session slots so
+# get_session_count() works immediately while each graph is built on demand.
+
+
+class SyntheticAgentSessionsDataGenerator(ReplayGraphSessionGeneratorBase):
+    """Lazy, deterministic generator of synthetic multi-agent replay sessions.
+
+    Each session's graph is a pure function of (config, session_index): the
+    theme is chosen by a deterministic weighted draw over `theme_mix`, so two
+    generator instances built from the same config emit byte-identical graphs.
+    """
+
+    def __init__(
+        self,
+        api_config: APIConfig,
+        config: DataConfig,
+        tokenizer: Optional[CustomTokenizer],
+        mp_manager: Optional["SyncManager"] = None,
+        base_seed: Optional[int] = None,
+        num_workers: int = 1,
+    ) -> None:
+        synthetic_config = getattr(config, "synthetic_agent_sessions", None)
+        if synthetic_config is None:
+            raise ValueError("synthetic_agent_sessions configuration is required for SyntheticAgentSessionsDataGenerator")
+
+        self.synthetic_config: SyntheticAgentSessionsConfig = synthetic_config
+
+        super().__init__(
+            api_config,
+            config,
+            tokenizer,
+            mp_manager=mp_manager,
+            base_seed=base_seed,
+            num_workers=num_workers,
+            replay_config=self.synthetic_config,
+        )
+
+        # Map name -> Theme; "generic" resolves to the built-in without file IO.
+        self._themes: Dict[str, Theme] = {
+            name: (GENERIC_THEME if name == "generic" else load_theme(name)) for name in self.synthetic_config.theme_mix
+        }
+
+        session_ids = [f"synthN{i}" for i in range(self.synthetic_config.num_sessions)]
+        self.initialize_sessions_lazy(session_ids)
+
+    def _pick_theme(self, session_index: int) -> Theme:
+        """Deterministic weighted draw of a theme for one session.
+
+        Uses a fixed reserved RNG path (999) off the per-session seed so the
+        theme choice is stable per (config, session_index) and independent of
+        the graph's own random draws.
+        """
+        names = list(self.synthetic_config.theme_mix.keys())
+        weights = np.array([self.synthetic_config.theme_mix[n] for n in names], dtype=np.float64)
+        weights = weights / weights.sum()
+        rng = child_rng(session_seed(self.synthetic_config.seed, session_index), 999)
+        return self._themes[names[int(rng.choice(len(names), p=weights))]]
+
+    def _build_session(self, session_index: int) -> Optional[ReplaySession]:
+        theme = self._pick_theme(session_index)
+        graph = build_graph_for_session(self.synthetic_config, theme, self.tokenizer, session_index)
+        if not graph.events:
+            return None
+        sid = f"synthN{session_index}"
+        return ReplaySession(session_id=sid, source_id=sid, session_index=session_index, graph=graph)

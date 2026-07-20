@@ -243,3 +243,31 @@ def test_event_budget_cost_is_k_plus_2_per_round():
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
     assert len(g.events) == 8  # exactly 2 full rounds of (k + 2) = 4 events
+
+
+# --- Task 10: the generator class (lazy build + theme weighting) ----------
+
+
+def _min_api():
+    from inference_perf.config import APIConfig, APIType
+
+    return APIConfig(type=APIType.Chat, streaming=False)
+
+
+def test_generator_builds_session_lazily():
+    from inference_perf.config.datagen.config import DataConfig, DataGenType
+    from inference_perf.datagen.synthetic_agent_sessions import SyntheticAgentSessionsDataGenerator
+
+    data = DataConfig(type=DataGenType.SyntheticAgentSessions, synthetic_agent_sessions=_cfg(num_sessions=4))
+    gen = SyntheticAgentSessionsDataGenerator(
+        api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1
+    )
+    assert gen.get_session_count() == 4
+    gen._ensure_session_built(0)
+    assert gen.sessions[0] is not None
+    # determinism: two generators, same index -> same event ids
+    gen2 = SyntheticAgentSessionsDataGenerator(
+        api_config=_min_api(), config=data, tokenizer=_WordTok(), num_workers=1
+    )
+    gen2._ensure_session_built(0)
+    assert list(gen.sessions[0].graph.events.keys()) == list(gen2.sessions[0].graph.events.keys())
