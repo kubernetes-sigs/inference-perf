@@ -1538,7 +1538,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 # so chat_messages (which becomes the wire payload when no
                 # substitution/injection runs) is not lossy.
                 tc_content = content if isinstance(content, str) and content else None
-                chat_messages.append(ChatMessage(role=role, content=tc_content, tool_calls=tool_calls, reasoning_content=reasoning_content))
+                chat_messages.append(
+                    ChatMessage(role=role, content=tc_content, tool_calls=tool_calls, reasoning_content=reasoning_content)
+                )
                 tc_msg: Dict[str, Any] = {"role": role, "tool_calls": tool_calls}
                 if tc_content is not None:
                     tc_msg["content"] = tc_content
@@ -1565,7 +1567,11 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             # tool_call_id belongs on a role:tool message only — don't leak it onto
             # user/assistant messages even if the recorded message carried one.
             wire_tool_call_id = tool_call_id if role == "tool" else None
-            chat_messages.append(ChatMessage(role=role, content=content_str, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content))
+            chat_messages.append(
+                ChatMessage(
+                    role=role, content=content_str, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content
+                )
+            )
             orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
             if wire_tool_call_id is not None:
                 orig_msg["tool_call_id"] = wire_tool_call_id

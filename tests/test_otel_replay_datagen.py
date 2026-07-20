@@ -1994,7 +1994,7 @@ def _graph_messages_from_input(input_messages: List[dict[str, Any]]) -> List[dic
         "resource_attributes": {"service.name": "t"},
         "status": {"code": 1, "message": ""},
     }
-    raw_calls = build_raw_calls([span])
+    raw_calls, _ = build_raw_calls([span])
     graph = build_graph(raw_calls, source_file="t")
     return next(iter(graph.events.values())).call.messages
 
@@ -2256,7 +2256,8 @@ class TestLoadLazyDataPreservesToolLinkage:
             "resource_attributes": {"service.name": "t"},
             "status": {"code": 1, "message": ""},
         }
-        graph = build_graph(build_raw_calls([span]), source_file="t")
+        raw_calls, _ = build_raw_calls([span])
+        graph = build_graph(raw_calls, source_file="t")
         session_id = "session_0"
         gc = next(iter(graph.events.values()))
         event = ReplaySessionEvent(
@@ -2277,6 +2278,7 @@ class TestLoadLazyDataPreservesToolLinkage:
         )
         gen = object.__new__(OTelTraceReplayDataGenerator)
         gen.all_events = [event]
+        gen._session_events = {0: [event]}
         gen.output_registry = EventOutputRegistry()
         gen.worker_tracker = WorkerSessionTracker()
         gen.session_completion_queue = None
