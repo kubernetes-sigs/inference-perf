@@ -283,3 +283,26 @@ def test_dispatch_resolves_synthetic_generator():
 
     assert DataGenType.SyntheticAgentSessions.value == "synthetic_agent_sessions"
     assert SyntheticAgentSessionsDataGenerator is not None
+
+
+# --- Task 12: end-to-end integration guard (no dangling tool_call_ids) -----
+
+
+def test_generated_fanout_session_has_no_dangling_tool_call_ids():
+    """Build a fan-out session and walk every event's messages; assert no
+    role:tool message references a tool_call_id absent from a preceding
+    assistant tool_call in the SAME event. This is the exact invariant whose
+    violation caused the live IndexError/dangling-id class of bug."""
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=2,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    assert len(g.events) > 4, "fan-out actually materialized"
+    for ev in g.events.values():
+        call_ids = {tc["id"] for m in ev.call.messages for tc in (m.get("tool_calls") or [])}
+        tool_ids = {m["tool_call_id"] for m in ev.call.messages if m.get("role") == "tool"}
+        assert tool_ids <= call_ids, f"dangling tool_call_id in {ev.event_id}"
