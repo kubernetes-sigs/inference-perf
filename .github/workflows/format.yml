@@ -11,7 +11,7 @@ on:
       - 'feature/**'
 
 jobs:
-  format-check:
+  lint:
     runs-on: ubuntu-latest
     strategy:
       matrix:

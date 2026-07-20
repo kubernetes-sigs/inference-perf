@@ -8,11 +8,9 @@ on:
     paths-ignore:
       - '**/*.md'
   pull_request:
-    paths-ignore:
-      - '**/*.md'
 
 jobs:
-  format-check:
+  coverage:
     runs-on: ubuntu-latest
     strategy:
       matrix:
