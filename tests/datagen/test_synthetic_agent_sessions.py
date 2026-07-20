@@ -157,6 +157,78 @@ def test_event_budget_caps_rounds():
     assert len(g.events) <= 6
 
 
+# --- Task 9: recursive fan-out + merge via tool_output --------------------
+
+
+def test_fanout_produces_subagents_and_valid_merge():
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=2,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    # a sub-agent exists (depth >= 1): some event id contains ":sub"
+    assert any(":sub" in eid for eid in g.events), "sub-agents spawned"
+    # every dispatch_agent tool_call has a matching role:tool result (inv #3, no dangling)
+    for ev in g.events.values():
+        n_calls = sum(len(m.get("tool_calls", [])) for m in ev.call.messages if m.get("tool_calls"))
+        n_tool = sum(1 for m in ev.call.messages if m.get("role") == "tool")
+        assert n_tool == n_calls
+
+
+def test_no_agent_beyond_max_depth():
+    import re
+
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=1,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    # depth encoded in id as ":dN:"; assert none exceeds max_depth
+    for eid in g.events:
+        m = re.search(r":d(\d+):", eid)
+        if m:
+            assert int(m.group(1)) <= 1
+
+
+def test_subagent_first_call_carries_identical_system_head():
+    # §4.2/§6 option (b): the invariant system head rides EVERY agent's first
+    # call, byte-identical. Verify a sub-agent's first (dispatch) event carries
+    # the same {role:"system"} message the root's first call gets.
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=2,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        shared_system_prompt_len=32,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+
+    def _system_msg(ev):
+        for m in ev.call.messages:
+            if m.get("role") == "system":
+                return m
+        return None
+
+    # root first call = the sole root event's principal
+    root_id = g.root_event_ids[0]
+    root_system = _system_msg(g.events[root_id])
+    assert root_system is not None, "root first call carries a system head"
+
+    # a sub-agent's first event: the child's principal (the ':sub' branch's first event)
+    sub_firsts = [ev for eid, ev in g.events.items() if ":sub" in eid and ":principal" in eid]
+    assert sub_firsts, "at least one sub-agent principal event exists"
+    for ev in sub_firsts:
+        sm = _system_msg(ev)
+        assert sm is not None, "sub-agent first call carries a system head"
+        assert sm == root_system, "sub-agent system head is byte-identical to root's"
+        # aliasing guard: must be a distinct object (a copy), not the same dict
+        assert sm is not root_system, "system head is copied per event, not aliased"
+
+
 def test_event_budget_cost_is_k_plus_2_per_round():
     # A round emits 1 principal + k tool-turn events (each tool-turn is ONE
     # event packing [tool_call msg, tool result msg]) + 1 answer = k + 2
