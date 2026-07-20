@@ -184,6 +184,7 @@ def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[
 _FB_TOOL_TURNS = Distribution(type="fixed", mean=2)
 _FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
 _FB_SUB_AGENTS = Distribution(type="uniform", min=2, max=4)
+_FB_PARALLEL = Distribution(type="fixed", mean=1)
 
 
 def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
@@ -343,33 +344,61 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         for t in range(k):
             if len(events) + 1 + 1 > budget:  # keep room for the answer
                 break
-            call_name = tool_defs[0]["name"]
-            tc_id = f"call_{agent_prefix}_{t}"
-            tool_call_msg = {
-                "role": "assistant",
-                "tool_calls": [
+            # K = parallel tool calls THIS ordinary tool turn emits. Applies ONLY
+            # here (not to dispatch/merge/answer). Fresh seed sub-index (t, 30)
+            # under the per-turn path: existing per-turn draws are (t, 3) [wait]
+            # and (t, 9) [result n0], so 30 cannot collide. Clamp K >= 1 so a
+            # turn always emits at least one call (keeps inv #3 well-defined).
+            n_calls = sample_int(
+                cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL
+            )
+            n_calls = max(1, n_calls)
+            result_tpl = theme.result_templates.get("default", "result: {entity} {n0} {t0}")
+            parallel_calls: List[Dict[str, Any]] = []
+            result_msgs: List[Dict[str, Any]] = []
+            call_names: List[str] = []
+            for j in range(n_calls):
+                # Cycle the theme tool catalog so each call name is a top-level
+                # tool_definitions name (inv #2), as the single-call path did.
+                call_name = tool_defs[j % len(tool_defs)]["name"]
+                call_names.append(call_name)
+                # Distinct ids across the K calls: call_{prefix}_{t}_{j}.
+                tc_id = f"call_{agent_prefix}_{t}_{j}"
+                parallel_calls.append(
                     {
                         "id": tc_id,
                         "type": "function",
                         # inv #1: arguments are json.dumps-ed strings.
-                        "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20]})},
+                        "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20], "i": j})},
                     }
-                ],
-            }
-            result_tpl = theme.result_templates.get("default", "result: {entity} {n0} {t0}")
-            try:
-                result = result_tpl.format(
-                    entity="x", n0=int(child_rng(seed, *agent_seed_path, t, 9).integers(0, 999)), t0="t0"
                 )
-            except (KeyError, IndexError):
-                result = "result"
-            tool_msg = {"role": "tool", "tool_call_id": tc_id, "content": result}
+                try:
+                    result = result_tpl.format(
+                        entity="x",
+                        n0=int(child_rng(seed, *agent_seed_path, t, 9, j).integers(0, 999)),
+                        t0="t0",
+                    )
+                except (KeyError, IndexError):
+                    result = "result"
+                # EXACTLY one role:tool result per call, in matching positional
+                # order, carrying that call's exact id (inv #3 positional).
+                result_msgs.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+            tool_call_msg = {"role": "assistant", "tool_calls": parallel_calls}
             turn_id = f"{agent_prefix}:t{t}"
             turn_wait = int(
                 sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0]
                 * 1000
             )
-            _emit(turn_id, [tool_call_msg, tool_msg], [last_id], {last_id: "full_match"}, [], turn_wait, True, [call_name])
+            _emit(
+                turn_id,
+                [tool_call_msg, *result_msgs],
+                [last_id],
+                {last_id: "full_match"},
+                [],
+                turn_wait,
+                True,
+                call_names,
+            )
             last_id = turn_id
 
         # --- optional fan-out: spawn K sub-agents + one merge ---

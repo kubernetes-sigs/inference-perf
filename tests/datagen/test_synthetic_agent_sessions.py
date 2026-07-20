@@ -337,6 +337,109 @@ def test_input_sizing_preserves_determinism_and_objective_text():
     assert objective_prefix, "objective text preserved before the filler marker"
 
 
+# --- Follow-up: parallel_tool_calls_per_turn on ordinary tool turns --------
+
+
+def _find_tool_turn_events(g):
+    """Return the ordinary tool-loop turn events (id ends with ':tN').
+
+    These are the ORDINARY tool turns emitted in _build_agent's tool-loop
+    (NOT dispatch events, NOT the merge). Their assistant message carries the
+    K parallel calls and is followed by K role:tool results.
+    """
+    import re
+
+    return [ev for eid, ev in g.events.items() if re.search(r":t\d+$", eid)]
+
+
+def test_parallel_tool_calls_emits_k_calls_and_k_results():
+    # parallel_tool_calls_per_turn fixed 3 -> an ordinary tool turn emits 3
+    # tool_calls in its assistant message AND 3 role:tool results, ids matching
+    # 1:1 in positional order (inv #3).
+    cfg = _cfg(
+        parallel_tool_calls_per_turn=Distribution(type="fixed", mean=3),
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    turns = _find_tool_turn_events(g)
+    assert turns, "at least one ordinary tool-turn event exists"
+    ev = turns[0]
+    assistant_msgs = [m for m in ev.call.messages if m.get("role") == "assistant"]
+    tool_msgs = [m for m in ev.call.messages if m.get("role") == "tool"]
+    assert len(assistant_msgs) == 1, "one assistant tool_call message per turn"
+    calls = assistant_msgs[0]["tool_calls"]
+    assert len(calls) == 3, f"expected 3 parallel calls, got {len(calls)}"
+    assert len(tool_msgs) == 3, f"expected 3 role:tool results, got {len(tool_msgs)}"
+    # ids match 1:1 in positional order (inv #3 positional)
+    call_ids = [c["id"] for c in calls]
+    result_ids = [m["tool_call_id"] for m in tool_msgs]
+    assert call_ids == result_ids, f"ids not positionally matched: {call_ids} vs {result_ids}"
+    assert len(set(call_ids)) == 3, "the 3 call ids are distinct"
+    # inv #1: json.dumps args; inv #2: each call name is a top-level tool_def name
+    def_names = {td["name"] for td in ev.call.tool_definitions or []}
+    for c in calls:
+        assert isinstance(c["function"]["arguments"], str)
+        assert c["function"]["name"] in def_names, "call name absent from tool_definitions"
+
+
+def test_parallel_default_is_single_call():
+    # parallel_tool_calls_per_turn unset (None -> fallback fixed 1): an ordinary
+    # tool turn has exactly 1 call + 1 result (unchanged default behavior).
+    cfg = _cfg(
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+    )
+    assert cfg.parallel_tool_calls_per_turn is None
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    turns = _find_tool_turn_events(g)
+    assert turns, "at least one ordinary tool-turn event exists"
+    for ev in turns:
+        assistant_msgs = [m for m in ev.call.messages if m.get("role") == "assistant"]
+        tool_msgs = [m for m in ev.call.messages if m.get("role") == "tool"]
+        assert len(assistant_msgs) == 1
+        assert len(assistant_msgs[0]["tool_calls"]) == 1
+        assert len(tool_msgs) == 1
+        assert assistant_msgs[0]["tool_calls"][0]["id"] == tool_msgs[0]["tool_call_id"]
+
+
+def test_dispatch_still_single_call_under_parallel_knob():
+    # The knob must NOT leak into sub-agent dispatch turns: with parallel fixed 3
+    # AND fanout forced, every dispatch_agent tool-call turn STILL has exactly 1
+    # call (the fan-out mechanism depends on single-call dispatch).
+    cfg = _cfg(
+        parallel_tool_calls_per_turn=Distribution(type="fixed", mean=3),
+        fanout_probability=1.0,
+        max_depth=1,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
+    assert dispatch_events, "fan-out dispatch events materialized"
+    for ev in dispatch_events:
+        # dispatch events carry NO stored assistant tool_call (0 calls, 0 results);
+        # the single dispatch call is the EXPECTED output. Assert its expected
+        # output is a single tool name and no parallel calls leaked in.
+        assert ev.call.expected_output_is_tool_call is True
+        assert ev.call.expected_output_tool_names == ["dispatch_agent"]
+        n_calls = sum(len(m.get("tool_calls", [])) for m in ev.call.messages if m.get("tool_calls"))
+        assert n_calls == 0, "dispatch event stores no parallel calls"
+
+
+def test_parallel_tool_calls_preserves_determinism():
+    cfg = _cfg(
+        parallel_tool_calls_per_turn=Distribution(type="fixed", mean=3),
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+        fanout_probability=0.0,
+    )
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=1)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=1)
+    assert list(g1.events.keys()) == list(g2.events.keys())
+    for eid in g1.events:
+        assert g1.events[eid].call.messages == g2.events[eid].call.messages
+
+
 def test_generated_fanout_session_has_no_dangling_tool_call_ids():
     """Build a fan-out session and walk every event's messages; assert no
     role:tool message references a tool_call_id absent from a preceding
