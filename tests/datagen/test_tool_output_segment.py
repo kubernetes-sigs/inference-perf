@@ -141,3 +141,27 @@ def test_tool_output_unavailable_output_falls_back():
     result = ev._build_messages_with_substitution()
 
     assert result[0]["content"] == "PLACEHOLDER"  # fell back, no crash
+
+
+def test_output_and_shared_segments_unchanged_by_tool_output_addition():
+    """A graph with NO tool_output segment must substitute exactly as before —
+    the new branch is additive and inert on the OTel/Weka path."""
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record("sessY:e1", "live-out", messages=[],
+                    output_message={"role": "assistant", "content": "live-out"})
+    original_messages = [{"role": "assistant", "content": "PLACEHOLDER"}]
+    ev = _make_api_data(
+        event_id="sessY:e2",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[InputSegment(type="output", message_count=1, token_count=5,
+                                     source_event_id="sessY:e1")],
+        predecessor_event_ids=["sessY:e1"],
+    )
+    result = ev._build_messages_with_substitution()
+    # output segment still substitutes the WHOLE message (assistant), as before
+    assert result[0]["role"] == "assistant"
+    assert result[0]["content"] == "live-out"
