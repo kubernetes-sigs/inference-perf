@@ -113,20 +113,175 @@ def message_tokens(msg: ReplayMessage) -> int:
     return estimate_tokens(message_content_text(msg))
 
 
+def _coerce_text(value: Any) -> str:
+    """Flatten a text value that may be a string or a list of content blocks.
+
+    Recorded ``text`` / tool-result values are usually strings, but some traces
+    carry a list of blocks, e.g. ``[{"type": "text", "text": "..."}]``. Extract
+    the text so the wire ``content`` is always a string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        out: List[str] = []
+        for block in value:
+            if isinstance(block, dict):
+                out.append(str(block.get("text", block.get("content", "")) or ""))
+            else:
+                out.append(str(block))
+        return "".join(out)
+    return str(value)
+
+
+def _normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a recorded tool call to OpenAI ``function`` format.
+
+    Accepts both the nested OpenAI shape
+    ``{"id", "type": "function", "function": {"name", "arguments"}}`` and the
+    "direct"/parts shape ``{"id", "name", "arguments"}``.
+
+    Raises ``ValueError`` if the tool call has no ``id``. OpenAI/vLLM reject a
+    ``tool_calls[].id`` of ``null`` with a 400, and the recorded ``role:tool``
+    result that answers this call is linked by that id — a call with no id cannot
+    be replayed faithfully. Raising here lets ``build_graph``'s caller skip the
+    whole trace with a logged reason rather than emit an invalid request.
+    """
+    fn = tc.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        arguments = fn.get("arguments")
+    else:
+        # No nested function dict (either absent or a malformed non-dict value):
+        # fall back to the direct/parts shape carrying name/arguments at top level.
+        name = tc.get("name")
+        arguments = tc.get("arguments")
+    # OpenAI/vLLM require function.arguments to be a JSON-encoded STRING. Recorded
+    # traces often carry it as a parsed object/array — serialise those so the wire
+    # request is valid (a raw object triggers a 400 unmarshalling error).
+    if arguments is None:
+        arguments = ""
+    elif not isinstance(arguments, str):
+        arguments = json.dumps(arguments)
+    tc_id = tc.get("id")
+    if tc_id is None:
+        raise ValueError(f"tool call has no id (name={name!r}); cannot replay it faithfully")
+    return {
+        "id": tc_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
 def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
     """Convert a ReplayMessage to an OpenAI-compatible dict for the graph.
 
-    For ComplexReplayMessage with tool_call_response parts, extracts tool_call_id
-    so it survives into the replay runtime for ID rewriting.
+    A ComplexReplayMessage carries the structured message in ``message_info``, in
+    one of two shapes:
+
+    - "parts" format: ``{"role", "parts": [{"type": "text"|"tool_call"|
+      "tool_call_response", ...}]}`` (produced by
+      ``_convert_content_and_tool_calls_to_parts`` / OTel output reconstruction).
+    - raw OpenAI dict: the original message, e.g.
+      ``{"role": "assistant", "tool_calls": [...]}``, a ``role:tool`` message
+      with ``tool_call_id``, or a ``role:tool`` message whose ``content`` is a
+      ``tool_call_response`` parts list.
+
+    We reconstruct the OpenAI wire fields (``tool_calls`` / ``tool_call_id``) from
+    ``message_info`` so tool turns replay structurally. Falling back to ``x.text``
+    would send the flattened ``<|tool_call|>...`` marker string as plain content,
+    which drops structured tool calls and tool-result linkage. ``x.text`` stays
+    the flattened form and is still used for token counting and causal dependency
+    matching; only the wire dict returned here carries structure.
+
+    A tool result's stored role varies by capture harness: OpenAI-native traces
+    put it on a ``role: "tool"`` message, while Anthropic-native traces put it on a ``role: "user"`` message.
+    Either way the OpenAI-compatible wire target this graph replays against
+    only defines tool results as ``role: "tool"`` messages, so we detect the
+    result by its part type (``tool_call_response``),
+    and normalize the emitted role to ``"tool"``.
     """
-    if isinstance(x, ComplexReplayMessage):
+    if isinstance(x, ComplexReplayMessage) and isinstance(x.message_info, dict):
         info = x.message_info
-        parts = info.get("parts")
-        if parts and x.role == "tool":
-            tool_result_parts = [p for p in parts if p.get("type") == "tool_call_response"]
-            if tool_result_parts:
-                result_part = tool_result_parts[0]
-                return {"role": "tool", "content": result_part.get("result", ""), "tool_call_id": result_part.get("id", "")}
+
+        # Shape 1: "parts" format — reassemble text / tool_calls / tool result.
+        if "parts" in info:
+            role = info.get("role", x.role)
+            msg: Dict[str, Any] = {"role": role}
+            text_parts: List[str] = []
+            tool_calls: List[Dict[str, Any]] = []
+            responses = [p for p in info["parts"] if p.get("type") == "tool_call_response"]
+            if len(responses) > 1:
+                # One OpenAI wire message answers exactly one tool_call_id, so a
+                # message bundling several tool results cannot be represented
+                # faithfully. Keep the first and drop the rest.
+                logger.debug(
+                    "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
+                    len(responses),
+                    responses[0].get("id"),
+                )
+            for part in info["parts"]:
+                part_type = part.get("type")
+                if part_type == "text":
+                    text_parts.append(_coerce_text(part.get("content", "")))
+                elif part_type == "tool_call":
+                    tool_calls.append(_normalize_tool_call(part))
+            if responses:
+                first = responses[0]
+                # A tool result is identified by its part type, not the stored
+                # role (see docstring) — normalize to role:tool on the wire
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                text_parts.append(_coerce_text(first.get("result", "")))
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            # Emit content for text / tool-result messages. For an assistant
+            # message that is only tool calls, omit content (matches OpenAI).
+            if text_parts or not tool_calls:
+                msg["content"] = "".join(text_parts)
+            return msg
+
+        # Shape 2: raw OpenAI dict.
+        role = info.get("role", x.role)
+        msg = {"role": role}
+        content = info.get("content")
+
+        # A tool result may carry its content as a tool_call_response parts list
+        # (rather than a plain string). Reconstruct the tool_call_id and flatten
+        # the result to string content.
+        if isinstance(content, list):
+            responses = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_call_response"]
+            if responses:
+                if len(responses) > 1:
+                    # See the parts-format branch above: multiple tool results
+                    # cannot be represented in one message; keep the first.
+                    logger.debug(
+                        "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
+                        len(responses),
+                        responses[0].get("id"),
+                    )
+                first = responses[0]
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                msg["content"] = _coerce_text(first.get("result", ""))
+                return msg
+
+        if info.get("tool_calls") is not None:
+            msg["tool_calls"] = [_normalize_tool_call(tc) for tc in info["tool_calls"]]
+        # tool_call_id belongs on a role:tool message only.
+        if role == "tool" and info.get("tool_call_id") is not None:
+            msg["tool_call_id"] = info["tool_call_id"]
+        if content is not None:
+            # Coerce list-of-blocks content to a string; pass strings through.
+            msg["content"] = content if isinstance(content, str) else _coerce_text(content)
+        elif "tool_calls" not in msg:
+            msg["content"] = x.text
+        return msg
 
     return {"role": x.role, "content": x.text}
 
@@ -181,16 +336,18 @@ def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[st
     for tc in tool_calls:
         if isinstance(tc, dict):
             # OpenAI format: {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
-            if "function" in tc:
+            fn = tc.get("function")
+            if isinstance(fn, dict):
                 parts.append(
                     {
                         "type": "tool_call",
                         "id": tc.get("id"),  # type: ignore[dict-item]
-                        "name": tc["function"].get("name"),
-                        "arguments": tc["function"].get("arguments"),
+                        "name": fn.get("name"),  # type: ignore[dict-item]
+                        "arguments": fn.get("arguments"),  # type: ignore[dict-item]
                     }
                 )
-            # Direct format: {"name": "...", "arguments": "..."}
+            # Direct format: {"name": "...", "arguments": "..."} (also the fallback
+            # when `function` is present but malformed/non-dict).
             elif "name" in tc:
                 parts.append(
                     {
@@ -245,7 +402,16 @@ def extract_messages(span: Dict[str, Any]) -> Tuple[List["ReplayMessage"], int]:
                         )
                     )
                 elif isinstance(content, str):
-                    res.append(ReplayMessage(role=role, text=content))  # type: ignore[arg-type]
+                    # A string-content message that also carries tool linkage
+                    # (a role:tool result with tool_call_id, or an assistant
+                    # message with tool_calls) must retain that structure, so
+                    # keep it as a ComplexReplayMessage rather than a plain one.
+                    if x.get("tool_call_id") is not None or x.get("tool_calls") is not None:
+                        res.append(
+                            ComplexReplayMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x))
+                        )
+                    else:
+                        res.append(ReplayMessage(role=role, text=content))  # type: ignore[arg-type]
                 else:
                     res.append(
                         ComplexReplayMessage(role=role, message_info=x, raw_reconstructed_text=reconstruct_llm_input(x))
