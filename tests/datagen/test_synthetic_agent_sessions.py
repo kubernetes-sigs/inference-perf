@@ -1,4 +1,5 @@
 from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_THEME, DEFAULT_SYSTEM_PROMPT  # noqa: F401
+from inference_perf.datagen.synthetic_agent_sessions import session_seed, child_rng, sample_int
 
 
 def test_load_bundled_theme():
@@ -49,3 +50,19 @@ def test_config_valid_minimal():
     assert cfg.duplicate_sessions_target is None
     assert cfg.override_tool_call_max_tokens is False
     assert cfg.bad_tool_call_handling == BadToolCallHandling.NONE
+
+
+def test_session_seed_stable_across_calls_and_processes():
+    # Must NOT depend on PYTHONHASHSEED or process -- pure function of inputs.
+    a = session_seed(42, 17)
+    b = session_seed(42, 17)
+    assert a == b
+    assert session_seed(42, 18) != a  # different index -> different seed
+
+
+def test_child_rng_path_derived_independent():
+    r1 = child_rng(session_seed(42, 0), 1, 2, 3)
+    r2 = child_rng(session_seed(42, 0), 1, 2, 3)
+    assert r1.integers(0, 1_000_000) == r2.integers(0, 1_000_000)  # reproducible
+    r3 = child_rng(session_seed(42, 0), 1, 2, 4)  # different path
+    assert r3.integers(0, 1_000_000) != r1.integers(0, 1_000_000)
