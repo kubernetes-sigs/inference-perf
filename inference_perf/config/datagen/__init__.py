@@ -34,6 +34,7 @@ from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
     SessionReplayConfig,
+    SyntheticAgentSessionsConfig,
     TraceConfig,
     TraceFormat,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "ResolutionPreset",
     "SessionReplayConfig",
     "SharedPrefix",
+    "SyntheticAgentSessionsConfig",
     "SyntheticMultimodalDatagenConfig",
     "TraceConfig",
     "TraceFormat",

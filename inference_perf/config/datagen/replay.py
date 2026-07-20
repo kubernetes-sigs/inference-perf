@@ -293,3 +293,35 @@ class WekaTraceReplayConfig(SessionReplayConfig):
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
             )
         return self
+
+
+class SyntheticAgentSessionsConfig(SessionReplayConfig):
+    """Procedural multi-agent agentic session generation (§8)."""
+
+    # Required — the four workload-shape decisions (no default)
+    num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
+    rounds_per_session: Distribution = Field(..., description="N principal inputs to the root; N=1 autonomous")
+    fanout_probability: float = Field(..., ge=0.0, le=1.0, description="P(an agent execution spawns sub-agents)")
+    theme_mix: Dict[str, float] = Field(..., description="theme name -> weight")
+
+    # Defaulted
+    seed: int = Field(42, description="Base seed for stable per-session RNG (§2.3a)")
+    shared_system_prompt_len: int = Field(0, ge=0, description="Invariant system-prompt head length in tokens")
+    tool_turns_per_loop: Optional[Distribution] = Field(None, description="tool-call TURNS per loop (fallback fixed 2)")
+    sub_agents_per_spawn: Optional[Distribution] = Field(None, description="K children per spawn (fallback uniform 2-4)")
+    max_depth: int = Field(2, ge=0, description="Hard recursion terminator")
+    max_events_per_session: int = Field(64, gt=0, description="Self-limiting event budget")
+    tool_definitions_per_agent: Optional[Distribution] = Field(None, description="advertised catalog size (fallback fixed 8)")
+    parallel_tool_calls_per_turn: Optional[Distribution] = Field(
+        None, description="calls per ordinary tool turn (fallback fixed 1)"
+    )
+    input_tokens_per_turn: Distribution = Field(..., description="per-turn input tokens")
+    output_tokens_per_turn: Distribution = Field(..., description="per-turn output tokens (plain-text turns)")
+    tool_call_latency_sec: Distribution = Field(..., description="machine/agent wait_ms gaps")
+    user_think_time_sec: Optional[Distribution] = Field(None, description="human gap before rounds 2..N")
+    max_model_len: Optional[int] = Field(None, description="fail-fast context-length ceiling")
+
+    # Pinned inert / not for synthetic (§2.2a, C3)
+    inject_random_session_id: bool = Field(False, frozen=True)
+    duplicate_sessions_target: Optional[int] = Field(None, frozen=True)
+    override_tool_call_max_tokens: bool = Field(False)
