@@ -869,3 +869,61 @@ def test_generated_fanout_session_has_no_dangling_tool_call_ids():
         call_ids = {tc["id"] for m in ev.call.messages for tc in (m.get("tool_calls") or [])}
         tool_ids = {m["tool_call_id"] for m in ev.call.messages if m.get("role") == "tool"}
         assert tool_ids <= call_ids, f"dangling tool_call_id in {ev.event_id}"
+
+
+# --- Config validation: theme_mix and max_model_len fail-fast --------------
+
+
+def test_theme_mix_empty_rejected():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _cfg(theme_mix={})
+
+
+def test_theme_mix_all_zero_rejected():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _cfg(theme_mix={"generic": 0.0})
+
+
+def test_theme_mix_negative_rejected():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _cfg(theme_mix={"generic": -1.0})
+
+
+def test_theme_mix_valid_accepted():
+    # Regression guard: a normal, non-empty, positive-weight mix must still
+    # construct without raising.
+    cfg = _cfg(theme_mix={"generic": 0.5, "db2_latency_incident": 0.5})
+    assert cfg.theme_mix == {"generic": 0.5, "db2_latency_incident": 0.5}
+
+
+def test_max_model_len_overrun_rejected():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _cfg(max_model_len=1000, shared_system_prompt_len=2000)
+
+
+def test_max_model_len_none_accepted():
+    # No ceiling configured -> no fail-fast check performed.
+    cfg = _cfg(max_model_len=None, shared_system_prompt_len=2000)
+    assert cfg.max_model_len is None
+
+
+def test_max_model_len_comfortable_fit_accepted():
+    # shared_system_prompt_len + input_tokens_per_turn.mean well under the cap.
+    cfg = _cfg(
+        max_model_len=100_000,
+        shared_system_prompt_len=100,
+        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+    )
+    assert cfg.max_model_len == 100_000

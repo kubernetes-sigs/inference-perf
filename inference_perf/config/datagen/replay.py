@@ -325,3 +325,36 @@ class SyntheticAgentSessionsConfig(SessionReplayConfig):
     inject_random_session_id: bool = Field(False, frozen=True)
     duplicate_sessions_target: Optional[int] = Field(None, frozen=True)
     override_tool_call_max_tokens: bool = Field(False)
+
+    @model_validator(mode="after")
+    def validate_theme_mix(self) -> "SyntheticAgentSessionsConfig":
+        if not self.theme_mix:
+            raise ValueError("theme_mix must be non-empty (at least one theme name -> weight)")
+        if any(w < 0 for w in self.theme_mix.values()):
+            raise ValueError(f"theme_mix weights must all be >= 0, got: {self.theme_mix}")
+        if sum(self.theme_mix.values()) <= 0:
+            raise ValueError(f"theme_mix weights must sum to a positive value (at least one weight > 0), got: {self.theme_mix}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_max_model_len(self) -> "SyntheticAgentSessionsConfig":
+        # Fail-fast context-length ceiling check (§8). Uses the mean of
+        # input_tokens_per_turn as the "typical" per-turn input size: mean is
+        # always a meaningful, well-defined statistic for every Distribution
+        # type (fixed, uniform, normal, ...), unlike max which for some
+        # distribution types is just an unconfigured default ceiling rather
+        # than a value the sampler is actually likely to produce. A config
+        # whose shared invariant system-prompt head plus a *typical* turn
+        # already exceeds the model's context window is obviously going to
+        # overrun in practice, so we reject it here rather than let it fail
+        # deep inside a live benchmark run.
+        if self.max_model_len is not None:
+            projected = self.shared_system_prompt_len + self.input_tokens_per_turn.mean
+            if projected > self.max_model_len:
+                raise ValueError(
+                    "max_model_len is too small for this configuration: "
+                    f"shared_system_prompt_len ({self.shared_system_prompt_len}) + "
+                    f"input_tokens_per_turn.mean ({self.input_tokens_per_turn.mean}) = {projected} "
+                    f"exceeds max_model_len ({self.max_model_len})"
+                )
+        return self
