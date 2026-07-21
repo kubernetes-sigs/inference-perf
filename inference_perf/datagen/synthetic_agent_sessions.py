@@ -226,12 +226,16 @@ def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[
 
 # --- The seeded single-agent walk -----------------------------------------
 #
-# build_graph_for_session emits a valid SINGLE-AGENT replay graph for one
-# session: N rounds, each of which is
-#     [principal input] -> k tool-turns -> [answer]
-# where a tool-turn is one assistant tool_call event immediately followed by
-# a role:tool result event, wired via predecessor_event_ids. Fan-out
-# (sub-agent spawning) is a separate task and is deliberately NOT done here.
+# build_graph_for_session emits a valid replay graph for one session: N rounds,
+# each an accumulating chain of LLM calls
+#     principal -> t0 -> t1 -> ... -> t{k-1}
+# where EACH event is one call whose INPUT is the cumulative transcript ending
+# in a user or tool message, and whose OUTPUT (expected_output) is that call's
+# assistant reply — a tool call for the intermediate turns, the plain answer for
+# the terminal event. There is NO separate lone-assistant "answer" event: the
+# answer is the LAST call's output. With k=0 the principal itself is terminal
+# (one event). Fan-out replaces the terminal with a merge event whose output is
+# the answer. All wiring is via predecessor_event_ids + input_segments.
 #
 # Determinism: every random draw comes from a child_rng derived from the
 # per-session seed and a stable graph-path tuple; no wall-clock, no hash().
@@ -384,13 +388,16 @@ def _render_tool_result(theme, call_name: str, seed: int, path: tuple) -> str:
 
 
 def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
-    """Build a single-agent replay graph for one synthetic session.
+    """Build a replay graph for one synthetic session.
 
-    Emits N rounds (from `rounds_per_session`); each round is a principal
-    input event, `k` tool-turns (from `tool_turns_per_loop`, fallback fixed 2),
-    and a final answer event. Round r+1's principal depends on round r's
-    answer. Honors `max_events_per_session`: stops STARTING new rounds once the
-    next round would overflow the budget (never truncates mid-round).
+    Emits N rounds (from `rounds_per_session`); each round is an accumulating
+    chain of `k+1` calls (from `tool_turns_per_loop`, fallback fixed 2):
+    a principal call plus `k` tool-turn calls, where each event's INPUT is the
+    growing transcript and the LAST call's OUTPUT is the answer (no separate
+    answer event — k=0 collapses to a single principal call). Round r+1's
+    principal depends on round r's terminal call. Honors
+    `max_events_per_session`: stops STARTING new rounds once even a minimal
+    (single-call) agent would overflow the budget.
     """
     seed = session_seed(cfg.seed, session_index)
     sid = f"synthN{session_index}"
@@ -419,17 +426,29 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         content = fit_filler(tokenizer, cfg.shared_system_prompt_len, theme.system_prompt or "", rng=child_rng(seed, 2))
         system_msg = {"role": "system", "content": content}
 
-    def _emit(event_id, messages, preds, dep_types, segs, wait_ms, is_tool_call, tool_names, defs=None):
+    def _emit(
+        event_id,
+        messages,
+        preds,
+        dep_types,
+        segs,
+        wait_ms,
+        is_tool_call,
+        tool_names,
+        defs=None,
+        expected_output="",
+        expected_output_tokens=0,
+    ):
         events[event_id] = GraphEvent(
             event_id=event_id,
             call=GraphCall(
                 call_id=event_id,
                 model="",
                 messages=messages,
-                expected_output="",
+                expected_output=expected_output,
                 input_segments=segs,
                 total_input_tokens=0,
-                expected_output_tokens=0,
+                expected_output_tokens=expected_output_tokens,
                 temperature=0.0,
                 max_tokens_recorded=None,
                 tool_definitions=tool_defs if defs is None else defs,
@@ -452,16 +471,30 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         return dict(system_msg) if system_msg is not None else None
 
     def _min_agent_cost() -> int:
-        # Minimum events an agent occupies regardless of its tool-loop / spawn:
-        # 1 principal + 1 answer. (Tool turns are >= 0; a spawn adds its own
-        # cost, guarded separately at the spawn decision.)
-        return 2
+        # Minimum events an agent occupies regardless of its tool-loop / spawn.
+        # Under the corrected event model (each call carries the cumulative
+        # transcript; the terminal answer is the LAST call's OUTPUT, not a
+        # separate lone-assistant event) the smallest possible agent is a single
+        # principal call whose expected_output IS the answer (k=0, no spawn).
+        # Tool turns are >= 0; a spawn adds its own cost, guarded separately at
+        # the spawn decision.
+        return 1
 
     # Per-round bookkeeping for §4.1 context growth: _build_agent (when is_root)
     # publishes the current round's principal event id + its input message count
     # here so the next round can build the shared/output segments that re-inject
     # the growing transcript.
     root_principal_meta: Dict[str, Any] = {}
+
+    def _answer_text(agent_seed_path: tuple) -> tuple:
+        """Render the agent's terminal answer text + its sampled token size.
+
+        Reuses the pre-existing (…, 4) [size] and (…, 5) [filler] sub-seeds the
+        old separate answer event drew from, so determinism paths are stable.
+        """
+        out_tokens = sample_int(cfg.output_tokens_per_turn, child_rng(seed, *agent_seed_path, 4), cfg.output_tokens_per_turn)
+        ans = fit_filler(tokenizer, out_tokens, "Summary:", rng=child_rng(seed, *agent_seed_path, 5))
+        return ans, out_tokens
 
     def _build_agent(
         depth: int,
@@ -474,16 +507,26 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         agent_seed_path: tuple,
         principal_segments: Optional[List[InputSegment]] = None,
     ) -> Optional[str]:
-        """Build ONE agent's execution and return its terminal (answer) event id.
+        """Build ONE agent's execution and return its TERMINAL event id.
 
-        An agent is: [principal input] -> k tool-turns -> optional fan-out
-        (recurse into K sub-agents + one merge) -> [answer]. Sub-agents call
-        this same builder at depth+1, so recursion is uniform.
+        Under the corrected event model each event is exactly one LLM call whose
+        INPUT is the cumulative conversation transcript ending in a user or tool
+        message; the assistant reply that call produces is the event's OUTPUT
+        (expected_output), NOT a separate lone-assistant event. The agent is a
+        linear accumulating chain:
+
+            principal -> t0 -> t1 -> ... -> t{k-1}(terminal)   [k tool results]
+
+        where the principal outputs the first tool call, each ':tN' event's
+        input re-injects the prior event's tool-call reply (output segment) plus
+        that call's result (unique segment), and the LAST event's OUTPUT is the
+        plain answer. With k=0 the principal itself is terminal (its output IS
+        the answer) — a bare single-round agent is EXACTLY one event. Fan-out
+        replaces the terminal with a merge event whose output is the answer.
 
         The FIRST call of every agent carries the byte-identical invariant
-        system head (a per-event copy). Returns None if the agent's minimum
-        cost (principal + answer) does not fit the remaining event budget — the
-        caller must treat that as "no agent built".
+        system head (a per-event copy). Returns None if the agent's minimum cost
+        (one terminal call) does not fit the remaining event budget.
         """
         if len(events) + _min_agent_cost() > budget:
             return None
@@ -519,7 +562,79 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             head = _system_head()
             principal_msgs = ([head] if head else []) + sized_task_msgs
             principal_segs = []
-        _emit(principal_id, principal_msgs, preds, dep_types, principal_segs, principal_wait, False, None)
+
+        obj = task_msgs[-1].get("content", "") if task_msgs else ""
+
+        # --- decide k tool-turns up front (governs whether principal is terminal) ---
+        k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, *agent_seed_path, 100), _FB_TOOL_TURNS)
+        k = max(0, k)
+        # §8 bare baseline: with an empty tool catalog (tool_definitions_per_agent=0)
+        # a tool-loop turn cannot emit a valid forced call — the `name` lookup
+        # `tool_defs[j % len(tool_defs)]` would divide by / index an empty list,
+        # and inv #2 (call name must appear in tool_definitions) is unsatisfiable.
+        # A catalog-less agent therefore emits ZERO tool turns and just answers.
+        if not tool_defs:
+            k = 0
+
+        # Will this agent spawn sub-agents? Decided up front (same reserved seed
+        # path as before) so we know whether the tool loop's last event is the
+        # agent terminal (plain answer output) or a hand-off into the fan-out.
+        spawn_roll = float(child_rng(seed, *agent_seed_path, 7).random())
+        will_spawn = spawn_roll < cfg.fanout_probability and depth < cfg.max_depth
+
+        # Per-turn parallel-call helper: build the K calls + K results for turn t.
+        def _turn_calls_and_results(t: int) -> tuple:
+            n_calls = sample_int(cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
+            n_calls = max(1, n_calls)
+            calls: List[Dict[str, Any]] = []
+            results: List[Dict[str, Any]] = []
+            names: List[str] = []
+            for j in range(n_calls):
+                call_name = tool_defs[j % len(tool_defs)]["name"]
+                names.append(call_name)
+                tc_id = f"call_{agent_prefix}_{t}_{j}"
+                calls.append(
+                    {
+                        "id": tc_id,
+                        "type": "function",
+                        # inv #1: arguments are json.dumps-ed strings.
+                        "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20], "i": j})},
+                    }
+                )
+                result = _render_tool_result(theme, call_name, seed, (*agent_seed_path, t, 9, j))
+                results.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+            return calls, results, names
+
+        # The principal's OUTPUT: the first tool call (turn 0) if the loop runs,
+        # else the plain answer. If it will spawn but has no tool turns, the
+        # principal still outputs plain text and the merge follows.
+        principal_is_terminal = (k == 0) and not will_spawn
+        if k >= 1:
+            first_calls, _, first_names = _turn_calls_and_results(0)
+            _emit(
+                principal_id,
+                principal_msgs,
+                preds,
+                dep_types,
+                principal_segs,
+                principal_wait,
+                True,
+                first_names,
+            )
+        else:
+            ans_text, ans_tokens = (_answer_text(agent_seed_path) if principal_is_terminal else ("", 0))
+            _emit(
+                principal_id,
+                principal_msgs,
+                preds,
+                dep_types,
+                principal_segs,
+                principal_wait,
+                False,
+                None,
+                expected_output=ans_text,
+                expected_output_tokens=ans_tokens,
+            )
         if is_root and not root_ids:
             root_ids.append(principal_id)
         if is_root:
@@ -529,117 +644,124 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             # slice `get_messages_by_event_id(src)[:message_count]` matches exactly.
             root_principal_meta["id"] = principal_id
             root_principal_meta["input_len"] = len(principal_msgs)
-        last_id = principal_id
 
-        obj = task_msgs[-1].get("content", "") if task_msgs else ""
+        # Per-agent accumulation cursor. `prev` tracks the immediately-prior
+        # event of THIS agent so each successor can build its growing transcript
+        # via shared(prev input) + output(prev reply) + unique(new turn):
+        #   id          -- prior event id (shared + output source)
+        #   input_len   -- prior event's REPLAY-recorded input length (== shared
+        #                  message_count; keeps the runtime cursor exact)
+        #   msgs        -- prior event's build-time input placeholder (the shared
+        #                  prefix content — length must equal input_len)
+        #   out_calls   -- the tool calls the prior event OUTPUTS, so this event
+        #                  can build the matching result messages + an output-slot
+        #                  placeholder assistant carrying those same ids (build-time
+        #                  inv #3). Empty when the prior output was plain text.
+        prev_id = principal_id
+        prev_input_len = len(principal_msgs)
+        prev_msgs: List[Dict[str, Any]] = list(principal_msgs)
+        prev_out_calls: List[Dict[str, Any]] = first_calls if k >= 1 else []
 
-        # --- k tool-turns (ordinary single-tool turns) ---
-        k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, *agent_seed_path, 100), _FB_TOOL_TURNS)
-        k = max(0, k)
-        # §8 bare baseline: with an empty tool catalog (tool_definitions_per_agent=0)
-        # a tool-loop turn cannot emit a valid forced call — the `name` lookup
-        # `tool_defs[j % len(tool_defs)]` would divide by / index an empty list,
-        # and inv #2 (call name must appear in tool_definitions) is unsatisfiable.
-        # A catalog-less agent therefore emits ZERO tool turns and just answers,
-        # which keeps invariants #2 (name-in-defs) and #3 (call/result pairing)
-        # trivially valid.
-        if not tool_defs:
-            k = 0
+        # --- k tool-turn events (accumulating chain) ---
+        # Event ':tN' (N = 0..k-1) re-injects the prior event's tool-call reply
+        # (output segment) plus that call's results (unique segment). Its OWN
+        # output is the next tool call (N < k-1) or, if it is the agent terminal
+        # (last turn AND no spawn), the plain answer.
         for t in range(k):
-            if len(events) + 1 + 1 > budget:  # keep room for the answer
+            # Room for this event; if it won't fit, stop the loop early. The
+            # prior event remains a valid terminal (its output stays a tool call
+            # if we truncate here, which is acceptable — it simply never gets a
+            # follow-up; no dangling result is created because the result only
+            # materializes in THIS event which we skip).
+            if len(events) + 1 > budget:
                 break
-            # K = parallel tool calls THIS ordinary tool turn emits. Applies ONLY
-            # here (not to dispatch/merge/answer). Fresh seed sub-index (t, 30)
-            # under the per-turn path: existing per-turn draws are (t, 3) [wait]
-            # and (t, 9) [result n0], so 30 cannot collide. Clamp K >= 1 so a
-            # turn always emits at least one call (keeps inv #3 well-defined).
-            n_calls = sample_int(cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
-            n_calls = max(1, n_calls)
-            parallel_calls: List[Dict[str, Any]] = []
-            result_msgs: List[Dict[str, Any]] = []
-            call_names: List[str] = []
-            for j in range(n_calls):
-                # Cycle the theme tool catalog so each call name is a top-level
-                # tool_definitions name (inv #2), as the single-call path did.
-                call_name = tool_defs[j % len(tool_defs)]["name"]
-                call_names.append(call_name)
-                # Distinct ids across the K calls: call_{prefix}_{t}_{j}.
-                tc_id = f"call_{agent_prefix}_{t}_{j}"
-                parallel_calls.append(
-                    {
-                        "id": tc_id,
-                        "type": "function",
-                        # inv #1: arguments are json.dumps-ed strings.
-                        "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20], "i": j})},
-                    }
-                )
-                # Per-tool template (falls back to 'default' only if the called
-                # tool has none), with EVERY declared field filled from a real,
-                # seeded value -- sub-path (t, 9, j) extended with a per-field
-                # index inside _render_tool_result, so it stays a strict
-                # extension of the pre-existing (t, 9, j) n0 draw and cannot
-                # collide with (t, 3) [wait] or (t, 30) [n_calls].
-                result = _render_tool_result(theme, call_name, seed, (*agent_seed_path, t, 9, j))
-                # EXACTLY one role:tool result per call, in matching positional
-                # order, carrying that call's exact id (inv #3 positional).
-                result_msgs.append({"role": "tool", "tool_call_id": tc_id, "content": result})
-            tool_call_msg = {"role": "assistant", "tool_calls": parallel_calls}
+            _, results, _ = _turn_calls_and_results(t)
+            # The output-slot placeholder assistant carries the prior event's
+            # emitted calls (same ids as `results`), so build-time inv #3 holds:
+            # exactly these calls are matched by exactly these results.
+            output_placeholder = {"role": "assistant", "tool_calls": [dict(c) for c in prev_out_calls]}
+            turn_msgs = [*prev_msgs, output_placeholder, *results]
+            turn_segs = [
+                InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_id),
+                InputSegment(type="unique", message_count=len(results), token_count=0, source_event_id=None),
+            ]
             turn_id = f"{agent_prefix}:t{t}"
             turn_wait = int(
                 sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000
             )
-            _emit(
-                turn_id,
-                [tool_call_msg, *result_msgs],
-                [last_id],
-                {last_id: "full_match"},
-                [],
-                turn_wait,
-                True,
-                call_names,
-            )
-            last_id = turn_id
+            is_last_turn = t == k - 1
+            turn_is_terminal = is_last_turn and not will_spawn
+            if turn_is_terminal:
+                # OUTPUT is the plain answer.
+                ans_text, ans_tokens = _answer_text(agent_seed_path)
+                _emit(
+                    turn_id,
+                    turn_msgs,
+                    [prev_id],
+                    {prev_id: "full_match"},
+                    turn_segs,
+                    turn_wait,
+                    False,
+                    None,
+                    expected_output=ans_text,
+                    expected_output_tokens=ans_tokens,
+                )
+                next_out_calls: List[Dict[str, Any]] = []
+            else:
+                # OUTPUT is the NEXT tool call (turn t+1); force it via tool_names.
+                next_calls, _, next_names = _turn_calls_and_results(t + 1)
+                _emit(
+                    turn_id,
+                    turn_msgs,
+                    [prev_id],
+                    {prev_id: "full_match"},
+                    turn_segs,
+                    turn_wait,
+                    True,
+                    next_names,
+                )
+                next_out_calls = next_calls
+            prev_id = turn_id
+            prev_input_len = len(turn_msgs)
+            prev_msgs = turn_msgs
+            prev_out_calls = next_out_calls
 
-        # --- optional fan-out: spawn K sub-agents + one merge ---
-        spawn_roll = float(child_rng(seed, *agent_seed_path, 7).random())
-        if spawn_roll < cfg.fanout_probability and depth < cfg.max_depth:
+        # --- optional fan-out: spawn K sub-agents + one merge (merge is terminal) ---
+        if will_spawn:
             K = sample_int(cfg.sub_agents_per_spawn, child_rng(seed, *agent_seed_path, 8), _FB_SUB_AGENTS)
             K = max(0, K)
             # Whole-spawn minimum cost: per child a dispatch event (1) + minimal
-            # child (principal + answer = 2), plus one shared merge event, plus
-            # this agent's own answer that still follows. Only spawn if it all
-            # fits; otherwise this agent stays a plain leaf.
+            # child (one terminal call), plus one shared merge event (which is
+            # this agent's terminal — no separate answer follows). Only spawn if
+            # it all fits; otherwise this agent stays a plain leaf whose current
+            # `prev` event must become terminal.
             min_spawn_cost = K * (1 + _min_agent_cost()) + 1
-            if K > 0 and len(events) + min_spawn_cost + 1 <= budget:
+            spawned = False
+            if K > 0 and len(events) + min_spawn_cost <= budget:
                 dispatch_pairs: List[tuple] = []  # (dispatch_id, tc_id)
                 child_terminals: List[str] = []
                 spawn_ok = True
                 for c in range(K):
-                    # --- single-call dispatch event (never dangles: one call) ---
+                    # --- single-call dispatch event (fresh [user] context; its
+                    # OUTPUT is the one dispatch_agent tool_call — never dangles,
+                    # and a fresh [user] input never ends in assistant) ---
                     disp_id = f"{agent_prefix}:d{depth}:disp{c}"
                     tc_id = f"dispatch_{agent_prefix}_{c}"
                     child_obj = _render_objective(theme, child_rng(seed, *agent_seed_path, c, 1))
-                    # The dispatch event's MESSAGES are the input context; its
-                    # OUTPUT is the single dispatch_agent tool_call the model
-                    # generates (expected_output_is_tool_call=True, single-call
-                    # so tool_choice forces the one name and it can never
-                    # dangle). The generated call is later reconstructed in the
-                    # merge via the "output" segment sourced from this event, so
-                    # the assistant tool_call is NOT stored in these messages
-                    # (which keeps inv #3 balanced: 0 calls, 0 results here).
                     dispatch_ctx = {"role": "user", "content": f"Dispatch a sub-agent to: {child_obj}"}
                     _emit(
                         disp_id,
                         [dispatch_ctx],
-                        [last_id],
-                        {last_id: "full_match"},
+                        [prev_id],
+                        {prev_id: "full_match"},
                         [],
                         0,
                         True,
                         [DISPATCH_AGENT_NAME],
                         defs=fanout_tool_defs,
                     )
-                    # --- recurse into the child agent (depth+1) ---
+                    # --- recurse into the child agent (depth+1); child starts CLEAN ---
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
                     child_task = [{"role": "user", "content": child_obj}]
                     child_terminal = _build_agent(
@@ -653,19 +775,23 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         (*agent_seed_path, 200 + c),
                     )
                     if child_terminal is None:
-                        # Budget ran out mid-spawn — abandon fan-out entirely so
-                        # we never emit a merge referencing a missing child.
                         spawn_ok = False
                         break
                     dispatch_pairs.append((disp_id, tc_id))
                     child_terminals.append(child_terminal)
 
                 if spawn_ok and dispatch_pairs:
-                    # --- ONE merge event consuming output + tool_output per child ---
-                    merge_msgs: List[Dict[str, Any]] = []
-                    merge_segs: List[InputSegment] = []
-                    merge_preds: List[str] = []
-                    merge_deps: Dict[str, str] = {}
+                    # --- ONE merge event: the parent's pre-spawn transcript
+                    # (shared-only prepend — introduces NO unmatched tool_call, so
+                    # it can never dangle) followed by [dispatch call, child
+                    # result] pairs. The merge is the agent TERMINAL: its OUTPUT is
+                    # the plain answer (no trailing answer event). ---
+                    merge_segs: List[InputSegment] = [
+                        InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                    ]
+                    merge_msgs: List[Dict[str, Any]] = list(prev_msgs)
+                    merge_preds: List[str] = [prev_id]
+                    merge_deps: Dict[str, str] = {prev_id: "full_match"}
                     for (disp_id, tc_id), child_term in zip(dispatch_pairs, child_terminals, strict=True):
                         # Reconstruct the [assistant dispatch call, tool result]
                         # pair per child so inv #3 holds (one call, one result).
@@ -682,11 +808,6 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                             }
                         )
                         merge_msgs.append({"role": "tool", "tool_call_id": tc_id, "content": "PLACEHOLDER"})
-                        # Segments align 1:1 with messages by cursor: the output
-                        # segment covers the assistant dispatch msg (replaced by
-                        # the dispatch event's live tool call), tool_output covers
-                        # the role:tool msg (content replaced by the child's live
-                        # answer text, role + tool_call_id preserved).
                         merge_segs.append(InputSegment(type="output", message_count=1, token_count=0, source_event_id=disp_id))
                         merge_segs.append(
                             InputSegment(type="tool_output", message_count=1, token_count=0, source_event_id=child_term)
@@ -695,15 +816,51 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         merge_deps[disp_id] = "full_match"
                         merge_deps[child_term] = "full_match"
                     merge_id = f"{agent_prefix}:d{depth}:merge"
-                    _emit(merge_id, merge_msgs, merge_preds, merge_deps, merge_segs, 0, False, None, defs=fanout_tool_defs)
-                    last_id = merge_id
+                    ans_text, ans_tokens = _answer_text(agent_seed_path)
+                    _emit(
+                        merge_id,
+                        merge_msgs,
+                        merge_preds,
+                        merge_deps,
+                        merge_segs,
+                        0,
+                        False,
+                        None,
+                        defs=fanout_tool_defs,
+                        expected_output=ans_text,
+                        expected_output_tokens=ans_tokens,
+                    )
+                    prev_id = merge_id
+                    spawned = True
+            # If the spawn was rolled but did not fit / produced no children
+            # (spawned is False), the current `prev` event may still advertise a
+            # tool call as its output; the final normalization below re-emits it
+            # as a plain-answer terminal.
+            _ = spawned
 
-        # --- answer event (agent terminal) ---
-        answer_id = f"{agent_prefix}:answer"
-        out_tokens = sample_int(cfg.output_tokens_per_turn, child_rng(seed, *agent_seed_path, 4), cfg.output_tokens_per_turn)
-        ans = fit_filler(tokenizer, out_tokens, "Summary:", rng=child_rng(seed, *agent_seed_path, 5))
-        _emit(answer_id, [{"role": "assistant", "content": ans}], [last_id], {last_id: "full_match"}, [], 0, False, None)
-        return answer_id
+        # Final normalization: the terminal event must OUTPUT the plain answer,
+        # never a forced-but-unconsumed tool call. This only fires when the tool
+        # loop was truncated early by the budget (so the last turn never became
+        # terminal) and no spawn happened; the normal paths already set the
+        # terminal's output to the answer above.
+        term_ev = events[prev_id]
+        if term_ev.call.expected_output_is_tool_call:
+            ans_text, ans_tokens = _answer_text(agent_seed_path)
+            _emit(
+                prev_id,
+                term_ev.call.messages,
+                term_ev.predecessor_event_ids,
+                term_ev.predecessor_dependency_types,
+                term_ev.call.input_segments,
+                term_ev.wait_ms,
+                False,
+                None,
+                defs=term_ev.call.tool_definitions,
+                expected_output=ans_text,
+                expected_output_tokens=ans_tokens,
+            )
+
+        return prev_id
 
     prev_answer_id: Optional[str] = None
     # The running conversation transcript used to build round K>=1's growing

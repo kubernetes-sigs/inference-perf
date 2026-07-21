@@ -288,20 +288,31 @@ def test_subagent_first_call_carries_identical_system_head():
         assert sm is not root_system, "system head is copied per event, not aliased"
 
 
-def test_event_budget_cost_is_k_plus_2_per_round():
-    # A round emits 1 principal + k tool-turn events (each tool-turn is ONE
-    # event packing [tool_call msg, tool result msg]) + 1 answer = k + 2
-    # events -- NOT 2*k + 2. With tool_turns_per_loop fixed at k=2, each round
-    # costs exactly 4 events. A budget of 8 fits exactly 2 whole rounds: if
-    # the cost formula over-counts (e.g. treats a round as 2*k+2 = 6 events),
-    # the budget would only fit 1 round, and this assertion would catch it.
-    cfg = _cfg(
+def test_event_budget_cost_is_k_plus_1_per_round():
+    # Under the corrected event model a round emits 1 principal + k tool-turn
+    # events, where the LAST tool turn's OUTPUT is the answer (no separate
+    # answer event) = k + 1 events. With tool_turns_per_loop fixed at k=2 each
+    # round costs exactly 3 events. A budget of 9 fits exactly 3 whole rounds
+    # (3 * 3 = 9); a budget of 8 fits only 2 whole rounds (the 3rd would need 3
+    # more, overflowing) and STOPS -- confirming the per-round cost is k+1, not
+    # the old k+2.
+    cfg9 = _cfg(
         rounds_per_session=Distribution(type="fixed", mean=100),
-        max_events_per_session=8,
+        max_events_per_session=9,
         tool_turns_per_loop=Distribution(type="fixed", mean=2),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
-    assert len(g.events) == 8  # exactly 2 full rounds of (k + 2) = 4 events
+    g9 = build_graph_for_session(cfg9, GENERIC_THEME, _WordTok(), 0)
+    assert len(g9.events) == 9, f"expected 3 rounds of (k+1)=3 events, got {len(g9.events)}"
+
+    cfg6 = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=100),
+        max_events_per_session=6,
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+    )
+    g6 = build_graph_for_session(cfg6, GENERIC_THEME, _WordTok(), 0)
+    # exactly 2 full rounds (6 events); the 3rd round can't even start its
+    # principal (6 + 1 > 6), so it never begins. Result: exactly 6 events.
+    assert len(g6.events) == 6, f"expected 2 full rounds of (k+1)=3 events, got {len(g6.events)}"
 
 
 # --- Task 10: the generator class (lazy build + theme weighting) ----------
@@ -405,11 +416,29 @@ def _find_tool_turn_events(g):
     return [ev for eid, ev in g.events.items() if re.search(r":t\d+$", eid)]
 
 
+def _last_tool_call_group(ev):
+    """Return (assistant_tool_calls, trailing_tool_results) for the LAST
+    tool-call group in an event's transcript.
+
+    Under the corrected event model a ':tN' event's input is the growing
+    transcript ending in [<prior turns>, assistant(K calls), tool×K]. The K
+    calls of THIS turn are the last assistant tool_call message; its results
+    are the trailing role:tool messages. Prior turns may add earlier
+    assistant/tool messages, so we look at the final group only."""
+    calls = None
+    for m in ev.call.messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            calls = m["tool_calls"]
+    tool_msgs = [m for m in ev.call.messages if m.get("role") == "tool"]
+    return calls, tool_msgs
+
+
 def test_parallel_tool_calls_emits_k_calls_and_k_results():
-    # parallel_tool_calls_per_turn fixed 3 -> an ordinary tool turn emits 3
-    # tool_calls in its assistant message AND 3 role:tool results, ids matching
-    # 1:1 in positional order (inv #3).
+    # parallel_tool_calls_per_turn fixed 3 -> the tool-turn event that carries a
+    # turn's result reconstructs an assistant message with 3 tool_calls AND 3
+    # role:tool results, ids matching 1:1 in positional order (inv #3).
     cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=1),
         parallel_tool_calls_per_turn=Distribution(type="fixed", mean=3),
         tool_turns_per_loop=Distribution(type="fixed", mean=1),
         fanout_probability=0.0,
@@ -418,10 +447,8 @@ def test_parallel_tool_calls_emits_k_calls_and_k_results():
     turns = _find_tool_turn_events(g)
     assert turns, "at least one ordinary tool-turn event exists"
     ev = turns[0]
-    assistant_msgs = [m for m in ev.call.messages if m.get("role") == "assistant"]
-    tool_msgs = [m for m in ev.call.messages if m.get("role") == "tool"]
-    assert len(assistant_msgs) == 1, "one assistant tool_call message per turn"
-    calls = assistant_msgs[0]["tool_calls"]
+    calls, tool_msgs = _last_tool_call_group(ev)
+    assert calls is not None, "the tool-turn event reconstructs an assistant tool_call message"
     assert len(calls) == 3, f"expected 3 parallel calls, got {len(calls)}"
     assert len(tool_msgs) == 3, f"expected 3 role:tool results, got {len(tool_msgs)}"
     # ids match 1:1 in positional order (inv #3 positional)
@@ -448,12 +475,11 @@ def test_parallel_default_is_single_call():
     turns = _find_tool_turn_events(g)
     assert turns, "at least one ordinary tool-turn event exists"
     for ev in turns:
-        assistant_msgs = [m for m in ev.call.messages if m.get("role") == "assistant"]
-        tool_msgs = [m for m in ev.call.messages if m.get("role") == "tool"]
-        assert len(assistant_msgs) == 1
-        assert len(assistant_msgs[0]["tool_calls"]) == 1
+        calls, tool_msgs = _last_tool_call_group(ev)
+        # the LAST tool-call group (this turn) has exactly 1 call + 1 result
+        assert calls is not None and len(calls) == 1
         assert len(tool_msgs) == 1
-        assert assistant_msgs[0]["tool_calls"][0]["id"] == tool_msgs[0]["tool_call_id"]
+        assert calls[0]["id"] == tool_msgs[0]["tool_call_id"]
 
 
 def test_dispatch_still_single_call_under_parallel_knob():
@@ -513,12 +539,13 @@ def test_zero_tool_definitions_is_bare_baseline():
         n_calls = sum(len(m.get("tool_calls", []) or []) for m in ev.call.messages)
         assert n_calls == 0, f"{ev.event_id} emitted a tool_call with an empty catalog"
         assert ev.call.expected_output_is_tool_call is False
-    # session is just principal + answer (no tool turns): with fanout 0 and one
-    # round, exactly 2 events and no ':tN' tool-turn event exists.
+    # session is just the principal (no tool turns): with fanout 0 and one
+    # round, exactly 1 event and no ':tN' tool-turn event exists. The principal
+    # IS the terminal call -- its answer is the OUTPUT, not a separate event.
     import re
 
     assert not any(re.search(r":t\d+$", eid) for eid in g.events), "no tool-loop turn emitted"
-    assert len(g.events) == 2, f"expected principal+answer only, got {sorted(g.events)}"
+    assert len(g.events) == 1, f"expected principal only (answer is its output), got {sorted(g.events)}"
 
 
 # --- Gap-fix 2: round-to-round context growth (spec §4.1) ------------------
@@ -927,3 +954,249 @@ def test_max_model_len_comfortable_fit_accepted():
         input_tokens_per_turn=Distribution(type="fixed", mean=20),
     )
     assert cfg.max_model_len == 100_000
+
+
+# --- Event-model fix: each call carries the cumulative transcript ----------
+#
+# Every event is exactly ONE LLM call whose INPUT is the growing conversation
+# transcript ending in a user or tool message; the assistant reply is the
+# event's OUTPUT (expected_output), NOT a separate lone-assistant event.
+
+
+def _last_role(ev):
+    """Role of the last message in an event's input transcript."""
+    return ev.call.messages[-1].get("role") if ev.call.messages else None
+
+
+def _is_lone_assistant(ev):
+    """True iff the event's input is a single assistant message (the bogus
+    lone-assistant 'answer' call the old model emitted)."""
+    msgs = ev.call.messages
+    return len(msgs) == 1 and msgs[0].get("role") == "assistant"
+
+
+def test_no_lone_assistant_input():
+    # THE core assertion. Across every shape (bare, tool-loop, interactive,
+    # fan-out), NO event's input is a lone assistant message, and EVERY event's
+    # input ends in role 'user' or 'tool' -- never 'assistant'.
+    shapes = {
+        "bare": _cfg(
+            tool_definitions_per_agent=Distribution(type="fixed", mean=0),
+            tool_turns_per_loop=Distribution(type="fixed", mean=2),
+            fanout_probability=0.0,
+        ),
+        "tool_loop": _cfg(
+            tool_turns_per_loop=Distribution(type="fixed", mean=3),
+            fanout_probability=0.0,
+        ),
+        "interactive": _cfg(
+            rounds_per_session=Distribution(type="fixed", mean=3),
+            tool_turns_per_loop=Distribution(type="fixed", mean=1),
+            fanout_probability=0.0,
+            max_events_per_session=2048,
+        ),
+        "fanout": _cfg(
+            fanout_probability=1.0,
+            max_depth=2,
+            sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+            max_events_per_session=2048,
+            tool_turns_per_loop=Distribution(type="fixed", mean=1),
+        ),
+    }
+    for name, cfg in shapes.items():
+        for idx in range(3):
+            g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+            assert g.events, f"{name}[{idx}] built no events"
+            for ev in g.events.values():
+                assert not _is_lone_assistant(ev), f"{name}[{idx}] {ev.event_id}: lone-assistant input"
+                assert _last_role(ev) in ("user", "tool"), (
+                    f"{name}[{idx}] {ev.event_id}: input ends in {_last_role(ev)!r}, not user/tool"
+                )
+
+
+def test_bare_single_round_is_one_event():
+    # rounds=1, k=0 (empty catalog), fanout 0 -> EXACTLY 1 event. Its input is
+    # [user] (+ system if configured); its expected_output is the (non-empty)
+    # answer text; it is NOT a tool call.
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=1),
+        tool_definitions_per_agent=Distribution(type="fixed", mean=0),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    assert len(g.events) == 1, f"expected exactly 1 event, got {sorted(g.events)}"
+    ev = next(iter(g.events.values()))
+    roles = [m.get("role") for m in ev.call.messages]
+    assert roles == ["user"], f"bare principal input should be [user], got {roles}"
+    assert ev.call.expected_output_is_tool_call is False
+    assert ev.call.expected_output, "terminal answer text must be non-empty"
+
+    # With a system prompt, the input is [system, user].
+    cfg_sys = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=1),
+        tool_definitions_per_agent=Distribution(type="fixed", mean=0),
+        fanout_probability=0.0,
+        shared_system_prompt_len=16,
+    )
+    gs = build_graph_for_session(cfg_sys, GENERIC_THEME, _WordTok(), session_index=0)
+    assert len(gs.events) == 1
+    evs = next(iter(gs.events.values()))
+    assert [m.get("role") for m in evs.call.messages] == ["system", "user"]
+
+
+def test_tool_loop_context_grows():
+    # single-agent k=3, fanout 0 -> the agent's events' input message counts
+    # grow like the OTel reference / real Exgentic (1, 3, 5, 7 for k=3, ignoring
+    # any system head). principal + t0 + t1 + t2 = 4 events.
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=3),
+        parallel_tool_calls_per_turn=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    # k+1 = 4 events for one round.
+    assert len(g.events) == 4, f"expected principal + 3 tool turns = 4 events, got {sorted(g.events)}"
+    # Order by id suffix: principal, t0, t1, t2.
+    ordered = sorted(g.events.values(), key=lambda e: (0 if e.event_id.endswith(":principal") else 1, e.event_id))
+    lengths = [len(e.call.messages) for e in ordered]
+    # strictly monotonically increasing, growing by 2 per turn (1,3,5,7).
+    assert lengths == sorted(lengths), f"input lengths not monotonic: {lengths}"
+    assert lengths[0] == 1, f"principal input should be [user] (1 msg), got {lengths[0]}"
+    for a, b in zip(lengths, lengths[1:], strict=False):
+        assert b - a == 2, f"tool loop should grow by 2 per turn (assistant+tool), got {lengths}"
+    assert lengths == [1, 3, 5, 7], f"expected 1,3,5,7 growth, got {lengths}"
+
+
+def _drive_substitution(target_ev, prior_by_source):
+    """Drive target_ev through the REAL _build_messages_with_substitution.
+
+    prior_by_source maps a source_event_id -> (input_messages, output_message)
+    to populate the registry for the target's predecessors. Returns the
+    reconstructed message list (raises if substitution mis-slices)."""
+    from inference_perf.datagen.replay_graph_session_datagen import (
+        EventOutputRegistry,
+        SessionChatCompletionAPIData,
+        WorkerSessionTracker,
+    )
+
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+    for src, (in_msgs, out_msg) in prior_by_source.items():
+        out_text = out_msg.get("content", "") if out_msg else ""
+        registry.record(src, out_text or "x", messages=list(in_msgs), output_message=out_msg)
+
+    ev = SessionChatCompletionAPIData(
+        messages=[],
+        max_tokens=50,
+        event_id=target_ev.event_id,
+        registry=registry,
+        worker_tracker=tracker,
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=list(target_ev.predecessor_event_ids),
+        input_segments=list(target_ev.call.input_segments),
+        original_messages=list(target_ev.call.messages),
+    )
+    return ev._build_messages_with_substitution()
+
+
+def _ordered_agent_events(g, agent_prefix):
+    """Return an agent's events in build order (principal first, then t0, t1...)."""
+    import re
+
+    evs = [ev for eid, ev in g.events.items() if eid.startswith(agent_prefix + ":")]
+
+    def _key(ev):
+        eid = ev.event_id
+        if eid.endswith(":principal"):
+            return (0, 0)
+        m = re.search(r":t(\d+)$", eid)
+        if m:
+            return (1, int(m.group(1)))
+        return (2, eid)
+
+    return sorted(evs, key=_key)
+
+
+def test_substitution_survives_all_shapes():
+    # Drive tool-loop events AND a fan-out merge through the REAL substitution
+    # with a populated registry: no IndexError, transcript reconstructs, prior
+    # turns are present.
+    # --- tool loop ---
+    cfg = _cfg(
+        rounds_per_session=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=3),
+        parallel_tool_calls_per_turn=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    ordered = _ordered_agent_events(g, "synthN0:r0")
+    # Walk the chain, simulating live outputs, feeding each event's rebuilt
+    # input (its replay `messages`) forward into the registry for the next.
+    live_inputs = {}
+    for ev in ordered:
+        prior_by_source = {}
+        for seg in ev.call.input_segments:
+            if seg.source_event_id is not None:
+                src = seg.source_event_id
+                in_msgs = live_inputs.get(src, [])
+                # Fabricate the source's live output_message: a tool call if the
+                # source's expected output was a tool call, else plain answer.
+                src_ev = g.events[src]
+                if src_ev.call.expected_output_is_tool_call:
+                    # reuse the build-time placeholder tool_calls from THIS event's
+                    # output slot so ids line up for the no-dangling post-pass.
+                    out_msg = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": f"live_{src}", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                        ],
+                    }
+                else:
+                    out_msg = {"role": "assistant", "content": f"LIVE-OUT-{src}"}
+                prior_by_source[src] = (in_msgs, out_msg)
+        result = _drive_substitution(ev, prior_by_source)  # must not raise IndexError
+        assert result, f"{ev.event_id}: substitution produced empty input"
+        assert result[-1].get("role") in ("user", "tool"), f"{ev.event_id}: rebuilt input ends in assistant"
+        live_inputs[ev.event_id] = result
+    # the last (terminal) event's rebuilt input carries the whole growing loop
+    assert len(live_inputs[ordered[-1].event_id]) == 7, "terminal tool-loop input did not accumulate to 1+2*3=7"
+
+    # --- fan-out merge ---
+    fcfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=1,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+    )
+    fg = build_graph_for_session(fcfg, GENERIC_THEME, _WordTok(), session_index=0)
+    merges = [ev for eid, ev in fg.events.items() if eid.endswith(":merge")]
+    assert merges, "fan-out merge event exists"
+    for merge in merges:
+        prior_by_source = {}
+        for seg in merge.call.input_segments:
+            if seg.source_event_id is None:
+                continue
+            src = seg.source_event_id
+            if seg.type == "output":
+                # dispatch event -> live dispatch tool call
+                out_msg = {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": f"live_{src}", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}
+                    ],
+                }
+                prior_by_source[src] = ([], out_msg)
+            elif seg.type == "tool_output":
+                out_msg = {"role": "assistant", "content": f"CHILD-ANSWER-{src}"}
+                prior_by_source[src] = ([], out_msg)
+            elif seg.type == "shared":
+                # the pre-spawn transcript source: give it a small balanced input
+                prior_by_source[src] = ([{"role": "user", "content": "pre-spawn task"}], None)
+        result = _drive_substitution(merge, prior_by_source)  # must not raise
+        assert result, "merge substitution produced empty input"
+        # a child answer text was injected into a role:tool slot
+        joined = " ".join(str(m.get("content", "")) for m in result)
+        assert "CHILD-ANSWER-" in joined, "child answer not injected into merge tool slot"

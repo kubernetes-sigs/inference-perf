@@ -17,14 +17,14 @@ ready. **Demo 10 needs a large-context model (≥128K)** — it will exceed Smol
 
 | # | Config | Demonstrates | What to look for |
 |---|--------|--------------|------------------|
-| 01 | `01_bare_no_tools` | Bare non-agentic baseline (no tools) | 2 events/session; no tools in requests |
-| 02 | `02_single_agent_tool_loop` | A tool-loop (introduces tools) | 4 events; forced 1-call-per-turn + tool result; catalog advertised |
+| 01 | `01_bare_no_tools` | Bare non-agentic baseline (no tools) | 1 event/session (the answer is the call's OUTPUT, not a separate event); no tools in requests |
+| 02 | `02_single_agent_tool_loop` | A tool-loop (introduces tools) | 3 events (principal + 2 tool turns; the last turn's OUTPUT is the answer); input grows 1→3→5; catalog advertised |
 | 03 | `03_parallel_tool_calls` | K>1 tool calls per turn (best-effort) | 3 tool_calls + 3 matching results per turn |
-| 04 | `04_interactive_multiround` | Multi-round conversation, growing context | prompt tokens INCREASE across rounds; 9 events |
+| 04 | `04_interactive_multiround` | Multi-round conversation, growing context | prompt tokens INCREASE across rounds; 6 events (3 rounds × (k=1 + 1)) |
 | 05 | `05_chat_with_tools_varying` | Per-round tool usage varies | mix of answer-only and tool-using rounds |
-| 06 | `06_orchestrator_fanout` | Spawn 2 sub-agents in parallel, wait, continue | 2 sub-agent calls overlap in time; merge then answer |
-| 07 | `07_recursive_fanout` | Recursive fan-out (depth 2) | ~30 events; nested parallel sub-agents; no dangling ids |
-| 08 | `08_big_catalog` | Tool-catalog inflation (prefill stress) | 2 events but large prompt; 30 tools advertised, none called |
+| 06 | `06_orchestrator_fanout` | Spawn 2 sub-agents in parallel, wait, continue | 2 sub-agent calls overlap in time; merge is terminal (its OUTPUT is the answer) |
+| 07 | `07_recursive_fanout` | Recursive fan-out (depth 2) | nested parallel sub-agents; no dangling ids |
+| 08 | `08_big_catalog` | Tool-catalog inflation (prefill stress) | 1 event but large prompt; 30 tools advertised, none called |
 | 09 | `09_mixed_everything` | Mixed themes + probabilistic fan-out + varying rounds | wide session-size spread; both themes; 0 errors |
 | 10 | `10_realistic_scale` | Real Exgentic scale (~114K-token prompts, 487 tools) | **needs big-context model**; input tokens ~87K–136K |
 
