@@ -1,14 +1,17 @@
 # Controller for the /ok-to-test command.
 #
 # Listens for "/ok-to-test" comments on pull requests. If (and only if) the
-# commenter is on the authorized list below, it resolves the PR's head branch
-# and head commit SHA via the GitHub API and dispatches integration-tests.yml
+# commenter is listed in the root OWNERS file (approvers or reviewers, with
+# aliases expanded via OWNERS_ALIASES), it resolves the PR's head branch and
+# head commit SHA via the GitHub API and dispatches integration-tests.yml
 # pinned to that exact SHA.
 #
 # Security model:
-#   - issue_comment always runs in the context of the DEFAULT branch, so this
-#     file (including the authorized-user list) cannot be tampered with from a
-#     PR branch.
+#   - issue_comment always runs in the context of the DEFAULT branch, so both
+#     this file and the OWNERS/OWNERS_ALIASES files it reads are the trusted
+#     copies — they cannot be tampered with from a PR branch.
+#   - The allowlist is derived from OWNERS at runtime, so membership changes
+#     land through regular OWNERS updates with no workflow edits.
 #   - Untrusted text (comment body, usernames) is only ever passed to bash via
 #     environment variables, never interpolated into the script — this
 #     prevents shell/script injection from crafted comments.
@@ -23,6 +26,7 @@ on:
 
 permissions:
   actions: write        # dispatch integration-tests.yml
+  contents: read        # checkout for OWNERS / OWNERS_ALIASES
   pull-requests: read   # read PR head ref / SHA
   issues: write         # add a reaction to the triggering comment
 
@@ -36,35 +40,56 @@ jobs:
       contains(github.event.comment.body, '/ok-to-test')
     runs-on: ubuntu-latest
     steps:
-      - name: Check command and commenter authorization
-        id: auth
+      - name: Check for exact /ok-to-test command
+        id: cmd
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
-          COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
 
           # Exact-match check: the comment must be exactly "/ok-to-test"
           # (surrounding whitespace tolerated), not merely mention it.
-          if [[ "$(tr -d '[:space:]' <<<"$COMMENT_BODY")" != "/ok-to-test" ]]; then
+          if [[ "$(tr -d '[:space:]' <<<"$COMMENT_BODY")" == "/ok-to-test" ]]; then
+            echo "is_command=true" >> "$GITHUB_OUTPUT"
+          else
             echo "Comment is not exactly '/ok-to-test'; ignoring."
-            echo "authorized=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "is_command=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Authorized users, from OWNERS aliases:
-          #   inference-perf-maintainers: achandrasekar wangchen615 SachinVarghese jjk-g lenadankin
-          #   inference-perf-approvers:   alonh
-          #   inference-perf-reviewers:   Bslabe123 alonh
-          ALLOWED_USERS=(
-            achandrasekar
-            wangchen615
-            SachinVarghese
-            jjk-g
-            lenadankin
-            alonh
-            Bslabe123
+      # issue_comment events check out the default branch, so these are the
+      # trusted OWNERS files — a PR cannot modify what this job reads.
+      - name: Checkout default branch for OWNERS files
+        if: steps.cmd.outputs.is_command == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check commenter authorization against OWNERS
+        if: steps.cmd.outputs.is_command == 'true'
+        id: auth
+        env:
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+
+          # Root OWNERS approvers/reviewers entries are either alias names
+          # (expanded via OWNERS_ALIASES) or direct GitHub usernames.
+          mapfile -t ALLOWED_USERS < <(python3 - <<'EOF'
+          import yaml
+
+          with open("OWNERS") as f:
+              owners = yaml.safe_load(f) or {}
+          with open("OWNERS_ALIASES") as f:
+              aliases = (yaml.safe_load(f) or {}).get("aliases") or {}
+
+          users = set()
+          for entry in (owners.get("approvers") or []) + (owners.get("reviewers") or []):
+              users.update(aliases.get(entry, [entry]))
+          print("\n".join(sorted(users, key=str.lower)))
+          EOF
           )
+
+          echo "OWNERS allowlist: ${ALLOWED_USERS[*]}"
 
           authorized=false
           for user in "${ALLOWED_USERS[@]}"; do
@@ -76,7 +101,7 @@ jobs:
           done
 
           if [[ "$authorized" == "true" ]]; then
-            echo "User '$COMMENTER' is authorized to trigger integration tests."
+            echo "User '$COMMENTER' is authorized (listed in OWNERS) to trigger integration tests."
           else
             echo "User '$COMMENTER' is NOT authorized to trigger integration tests; ignoring."
           fi
