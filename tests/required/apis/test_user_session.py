@@ -291,3 +291,35 @@ class TestUserSessionTruncation:
 
         assert session.system_prompt == "tok_10"
         assert payload["prompt"] == "tok_10 tok_10"
+
+    @pytest.mark.parametrize(
+        ("request_max_tokens", "default_max_tokens"),
+        [(10, 2), (0, 10)],
+        ids=["request-specific-value", "client-default-fallback"],
+    )
+    @pytest.mark.asyncio
+    async def test_prompt_truncation_reserves_actual_max_tokens(
+        self, request_max_tokens: int, default_max_tokens: int
+    ) -> None:
+        """Truncation reserves the completion length that the request will send."""
+        tok = _mock_tokenizer()
+        hf = tok.get_tokenizer.return_value
+        hf.encode = MagicMock(side_effect=lambda text: [1] * tok.count_tokens(text))
+
+        session = LocalUserSession(user_session_id="sess_3", system_prompt="tok_5", tokenizer=tok, max_model_len=220)
+        LocalUserSession._instances["sess_3"] = session
+
+        session.history = ["tok_5", "tok_5"]
+        session.context = "tok_5 tok_5 tok_5"
+
+        data = UserSessionCompletionAPIData(
+            user_session_id="sess_3", target_round=1, prompt="tok_10", max_tokens=request_max_tokens
+        )
+
+        payload = await data.to_request_body("model", default_max_tokens, False, False)
+
+        assert payload["max_tokens"] == 10
+        # prompt + completion + 200 token buffer must fit within max_model_len
+        assert tok.count_tokens(payload["prompt"]) + payload["max_tokens"] + 200 <= 220
+        # target_len = 220 - 10 - 200 = 10, so history and system prompt are dropped
+        assert payload["prompt"] == "tok_10"
