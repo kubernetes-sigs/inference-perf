@@ -316,6 +316,73 @@ def _render_followup(theme, objective: str, rng: np.random.Generator) -> str:
     return connective + objective
 
 
+def _is_time_field(field: str) -> bool:
+    f = field.lower()
+    return f.startswith("t") and (f in ("t", "time") or f[1:].isdigit() or "time" in f or f.endswith("_t") or "_t" in f)
+
+
+def _is_numeric_field(field: str) -> bool:
+    f = field.lower()
+    if any(c.isdigit() for c in f):
+        return True
+    return any(tok in f for tok in ("n", "ms", "count", "wait"))
+
+
+def _seeded_time_value(rng: np.random.Generator) -> str:
+    hh = int(rng.integers(0, 24))
+    mm = int(rng.integers(0, 60))
+    ss = int(rng.integers(0, 60))
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _seeded_entity_value(theme, rng: np.random.Generator) -> str:
+    pool: List[str] = []
+    for vals in theme.entities.values():
+        pool.extend(vals)
+    if not pool:
+        return f"entity-{int(rng.integers(0, 999))}"
+    return pool[int(rng.integers(0, len(pool)))]
+
+
+def _render_tool_result(theme, call_name: str, seed: int, path: tuple) -> str:
+    """Render a tool-result content string from the theme's PER-TOOL template
+    for `call_name` (falling back to 'default' only if the tool has none),
+    filling EVERY placeholder the chosen template declares with a real,
+    deterministically-seeded value -- never a literal stand-in, never left
+    unfilled.
+
+    `path` is the seed sub-path prefix (e.g. (*agent_seed_path, t, 9, j)) under
+    which per-field sub-seeds are derived (appending a field index), so
+    different fields in the same call draw from independent streams and
+    different calls/turns/agents never collide.
+    """
+    import string
+
+    tpl = theme.result_templates.get(call_name, theme.result_templates.get("default", "result: {entity} {n0} {t0}"))
+    fields: List[str] = []
+    for _, field_name, _, _ in string.Formatter().parse(tpl):
+        if field_name:
+            fields.append(field_name)
+
+    values: Dict[str, str] = {}
+    for idx, field in enumerate(fields):
+        field_rng = child_rng(seed, *path, idx)
+        if field == "entity":
+            values[field] = _seeded_entity_value(theme, field_rng)
+        elif _is_time_field(field):
+            values[field] = _seeded_time_value(field_rng)
+        elif _is_numeric_field(field):
+            values[field] = str(int(field_rng.integers(0, 999)))
+        else:
+            # Unknown field: seeded token, never left unfilled.
+            values[field] = _seeded_entity_value(theme, field_rng)
+
+    try:
+        return tpl.format_map(values)
+    except (KeyError, IndexError):
+        return "result"
+
+
 def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
     """Build a single-agent replay graph for one synthetic session.
 
@@ -488,7 +555,6 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             # turn always emits at least one call (keeps inv #3 well-defined).
             n_calls = sample_int(cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
             n_calls = max(1, n_calls)
-            result_tpl = theme.result_templates.get("default", "result: {entity} {n0} {t0}")
             parallel_calls: List[Dict[str, Any]] = []
             result_msgs: List[Dict[str, Any]] = []
             call_names: List[str] = []
@@ -507,14 +573,13 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         "function": {"name": call_name, "arguments": json.dumps({"q": obj[:20], "i": j})},
                     }
                 )
-                try:
-                    result = result_tpl.format(
-                        entity="x",
-                        n0=int(child_rng(seed, *agent_seed_path, t, 9, j).integers(0, 999)),
-                        t0="t0",
-                    )
-                except (KeyError, IndexError):
-                    result = "result"
+                # Per-tool template (falls back to 'default' only if the called
+                # tool has none), with EVERY declared field filled from a real,
+                # seeded value -- sub-path (t, 9, j) extended with a per-field
+                # index inside _render_tool_result, so it stays a strict
+                # extension of the pre-existing (t, 9, j) n0 draw and cannot
+                # collide with (t, 3) [wait] or (t, 30) [n_calls].
+                result = _render_tool_result(theme, call_name, seed, (*agent_seed_path, t, 9, j))
                 # EXACTLY one role:tool result per call, in matching positional
                 # order, carrying that call's exact id (inv #3 positional).
                 result_msgs.append({"role": "tool", "tool_call_id": tc_id, "content": result})

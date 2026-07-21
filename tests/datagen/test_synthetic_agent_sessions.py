@@ -767,6 +767,90 @@ def test_inv2_holds_across_fanout_graph():
     _assert_inv2_over_graph(g)
 
 
+# --- Result-content fidelity: per-tool templates, no placeholder leakage ---
+
+
+def _find_ordinary_tool_result_msgs(g):
+    """Return all role:tool result messages emitted by ORDINARY tool-loop turns
+    (id ends with ':tN'), paired with the call name that produced them."""
+    import re
+
+    out = []
+    for eid, ev in g.events.items():
+        if not re.search(r":t\d+$", eid):
+            continue
+        call_name_by_id = {}
+        for m in ev.call.messages:
+            for tc in m.get("tool_calls", []) or []:
+                call_name_by_id[tc["id"]] = tc["function"]["name"]
+        for m in ev.call.messages:
+            if m.get("role") == "tool":
+                out.append((call_name_by_id.get(m["tool_call_id"]), m["content"]))
+    return out
+
+
+def test_tool_result_uses_per_tool_template():
+    # db2 theme's get_bp_stats template is rich ("| time | bp | hit_ratio |"
+    # table markers) and distinct from the generic 'default' template. Force
+    # a small catalog (tool_definitions_per_agent=1) so the single advertised
+    # tool is theme.tool_names[0] == "get_bp_stats" (per _tool_definitions'
+    # cycling), guaranteeing every ordinary tool-turn call is get_bp_stats.
+    theme = load_theme("db2_latency_incident")
+    cfg = _cfg(
+        theme_mix={"db2_latency_incident": 1.0},
+        tool_definitions_per_agent=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=3),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    results = _find_ordinary_tool_result_msgs(g)
+    assert results, "at least one ordinary tool-turn result exists"
+    get_bp_stats_results = [content for name, content in results if name == "get_bp_stats"]
+    assert get_bp_stats_results, "get_bp_stats was called at least once"
+    for content in get_bp_stats_results:
+        # Shape of the per-tool template, not the generic default.
+        assert "| time | bp | hit_ratio |" in content, f"expected get_bp_stats table shape, got: {content!r}"
+        assert not content.startswith("result for "), f"fell back to the generic default template: {content!r}"
+
+
+def test_tool_result_no_literal_placeholders():
+    theme = load_theme("db2_latency_incident")
+    cfg = _cfg(
+        theme_mix={"db2_latency_incident": 1.0},
+        tool_definitions_per_agent=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=3),
+        fanout_probability=0.0,
+    )
+    g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    results = _find_ordinary_tool_result_msgs(g)
+    assert results, "at least one ordinary tool-turn result exists"
+    import re
+
+    for _, content in results:
+        assert "{" not in content and "}" not in content, f"unfilled placeholder leaked: {content!r}"
+        assert " x " not in content, f"literal entity stand-in leaked: {content!r}"
+        assert "at t0" not in content, f"literal t0 stand-in leaked: {content!r}"
+        # time-ish fields (t0, t1, ...) look like HH:MM:SS
+        for m in re.findall(r"\b\d{1,2}:\d{2}:\d{2}\b", content):
+            hh, mm, ss = (int(x) for x in m.split(":"))
+            assert 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59, f"implausible timestamp {m!r} in {content!r}"
+
+
+def test_tool_result_content_is_deterministic():
+    theme = load_theme("db2_latency_incident")
+    cfg = _cfg(
+        theme_mix={"db2_latency_incident": 1.0},
+        tool_definitions_per_agent=Distribution(type="fixed", mean=1),
+        tool_turns_per_loop=Distribution(type="fixed", mean=3),
+        fanout_probability=0.0,
+    )
+    g1 = build_graph_for_session(cfg, theme, _WordTok(), session_index=7)
+    g2 = build_graph_for_session(cfg, theme, _WordTok(), session_index=7)
+    r1 = _find_ordinary_tool_result_msgs(g1)
+    r2 = _find_ordinary_tool_result_msgs(g2)
+    assert r1 == r2, "tool-result contents are not deterministic for the same (config, index)"
+
+
 def test_generated_fanout_session_has_no_dangling_tool_call_ids():
     """Build a fan-out session and walk every event's messages; assert no
     role:tool message references a tool_call_id absent from a preceding
