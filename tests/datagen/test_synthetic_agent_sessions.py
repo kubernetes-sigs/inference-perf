@@ -594,6 +594,123 @@ def test_interactive_rounds_preserve_determinism():
         assert g1.events[eid].call.input_segments == g2.events[eid].call.input_segments
 
 
+# --- inv #2: forced/emitted tool names must appear in tool_definitions -----
+
+
+def _event_def_names(ev):
+    """Top-level tool_definitions names advertised on an event."""
+    return {td["name"] for td in (ev.call.tool_definitions or []) if "name" in td}
+
+
+def _event_tool_call_names(ev):
+    """Tool names appearing in this event's stored assistant tool_calls."""
+    names = set()
+    for m in ev.call.messages:
+        for tc in m.get("tool_calls", []) or []:
+            names.add(tc["function"]["name"])
+    return names
+
+
+def _assert_inv2_over_graph(g):
+    """inv #2, general form: for EVERY event,
+    {forced names} ∪ {names in message tool_calls} ⊆ {tool_definitions names}.
+
+    This is the assertion whose absence let the forced-tool-degradation bug
+    through: a dispatch event forced 'dispatch_agent' without advertising it.
+    """
+    for ev in g.events.values():
+        advertised = _event_def_names(ev)
+        forced = set(ev.call.expected_output_tool_names or [])
+        emitted = _event_tool_call_names(ev)
+        needed = forced | emitted
+        missing = needed - advertised
+        assert not missing, (
+            f"{ev.event_id}: tool names {sorted(missing)} forced/emitted but not in "
+            f"tool_definitions {sorted(advertised)}"
+        )
+
+
+def test_dispatch_agent_is_in_tool_definitions():
+    # fanout forced, normal catalog: every event that forces a tool or stores a
+    # tool_call must advertise that tool (inv #2). Specifically the dispatch
+    # events must both FORCE dispatch_agent and ADVERTISE it, so replay's
+    # tool_choice forcing does not silently degrade to "required".
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=1,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    _assert_inv2_over_graph(g)
+
+    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
+    assert dispatch_events, "fan-out dispatch events materialized"
+    for ev in dispatch_events:
+        assert ev.call.expected_output_tool_names == ["dispatch_agent"], "dispatch event forces dispatch_agent"
+        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in dispatch event tool_definitions"
+
+    # the merge event emits dispatch_agent calls in its message history -> inv #2 applies there too.
+    merge_events = [ev for eid, ev in g.events.items() if eid.endswith(":merge")]
+    assert merge_events, "fan-out merge event materialized"
+    for ev in merge_events:
+        assert "dispatch_agent" in _event_tool_call_names(ev), "merge emits dispatch_agent calls"
+        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in merge tool_definitions"
+
+
+def test_dispatch_agent_present_even_with_empty_theme_catalog():
+    # tool_definitions_per_agent=0 + fanout: theme catalog is empty, but the
+    # dispatch tool is STRUCTURAL, so dispatch events must advertise exactly
+    # [dispatch_agent] (not []).
+    cfg = _cfg(
+        tool_definitions_per_agent=Distribution(type="fixed", mean=0),
+        fanout_probability=1.0,
+        max_depth=1,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    _assert_inv2_over_graph(g)
+
+    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
+    assert dispatch_events, "fan-out dispatch events materialized even with empty theme catalog"
+    for ev in dispatch_events:
+        defs = ev.call.tool_definitions or []
+        names = [td["name"] for td in defs if "name" in td]
+        assert names == ["dispatch_agent"], f"expected exactly [dispatch_agent], got {names}"
+
+
+def test_no_dispatch_agent_when_no_fanout():
+    # fanout_probability=0.0: single-agent catalogs stay clean -- no
+    # dispatch_agent advertised anywhere.
+    cfg = _cfg(
+        fanout_probability=0.0,
+        tool_turns_per_loop=Distribution(type="fixed", mean=2),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    _assert_inv2_over_graph(g)
+    for ev in g.events.values():
+        assert "dispatch_agent" not in _event_def_names(ev), (
+            f"{ev.event_id} advertised dispatch_agent without fan-out"
+        )
+
+
+def test_inv2_holds_across_fanout_graph():
+    # GENERAL inv #2 regression across a deeper fan-out graph.
+    cfg = _cfg(
+        fanout_probability=1.0,
+        max_depth=2,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=2),
+        max_events_per_session=2048,
+        tool_turns_per_loop=Distribution(type="fixed", mean=1),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    assert len(g.events) > 4, "fan-out actually materialized"
+    _assert_inv2_over_graph(g)
+
+
 def test_generated_fanout_session_has_no_dangling_tool_call_ids():
     """Build a fan-out session and walk every event's messages; assert no
     role:tool message references a tool_call_id absent from a preceding

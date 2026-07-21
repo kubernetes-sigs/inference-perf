@@ -186,6 +186,22 @@ _FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
 _FB_SUB_AGENTS = Distribution(type="uniform", min=2, max=4)
 _FB_PARALLEL = Distribution(type="fixed", mean=1)
 
+# Canonical structural tool used to spawn sub-agents. It is NOT a theme tool:
+# it must be advertised on any event that FORCES it (dispatch events, via
+# expected_output_tool_names) or EMITS it (the merge event, which stores
+# dispatch_agent tool_calls in its message history). inv #2 requires every
+# forced/emitted tool name to appear in that turn's tool_definitions with a
+# top-level `name` key, so its shape mirrors `_tool_definitions` output exactly.
+DISPATCH_AGENT_NAME = "dispatch_agent"
+DISPATCH_AGENT_TOOL_DEF: Dict[str, Any] = {
+    "name": DISPATCH_AGENT_NAME,
+    "type": "function",
+    "function": {
+        "name": DISPATCH_AGENT_NAME,
+        "parameters": {"type": "object", "properties": {"objective": {"type": "string"}}},
+    },
+}
+
 
 def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
     """Build `n` tool definitions, each with a TOP-LEVEL `name` key (inv #2).
@@ -265,13 +281,22 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     # baseline — NO tools advertised at all. Floor at 0 (not 1) so that value
     # flows through to an empty catalog; `_tool_definitions(theme, 0)` returns [].
     tool_defs = _tool_definitions(theme, max(0, tool_defs_n))
+    # Fan-out catalog: the theme tools PLUS the structural dispatch_agent tool.
+    # Used ONLY on events that force or emit dispatch_agent (dispatch + merge),
+    # so ordinary/non-fan-out events keep a clean catalog (dispatch_agent is
+    # never advertised when there is no fan-out). Guard against duplication in
+    # case a theme ever names a tool "dispatch_agent".
+    if any(td.get("name") == DISPATCH_AGENT_NAME for td in tool_defs):
+        fanout_tool_defs = tool_defs
+    else:
+        fanout_tool_defs = [*tool_defs, DISPATCH_AGENT_TOOL_DEF]
 
     system_msg: Optional[Dict[str, Any]] = None
     if cfg.shared_system_prompt_len > 0:
         content = fit_filler(tokenizer, cfg.shared_system_prompt_len, theme.system_prompt or "", rng=child_rng(seed, 2))
         system_msg = {"role": "system", "content": content}
 
-    def _emit(event_id, messages, preds, dep_types, segs, wait_ms, is_tool_call, tool_names):
+    def _emit(event_id, messages, preds, dep_types, segs, wait_ms, is_tool_call, tool_names, defs=None):
         events[event_id] = GraphEvent(
             event_id=event_id,
             call=GraphCall(
@@ -284,7 +309,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 expected_output_tokens=0,
                 temperature=0.0,
                 max_tokens_recorded=None,
-                tool_definitions=tool_defs,
+                tool_definitions=tool_defs if defs is None else defs,
                 expected_output_is_tool_call=is_tool_call,
                 expected_output_tool_names=tool_names,
                 attributes=None,
@@ -490,7 +515,8 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         [],
                         0,
                         True,
-                        ["dispatch_agent"],
+                        [DISPATCH_AGENT_NAME],
+                        defs=fanout_tool_defs,
                     )
                     # --- recurse into the child agent (depth+1) ---
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
@@ -529,7 +555,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                                     {
                                         "id": tc_id,
                                         "type": "function",
-                                        "function": {"name": "dispatch_agent", "arguments": json.dumps({})},
+                                        "function": {"name": DISPATCH_AGENT_NAME, "arguments": json.dumps({})},
                                     }
                                 ],
                             }
@@ -548,7 +574,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         merge_deps[disp_id] = "full_match"
                         merge_deps[child_term] = "full_match"
                     merge_id = f"{agent_prefix}:d{depth}:merge"
-                    _emit(merge_id, merge_msgs, merge_preds, merge_deps, merge_segs, 0, False, None)
+                    _emit(merge_id, merge_msgs, merge_preds, merge_deps, merge_segs, 0, False, None, defs=fanout_tool_defs)
                     last_id = merge_id
 
         # --- answer event (agent terminal) ---
