@@ -1,0 +1,35 @@
+# DEMO 08 — Big tool-catalog inflation (prefill stress).
+# k=0 direct answer, but 30 tools advertised on every request (real agents carry huge catalogs;
+# real Exgentic ~487). Stresses prompt prefill without needing tool calls.
+# WHAT TO LOOK FOR: 2 events/session but large-ish input tokens from the advertised catalog;
+# tools present in the request, none called.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agent_sessions
+  synthetic_agent_sessions:
+    num_sessions: 4
+    seed: 8
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 1}
+    fanout_probability: 0.0
+    tool_turns_per_loop: {type: fixed, mean: 0}
+    tool_definitions_per_agent: {type: fixed, mean: 30}   # big catalog (bump to ~487 on a big model)
+    input_tokens_per_turn:  {type: fixed, mean: 400}
+    output_tokens_per_turn: {type: fixed, mean: 40}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-08-bigcatalog"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

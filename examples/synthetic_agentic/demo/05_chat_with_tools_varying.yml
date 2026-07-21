@@ -1,0 +1,35 @@
+# DEMO 05 — Chat-with-tools: per-round tool usage VARIES (the general interactive shape).
+# 4 rounds; each round independently draws 0..3 tool turns — so some rounds answer directly,
+# some run a tool-loop. This is the most realistic single-agent conversational shape.
+# WHAT TO LOOK FOR: heterogeneous event counts per round; a mix of answer-only and tool-using rounds.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agent_sessions
+  synthetic_agent_sessions:
+    num_sessions: 4
+    seed: 5
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 4}
+    fanout_probability: 0.0
+    tool_turns_per_loop: {type: uniform, min: 0, max: 3}   # VARIES per round
+    tool_definitions_per_agent: {type: fixed, mean: 8}
+    input_tokens_per_turn:  {type: fixed, mean: 250}
+    output_tokens_per_turn: {type: fixed, mean: 60}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+    user_think_time_sec:    {type: fixed, mean: 2}
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-05-chatwithtools"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}
