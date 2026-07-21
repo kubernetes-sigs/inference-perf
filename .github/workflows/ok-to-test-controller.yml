@@ -1,10 +1,12 @@
-# Controller for the /ok-to-test command.
+# /ok-to-test — comment-driven "Approve workflows to run".
 #
-# Listens for "/ok-to-test" comments on pull requests. If (and only if) the
-# commenter is listed in the root OWNERS file (approvers or reviewers, with
-# aliases expanded via OWNERS_ALIASES), it resolves the PR's head branch and
-# head commit SHA via the GitHub API and dispatches integration-tests.yml
-# pinned to that exact SHA.
+# GitHub holds Actions runs for pull requests from first-time / outside
+# contributors until someone with write access clicks "Approve workflows to
+# run". This workflow lets anyone listed in the root OWNERS file (approvers or
+# reviewers, aliases expanded via OWNERS_ALIASES) grant that approval by
+# commenting "/ok-to-test" on the PR: it finds the PR's held workflow runs and
+# approves them via the API, so the repo's normal PR workflows (unit tests,
+# format, e2e, coverage) run as usual.
 #
 # Security model:
 #   - issue_comment always runs in the context of the DEFAULT branch, so both
@@ -15,9 +17,9 @@
 #   - Untrusted text (comment body, usernames) is only ever passed to bash via
 #     environment variables, never interpolated into the script — this
 #     prevents shell/script injection from crafted comments.
-#   - The dispatched run is pinned to the head SHA that was current when the
-#     authorized user commented. If more commits are pushed afterwards, the
-#     test run refuses to proceed and a fresh /ok-to-test is required.
+#   - Approval applies only to runs already held for the PR's current head
+#     SHA. Commits pushed later are held again by GitHub as usual and need a
+#     fresh /ok-to-test.
 name: ok-to-test controller
 
 on:
@@ -25,13 +27,13 @@ on:
     types: [created]
 
 permissions:
-  actions: write        # dispatch integration-tests.yml
+  actions: write        # approve the held workflow runs
   contents: read        # checkout for OWNERS / OWNERS_ALIASES
-  pull-requests: read   # read PR head ref / SHA
+  pull-requests: read   # read PR head SHA
   issues: write         # add a reaction to the triggering comment
 
 jobs:
-  authorize-and-dispatch:
+  authorize-and-approve:
     # issue_comment fires for both issues and PRs; `issue.pull_request` is only
     # present when the comment is on a PR. The contains() check is a cheap
     # prefilter — the exact-match check happens in the first step.
@@ -101,70 +103,43 @@ jobs:
           done
 
           if [[ "$authorized" == "true" ]]; then
-            echo "User '$COMMENTER' is authorized (listed in OWNERS) to trigger integration tests."
+            echo "User '$COMMENTER' is authorized (listed in OWNERS) to approve workflow runs."
           else
-            echo "User '$COMMENTER' is NOT authorized to trigger integration tests; ignoring."
+            echo "User '$COMMENTER' is NOT authorized to approve workflow runs; ignoring."
           fi
           echo "authorized=$authorized" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch PR head branch and SHA
+      - name: Approve workflow runs held for the PR head
         if: steps.auth.outputs.authorized == 'true'
-        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
           # issue_comment carries no PR context (it runs against the default
-          # branch), so resolve the PR's head branch and SHA via the API.
-          PR_JSON="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+          # branch), so resolve the PR's current head SHA via the API.
+          HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          echo "PR #${PR_NUMBER} head SHA: ${HEAD_SHA}"
 
-          HEAD_REF="$(jq -r '.head.ref' <<<"$PR_JSON")"
-          HEAD_SHA="$(jq -r '.head.sha' <<<"$PR_JSON")"
-          HEAD_REPO="$(jq -r '.head.repo.full_name' <<<"$PR_JSON")"
+          # Runs held behind "Approve workflows to run" have status
+          # action_required. Approving is the API equivalent of the button;
+          # each run then executes with its normal event context.
+          mapfile -t RUN_IDS < <(gh api --paginate \
+            "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" \
+            --jq '.workflow_runs[].id')
 
-          # workflow_dispatch needs a ref that exists in THIS repository and
-          # contains the integration-tests.yml workflow file. For same-repo
-          # PRs that is the head branch itself; for PRs from forks the head
-          # branch does not exist here, so dispatch on the default branch —
-          # the test workflow checks out the PR code via the head SHA anyway.
-          if [[ "$HEAD_REPO" == "$REPO" ]]; then
-            DISPATCH_REF="$HEAD_REF"
-          else
-            DISPATCH_REF="$DEFAULT_BRANCH"
+          if [[ ${#RUN_IDS[@]} -eq 0 ]]; then
+            echo "No workflow runs are awaiting approval for ${HEAD_SHA}."
+            exit 0
           fi
 
-          echo "PR #${PR_NUMBER}: head_ref=${HEAD_REF} head_sha=${HEAD_SHA} head_repo=${HEAD_REPO} dispatch_ref=${DISPATCH_REF}"
-          {
-            echo "head_ref=$HEAD_REF"
-            echo "head_sha=$HEAD_SHA"
-            echo "dispatch_ref=$DISPATCH_REF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Dispatch integration tests
-        if: steps.auth.outputs.authorized == 'true'
-        env:
-          # The default GITHUB_TOKEN works here: workflow_dispatch and
-          # repository_dispatch are exempt from GitHub's recursive-trigger
-          # prevention. Set the OK_TO_TEST_TOKEN secret (fine-grained PAT or
-          # GitHub App token) only if you need cross-repo dispatch or want the
-          # dispatched run attributed to a bot identity.
-          GH_TOKEN: ${{ secrets.OK_TO_TEST_TOKEN || github.token }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          DISPATCH_REF: ${{ steps.pr.outputs.dispatch_ref }}
-        run: |
-          set -euo pipefail
-          gh workflow run integration-tests.yml \
-            --repo "$REPO" \
-            --ref "$DISPATCH_REF" \
-            -f "pr_number=$PR_NUMBER" \
-            -f "head_sha=$HEAD_SHA"
-          echo "Dispatched integration-tests.yml on ref '$DISPATCH_REF' for PR #${PR_NUMBER} @ ${HEAD_SHA}"
+          for run_id in "${RUN_IDS[@]}"; do
+            gh api --method POST "repos/${REPO}/actions/runs/${run_id}/approve"
+            echo "Approved workflow run ${run_id}"
+          done
+          echo "Approved ${#RUN_IDS[@]} workflow run(s) for PR #${PR_NUMBER} @ ${HEAD_SHA}"
 
       - name: Acknowledge the command with a reaction
         if: steps.auth.outputs.authorized == 'true'
