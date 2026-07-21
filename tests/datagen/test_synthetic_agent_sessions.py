@@ -101,6 +101,65 @@ def test_tool_call_margin_value():
     assert TOOL_CALL_MARGIN == 64
 
 
+# --- Large-target scaling (real tokenizer) --------------------------------
+#
+# These guard two bugs that only surface past the tokenizer's truncation
+# ceiling (SmolLM2 model_max_length=8192): (A) fit_filler silently capped at
+# ~8192 tokens because count_tokens truncates, so the loop couldn't measure
+# beyond it; (B) the re-tokenizing loop was O(target) slow (tens of seconds
+# per turn). A word-count proxy tokenizer would HIDE bug A (it never
+# truncates), so at least one test must exercise the REAL tokenizer.
+
+_REAL_TOKENIZER_MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"
+
+
+def _real_tokenizer():
+    """Load the real CustomTokenizer, or skip if it can't be loaded offline."""
+    import pytest
+
+    try:
+        from inference_perf.config import CustomTokenizerConfig
+        from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+        return CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path=_REAL_TOKENIZER_MODEL))
+    except Exception as e:  # network down / model unavailable in CI
+        pytest.skip(f"real tokenizer {_REAL_TOKENIZER_MODEL} unavailable: {e}")
+
+
+def _untruncated_token_count(ct, text: str) -> int:
+    """Length of `text` in tokens WITHOUT the model_max_length truncation.
+
+    count_tokens truncates at model_max_length (8192 here), so it cannot
+    measure a 100K-token string. The underlying HF tokenizer called with
+    truncation=False gives the true length.
+    """
+    return len(ct.get_tokenizer()(text, truncation=False, add_special_tokens=False)["input_ids"])
+
+
+def test_fit_filler_reaches_large_target():
+    # Bug A regression: a 50K-token target must NOT be silently capped at
+    # ~8192. Measure UNTRUNCATED so we see past the tokenizer's ceiling.
+    ct = _real_tokenizer()
+    out = fit_filler(ct, target_tokens=50000, fixed_content="Objective: investigate the incident.", rng=None)
+    n = _untruncated_token_count(ct, out)
+    assert n >= 40000, f"fit_filler capped below target (bug A): got {n} tokens for target 50000"
+    assert FILLER_MARKER in out, "filler was added, so the marker must be present"
+
+
+def test_fit_filler_large_target_is_fast():
+    # Bug B regression: sizing must be analytic, not an O(target) re-tokenizing
+    # loop. 100K tokens must build in well under 5 seconds.
+    import time
+
+    ct = _real_tokenizer()
+    start = time.time()
+    out = fit_filler(ct, target_tokens=100000, fixed_content="Objective: investigate the incident.", rng=None)
+    elapsed = time.time() - start
+    assert elapsed < 5.0, f"fit_filler too slow (bug B): {elapsed:.2f}s for target 100000"
+    n = _untruncated_token_count(ct, out)
+    assert n >= 80000, f"fit_filler capped below target (bug A): got {n} tokens for target 100000"
+
+
 # --- Task 8: the seeded single-agent walk ---------------------------------
 
 
@@ -625,8 +684,7 @@ def _assert_inv2_over_graph(g):
         needed = forced | emitted
         missing = needed - advertised
         assert not missing, (
-            f"{ev.event_id}: tool names {sorted(missing)} forced/emitted but not in "
-            f"tool_definitions {sorted(advertised)}"
+            f"{ev.event_id}: tool names {sorted(missing)} forced/emitted but not in tool_definitions {sorted(advertised)}"
         )
 
 
@@ -692,9 +750,7 @@ def test_no_dispatch_agent_when_no_fanout():
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     _assert_inv2_over_graph(g)
     for ev in g.events.values():
-        assert "dispatch_agent" not in _event_def_names(ev), (
-            f"{ev.event_id} advertised dispatch_agent without fan-out"
-        )
+        assert "dispatch_agent" not in _event_def_names(ev), f"{ev.event_id} advertised dispatch_agent without fan-out"
 
 
 def test_inv2_holds_across_fanout_graph():

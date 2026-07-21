@@ -115,6 +115,46 @@ def _corpus_words() -> List[str]:
     return _corpus_words_cache
 
 
+# Number of corpus words tokenized ONCE to estimate the corpus's average
+# tokens-per-word ratio. Kept comfortably below any real tokenizer's
+# model_max_length (8192) so this measurement is never truncated -- that is
+# the whole point: we measure a small, un-truncated sample and extrapolate,
+# instead of re-tokenizing a growing multi-thousand-token buffer (which both
+# saturates at the truncation ceiling AND is O(target) slow).
+_RATIO_SAMPLE_WORDS = 512
+
+
+def _cycled_words(words: List[str], count: int, start: int = 0) -> List[str]:
+    """Return `count` words drawn from `words`, CYCLING when it runs out.
+
+    The corpus is large (~1M words) but a realistic 100K+ token target can
+    still demand more words than it holds, so we must repeat rather than cap
+    at len(words). `start` lets callers offset into the cycle.
+    """
+    n = len(words)
+    if n == 0:
+        return []
+    return [words[(start + i) % n] for i in range(max(0, count))]
+
+
+def _untruncated_len(tokenizer, text: str) -> int:
+    """Token length of `text` WITHOUT the model_max_length truncation.
+
+    CustomTokenizer.count_tokens truncates at model_max_length (a shared
+    utility we must NOT change), so it saturates and cannot MEASURE a string
+    longer than the ceiling. For fit_filler's own internal sizing we go one
+    level down to the raw HF tokenizer with truncation=False. If that path is
+    unavailable (e.g. a lightweight fake tokenizer in tests that raises from
+    get_tokenizer), fall back to count_tokens -- fakes there don't truncate,
+    so the fallback is exact for them.
+    """
+    try:
+        hf = tokenizer.get_tokenizer()
+        return len(hf(text, truncation=False, add_special_tokens=False)["input_ids"])
+    except Exception:
+        return tokenizer.count_tokens(text)
+
+
 def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[np.random.Generator]) -> str:
     """Pad `fixed_content` with Shakespeare-corpus filler to approximate `target_tokens`.
 
@@ -126,12 +166,18 @@ def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[
     This is logged at debug rather than raised, since a too-small target is an
     expected edge of the sampled-token-count distribution, not a bug.
 
-    Otherwise, words are appended after the marker until the text reaches (or
-    passes) target_tokens, tracking the best (closest-to-target) candidate
-    seen across a bounded number of iterations, mirroring
-    datagen_utils.converge_to_exact_length_text's iteration cap but wrapping
-    it so imperfect convergence returns the closest text instead of raising
-    -- fit_filler must never raise to its caller for length reasons.
+    Sizing is ANALYTIC, not an iterative re-tokenizing loop. The old loop
+    re-tokenized a growing buffer each iteration, which (1) saturated at the
+    tokenizer's model_max_length truncation ceiling (~8192) so it could never
+    MEASURE -- let alone reach -- a larger target, silently capping realistic
+    100K+ prompts, and (2) was O(target) slow (tens of seconds per turn).
+
+    Instead we tokenize a small fixed-size word SAMPLE once (below the ceiling,
+    so it's never truncated) to get an average tokens-per-word ratio, compute
+    the number of words needed = ceil((target - fixed_cost) / ratio), and emit
+    that many CYCLED corpus words in one shot. A single bounded correction pass
+    (measured untruncated) refines the ratio for a slight over/undershoot. This
+    reaches any target regardless of corpus size, in well under a second.
     """
     marker_and_fixed = fixed_content + " " + FILLER_MARKER
     fixed_cost = tokenizer.count_tokens(marker_and_fixed)
@@ -146,26 +192,36 @@ def fit_filler(tokenizer, target_tokens: int, fixed_content: str, rng: Optional[
         return fixed_content
 
     words = _corpus_words()
-    best_text, best_gap = marker_and_fixed, abs(fixed_cost - target_tokens)
-    buf = marker_and_fixed
-    idx = 0
-    max_iterations = 20  # bounded, mirrors converge_to_exact_length_text's cap
-    for _ in range(max_iterations):
-        cur = tokenizer.count_tokens(buf)
-        gap = abs(cur - target_tokens)
-        if gap < best_gap:
-            best_gap, best_text = gap, buf
-        if cur >= target_tokens:
-            break
-        take = max(1, target_tokens - cur)
-        if idx >= len(words):
-            idx = 0  # wrap around a short/exhausted corpus rather than stalling
-        chunk = words[idx : idx + take]
-        if not chunk:
-            chunk = words[: max(1, take)]
-        buf = buf + " " + " ".join(chunk)
-        idx += len(chunk)
-    return best_text
+    if not words:
+        return marker_and_fixed
+
+    # Average tokens-per-word from a small, un-truncated sample (measured once).
+    sample = _cycled_words(words, min(_RATIO_SAMPLE_WORDS, len(words)))
+    sample_text = " ".join(sample)
+    sample_tokens = _untruncated_len(tokenizer, sample_text)
+    tokens_per_word = (sample_tokens / len(sample)) if sample and sample_tokens > 0 else 1.0
+
+    def _emit(n_words: int) -> str:
+        chunk = _cycled_words(words, max(1, n_words))
+        return marker_and_fixed + " " + " ".join(chunk)
+
+    # Analytic estimate: how many words to cover the remaining budget.
+    n_words = max(1, int(np.ceil(filler_budget / tokens_per_word)))
+    buf = _emit(n_words)
+
+    # One bounded correction pass: measure the real (untruncated) length of the
+    # emitted text and re-derive the word count from the OBSERVED filler ratio,
+    # correcting any systematic bias between the sample and the emitted filler.
+    # This runs at most once -- it never loops, so it stays fast.
+    actual = _untruncated_len(tokenizer, buf)
+    filler_actual = actual - fixed_cost
+    if actual != target_tokens and filler_actual > 0:
+        observed_ratio = filler_actual / n_words
+        corrected = max(1, int(np.ceil(filler_budget / observed_ratio)))
+        if corrected != n_words:
+            n_words = corrected
+            buf = _emit(n_words)
+    return buf
 
 
 # --- The seeded single-agent walk -----------------------------------------
