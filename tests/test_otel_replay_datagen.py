@@ -83,7 +83,7 @@ def make_api_config() -> APIConfig:
 def make_mock_tokenizer() -> MagicMock:
     """Return a mock tokenizer that counts words as tokens."""
     tok = MagicMock()
-    tok.count_tokens = lambda text: max(1, len((text or "").split()))
+    tok.count_tokens = lambda text, **kw: max(1, len((text or "").split()))
     return tok
 
 

@@ -27,7 +27,7 @@ def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
     # Match the decode mock's "text_N" format so count_tokens returns a real int
     # (the new exact-length datagen path compares this against target_len).
     mock_tokenizer.count_tokens = MagicMock(
-        side_effect=lambda text: sum(int(n) for n in re.findall(r"text_(\d+)", text)) if isinstance(text, str) else 0
+        side_effect=lambda text, **kw: sum(int(n) for n in re.findall(r"text_(\d+)", text)) if isinstance(text, str) else 0
     )
     return mock_tokenizer
 

@@ -47,7 +47,7 @@ def _clear_user_session_registry() -> Generator[None, None, None]:
 def _make_mock_tokenizer(vocab_size: int = 32000) -> MagicMock:
     """Create a mock tokenizer with the expected interface."""
     mock_tokenizer = MagicMock()
-    mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split()) * 10 if text.strip() else 0
+    mock_tokenizer.count_tokens.side_effect = lambda text, **kw: len(text.split()) * 10 if text.strip() else 0
     hf_tok = MagicMock()
     hf_tok.vocab_size = vocab_size
     hf_tok.decode.side_effect = lambda ids, **kwargs: f"decoded_{ids}"
@@ -504,7 +504,7 @@ class TestSlidingWindowTruncation:
 
         mock_tokenizer = MagicMock()
         # count_tokens returns 100 for system prompt and 100 for each turn
-        mock_tokenizer.count_tokens.side_effect = lambda text: len(text.split()) * 10
+        mock_tokenizer.count_tokens.side_effect = lambda text, **kw: len(text.split()) * 10
 
         system_prompt = "System Instruction"  # length in words = 2 -> 20 tokens
         session = LocalUserSession(

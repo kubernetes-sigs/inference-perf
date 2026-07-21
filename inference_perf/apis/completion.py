@@ -58,7 +58,10 @@ class CompletionAPIData(InferenceAPIData):
             )
 
             prompt_len = tokenizer.count_tokens(self.prompt)
-            output_len = tokenizer.count_tokens(output_text)
+            # Generated text is a continuation, not a sequence start: counting it
+            # with special tokens would add a BOS the server's completion_tokens
+            # never contains.
+            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
@@ -82,7 +85,7 @@ class CompletionAPIData(InferenceAPIData):
                     lora_adapter=lora_adapter,
                 )
             output_text = choices[0].get("text", "")
-            output_len = tokenizer.count_tokens(output_text)
+            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
