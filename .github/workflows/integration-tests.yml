@@ -1,0 +1,115 @@
+# Integration tests, dispatched by ok-to-test-controller.yml after an
+# authorized maintainer comments "/ok-to-test" on a pull request.
+#
+# The run checks out refs/pull/<pr_number>/head (which exists in this repo
+# even for PRs from forks) and then verifies it matches the head_sha that the
+# authorizing maintainer actually approved. If new commits were pushed after
+# the /ok-to-test comment, the SHAs differ and the run fails fast — a fresh
+# /ok-to-test on the new head is required. This closes the
+# approve-then-swap-the-code (TOCTOU) hole.
+#
+# Because workflow_dispatch runs are not linked to the PR automatically, the
+# workflow reports pending/success/failure commit statuses on the head SHA so
+# the result is visible on the PR's checks list.
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number the tests run for'
+        required: true
+        type: string
+      head_sha:
+        description: 'Authorized head commit SHA of the PR to test'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: write   # report the result back onto the PR's head commit
+
+concurrency:
+  group: integration-tests-pr-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report pending status on the PR head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+            -f state=pending \
+            -f context=integration-tests \
+            -f description="Integration tests running" \
+            -f target_url="$RUN_URL"
+
+      - name: Checkout PR code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The pull head ref exists in the base repo for fork PRs too, unlike
+          # the PR's branch name. The next step pins it to the authorized SHA.
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          persist-credentials: false
+
+      - name: Verify checked-out commit matches the authorized SHA
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "$HEAD_SHA" ]]; then
+            echo "::error::PR #${PR_NUMBER} head is now ${ACTUAL_SHA}, but /ok-to-test authorized ${HEAD_SHA}." \
+                 "New commits were pushed after authorization — a maintainer must re-issue /ok-to-test."
+            exit 1
+          fi
+          echo "Running integration tests for PR #${PR_NUMBER} @ ${ACTUAL_SHA}"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          pdm sync -d -G analysis -G otel
+
+      - name: Run integration tests
+        run: |
+          pdm run test
+
+      - name: Report final status on the PR head commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            STATE=success
+            DESCRIPTION="Integration tests passed"
+          else
+            STATE=failure
+            DESCRIPTION="Integration tests failed"
+          fi
+          gh api --method POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+            -f state="$STATE" \
+            -f context=integration-tests \
+            -f description="$DESCRIPTION" \
+            -f target_url="$RUN_URL"
