@@ -1,7 +1,0 @@
-{
-  "object": "error",
-  "message": "This model's maximum context length is 4096 tokens. However, you requested 4231 tokens (4031 in the messages, 200 in the completion). Please reduce the length of the messages or completion.",
-  "type": "BadRequestError",
-  "param": null,
-  "code": 400
-}
