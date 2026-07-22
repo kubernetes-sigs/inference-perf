@@ -65,6 +65,9 @@ def _load_tokenizer_with_deadline(config: CustomTokenizerConfig) -> PreTrainedTo
     logger.info("Loading tokenizer '%s'", config.pretrained_model_name_or_path)
     thread = threading.Thread(target=load, name="tokenizer-load", daemon=True)
     thread.start()
+    # load_timeout=None must reach join() untouched: join(timeout=None) waits
+    # indefinitely, which is how null disables the deadline. Coercing None to a
+    # number (join(timeout=0) returns immediately) would fail every load.
     thread.join(timeout=config.load_timeout)
     if thread.is_alive():
         raise TimeoutError(
