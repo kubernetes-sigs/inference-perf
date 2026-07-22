@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import threading
+import time
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,26 @@ class TestCustomTokenizerLoadDeadline(unittest.TestCase):
             self.assertIn("did not finish within 0.1 seconds", str(ctx.exception))
         finally:
             release.set()
+
+    @patch("inference_perf.utils.custom_tokenizer.AutoTokenizer")
+    def test_null_load_timeout_disables_deadline(self, mock_auto_tokenizer: MagicMock) -> None:
+        # load_timeout=null must mean "no deadline": the load is waited on until
+        # it completes, however long it takes. A regression that coerces None to
+        # a number (e.g. thread.join(timeout=0)) would return with the loader
+        # thread still alive and raise a spurious TimeoutError on every load, so
+        # the slow load below must still succeed.
+        fake_tokenizer = MagicMock()
+
+        def slow_load(*args: Any, **kwargs: Any) -> MagicMock:
+            time.sleep(0.2)
+            return fake_tokenizer
+
+        mock_auto_tokenizer.from_pretrained.side_effect = slow_load
+
+        tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="some/model", load_timeout=None))
+
+        self.assertIs(tokenizer.get_tokenizer(), fake_tokenizer)
+        mock_auto_tokenizer.from_pretrained.assert_called_once_with("some/model", token=None, trust_remote_code=None)
 
     def test_default_load_timeout(self) -> None:
         self.assertEqual(CustomTokenizerConfig().load_timeout, 300.0)
