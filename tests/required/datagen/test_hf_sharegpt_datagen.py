@@ -1,5 +1,6 @@
 import json
 import pytest
+from inference_perf.apis import CompletionAPIData
 from inference_perf.datagen.hf_sharegpt_datagen import HFShareGPTDataGenerator
 
 
@@ -51,3 +52,12 @@ def test_get_conversation_turn_content_unsupported_type() -> None:
 
     with pytest.raises(Exception, match="Conversation from upstream gave unsupported type: list"):
         generator.get_conversation_turn_content(data, 1)
+
+
+def test_get_anthropic_messages_data_rejects_unexpected_chat_data() -> None:
+    generator = HFShareGPTDataGenerator.__new__(HFShareGPTDataGenerator)
+    generator.tokenizer = object()
+    generator.get_chat_data = lambda: iter([CompletionAPIData(prompt="hello")])
+
+    with pytest.raises(Exception, match="Expected ChatCompletionAPIData, got CompletionAPIData"):
+        next(generator.get_anthropic_messages_data())
