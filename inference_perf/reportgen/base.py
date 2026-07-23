@@ -194,7 +194,7 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percenti
         response_metrics = metric.info.response_metrics
         server_usage = response_metrics.server_usage if response_metrics else None
         prompt_tokens = server_usage.get("prompt_tokens") if server_usage else metric.info.request_metrics.text.input_tokens
-        prompt_tokens_details = server_usage.get("prompt_tokens_details", {}) if server_usage else {}
+        prompt_tokens_details = (server_usage.get("prompt_tokens_details") or {}) if server_usage else {}
 
         prompt_tokens_value = safe_float(prompt_tokens)
         prompt_tokens_total += prompt_tokens_value
