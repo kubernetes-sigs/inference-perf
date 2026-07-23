@@ -1,0 +1,154 @@
+# /ok-to-test — comment-driven "Approve workflows to run".
+#
+# GitHub holds Actions runs for pull requests from first-time / outside
+# contributors until someone with write access clicks "Approve workflows to
+# run". This workflow lets anyone listed in the root OWNERS file (approvers or
+# reviewers, aliases expanded via OWNERS_ALIASES) grant that approval by
+# commenting "/ok-to-test" on the PR: it finds the PR's held workflow runs and
+# approves them via the API, so the repo's normal PR workflows (unit tests,
+# format, e2e, coverage) run as usual.
+#
+# Security model:
+#   - issue_comment always runs in the context of the DEFAULT branch, so both
+#     this file and the OWNERS/OWNERS_ALIASES files it reads are the trusted
+#     copies — they cannot be tampered with from a PR branch.
+#   - The allowlist is derived from OWNERS at runtime, so membership changes
+#     land through regular OWNERS updates with no workflow edits.
+#   - Untrusted text (comment body, usernames) is only ever passed to bash via
+#     environment variables, never interpolated into the script — this
+#     prevents shell/script injection from crafted comments.
+#   - Approval applies only to runs already held for the PR's current head
+#     SHA. Commits pushed later are held again by GitHub as usual and need a
+#     fresh /ok-to-test.
+name: ok-to-test controller
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write        # approve the held workflow runs
+  contents: read        # checkout for OWNERS / OWNERS_ALIASES
+  pull-requests: read   # read PR head SHA
+  issues: write         # add a reaction to the triggering comment
+
+jobs:
+  authorize-and-approve:
+    # issue_comment fires for both issues and PRs; `issue.pull_request` is only
+    # present when the comment is on a PR. The contains() check is a cheap
+    # prefilter — the exact-match check happens in the first step.
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/ok-to-test')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for exact /ok-to-test command
+        id: cmd
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          # Exact-match check: the comment must be exactly "/ok-to-test"
+          # (surrounding whitespace tolerated), not merely mention it.
+          if [[ "$(tr -d '[:space:]' <<<"$COMMENT_BODY")" == "/ok-to-test" ]]; then
+            echo "is_command=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Comment is not exactly '/ok-to-test'; ignoring."
+            echo "is_command=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # issue_comment events check out the default branch, so these are the
+      # trusted OWNERS files — a PR cannot modify what this job reads.
+      - name: Checkout default branch for OWNERS files
+        if: steps.cmd.outputs.is_command == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check commenter authorization against OWNERS
+        if: steps.cmd.outputs.is_command == 'true'
+        id: auth
+        env:
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+
+          # Root OWNERS approvers/reviewers entries are either alias names
+          # (expanded via OWNERS_ALIASES) or direct GitHub usernames.
+          mapfile -t ALLOWED_USERS < <(python3 - <<'EOF'
+          import yaml
+
+          with open("OWNERS") as f:
+              owners = yaml.safe_load(f) or {}
+          with open("OWNERS_ALIASES") as f:
+              aliases = (yaml.safe_load(f) or {}).get("aliases") or {}
+
+          users = set()
+          for entry in (owners.get("approvers") or []) + (owners.get("reviewers") or []):
+              users.update(aliases.get(entry, [entry]))
+          print("\n".join(sorted(users, key=str.lower)))
+          EOF
+          )
+
+          echo "OWNERS allowlist: ${ALLOWED_USERS[*]}"
+
+          authorized=false
+          for user in "${ALLOWED_USERS[@]}"; do
+            # GitHub usernames are case-insensitive; compare lowercased.
+            if [[ "${COMMENTER,,}" == "${user,,}" ]]; then
+              authorized=true
+              break
+            fi
+          done
+
+          if [[ "$authorized" == "true" ]]; then
+            echo "User '$COMMENTER' is authorized (listed in OWNERS) to approve workflow runs."
+          else
+            echo "User '$COMMENTER' is NOT authorized to approve workflow runs; ignoring."
+          fi
+          echo "authorized=$authorized" >> "$GITHUB_OUTPUT"
+
+      - name: Approve workflow runs held for the PR head
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # issue_comment carries no PR context (it runs against the default
+          # branch), so resolve the PR's current head SHA via the API.
+          HEAD_SHA="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          echo "PR #${PR_NUMBER} head SHA: ${HEAD_SHA}"
+
+          # Runs held behind "Approve workflows to run" have status
+          # action_required. Approving is the API equivalent of the button;
+          # each run then executes with its normal event context.
+          mapfile -t RUN_IDS < <(gh api --paginate \
+            "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" \
+            --jq '.workflow_runs[].id')
+
+          if [[ ${#RUN_IDS[@]} -eq 0 ]]; then
+            echo "No workflow runs are awaiting approval for ${HEAD_SHA}."
+            exit 0
+          fi
+
+          for run_id in "${RUN_IDS[@]}"; do
+            gh api --method POST "repos/${REPO}/actions/runs/${run_id}/approve"
+            echo "Approved workflow run ${run_id}"
+          done
+          echo "Approved ${#RUN_IDS[@]} workflow run(s) for PR #${PR_NUMBER} @ ${HEAD_SHA}"
+
+      - name: Acknowledge the command with a reaction
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" \
+            -f content=rocket
