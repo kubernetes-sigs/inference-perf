@@ -3,6 +3,7 @@
 [![PyPI Release](https://img.shields.io/pypi/v/inference-perf.svg?label=PyPI%20Release)](https://pypi.python.org/pypi/inference-perf)
 [![Container Image](https://img.shields.io/badge/Container-latest-blue)](https://quay.io/inference-perf/inference-perf)
 [![Tests](https://img.shields.io/github/actions/workflow/status/kubernetes-sigs/inference-perf/unit_test.yml?branch=main&label=Tests)](https://github.com/kubernetes-sigs/inference-perf/actions/workflows/unit_test.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/kubernetes-sigs/inference-perf/badges/coverage-endpoint.json)](https://github.com/kubernetes-sigs/inference-perf/actions/workflows/coverage.yml)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
 
 # Inference Perf
