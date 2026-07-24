@@ -21,7 +21,7 @@ from inference_perf.apis import (
     InferenceAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from .base import DataGenerator
+from .base import DataGenerator, StreamingDatasetMixin
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Any, Generator, List, Optional
 from datasets import load_dataset
@@ -35,10 +35,22 @@ SHAREGPT_HF_DATAFILES_PATH = "ShareGPT_V3_unfiltered_cleaned_split.json"
 SHAREGPT_HF_CHAT_ROLE_MAP = {"human": "user", "gpt": "assistant"}
 
 
-class HFShareGPTDataGenerator(DataGenerator):
+class HFShareGPTDataGenerator(StreamingDatasetMixin, DataGenerator):
+    _streaming_dataset_attr = "sharegpt_dataset"
+
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
+        self.config = config
+        self.min_num_turns = 2
+        self.data_key = "conversations"
+        self.role_key = "from"
+        self.content_key = "value"
+        self._initialize_dataset()
+        # initialize data collection
+        next(self.sharegpt_dataset)
 
+    def _initialize_dataset(self) -> None:
+        config = self.config
         if config.path is not None:
             # check if the path is valid
             if not os.path.exists(config.path):
@@ -65,12 +77,6 @@ class HFShareGPTDataGenerator(DataGenerator):
                     split="train",
                 )
             )
-        self.min_num_turns = 2
-        self.data_key = "conversations"
-        self.role_key = "from"
-        self.content_key = "value"
-        # initialize data collection
-        next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages]
