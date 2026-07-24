@@ -166,6 +166,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.weka_trace_replay.use_think_time_only` | boolean | Only use think_time attribute instead of timestamps |
 | `--data.weka_trace_replay.default_block_size` | int | Default block size if not specified in trace |
 | `--data.weka_trace_replay.num_dataset_entries` | int | Max number of dataset traces to load from HuggingFace |
+| `--data.weka_trace_replay.datagen_workers` | int | Number of processes used to reconstruct trace sessions during data generation. Defaults to the number of available CPU cores (capped at the trace count). Set to 1 to disable multiprocessing. Output is deterministic and identical regardless of this value. |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |
