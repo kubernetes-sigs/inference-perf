@@ -220,11 +220,8 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--load.interval` | float | Matches load.interval in config |
 | `--load.stages` | JSON | Matches load.stages in config |
 | `--load.sweep.type` | Enum (geometric, linear) | Matches load.sweep.type in config |
-| `--load.sweep.num_requests` | int | Matches load.sweep.num_requests in config |
-| `--load.sweep.timeout` | float | Matches load.sweep.timeout in config |
-| `--load.sweep.num_stages` | int | Matches load.sweep.num_stages in config |
-| `--load.sweep.stage_duration` | int | Matches load.sweep.stage_duration in config |
-| `--load.sweep.saturation_percentile` | float | Matches load.sweep.saturation_percentile in config |
+| `--load.sweep.num_stages` | int | Number of load stages to generate |
+| `--load.sweep.stage_duration` | int | Duration (s) of each generated stage |
 | `--load.num_workers` | int | Matches load.num_workers in config |
 | `--load.worker_max_concurrency` | int | Matches load.worker_max_concurrency in config |
 | `--load.worker_max_tcp_connections` | int | Matches load.worker_max_tcp_connections in config |
