@@ -141,11 +141,16 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> RequestBody:
+        if self.max_tokens == 0:
+            self.max_tokens = max_tokens
+
         self._session_context = await self.user_session.get_context(self.target_round)
 
         if self.user_session.tokenizer and self.user_session.max_model_len:
+            # Use the request-specific max_tokens (sampled from the output distribution) rather than the
+            # client-wide default so prompt + completion stays within the model's context length.
             # 200 token buffer to ensure we stay under model's context length regardless of any tokenization variations
-            target_len = self.user_session.max_model_len - max_tokens - 200
+            target_len = self.user_session.max_model_len - self.max_tokens - 200
             hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
 
             system_prompt = self.user_session.system_prompt
