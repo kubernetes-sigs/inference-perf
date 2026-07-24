@@ -13,10 +13,10 @@
 # limitations under the License.
 from typing import Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 
-class CustomTokenizerConfig(BaseModel):
+class CustomTokenizerConfig(StrictBaseModel):
     pretrained_model_name_or_path: Optional[str] = None
     trust_remote_code: Optional[bool] = None
     token: Optional[str] = None

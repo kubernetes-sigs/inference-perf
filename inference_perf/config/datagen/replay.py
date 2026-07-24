@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
-from inference_perf.config.common import Distribution
+from inference_perf.config.common import Distribution, StrictBaseModel
 
 
 class TraceFormat(Enum):
@@ -59,12 +59,12 @@ class BadToolCallHandling(str, Enum):
     USE_RECORDED = "use_recorded"
 
 
-class TraceConfig(BaseModel):
+class TraceConfig(StrictBaseModel):
     file: str
     format: TraceFormat = TraceFormat.AZURE_PUBLIC_DATASET
 
 
-class ConversationReplayConfig(BaseModel):
+class ConversationReplayConfig(StrictBaseModel):
     """Configuration for conversation replay data generator.
 
     Generates synthetic multi-turn conversations in-memory from configurable
@@ -98,7 +98,7 @@ class ConversationReplayConfig(BaseModel):
     max_model_len: Optional[int] = Field(None, description="Maximum model context length in tokens")
 
 
-class SessionReplayConfig(BaseModel):
+class SessionReplayConfig(StrictBaseModel):
     """Base configuration for session replay data generators."""
 
     # Model configuration

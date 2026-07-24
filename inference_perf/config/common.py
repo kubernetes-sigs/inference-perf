@@ -15,7 +15,19 @@ from enum import Enum
 from math import sqrt
 from typing import Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
+
+
+class StrictBaseModel(BaseModel):
+    """Base for every config model: unknown keys are an error, not silently dropped.
+
+    Pydantic's default (`extra="ignore"`) means a renamed or misspelled key is discarded
+    without a word, so a stale config keeps "working" while quietly losing the setting it
+    was meant to apply. Rejecting extras is what lets the example-config CI gate actually
+    detect drift between the YAML in this repo and the schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class DistributionType(str, Enum):
@@ -28,7 +40,7 @@ class DistributionType(str, Enum):
 
 
 # Represents the distribution for input prompts and output generations.
-class Distribution(BaseModel):
+class Distribution(StrictBaseModel):
     min: int = 10
     max: int = 1024
     mean: float = 512

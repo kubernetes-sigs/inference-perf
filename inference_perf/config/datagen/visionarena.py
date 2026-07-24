@@ -15,12 +15,12 @@
 
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from inference_perf.config.common import Distribution
+from inference_perf.config.common import Distribution, StrictBaseModel
 
 
-class VisionArenaConfig(BaseModel):
+class VisionArenaConfig(StrictBaseModel):
     """Configuration for the VisionArena-Chat dataset loader.
 
     Streams real image+prompt pairs from the public

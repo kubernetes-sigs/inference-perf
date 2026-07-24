@@ -14,7 +14,7 @@
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 
 class APIType(Enum):
@@ -28,7 +28,7 @@ class ResponseFormatType(Enum):
     JSON_OBJECT = "json_object"
 
 
-class ResponseFormat(BaseModel):
+class ResponseFormat(StrictBaseModel):
     """Configuration for structured output via response_format parameter.
 
     See vLLM docs: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
@@ -52,7 +52,7 @@ class ResponseFormat(BaseModel):
         }
 
 
-class APIConfig(BaseModel):
+class APIConfig(StrictBaseModel):
     type: APIType = APIType.Completion
     streaming: bool = False
     headers: Optional[dict[str, str]] = None

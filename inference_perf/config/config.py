@@ -16,7 +16,8 @@ from datetime import datetime
 from typing import Any, List, Optional
 
 import yaml
-from pydantic import BaseModel, model_validator
+from inference_perf.config.common import StrictBaseModel
+from pydantic import model_validator
 
 from inference_perf.circuit_breaker import CircuitBreakerConfig
 from inference_perf.config.apis import APIConfig
@@ -35,7 +36,7 @@ from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
 
 
-class Config(BaseModel):
+class Config(StrictBaseModel):
     api: APIConfig = APIConfig()
     data: DataConfig = DataConfig()
     load: LoadConfig = LoadConfig()

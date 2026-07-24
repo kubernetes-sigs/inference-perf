@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import Optional, Union
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, model_validator
 
-from inference_perf.config.common import Distribution
+from inference_perf.config.common import Distribution, StrictBaseModel
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -43,7 +43,7 @@ class DataGenType(Enum):
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
-class SharedPrefix(BaseModel):
+class SharedPrefix(StrictBaseModel):
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     num_groups: int = Field(
@@ -86,7 +86,7 @@ class SharedPrefix(BaseModel):
         return self
 
 
-class DataConfig(BaseModel):
+class DataConfig(StrictBaseModel):
     type: DataGenType = DataGenType.Mock
 
     # Valid only for shareGPT type at this moment

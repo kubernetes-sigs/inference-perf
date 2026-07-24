@@ -14,10 +14,10 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 
-class StorageConfigBase(BaseModel):
+class StorageConfigBase(StrictBaseModel):
     path: str = f"reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     report_file_prefix: Optional[str] = None
 
@@ -33,7 +33,7 @@ class SimpleStorageServiceConfig(StorageConfigBase):
     addressing_style: Optional[Literal["auto", "virtual", "path"]] = None
 
 
-class StorageConfig(BaseModel):
+class StorageConfig(StrictBaseModel):
     local_storage: StorageConfigBase = StorageConfigBase()
     google_cloud_storage: Optional[GoogleCloudStorageConfig] = None
     simple_storage_service: Optional[SimpleStorageServiceConfig] = None

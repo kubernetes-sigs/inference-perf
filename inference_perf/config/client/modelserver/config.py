@@ -14,7 +14,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 
 class ModelServerType(Enum):
@@ -24,7 +24,7 @@ class ModelServerType(Enum):
     MOCK = "mock"
 
 
-class ModelServerClientConfig(BaseModel):
+class ModelServerClientConfig(StrictBaseModel):
     type: ModelServerType = ModelServerType.VLLM
     model_name: Optional[str] = None
     base_url: str

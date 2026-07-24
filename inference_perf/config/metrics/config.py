@@ -14,7 +14,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 from inference_perf.config.client.server_metrics import PrometheusClientConfig
 
@@ -24,6 +24,6 @@ class MetricsClientType(Enum):
     DEFAULT = "default"
 
 
-class MetricsClientConfig(BaseModel):
+class MetricsClientConfig(StrictBaseModel):
     type: MetricsClientType
     prometheus: Optional[PrometheusClientConfig] = None

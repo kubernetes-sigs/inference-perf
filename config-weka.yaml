@@ -33,4 +33,3 @@ report:
     constraints:
       ttft: 0.3
       itl: 0.018
-    percentile: p90

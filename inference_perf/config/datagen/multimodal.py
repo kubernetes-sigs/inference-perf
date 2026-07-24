@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from inference_perf.config.common import Distribution
+from inference_perf.config.common import Distribution, StrictBaseModel
 from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 
 
@@ -37,7 +37,7 @@ class ResolutionPreset(str, Enum):
     P360 = "360p"
 
 
-class Resolution(BaseModel):
+class Resolution(StrictBaseModel):
     height: int = Field(description="Pixel height (e.g. 1080).")
     width: int = Field(description="Pixel width (e.g. 1920).")
 
@@ -45,28 +45,28 @@ class Resolution(BaseModel):
 AnyResolution = Union[ResolutionPreset, Resolution]
 
 
-class WeightedResolution(BaseModel):
+class WeightedResolution(StrictBaseModel):
     resolution: AnyResolution = Field(description='A ``ResolutionPreset`` (e.g. ``"1080p"``) or explicit ``Resolution``.')
     weight: float = Field(default=1.0, description="Relative frequency of this resolution being selected from the list.")
 
 
-class VideoProfile(BaseModel):
+class VideoProfile(StrictBaseModel):
     resolution: AnyResolution = Field(description="Frame resolution. Preset string or explicit ``Resolution``.")
     frames: int = Field(description="Number of frames in the video. Required.")
 
 
-class WeightedVideoProfile(BaseModel):
+class WeightedVideoProfile(StrictBaseModel):
     profile: VideoProfile
     weight: float = Field(default=1.0, description="Relative frequency of this exact video profile being selected.")
 
 
-class WeightedDuration(BaseModel):
+class WeightedDuration(StrictBaseModel):
     duration: float = Field(description="The length of the audio clip in seconds.")
     weight: float = Field(default=1.0, description="Relative frequency of this duration being selected.")
 
 
 # --- Modality-Specific Request Configs ---
-class MediaDatagenConfig(BaseModel):
+class MediaDatagenConfig(StrictBaseModel):
     count: Optional[Distribution] = Field(
         default=None, description="Distribution of the number of media items to generate per request."
     )
@@ -112,7 +112,7 @@ class AudioDatagenConfig(MediaDatagenConfig):
 
 
 # --- Main Wrapper Models ---
-class SyntheticMultimodalDatagenConfig(BaseModel):
+class SyntheticMultimodalDatagenConfig(StrictBaseModel):
     """Configuration for standard multimodal data generation.
 
     Caveat: resolutions, video profiles, and audio durations specified here are

@@ -2,7 +2,7 @@ api:
   type: completion
   streaming: true
 data:
-  type: sharedPrefix
+  type: shared_prefix
   shared_prefix:
     num_unique_system_prompts: 10
     num_users_per_system_prompt: 10
