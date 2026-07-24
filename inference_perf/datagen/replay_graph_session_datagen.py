@@ -1056,6 +1056,9 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
     ) -> SessionInferenceInfo:
         logger.debug(f"process_response called for event {self.event_id}")
 
+        # The streaming branch always builds a message dict; the unary branch gets None back from
+        # parse_anthropic_content when the response carries no content blocks.
+        output_message: Optional[Dict[str, Any]]
         if config.streaming:
             (
                 output_text,

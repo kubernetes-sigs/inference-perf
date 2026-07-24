@@ -60,8 +60,8 @@ class BadToolCallHandling(str, Enum):
 
 
 class TraceConfig(BaseModel):
-    file: str
-    format: TraceFormat = TraceFormat.AZURE_PUBLIC_DATASET
+    file: str = Field(description="Path to the trace file to replay.")
+    format: TraceFormat = Field(default=TraceFormat.AZURE_PUBLIC_DATASET, description="Format of the trace file.")
 
 
 class ConversationReplayConfig(BaseModel):

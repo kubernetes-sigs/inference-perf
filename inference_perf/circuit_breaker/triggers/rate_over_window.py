@@ -16,7 +16,7 @@ import collections
 import datetime
 from typing import Deque
 from .base import Trigger, HitSample
-from .config import TriggerRateOverWindow
+from inference_perf.config.circuit_breaker import TriggerRateOverWindow
 
 
 class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):

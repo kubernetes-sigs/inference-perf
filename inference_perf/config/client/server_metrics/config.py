@@ -13,14 +13,18 @@
 # limitations under the License.
 from typing import List, Optional
 
-from pydantic import BaseModel, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 class PrometheusClientConfig(BaseModel):
-    scrape_interval: int = 15
-    url: Optional[HttpUrl] = None
-    filters: List[str] = []
-    google_managed: bool = False
+    scrape_interval: int = Field(default=15, description="Scrape interval of the Prometheus server in seconds.")
+    url: Optional[HttpUrl] = Field(default=None, description="URL of the Prometheus server to query.")
+    filters: List[str] = Field(
+        default=[], description="PromQL label matchers (e.g. 'namespace=\"default\"') applied to every metric query."
+    )
+    google_managed: bool = Field(
+        default=False, description="Query Google Cloud Managed Service for Prometheus instead of a self-hosted server."
+    )
 
     @model_validator(mode="after")
     def check_exclusive_fields(self) -> "PrometheusClientConfig":

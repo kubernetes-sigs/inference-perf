@@ -11,25 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from pydantic import BaseModel, Field
-from typing import List
-from .triggers.config import TriggerSpec
+from inference_perf.config.circuit_breaker.config import (
+    CircuitBreakerConfig,
+    MetricsSpec,
+    TriggerConsecutive,
+    TriggerRateOverWindow,
+    TriggerSpec,
+)
 
-
-class MetricsSpec(BaseModel):
-    """
-    Manage matches and rules to select target metrics.
-    """
-
-    matches: List[str] = Field(..., description="Determine data is target metrics or not", min_length=1)
-    rules: List[str] = Field(default=[], description="Determine data is hit or not")
-
-
-class CircuitBreakerConfig(BaseModel):
-    """
-    Declarative breaker configuration.
-    """
-
-    name: str
-    metrics: MetricsSpec
-    triggers: List[TriggerSpec]
+__all__ = [
+    "CircuitBreakerConfig",
+    "MetricsSpec",
+    "TriggerConsecutive",
+    "TriggerRateOverWindow",
+    "TriggerSpec",
+]

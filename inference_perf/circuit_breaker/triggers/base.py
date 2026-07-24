@@ -16,7 +16,7 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from typing import Type, Any, Optional, Dict, Tuple
 from datetime import datetime
-from .config import TriggerSpec
+from inference_perf.config.circuit_breaker import TriggerSpec
 
 trigger_implementations: dict[Type[TriggerSpec], type] = {}
 

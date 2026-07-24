@@ -56,7 +56,7 @@ class VideoProfile(BaseModel):
 
 
 class WeightedVideoProfile(BaseModel):
-    profile: VideoProfile
+    profile: VideoProfile = Field(description="The video profile (resolution and frame count) this weight applies to.")
     weight: float = Field(default=1.0, description="Relative frequency of this exact video profile being selected.")
 
 
@@ -126,6 +126,6 @@ class SyntheticMultimodalDatagenConfig(BaseModel):
     when picking values. See docs/config.md ("Multimodal Data Generation").
     """
 
-    image: Optional[ImageDatagenConfig] = None
-    video: Optional[VideoDatagenConfig] = None
-    audio: Optional[AudioDatagenConfig] = None
+    image: Optional[ImageDatagenConfig] = Field(default=None, description="Synthetic image generation settings.")
+    video: Optional[VideoDatagenConfig] = Field(default=None, description="Synthetic video generation settings.")
+    audio: Optional[AudioDatagenConfig] = Field(default=None, description="Synthetic audio generation settings.")

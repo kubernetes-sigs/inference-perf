@@ -15,7 +15,7 @@ from enum import Enum
 from math import sqrt
 from typing import Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class DistributionType(str, Enum):
@@ -29,15 +29,16 @@ class DistributionType(str, Enum):
 
 # Represents the distribution for input prompts and output generations.
 class Distribution(BaseModel):
-    min: int = 10
-    max: int = 1024
-    mean: float = 512
-    std_dev: float = 200
-    total_count: Optional[int] = None
-    # New fields for configurable distribution types (default to normal for backward compat)
-    type: DistributionType = DistributionType.NORMAL
-    variance: Optional[float] = None
-    skew: float = 0.0  # Only used for skew_normal
+    min: int = Field(default=10, description="Smallest value the distribution can produce; samples below are clamped.")
+    max: int = Field(default=1024, description="Largest value the distribution can produce; samples above are clamped.")
+    mean: float = Field(default=512, description="Mean of the distribution.")
+    std_dev: float = Field(default=200, description="Standard deviation of the distribution. Exclusive with 'variance'.")
+    total_count: Optional[int] = Field(default=None, description="Total number of values to sample from the distribution.")
+    type: DistributionType = Field(
+        default=DistributionType.NORMAL, description="Shape of the distribution to sample values from."
+    )
+    variance: Optional[float] = Field(default=None, description="Variance of the distribution. Exclusive with 'std_dev'.")
+    skew: float = Field(default=0.0, description="Skewness of the distribution. Only used when type is 'skew_normal'.")
 
     @model_validator(mode="after")
     def validate_distribution(self) -> "Distribution":

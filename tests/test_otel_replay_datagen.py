@@ -1764,6 +1764,7 @@ class TestWorkerSessionEviction:
         assert len(events) == 2
         datas = [gen.load_lazy_data(e) for e in events]
         for d in datas:
+            assert isinstance(d, SessionChatCompletionAPIData)
             assert d.generator is gen  # back-reference wired
 
         info = SessionInferenceInfo(output_text="x", request_metrics=RequestMetrics(text=Text(input_tokens=1)))
@@ -1791,6 +1792,7 @@ class TestWorkerSessionEviction:
 
         # The two successors are dequeued and skip via the session-already-failed path.
         for d in datas[1:]:
+            assert isinstance(d, SessionChatCompletionAPIData)
             asyncio.run(d.wait_for_predecessors_and_substitute())
             assert d.skip_request is True
 
@@ -1907,6 +1909,7 @@ class TestUnbuildableSessionSlot:
         assert len(scheduled) == 1, f"expected 1 scheduled event, got {len(scheduled)}"
 
         data = gen.load_lazy_data(scheduled[0])
+        assert isinstance(data, SessionChatCompletionAPIData)
         assert data.generator is gen
 
         # total_events_in_session must equal the scheduled count (1), not len(graph.events) (2).
