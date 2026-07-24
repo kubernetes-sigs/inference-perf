@@ -16,7 +16,8 @@ from enum import Enum
 from os import cpu_count
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from inference_perf.config.common import StrictBaseModel
+from pydantic import ConfigDict, Field, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
 
@@ -29,7 +30,7 @@ class LoadType(Enum):
     TRACE_SESSION_REPLAY = "trace_session_replay"
 
 
-class LoadStage(BaseModel):
+class LoadStage(StrictBaseModel):
     """Base class for load stages. Use specific subclasses for different load types."""
 
     pass
@@ -140,7 +141,7 @@ class StageGenType(Enum):
     LINEAR = "linear"
 
 
-class SweepConfig(BaseModel):
+class SweepConfig(StrictBaseModel):
     type: StageGenType
     num_requests: int = 2000
     timeout: float = 60
@@ -149,12 +150,12 @@ class SweepConfig(BaseModel):
     saturation_percentile: float = 95
 
 
-class MultiLoRAConfig(BaseModel):
+class MultiLoRAConfig(StrictBaseModel):
     name: str
     split: float
 
 
-class LoadConfig(BaseModel):
+class LoadConfig(StrictBaseModel):
     type: LoadType = LoadType.CONSTANT
     interval: float = 1.0
     stages: Union[List[StandardLoadStage], List[ConcurrentLoadStage], List[TraceSessionReplayLoadStage]] = []

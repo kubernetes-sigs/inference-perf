@@ -181,11 +181,9 @@ class TestMultiTurnChat:
 
 @pytest.fixture
 def api_config() -> APIConfig:
-    return APIConfig(
-        api_type=APIType.Completion,
-        model_name="gpt2",
-        tokenizer_name="gpt2",
-    )
+    # `api_type`/`model_name`/`tokenizer_name` are not APIConfig fields and were silently
+    # dropped before the models rejected extras; the tokenizer comes from its own fixture.
+    return APIConfig(type=APIType.Completion)
 
 
 @pytest.fixture

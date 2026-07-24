@@ -13,10 +13,11 @@
 # limitations under the License.
 from typing import List, Optional
 
-from pydantic import BaseModel, HttpUrl, model_validator
+from inference_perf.config.common import StrictBaseModel
+from pydantic import HttpUrl, model_validator
 
 
-class PrometheusClientConfig(BaseModel):
+class PrometheusClientConfig(StrictBaseModel):
     scrape_interval: int = 15
     url: Optional[HttpUrl] = None
     filters: List[str] = []

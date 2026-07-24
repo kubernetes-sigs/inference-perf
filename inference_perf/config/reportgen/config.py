@@ -13,10 +13,10 @@
 # limitations under the License.
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from inference_perf.config.common import StrictBaseModel
 
 
-class RequestLifecycleMetricsReportConfig(BaseModel):
+class RequestLifecycleMetricsReportConfig(StrictBaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_request: Optional[bool] = False
@@ -29,22 +29,22 @@ class RequestLifecycleMetricsReportConfig(BaseModel):
     max_error_messages: int = 100
 
 
-class PrometheusMetricsReportConfig(BaseModel):
+class PrometheusMetricsReportConfig(StrictBaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = False
 
 
-class SessionLifecycleReportConfig(BaseModel):
+class SessionLifecycleReportConfig(StrictBaseModel):
     summary: Optional[bool] = True
     per_stage: Optional[bool] = True
     per_session: Optional[bool] = False
 
 
-class GoodputConfig(BaseModel):
+class GoodputConfig(StrictBaseModel):
     constraints: Dict[str, float] = {}
 
 
-class ReportConfig(BaseModel):
+class ReportConfig(StrictBaseModel):
     request_lifecycle: RequestLifecycleMetricsReportConfig = RequestLifecycleMetricsReportConfig()
     prometheus: Optional[PrometheusMetricsReportConfig] = PrometheusMetricsReportConfig()
     session_lifecycle: SessionLifecycleReportConfig = SessionLifecycleReportConfig()
