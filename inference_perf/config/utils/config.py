@@ -20,3 +20,6 @@ class CustomTokenizerConfig(BaseModel):
     pretrained_model_name_or_path: Optional[str] = None
     trust_remote_code: Optional[bool] = None
     token: Optional[str] = None
+    # Deadline in seconds for loading the tokenizer, including any download from
+    # Hugging Face Hub. None disables the deadline.
+    load_timeout: Optional[float] = 300.0

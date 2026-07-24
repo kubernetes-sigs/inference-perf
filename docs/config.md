@@ -286,6 +286,9 @@ tokenizer:
   pretrained_model_name_or_path: "model-id"   # Required model path
   trust_remote_code: true                     # Whether to trust custom tokenizer code
   token: ""                                   # HuggingFace access token for private models
+  load_timeout: 300.0                         # Deadline in seconds for loading the tokenizer,
+                                              # including any download from Hugging Face Hub.
+                                              # Set to null to disable. Default: 300.
 ```
 
 ## Full Configuration Examples
