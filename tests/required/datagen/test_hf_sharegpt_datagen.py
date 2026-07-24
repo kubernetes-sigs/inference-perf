@@ -56,8 +56,11 @@ def test_get_conversation_turn_content_unsupported_type() -> None:
 
 def test_get_anthropic_messages_data_rejects_unexpected_chat_data() -> None:
     generator = HFShareGPTDataGenerator.__new__(HFShareGPTDataGenerator)
-    generator.tokenizer = object()
-    generator.get_chat_data = lambda: iter([CompletionAPIData(prompt="hello")])
+    # Deliberately stub the instance past its real types: the test only needs
+    # get_anthropic_messages_data to reject a non-chat payload, so the tokenizer is never used
+    # and get_chat_data is replaced with a generator of the wrong element type on purpose.
+    generator.tokenizer = object()  # type: ignore[assignment]
+    generator.get_chat_data = lambda: iter([CompletionAPIData(prompt="hello")])  # type: ignore[method-assign,assignment,return-value]
 
     with pytest.raises(Exception, match="Expected ChatCompletionAPIData, got CompletionAPIData"):
         next(generator.get_anthropic_messages_data())
