@@ -298,6 +298,9 @@ class AnthropicMessagesAPIData(InferenceAPIData):
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: str | None = None
     ) -> InferenceInfo:
+        # The streaming branch always builds a message dict; the unary branch gets None back from
+        # parse_anthropic_content when the response carries no content blocks.
+        output_message: dict[str, Any] | None
         if config.streaming:
             (
                 output_text,
