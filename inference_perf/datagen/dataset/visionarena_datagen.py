@@ -37,8 +37,8 @@ from inference_perf.config import APIConfig, APIType, DataConfig, VisionArenaCon
 from inference_perf.payloads import ImageRepresentation, MultimodalSpec, PreEncodedImageSpec
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
-from .base import DataGenerator, LazyLoadDataMixin
-from .multimodal_sampling import sample_insertion_point
+from ..base import DataGenerator, LazyLoadDataMixin
+from ..multimodal_sampling import sample_insertion_point
 
 logger = logging.getLogger(__name__)
 

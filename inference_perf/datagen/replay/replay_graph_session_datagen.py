@@ -56,7 +56,7 @@ from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.config.datagen.replay import BadToolCallHandling
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
-from inference_perf.datagen.replay_graph_types import InputSegment, ReplayGraph
+from inference_perf.datagen.replay.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)

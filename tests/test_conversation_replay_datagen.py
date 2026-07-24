@@ -27,7 +27,7 @@ from inference_perf.config import (
     DataConfig,
     DataGenType,
 )
-from inference_perf.datagen.conversation_replay_datagen import (
+from inference_perf.datagen.replay.conversation_replay_datagen import (
     ConversationReplayDataGenerator,
     _ConversationReplayAPIData,
 )

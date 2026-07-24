@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 import pytest
 
-from inference_perf.datagen.shared_prefix_datagen import SharedPrefixDataGenerator
+from inference_perf.datagen.synthetic.shared_prefix_datagen import SharedPrefixDataGenerator
 from inference_perf.config import (
     APIConfig,
     DataConfig,

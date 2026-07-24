@@ -37,14 +37,14 @@ Key structural properties of the new graph format:
 import json
 from typing import Any, Dict, List, Optional
 
-from inference_perf.datagen.otel_trace_to_replay_graph import (
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_graph,
     build_raw_calls,
     extract_messages,
     print_graph,
     summarize_graph,
 )
-from inference_perf.datagen.replay_graph_types import ComplexReplayMessage
+from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage
 
 
 # ---------------------------------------------------------------------------

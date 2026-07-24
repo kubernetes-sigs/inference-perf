@@ -16,14 +16,14 @@ from pathlib import Path
 from unittest.mock import Mock
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.datagen.random_datagen import RandomDataGenerator
+from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.datagen.base import LazyLoadDataMixin
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
     ReplaySession,
     ReplaySessionState,
 )
-from inference_perf.datagen.replay_graph_types import ReplayGraph
+from inference_perf.datagen.replay.replay_graph_types import ReplayGraph
 from inference_perf.config import APIConfig, DataConfig, APIType, TraceFormat, TraceConfig, DataGenType
 
 
