@@ -85,8 +85,10 @@ lint = "ruff check"
 type-check = "mypy --strict ./inference_perf ./tests"
 "check:cli-flags" = "python scripts/sync_cli_flags_doc.py --check"
 "update:cli-flags" = "python scripts/sync_cli_flags_doc.py"
+"check:runtime-metrics" = "python scripts/sync_runtime_metrics_doc.py --check"
+"update:runtime-metrics" = "python scripts/sync_runtime_metrics_doc.py"
 check = {composite = ["format", "lint"]}
-validate = {composite = ["format", "lint", "type-check", "check:cli-flags"]}
+validate = {composite = ["format", "lint", "type-check", "check:cli-flags", "check:runtime-metrics"]}
 setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push"}
 
 "test" = "pytest tests"

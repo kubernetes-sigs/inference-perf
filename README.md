@@ -91,7 +91,8 @@ Explore detailed documentation for specific topics:
 | **Configuration** | Full YAML configuration schema and options. | [config.md](./docs/config.md) |
 | **CLI Flags** | Overriding configuration via command line flags. | [cli_flags.md](./docs/cli_flags.md) |
 | **Load Generation** | Detailed explanation of load patterns and multi-worker setup. | [loadgen.md](./docs/loadgen.md) |
-| **Metrics** | Definitions of TTFT, TPOT, ITL, etc. | [metrics.md](./docs/metrics.md) |
+| **Collected Metrics** | Definitions of TTFT, TPOT, ITL, etc. | [metrics.md](./docs/metrics.md) |
+| **Emitted Metrics** | Prometheus metrics inference-perf exports about its own runtime. | [runtime_metrics.md](./inference_perf/observability/metrics/runtime_metrics.md) |
 | **Goodput** | How to measure requests meeting SLOs. | [goodput.md](./docs/goodput.md) |
 | **Reports** | Understanding generated JSON reports. | [reports.md](./docs/reports.md) |
 | **OTel Observability** | Instrument benchmark runs with OpenTelemetry tracing to export to Jaeger, Tempo, etc. | [otel_instrumentation.md](./docs/otel_instrumentation.md) |
