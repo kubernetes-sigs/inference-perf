@@ -15,7 +15,8 @@ import pytest
 import asyncio
 import aiohttp
 from unittest.mock import AsyncMock, MagicMock
-from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession
+from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
+from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage, ErrorResponseInfo, InferenceInfo
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
 from inference_perf.config import APIType
@@ -29,6 +30,7 @@ def mock_client() -> MagicMock:
     client.api_config = MagicMock()
     client.api_config.headers = {}
     client.api_config.response_format = None
+    client.api_config.streaming = False
     client.tokenizer = MagicMock()
     client.metrics_collector = MagicMock()
     client.cert_path = None
@@ -295,3 +297,87 @@ async def test_session_id_header_not_injected_when_header_key_is_none(mock_clien
 
     headers_passed = session.session.post.call_args.kwargs["headers"]
     assert "x-session-id" not in headers_passed
+
+
+def test_openai_metrics_iteration_yields_each_field_once() -> None:
+    """Iterating OpenAIMetrics yields (target_field, metric) pairs; named fields take precedence
+    over a custom_metrics entry that reuses a named field's key."""
+
+    class FakeMetric(Metric[CounterResult]):
+        def __init__(self, name: str) -> None:
+            self.metric_name = name
+
+        def get_queries(self, duration: float, filters: str) -> list[str]:
+            return []
+
+        def parse(self, results: list[float]) -> CounterResult:
+            return CounterResult()
+
+    metrics = OpenAIMetrics(
+        filters=[],
+        prompt_tokens=FakeMetric("pt"),
+        output_tokens=FakeMetric("ot"),
+        requests=FakeMetric("req"),
+        request_latency=FakeMetric("lat"),
+        queue_length=FakeMetric("q"),
+        time_per_output_token=FakeMetric("tpot"),
+        custom_metrics={
+            "kv_cache_usage": FakeMetric("kv"),
+            "prompt_tokens": FakeMetric("custom-pt"),  # collides with the named field
+        },
+    )
+
+    fields = [field for field, _ in metrics]
+    by_field = dict(metrics)
+
+    # Each field appears once, named field wins over the colliding custom entry.
+    assert len(fields) == len(set(fields))
+    assert set(fields) == {
+        "prompt_tokens",
+        "output_tokens",
+        "requests",
+        "request_latency",
+        "queue_length",
+        "time_per_output_token",
+        "kv_cache_usage",
+    }
+    assert by_field["prompt_tokens"].metric_name == "pt"
+
+
+@pytest.mark.asyncio
+async def test_process_request_success(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """Test process_request with HTTP 200 success."""
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    # Mock the response
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.text = AsyncMock(return_value="success_response_text")
+
+    # Mock data.process_response
+    expected_info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
+    mock_data.process_response.return_value = expected_info
+
+    # Mock the post context
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+
+    # Verify process_response was called
+    mock_data.process_response.assert_called_once_with(
+        response=mock_response,
+        config=mock_client.api_config,
+        tokenizer=mock_client.tokenizer,
+        lora_adapter=None,
+    )
+
+    # Verify metric was recorded
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.info == expected_info
+    assert metric.response_data == "success_response_text"
+    assert metric.error is None
