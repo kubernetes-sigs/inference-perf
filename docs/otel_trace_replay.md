@@ -96,6 +96,20 @@ load:
 >
 > **Note on `worker_max_concurrency`:** Set this high for trace replay. All events in a session are enqueued immediately, and events waiting for predecessors hold concurrency slots. However, waiting is done via `asyncio.Event` (zero threads—just suspended coroutines), so high values have negligible cost. **Rule of thumb:** `concurrent_sessions × 50` to `concurrent_sessions × 100` depending on your trace complexity.
 
+### Router Session Affinity
+
+When benchmarking through a router that implements token-based session affinity — such as the [llm-d-router session affinity plugins](https://github.com/llm-d/llm-d-router/tree/main/pkg/epp/framework/plugins/scheduling/scorer/sessionaffinity) — the router returns a session token in a response header (`x-session-token` by default) and expects the client to echo that header on subsequent requests of the same session. Set `api.session_token_header_key` to make trace replay behave like such a client:
+
+```yaml
+api:
+  type: chat
+  session_token_header_key: x-session-token  # header carrying the router's session token
+```
+
+The token received in a session's response is stored per session and sent as a request header on that session's subsequent requests, allowing the router to route the whole session to the same endpoint.
+
+This differs from `api.session_id_header_key`, which unconditionally sends the replay-side session ID as a request header and does not involve any server-assigned token.
+
 ### Data Configuration: `otel_trace_replay`
 
 The `data.otel_trace_replay` section controls what traces to replay and how to process them.

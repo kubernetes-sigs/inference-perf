@@ -61,3 +61,8 @@ class APIConfig(BaseModel):
     slo_ttft_header: Optional[str] = None
     response_format: Optional[ResponseFormat] = None
     session_id_header_key: Optional[str] = None
+    # Response header carrying a server-assigned session token (e.g. x-session-token
+    # from the llm-d-router session affinity plugin). When set, the token received in
+    # a session's response is echoed as a request header on subsequent requests of
+    # the same session so the router can maintain session affinity.
+    session_token_header_key: Optional[str] = None
