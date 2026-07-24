@@ -36,6 +36,7 @@ from inference_perf.config import (
     ReportConfig,
     SessionLifecycleReportConfig,
     GoodputConfig,
+    PerRequestFieldsConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
@@ -537,6 +538,107 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
+def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Optional[CustomTokenizer]) -> bool:
+    """Re-derive output_token_times for a streamed response from its raw chunks.
+
+    Mutates m.info.response_metrics in place so that the summary, per-stage, and
+    per-request reports all see the same tokenizer-corrected token timings.
+    Returns True if the tokenizer-derived token count doesn't match the
+    server-reported completion_tokens.
+    """
+    if not (
+        isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.response_chunks and tokenizer
+    ):
+        return False
+
+    output_token_times = []
+    accumulated_tokens = 0
+    parsed_chunks = []
+    expected_output_tokens = (
+        m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
+    )
+
+    for chunk_str, chunk_time in zip(
+        m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
+    ):
+        try:
+            data = json.loads(chunk_str)
+            if choices := data.get("choices"):
+                delta = choices[0]
+                text = delta.get("text") or delta.get("delta", {}).get("content")
+                if text:
+                    parsed_chunks.append((text, chunk_time))
+        except json.JSONDecodeError:
+            continue
+
+    for text, chunk_time in parsed_chunks:
+        # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
+        # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
+        # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
+        # by the same factor. See #564.
+        tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
+        if tokens_in_chunk > 0:
+            # Assign every token in a chunk the chunk's arrival time to match user-perceived
+            # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
+            # reports the smoothed average.
+            for _ in range(tokens_in_chunk):
+                output_token_times.append(chunk_time)
+            accumulated_tokens += tokens_in_chunk
+
+    m.info.response_metrics.output_token_times = output_token_times
+    # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
+    # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
+
+    return expected_output_tokens is not None and accumulated_tokens != expected_output_tokens
+
+
+def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, Any]:
+    """Compute per-request latency metrics for a single successful request.
+
+    Uses the same formulas as the aggregation loop in summarize_requests() so
+    per-request values stay consistent with the summary/per-stage reports.
+    Assumes correct_streamed_response_metrics() has already been applied.
+    """
+    request_latency = m.end_time - m.start_time
+    response_metrics = m.info.response_metrics
+
+    # NTPOT: (End - Start) / Output Tokens
+    ntpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+    ntpot = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else 0.0
+
+    ttft: Optional[float] = None
+    tpot: Optional[float] = None
+    itl: Optional[float] = None
+    itl_deltas: List[float] = []
+
+    # Check if streamable: Must have more than 1 output token timestamp
+    if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
+        # TTFT: First Token Time - Start Time
+        ttft = response_metrics.output_token_times[0] - m.start_time
+
+        # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
+        duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
+        tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+        if tpot_output_tokens > 1:
+            tpot = duration / (tpot_output_tokens - 1)
+
+        itl_deltas = [
+            t2 - t1
+            for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False)
+        ]
+        if itl_deltas:
+            itl = sum(itl_deltas) / len(itl_deltas)
+
+    return {
+        "request_latency": request_latency,
+        "normalized_time_per_output_token": ntpot,
+        "time_to_first_token": ttft,
+        "time_per_output_token": tpot,
+        "inter_token_latency": itl,
+        "inter_token_latency_deltas": itl_deltas,
+    }
+
+
 def summarize_requests(
     metrics: List[RequestLifecycleMetric],
     percentiles: List[float],
@@ -586,93 +688,16 @@ def summarize_requests(
 
     mismatched_requests = 0
     for m in all_successful:
-        request_latency_values.append(m.end_time - m.start_time)
+        if correct_streamed_response_metrics(m, tokenizer):
+            mismatched_requests += 1
 
-        # Process raw chunks if present and tokenizer is available
-        if (
-            isinstance(m.info.response_metrics, StreamedResponseMetrics)
-            and m.info.response_metrics.response_chunks
-            and tokenizer
-        ):
-            output_token_times = []
-            accumulated_tokens = 0
-            parsed_chunks = []
-            expected_output_tokens = (
-                m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
-            )
-
-            for chunk_str, chunk_time in zip(
-                m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
-            ):
-                try:
-                    data = json.loads(chunk_str)
-                    if choices := data.get("choices"):
-                        delta = choices[0]
-                        text = delta.get("text") or delta.get("delta", {}).get("content")
-                        if text:
-                            parsed_chunks.append((text, chunk_time))
-                except json.JSONDecodeError:
-                    continue
-
-            for text, chunk_time in parsed_chunks:
-                # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
-                # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
-                # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
-                # by the same factor. See #564.
-                tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
-                if tokens_in_chunk > 0:
-                    # Assign every token in a chunk the chunk's arrival time to match user-perceived
-                    # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
-                    # reports the smoothed average.
-                    for _ in range(tokens_in_chunk):
-                        output_token_times.append(chunk_time)
-                    accumulated_tokens += tokens_in_chunk
-
-            m.info.response_metrics.output_token_times = output_token_times
-            # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
-            # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
-
-            if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
-                mismatched_requests += 1
-
-        # NTPOT: (End - Start) / Output Tokens (Calculated for ALL successful requests)
-        ntpot_output_tokens = effective_output_tokens(m.info.response_metrics, use_server_output_tokens)
-        if ntpot_output_tokens > 0:
-            ntpot_values.append((m.end_time - m.start_time) / ntpot_output_tokens)
-        else:
-            ntpot_values.append(0.0)
-
-        # Check if streamable: Must have more than 1 output token timestamp
-        response_metrics = m.info.response_metrics
-        if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
-            # TTFT: First Token Time - Start Time
-            ttft = response_metrics.output_token_times[0] - m.start_time
-            ttft_values.append(ttft)
-
-            # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
-            duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
-            tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-            if tpot_output_tokens > 1:
-                tpot = duration / (tpot_output_tokens - 1)
-            else:
-                tpot = None
-            tpot_values.append(tpot)
-
-            # Add inter-token deltas
-            request_itl = []
-            for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False):
-                inter_token_latencies.append(t2 - t1)
-                request_itl.append(t2 - t1)
-
-            if request_itl:
-                itl_values.append(sum(request_itl) / len(request_itl))
-            else:
-                itl_values.append(None)
-        else:
-            # Not streamable, so TTFT and TPOT are undefined
-            ttft_values.append(None)
-            tpot_values.append(None)
-            itl_values.append(None)
+        latency = compute_request_latency_metrics(m, use_server_output_tokens)
+        request_latency_values.append(latency["request_latency"])
+        ntpot_values.append(latency["normalized_time_per_output_token"])
+        ttft_values.append(latency["time_to_first_token"])
+        tpot_values.append(latency["time_per_output_token"])
+        itl_values.append(latency["inter_token_latency"])
+        inter_token_latencies.extend(latency["inter_token_latency_deltas"])
 
     # --- Calculate Goodput Metrics ---
     goodput_metrics = calculate_goodput_metrics(
@@ -803,6 +828,57 @@ def summarize_requests(
     )
 
 
+def build_per_request_lifecycle_entry(
+    metric: RequestLifecycleMetric,
+    fields: PerRequestFieldsConfig,
+    tokenizer: Optional[CustomTokenizer] = None,
+    use_server_output_tokens: bool = False,
+) -> dict[str, Any]:
+    if fields.computed_metrics and metric.error is None:
+        # Correct output_token_times from raw chunks before the info dump and computed_metrics
+        # below, so both reflect the same tokenizer-corrected timings that summary/per-stage
+        # reports use. Skipped when computed_metrics is off so the raw per-request output is
+        # untouched.
+        correct_streamed_response_metrics(metric, tokenizer)
+
+    entry: dict[str, Any] = {
+        "start_time": metric.start_time,
+        "end_time": metric.end_time,
+        "error": metric.error.model_dump() if metric.error else None,
+    }
+
+    if fields.request:
+        entry["request"] = metric.request_data
+
+    if fields.response:
+        entry["response"] = metric.response_data
+
+    if fields.info:
+        info = metric.info.model_dump() if metric.info else None
+        if info and not fields.response_chunks:
+            response_metrics = info.get("response_metrics")
+            if isinstance(response_metrics, dict):
+                response_metrics.pop("response_chunks", None)
+        entry["info"] = info
+
+    if fields.computed_metrics and metric.error is None:
+        latency = compute_request_latency_metrics(metric, use_server_output_tokens)
+        entry["computed_metrics"] = {
+            "request_latency": latency["request_latency"],
+            "normalized_time_per_output_token": latency["normalized_time_per_output_token"],
+            "time_to_first_token": latency["time_to_first_token"],
+            "time_per_output_token": latency["time_per_output_token"],
+            "inter_token_latency": latency["inter_token_latency"],
+            "inter_token_latencies": latency["inter_token_latency_deltas"],
+            "input_tokens": metric.info.request_metrics.text.input_tokens,
+            "output_tokens": metric.info.response_metrics.output_tokens if metric.info.response_metrics else None,
+            "ttft_slo_sec": metric.ttft_slo_sec,
+            "tpot_slo_sec": metric.tpot_slo_sec,
+        }
+
+    return entry
+
+
 class ReportGenerator:
     def __init__(
         self,
@@ -906,17 +982,11 @@ class ReportGenerator:
                 lifecycle_reports.append(report_file)
 
         if report_config.request_lifecycle.per_request:
+            fields = report_config.request_lifecycle.per_request_fields
             report_file = ReportFile(
                 name="per_request_lifecycle_metrics",
                 contents=[
-                    {
-                        "start_time": metric.start_time,
-                        "end_time": metric.end_time,
-                        "request": metric.request_data,
-                        "response": metric.response_data,
-                        "info": metric.info.model_dump() if metric.info else None,
-                        "error": metric.error.model_dump() if metric.error else None,
-                    }
+                    build_per_request_lifecycle_entry(metric, fields, tokenizer, use_server_output_tokens)
                     for metric in request_metrics
                 ],
             )
