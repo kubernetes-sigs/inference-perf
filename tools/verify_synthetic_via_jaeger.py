@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Verify a synthetic_agent_sessions run by reconstructing its sessions from Jaeger spans.
+"""Verify a synthetic_agentic run by reconstructing its sessions from Jaeger spans.
 
-This is the live-loop verifier: after running a `synthetic_agent_sessions` config with
+This is the live-loop verifier: after running a `synthetic_agentic` config with
 Jaeger tracing enabled (see examples/otel/run_with_jaeger.sh), query the Jaeger HTTP API,
 reconstruct each session from its spans, and assert the replayed sessions match what the
 generator intended — every session succeeded (no dangling tool_call_id / 400), and the

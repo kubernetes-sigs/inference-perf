@@ -1,6 +1,6 @@
 # Synthetic agent session examples
 
-These configs exercise the `synthetic_agent_sessions` data generator, which procedurally
+These configs exercise the `synthetic_agentic` data generator, which procedurally
 builds multi-turn, tool-calling agent sessions (including recursive sub-agent fan-out) without
 requiring a recorded OTel trace. Each config isolates one shape of the generator's behavior:
 `single_agent_smoke` is a plain tool-call loop with no fan-out; `fanout_smoke` forces recursive
@@ -15,7 +15,7 @@ To run one, start Jaeger and a target server (see `examples/otel/run_with_jaeger
 Jaeger prerequisites), then:
 
 ```bash
-./examples/otel/run_with_jaeger.sh examples/synthetic/configs/fanout_smoke.yml
+./examples/otel/run_with_jaeger.sh examples/synthetic_agentic/configs/fanout_smoke.yml
 ```
 
 To verify a run, reconstruct the sessions from Jaeger spans and check that every session

@@ -43,7 +43,7 @@ from inference_perf.datagen import (
     BillsumConversationsDataGenerator,
     OTelTraceReplayDataGenerator,
     WekaTraceReplayDataGenerator,
-    SyntheticAgentSessionsDataGenerator,
+    SyntheticAgenticDataGenerator,
     ConversationReplayDataGenerator,
     VisionArenaDataGenerator,
 )
@@ -269,7 +269,7 @@ def main_cli() -> None:
     mp_manager = None
     if (
         config.data
-        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentSessions)
+        and config.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentic)
         and config.load.num_workers > 0
     ):
         mp_manager = mp.Manager()
@@ -287,7 +287,7 @@ def main_cli() -> None:
                 DataGenType.BillsumConversations,
                 DataGenType.OTelTraceReplay,
                 DataGenType.WekaTraceReplay,
-                DataGenType.SyntheticAgentSessions,
+                DataGenType.SyntheticAgentic,
                 DataGenType.ConversationReplay,
             }
         ):
@@ -365,8 +365,8 @@ def main_cli() -> None:
             datagen = WekaTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
-        elif config.data.type == DataGenType.SyntheticAgentSessions:
-            datagen = SyntheticAgentSessionsDataGenerator(
+        elif config.data.type == DataGenType.SyntheticAgentic:
+            datagen = SyntheticAgenticDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
         else:
@@ -379,7 +379,7 @@ def main_cli() -> None:
     if config.data and config.data.type in (
         DataGenType.OTelTraceReplay,
         DataGenType.WekaTraceReplay,
-        DataGenType.SyntheticAgentSessions,
+        DataGenType.SyntheticAgentic,
     ):
         session_metrics_collector = SessionMetricsCollector()
 

@@ -1,11 +1,11 @@
-# DEMO 05 — Chat-with-tools: per-round tool usage VARIES (the general interactive shape).
+# DEMO 07 — Chat-with-tools: per-round tool usage VARIES (the general interactive shape).
 # 4 rounds; each round independently draws 0..3 tool turns — so some rounds answer directly,
 # some run a tool-loop. This is the most realistic single-agent conversational shape.
 # WHAT TO LOOK FOR: heterogeneous event counts per round; a mix of answer-only and tool-using rounds.
 api: {type: chat, streaming: false}
 data:
-  type: synthetic_agent_sessions
-  synthetic_agent_sessions:
+  type: synthetic_agentic
+  synthetic_agentic:
     num_sessions: 4
     seed: 5
     theme_mix: {generic: 1.0}
@@ -30,6 +30,6 @@ server:
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
 
 storage:
-  local_storage: {path: "reports-demo-05-chatwithtools"}
+  local_storage: {path: "reports-demo-07-chatwithtools"}
 report:
   request_lifecycle: {summary: true, per_stage: true}

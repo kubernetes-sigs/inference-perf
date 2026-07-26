@@ -1,7 +1,7 @@
 api: {type: chat, streaming: false}
 data:
-  type: synthetic_agent_sessions
-  synthetic_agent_sessions:
+  type: synthetic_agentic
+  synthetic_agentic:
     num_sessions: 6
     seed: 21
     theme_mix: {generic: 0.5, db2_latency_incident: 0.5}

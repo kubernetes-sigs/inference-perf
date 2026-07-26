@@ -1,12 +1,12 @@
-# DEMO 10 — REALISTIC SCALE, matched to real Exgentic (~114K-token prompts, ~487-tool catalog).
+# DEMO 12 — REALISTIC SCALE, matched to real Exgentic (~114K-token prompts, ~487-tool catalog).
 # *** REQUIRES A LARGE-CONTEXT MODEL (>=128K ctx). On SmolLM2 (8K ctx) this WILL exceed context
 # and 400 — that's expected. Swap model_name/base_url below to your big model before running. ***
 # WHAT TO LOOK FOR (on a big model): per-session input tokens ~87K-136K (real agentic scale);
 # fast graph build; 0 errors; mirrors the real Exgentic load profile.
 api: {type: chat, streaming: false}
 data:
-  type: synthetic_agent_sessions
-  synthetic_agent_sessions:
+  type: synthetic_agentic
+  synthetic_agentic:
     num_sessions: 20
     seed: 42
     theme_mix: {generic: 1.0}
@@ -34,6 +34,6 @@ server:
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
 
 storage:
-  local_storage: {path: "reports-demo-10-realistic"}
+  local_storage: {path: "reports-demo-12-realistic"}
 report:
   request_lifecycle: {summary: true, per_stage: true}

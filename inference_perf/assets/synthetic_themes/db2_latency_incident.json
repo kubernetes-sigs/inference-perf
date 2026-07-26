@@ -3,19 +3,64 @@
   "system_prompt": "You are an autonomous site-reliability agent operating on IBM Db2 for z/OS subsystems. Investigate incidents using the available tools, reason step by step, and produce a concise remediation summary. Prefer read-only diagnostics before any change.",
   "verbs": ["Analyze", "Assess", "Review", "Diagnose", "Inspect", "Evaluate"],
   "entities": {
-    "db_instance": ["DBP1", "DBP2", "DBX9"],
-    "symptom": ["commit-latency spike", "lock-wait escalation", "bufferpool thrash"]
+    "db_instance": ["DBP1", "DBP2", "DBX9", "DBQ4"],
+    "symptom": ["commit-latency spike", "lock-wait escalation", "bufferpool thrash", "log-write stall", "rising class2 CPU"],
+    "bufferpool": ["BP0", "BP1", "BP2", "BP8K0", "BP32K"],
+    "plan": ["PLNAUTH", "PLNBTCH", "PLNONLN", "PLNRPT"],
+    "table": ["INVOICE", "ACCOUNT", "LEDGER", "CUSTOMER"]
   },
-  "enumerated": {"bufferpool": "BP"},
-  "tool_names": ["get_bp_stats", "get_lock_waits", "get_log_activity", "run_reorg", "get_thread_detail"],
-  "objective_template": "{verb} {symptom} on {db_instance}: identify root cause and recommend remediation.",
+  "tool_names": ["get_bp_stats", "get_lock_waits", "get_log_activity", "get_thread_detail", "get_deadlock_events", "get_message_log", "get_plan_stats", "run_reorg"],
+  "tool_descriptions": {
+    "get_bp_stats": "Return recent bufferpool statistics (hit ratio, get-page, sync/async reads) for a bufferpool on a Db2 subsystem.",
+    "get_lock_waits": "List current lock waits on a subsystem: waiter/holder threads, resource, and wait time in ms.",
+    "get_log_activity": "Return active-log write activity: write rate, checkpoint interval, and log-write latency.",
+    "get_thread_detail": "Return detail for active threads on a subsystem: plan, class2 CPU, get-page counts, and status.",
+    "get_deadlock_events": "Return recent deadlock/timeout events with the victim thread and the resource involved.",
+    "get_message_log": "Fetch recent console messages (DSNxxxx) for a subsystem; may return a not-found/connection-error payload when the log is unreachable.",
+    "get_plan_stats": "Return access-path and execution statistics for a plan: rows examined, index usage, and elapsed time.",
+    "run_reorg": "Run a REORG on a table or index (a change action); returns the utility job status and reclaimed space."
+  },
+  "tool_parameters": {
+    "get_bp_stats": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "bufferpool": {"type": "string", "description": "Bufferpool name, e.g. BP0."}}, "required": ["db_instance", "bufferpool"]},
+    "get_lock_waits": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "min_wait_ms": {"type": "integer", "description": "Only return waits above this many ms."}}, "required": ["db_instance"]},
+    "get_log_activity": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}}, "required": ["db_instance"]},
+    "get_thread_detail": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "plan": {"type": "string", "description": "Filter to a plan name."}}, "required": ["db_instance"]},
+    "get_deadlock_events": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}}, "required": ["db_instance"]},
+    "get_message_log": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "since": {"type": "string", "description": "Return messages since this timestamp (HH:MM:SS)."}}, "required": ["db_instance"]},
+    "get_plan_stats": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "plan": {"type": "string", "description": "Plan name to report on."}}, "required": ["db_instance", "plan"]},
+    "run_reorg": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "table": {"type": "string", "description": "Table to reorganize."}}, "required": ["db_instance", "table"]}
+  },
   "result_templates": {
-    "get_bp_stats": "| time | bp | hit_ratio |\n| {t0} | {bp0} | {r0} |\n| {t1} | {bp1} | {r1} |",
+    "get_bp_stats": "bufferpool {bufferpool} on {db_instance}\n| time | bp | hit_ratio | getpage | sync_read | async_read |\n| {t0} | {bp0} | {hit_ratio0} | {getpage0} | {sync0} | {async0} |\n| {t1} | {bp1} | {hit_ratio1} | {getpage1} | {sync1} | {async1} |\n| {t2} | {bp2} | {hit_ratio2} | {getpage2} | {sync2} | {async2} |",
+    "get_lock_waits": "lock waits on {db_instance} (min_wait shown):\n  waiter=thr-{n0} holder=thr-{n1} resource={table} wait_ms={wait_ms0} mode=X\n  waiter=thr-{n2} holder=thr-{n3} resource={table} wait_ms={wait_ms1} mode=U",
+    "get_log_activity": "log activity {db_instance}: write_rate={rate0}/s checkpoint_interval={n0}s log_write_ms={log_ms0} active_log_pct={pct0}",
+    "get_thread_detail": "thread detail {db_instance} plan={plan}:\n  token={n0} class2_cpu_ms={cpu0} getpages={getpage0} status=ACTIVE\n  token={n1} class2_cpu_ms={cpu1} getpages={getpage1} status=WAIT",
+    "get_deadlock_events": "deadlock events {db_instance}:\n  {t0} victim=thr-{n0} resource={table} plan={plan} reason=00C90088\n  {t1} timeout waiter=thr-{n1} resource={table} wait_ms={wait_ms0}",
+    "get_message_log": "get_message_log {db_instance}: ERROR DSNL027I subsystem unreachable — no messages returned (connection timed out after {n0}ms). since={t0}",
+    "get_plan_stats": "plan stats {db_instance} plan={plan}: rows_examined={n0} index_used={pct0}% elapsed_ms={elapsed_ms0} sync_io={sync0}",
+    "run_reorg": "run_reorg {db_instance} table={table}: utility=REORG status=COMPLETE rows={n0} reclaimed_pct={pct0}% elapsed_s={n1}",
     "default": "result for {entity}: value={n0} at {t0}"
   },
+  "objective_template": "{verb} {symptom} on {db_instance}: identify root cause and recommend remediation.",
   "followup_templates": [
     "What does the {symptom} trend look like over the last hour on {db_instance}?",
-    "Given that, should we reorg {bufferpool} or adjust the bufferpool size?"
+    "Given that, should we reorg {table} or adjust the {bufferpool} bufferpool size?",
+    "Are other plans besides {plan} affected on {db_instance}?"
   ],
-  "followup_connectives": ["Following up on the previous result, ", "Given that, ", "Next, "]
+  "followup_connectives": ["Following up on the previous result, ", "Given that, ", "Next, "],
+  "intro_doc_templates": [
+    "Db2 console excerpt ({db_instance}) — pasted by on-call DBA:\n-DIS BUFFERPOOL({bufferpool}) DETAIL\n{t0} DSNB402I  VP SIZE = {n0}  HIT RATIO = {hit_ratio0}\n{t1} DSNB411I  SYNC READ I/O = {sync0}  ASYNC = {async0}\n{t2} DSNL027I  {symptom} observed on {db_instance}; class2 CPU rising\n{t3} DSNT376I  PLAN={plan} TIMEOUT on TABLE={table} wait_ms={wait_ms0}\nInvestigate: {symptom} on {db_instance}. Determine the root cause and recommend a remediation.",
+    "Incident ticket INC-{n0} ({db_instance}) — OMEGAMON alert attached:\n{t0} DSNJ031I {db_instance} active log write latency high\nSummary: {symptom} on {db_instance} since {t0}.\n  - bufferpool {bufferpool} hit ratio {hit_ratio0}\n  - plan {plan} elapsed climbing; lock waits on {table}\n  - log_write_ms={log_ms0}, checkpoint interval widening\nPlease triage {db_instance} and recommend a remediation."
+  ],
+  "filler_templates": [
+    "{t0} DSNL027I {db_instance} bufferpool {bufferpool} hit_ratio={hit_ratio0} getpage={getpage0}",
+    "{t0} DSNT376I {db_instance} PLAN={plan} lock-wait on {table} wait_ms={wait_ms0} mode=X",
+    "{t0} DSNB402I {db_instance} VP_SIZE={n0} sync_read={sync0} async_read={async0}",
+    "{t0} thread token={n0} plan={plan} class2_cpu={cpu0}ms getpages={getpage0} status=ACTIVE",
+    "{t0} DSNJ001I {db_instance} log write_rate={rate0}/s log_write_ms={log_ms0} checkpoint={n1}s",
+    "{t0} DSNI031I {db_instance} deadlock victim=thr-{n0} resource={table} reason=00C90088",
+    "{t0} metric {db_instance} commit_ms={elapsed_ms0} class2_cpu={cpu0} getpage_rate={rate0}",
+    "{t0} DSNB250E {db_instance} bufferpool {bufferpool} sync I/O elevated sync_read={sync0}"
+  ],
+  "compaction_summary_template": "{verb} {symptom} on {db_instance} (plan {plan}, table {table}). So far: ran {tool_a}, {tool_b}, and {tool_c}; collected bufferpool, lock-wait, and log-activity diagnostics. Findings are still partial; continuing to isolate the bottleneck."
 }

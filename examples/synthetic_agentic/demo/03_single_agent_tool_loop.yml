@@ -1,11 +1,12 @@
-# DEMO 02 — Single-agent tool-loop (introduces tools).
+# DEMO 03 — Single-agent tool-loop (introduces tools + tool-loop growth).
 # One turn that makes 2 sequential tool calls, then answers: the classic agent loop.
-# WHAT TO LOOK FOR: 4 events/session (principal + 2 tool-turns + answer); each tool turn =
-# 1 forced tool_call + 1 tool result; the ~8-tool catalog is advertised on every request.
+# WHAT TO LOOK FOR: 3 events/session (principal + 2 tool turns; the last turn's OUTPUT is the
+# answer); input message count grows 1 -> 3 -> 5; each tool turn = 1 forced tool_call + 1 tool
+# result; the ~8-tool catalog is advertised on every request.
 api: {type: chat, streaming: false}
 data:
-  type: synthetic_agent_sessions
-  synthetic_agent_sessions:
+  type: synthetic_agentic
+  synthetic_agentic:
     num_sessions: 5
     seed: 2
     theme_mix: {generic: 1.0}

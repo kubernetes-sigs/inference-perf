@@ -1,0 +1,38 @@
+# DEMO 02 — Multi-turn conversation, NO tools (the simplest GROWING shape).
+# 3 human turns, no tools at all: the classic chat back-and-forth. Each round the "user"
+# follows up and the conversation transcript GROWS (round K carries rounds 0..K-1 as context).
+# This isolates conversation growth with nothing else going on.
+# WHAT TO LOOK FOR: 3 events/session; input message count grows 1 -> 3 -> 5 across the rounds
+# (each round adds the prior [assistant answer, new user turn]); prompt tokens INCREASE per round;
+# NO tools advertised.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 5
+    seed: 2
+    theme_mix: {generic: 1.0}
+    rounds_per_session: {type: fixed, mean: 3}     # 3 human turns -> growing context
+    fanout_probability: 0.0                          # no sub-agents
+    tool_turns_per_loop: {type: fixed, mean: 0}      # answer directly each round
+    tool_definitions_per_agent: {type: fixed, mean: 0}  # NO tools advertised
+    input_tokens_per_turn:  {type: fixed, mean: 200}
+    output_tokens_per_turn: {type: fixed, mean: 60}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+    user_think_time_sec:    {type: fixed, mean: 1}   # gap before each follow-up
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-02-multiturn-notools"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

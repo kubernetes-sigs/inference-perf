@@ -295,7 +295,38 @@ class WekaTraceReplayConfig(SessionReplayConfig):
         return self
 
 
-class SyntheticAgentSessionsConfig(SessionReplayConfig):
+class ContextCompactionConfig(BaseModel):
+    """Context compaction policy: model long-horizon agents that COMPACT
+    instead of growing the transcript forever.
+
+    When present, and a round's accumulated principal input (message content +
+    advertised tool catalog) would cross `trigger_tokens`, the NEXT round starts
+    fresh: a `target_tokens`-sized summary block replaces the grown transcript
+    instead of re-injecting it — a sharp prefill drop + KV-prefix reset that pure
+    growth can't produce. Omit the whole block to never compact (pure growth).
+    Both fields are required when the block is present.
+    """
+
+    trigger_tokens: Distribution = Field(
+        ...,
+        description=(
+            "When a round's accumulated principal input (message content + advertised tool "
+            "catalog) would cross this many tokens, the NEXT round starts fresh with a "
+            "summary block replacing the grown transcript. Sampled per session."
+        ),
+    )
+    target_tokens: Distribution = Field(
+        ...,
+        description=(
+            "Size (tokens) of the summary block that replaces the transcript on compaction. "
+            "Sampled per session. Set it to the size you want the post-compaction context to "
+            "have -- typically a fraction of the trigger (a real compaction reduces a bloated "
+            "window to ~20-40% of its size)."
+        ),
+    )
+
+
+class SyntheticAgenticConfig(SessionReplayConfig):
     """Procedural multi-agent agentic session generation (§8)."""
 
     # Required — the four workload-shape decisions (no default)
@@ -321,13 +352,24 @@ class SyntheticAgentSessionsConfig(SessionReplayConfig):
     user_think_time_sec: Optional[Distribution] = Field(None, description="human gap before rounds 2..N")
     max_model_len: Optional[int] = Field(None, description="fail-fast context-length ceiling")
 
+    # Context compaction: omit to never compact (pure growth). When set,
+    # both trigger_tokens and target_tokens are required (enforced by the submodel).
+    context_compaction: Optional[ContextCompactionConfig] = Field(
+        None,
+        description=(
+            "Context compaction policy. When set, a round whose accumulated input crosses "
+            "trigger_tokens is followed by a fresh round whose grown transcript is replaced "
+            "by a target_tokens-sized summary block. Omit for pure growth (no compaction)."
+        ),
+    )
+
     # Pinned inert / not for synthetic (§2.2a, C3)
     inject_random_session_id: bool = Field(False, frozen=True)
     duplicate_sessions_target: Optional[int] = Field(None, frozen=True)
     override_tool_call_max_tokens: bool = Field(False)
 
     @model_validator(mode="after")
-    def validate_theme_mix(self) -> "SyntheticAgentSessionsConfig":
+    def validate_theme_mix(self) -> "SyntheticAgenticConfig":
         if not self.theme_mix:
             raise ValueError("theme_mix must be non-empty (at least one theme name -> weight)")
         if any(w < 0 for w in self.theme_mix.values()):
@@ -337,7 +379,7 @@ class SyntheticAgentSessionsConfig(SessionReplayConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_max_model_len(self) -> "SyntheticAgentSessionsConfig":
+    def validate_max_model_len(self) -> "SyntheticAgenticConfig":
         # Fail-fast context-length ceiling check (§8). Uses the mean of
         # input_tokens_per_turn as the "typical" per-turn input size: mean is
         # always a meaningful, well-defined statistic for every Distribution

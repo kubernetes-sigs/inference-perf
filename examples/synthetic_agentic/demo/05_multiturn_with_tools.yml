@@ -1,12 +1,15 @@
-# DEMO 04 — Interactive multi-round conversation (N>1 human turns, growing context).
-# 3 rounds; each round the "user" follows up and the conversation transcript GROWS
-# (round K carries rounds 0..K-1 as context). user_think_time_sec spaces the human turns.
-# WHAT TO LOOK FOR: per-round prompt token counts INCREASE across rounds (accumulating context);
-# 9 events/session (3 rounds x [principal + 1 tool turn + answer]).
+# DEMO 05 — Multi-turn conversation WITH tools (rounds AND tool-loops both grow, combined).
+# 3 rounds; each round the "user" follows up (conversation GROWS, round K carries rounds
+# 0..K-1) AND each round runs a 1-turn tool-loop. This is the two growth mechanisms stacked:
+# per-round growth carries the prior rounds, per-loop growth carries the tool call+result.
+# user_think_time_sec spaces the human turns.
+# WHAT TO LOOK FOR: 6 events/session; input message count grows 1 -> 3 -> 3 -> 5 -> 5 -> 7
+# (each round: principal grows over the last round, then its tool turn adds the call+result);
+# per-round prompt tokens INCREASE across rounds.
 api: {type: chat, streaming: false}
 data:
-  type: synthetic_agent_sessions
-  synthetic_agent_sessions:
+  type: synthetic_agentic
+  synthetic_agentic:
     num_sessions: 4
     seed: 4
     theme_mix: {generic: 1.0}
@@ -31,6 +34,6 @@ server:
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
 
 storage:
-  local_storage: {path: "reports-demo-04-interactive"}
+  local_storage: {path: "reports-demo-05-multiturn-tools"}
 report:
   request_lifecycle: {summary: true, per_stage: true}

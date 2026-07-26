@@ -32,6 +32,7 @@ from .synthetic import (
     SyntheticDataGenerator,
 )
 from .synthetic_agent_sessions import SyntheticAgentSessionsDataGenerator
+from .synthetic_agentic import SyntheticAgenticDataGenerator
 
 __all__ = [
     "BaseGenerator",
@@ -48,6 +49,7 @@ __all__ = [
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
     "SyntheticAgentSessionsDataGenerator",
+    "SyntheticAgenticDataGenerator",
     "WekaTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",
     "MultimodalDataGenerator",
