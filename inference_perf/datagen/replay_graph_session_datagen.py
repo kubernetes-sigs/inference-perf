@@ -523,7 +523,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         # Track where live tool-call assistant messages were inserted so we can
         # rewrite the tool_call_id values in the role:tool messages that follow.
-        # Each entry is (index_of_assistant_in_result, live_tool_calls_list).
+        # Each entry is (index_of_assistant_in_result, live_tool_calls_list, recorded_tool_names).
+        #
+        # recorded_tool_names is the recorded (pre-substitution) function-name order
+        # for this slot, taken from the assistant message being replaced. It lets the
+        # post-pass pair each recorded role:tool message with the live call of the
+        # SAME function name rather than by raw position — necessary because the live
+        # model can call the same function more than once (or in a different order),
+        # which would otherwise pair the wrong result with the wrong call.
         #
         # We use a post-pass rather than rewriting inline because the role:tool
         # messages live in a later segment ("unique") that hasn't been added to
@@ -531,7 +538,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         #
         # index_of_assistant_in_result == len(result) at the time of the append,
         # which equals the index the message will occupy after the append.
-        pending_id_rewrites: List[Tuple[int, List[Dict[str, Any]]]] = []
+        pending_id_rewrites: List[Tuple[int, List[Dict[str, Any]], List[Optional[str]]]] = []
 
         for seg in self.input_segments:
             seg_msgs = self.original_messages[cursor : cursor + seg.message_count]
@@ -607,7 +614,12 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                             if live_tool_calls:
                                 # Record the position of this assistant message so the post-pass
                                 # can rewrite tool_call_id in the role:tool messages that follow.
-                                pending_id_rewrites.append((len(result), live_tool_calls))
+                                # recorded_tool_calls is the pre-substitution assistant message's
+                                # own tool_calls — the same recorded order the successor's role:tool
+                                # messages were emitted against — used to pair by function name.
+                                recorded_tool_calls = seg_msgs[0].get("tool_calls") or []
+                                recorded_tool_names = [tc.get("function", {}).get("name") for tc in recorded_tool_calls]
+                                pending_id_rewrites.append((len(result), live_tool_calls, recorded_tool_names))
                             result.append(actual_message)
                             logger.debug(
                                 f"Event {self.event_id}: substituted output segment with structured message from {seg.source_event_id}"
@@ -723,29 +735,50 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         # Post-pass: rewrite tool_call_id values in role:tool messages so they match
         # the live tool call IDs instead of the recorded (now stale) ones.
         #
-        # Why by index rather than by name: the live model may call the same function
-        # twice, making name-based matching ambiguous. Index is unambiguous — the i-th
-        # role:tool message corresponds to the i-th tool call in the preceding assistant
-        # message (guaranteed by the OpenAI spec).
-        #
-        # We scan forward from the assistant message and rewrite only role:tool messages
-        # that carry a tool_call_id, skipping any intervening non-tool messages
-        # (which are valid in some trace formats).
-        for assistant_idx, live_tool_calls in pending_id_rewrites:
+        # Matched by recorded function name (not raw index), since the live model may
+        # call the same function a different number of times or in a different order
+        # than the recording did. Each recorded role:tool message pairs with the first
+        # unused live call of the same name; no match leaves it dangling (logged).
+        # If no tool_calls were recorded (empty recorded_tool_names), there's no name
+        # signal, so we fall back to positional pairing instead.
+        for assistant_idx, live_tool_calls, recorded_tool_names in pending_id_rewrites:
+            positional_fallback = not recorded_tool_names
+            bound = len(live_tool_calls) if positional_fallback else len(recorded_tool_names)
+            used_live_indices: Set[int] = set()
             tool_result_idx = 0
             for result_idx in range(assistant_idx + 1, len(result)):
-                if tool_result_idx >= len(live_tool_calls):
+                if tool_result_idx >= bound:
                     break
                 msg = result[result_idx]
                 if msg.get("role") == "tool":
-                    live_id = live_tool_calls[tool_result_idx].get("id")
-                    if live_id:
-                        msg = dict(msg)  # copy before mutating — the dict may be shared
-                        msg["tool_call_id"] = live_id
-                        result[result_idx] = msg
+                    if positional_fallback:
+                        live_match_idx: Optional[int] = tool_result_idx
+                        recorded_name = None
+                    else:
+                        recorded_name = recorded_tool_names[tool_result_idx]
+                        live_match_idx = next(
+                            (
+                                i
+                                for i, tc in enumerate(live_tool_calls)
+                                if i not in used_live_indices and tc.get("function", {}).get("name") == recorded_name
+                            ),
+                            None,
+                        )
+                    if live_match_idx is not None:
+                        used_live_indices.add(live_match_idx)
+                        live_id = live_tool_calls[live_match_idx].get("id")
+                        if live_id:
+                            msg = dict(msg)  # copy before mutating — the dict may be shared
+                            msg["tool_call_id"] = live_id
+                            result[result_idx] = msg
+                            logger.debug(
+                                f"Event {self.event_id}: rewrote tool_call_id at position {result_idx} to live ID {live_id!r}"
+                            )
+                    else:
                         logger.debug(
-                            f"Event {self.event_id}: rewrote tool_call_id at position {result_idx} "
-                            f"to live ID {live_id!r} (index {tool_result_idx})"
+                            f"Event {self.event_id}: no live tool call named {recorded_name!r} found for "
+                            f"recorded role:tool message at position {result_idx}; leaving its tool_call_id "
+                            f"dangling"
                         )
                     tool_result_idx += 1
 
@@ -821,11 +854,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 )
             return ""
 
+        actual_tool_names: List[str] = []
+
         if config.streaming:
             # Accumulate tool_call chunks and reasoning_content alongside text content.
             # delta.tool_calls is a list of partial objects; each chunk carries an
             # index that identifies which tool call it belongs to.
-            tool_call_chunks: Dict[int, Dict[str, Any]] = {}
+            tool_call_chunks = {}
             reasoning_content_chunks: list[str] = []
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
@@ -901,6 +936,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_message=streaming_output_message,
                 extra_info={"raw_response": raw_content},
             )
+            actual_tool_names = [tool_call_chunks[i]["function"]["name"] for i in sorted(tool_call_chunks)]
         else:
             data = await response.json()
             prompt_len = tokenizer.count_tokens("".join([_get_text(m.content) for m in self.messages]))
@@ -944,6 +980,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_text=output_text or None,
                 output_message=output_message,
             )
+            actual_tool_names = [tc["function"]["name"] for tc in (tool_calls or [])]
+
+        if self.expected_output_tool_names is not None:
+            if actual_tool_names != self.expected_output_tool_names:
+                logger.debug(
+                    f"Tool call name mismatch for event {self.event_id}: "
+                    f"expected {self.expected_output_tool_names}, got {actual_tool_names}"
+                )
 
         # Register output and notify successors.
         self.on_completion(info)

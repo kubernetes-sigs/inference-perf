@@ -331,7 +331,7 @@ class TestToolCallIdRewriting:
         assert result[2]["role"] == "tool"
         assert result[2]["tool_call_id"] == "live_id_1"
 
-    def test_multiple_tool_call_ids_rewritten_in_order(self) -> None:
+    def test_multiple_tool_call_ids_no_tool_name_rewritten_in_order(self) -> None:
         from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
         from inference_perf.datagen.replay_graph_types import InputSegment
 
@@ -358,6 +358,79 @@ class TestToolCallIdRewriting:
 
         assert result[2]["tool_call_id"] == "live_1"
         assert result[3]["tool_call_id"] == "live_2"
+
+    def test_duplicate_live_name_matches_correct_recorded_slot(self) -> None:
+        """Recorded ["get_document", "search"] vs live ["search", "search"]: the recorded
+        "search" result must pair with a live "search" call, not with "get_document" by
+        raw position, and the "get_document" result must be left dangling."""
+        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay_graph_types import InputSegment
+
+        registry = EventOutputRegistry()
+        live_tool_calls = [
+            {"id": "live_search_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "live_search_2", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+        ]
+        registry.record("sess:evt1", "", [], output_message={"role": "assistant", "tool_calls": live_tool_calls})
+
+        recorded_tool_calls = [
+            {"id": "rec_get_document", "type": "function", "function": {"name": "get_document", "arguments": "{}"}},
+            {"id": "rec_search", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+        ]
+        original_messages = [
+            {"role": "user", "content": "Go"},
+            {"role": "assistant", "content": "<recorded>", "tool_calls": recorded_tool_calls},
+            {"role": "tool", "tool_call_id": "rec_get_document", "content": "doc result"},
+            {"role": "tool", "tool_call_id": "rec_search", "content": "search result"},
+        ]
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=5),
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sess:evt1"),
+            InputSegment(type="unique", message_count=2, token_count=10),
+        ]
+        api_data = self._make_api_data(registry, original_messages, segments)
+        result = api_data._build_messages_with_substitution()
+
+        # "get_document" has no matching live call — stays dangling with its stale recorded id.
+        assert result[2]["tool_call_id"] == "rec_get_document"
+        # "search" matches the (first unused) live "search" call.
+        assert result[3]["tool_call_id"] == "live_search_1"
+
+    def test_more_live_tools_than_recorded_all_recorded_matched(self) -> None:
+        """Live model makes extra tool calls beyond what was recorded (e.g. "search",
+        "search", "get_document" live vs just "search", "get_document" recorded). Every
+        recorded result must still find its match; the extra live call is simply unused."""
+        from inference_perf.datagen.replay_graph_session_datagen import EventOutputRegistry
+        from inference_perf.datagen.replay_graph_types import InputSegment
+
+        registry = EventOutputRegistry()
+        live_tool_calls = [
+            {"id": "live_search_1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "live_search_2", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "live_get_document", "type": "function", "function": {"name": "get_document", "arguments": "{}"}},
+        ]
+        registry.record("sess:evt1", "", [], output_message={"role": "assistant", "tool_calls": live_tool_calls})
+
+        recorded_tool_calls = [
+            {"id": "rec_search", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+            {"id": "rec_get_document", "type": "function", "function": {"name": "get_document", "arguments": "{}"}},
+        ]
+        original_messages = [
+            {"role": "user", "content": "Go"},
+            {"role": "assistant", "content": "<recorded>", "tool_calls": recorded_tool_calls},
+            {"role": "tool", "tool_call_id": "rec_search", "content": "search result"},
+            {"role": "tool", "tool_call_id": "rec_get_document", "content": "doc result"},
+        ]
+        segments = [
+            InputSegment(type="unique", message_count=1, token_count=5),
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sess:evt1"),
+            InputSegment(type="unique", message_count=2, token_count=10),
+        ]
+        api_data = self._make_api_data(registry, original_messages, segments)
+        result = api_data._build_messages_with_substitution()
+
+        assert result[2]["tool_call_id"] == "live_search_1"
+        assert result[3]["tool_call_id"] == "live_get_document"
 
     def test_non_tool_unique_messages_not_rewritten(self) -> None:
         """Messages after the tool results in the unique segment must not be touched."""
