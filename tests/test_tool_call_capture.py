@@ -377,7 +377,7 @@ class TestToolCallIdRewriting:
             {"id": "rec_get_document", "type": "function", "function": {"name": "get_document", "arguments": "{}"}},
             {"id": "rec_search", "type": "function", "function": {"name": "search", "arguments": "{}"}},
         ]
-        original_messages = [
+        original_messages: List[Dict[str, Any]] = [
             {"role": "user", "content": "Go"},
             {"role": "assistant", "content": "<recorded>", "tool_calls": recorded_tool_calls},
             {"role": "tool", "tool_call_id": "rec_get_document", "content": "doc result"},
@@ -415,7 +415,7 @@ class TestToolCallIdRewriting:
             {"id": "rec_search", "type": "function", "function": {"name": "search", "arguments": "{}"}},
             {"id": "rec_get_document", "type": "function", "function": {"name": "get_document", "arguments": "{}"}},
         ]
-        original_messages = [
+        original_messages: List[Dict[str, Any]] = [
             {"role": "user", "content": "Go"},
             {"role": "assistant", "content": "<recorded>", "tool_calls": recorded_tool_calls},
             {"role": "tool", "tool_call_id": "rec_search", "content": "search result"},
