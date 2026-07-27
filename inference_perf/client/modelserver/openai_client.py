@@ -22,6 +22,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     StreamedResponseMetrics,
 )
+from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
@@ -243,7 +244,17 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     otel_response_info["input_prompt"] = data.prompt
 
                 # Extract output text (gen_ai.output.text)
-                if self.client.api_config.streaming and response_content:
+                if self.client.api_config.type == APIType.AnthropicMessages and response and response.status == 200:
+                    if not self.client.api_config.streaming and response_content:
+                        response_json = json.loads(response_content)
+                        output_text, output_message = parse_anthropic_content(response_json.get("content"))
+                        if output_text:
+                            otel_response_info["output_text"] = output_text
+                        if output_message and output_message.get("tool_calls"):
+                            otel_response_info["output_message"] = json.dumps(output_message)
+                        if response_json.get("stop_reason"):
+                            otel_response_info["finish_reason"] = response_json["stop_reason"]
+                elif self.client.api_config.streaming and response_content:
                     stripped_response = response_content.strip()
                     if stripped_response.startswith("data:"):
                         output_parts = []
@@ -321,14 +332,18 @@ class openAIModelServerClientSession(ModelServerClientSession):
             streaming=self.client.api_config.streaming,
         )
 
-        # Add response_format for structured output if configured
-        if self.client.api_config.response_format:
+        # Add response_format for structured output if configured.
+        if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
             payload["response_format"] = self.client.api_config.response_format.to_api_format()
 
         headers = {"Content-Type": "application/json"}
 
         if self.client.api_key:
-            headers["Authorization"] = f"Bearer {self.client.api_key}"
+            if self.client.api_config.type == APIType.AnthropicMessages:
+                headers["x-api-key"] = self.client.api_key
+                headers["anthropic-version"] = ANTHROPIC_VERSION
+            else:
+                headers["Authorization"] = f"Bearer {self.client.api_key}"
 
         if self.client.api_config.headers:
             _update_headers_case_insensitive(headers, self.client.api_config.headers)
@@ -344,7 +359,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
         request_data = json.dumps(payload)
 
         # Determine operation name based on API type
-        operation_name = "chat.completions" if self.client.api_config.type == APIType.Chat else "completions"
+        if self.client.api_config.type == APIType.Chat:
+            operation_name = "chat.completions"
+        elif self.client.api_config.type == APIType.AnthropicMessages:
+            operation_name = "messages"
+        else:
+            operation_name = "completions"
 
         start = time.perf_counter()
         response: Optional[aiohttp.ClientResponse] = None

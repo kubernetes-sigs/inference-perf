@@ -69,7 +69,7 @@ OTel trace replay requires two configuration sections: `data` (what to replay) a
 
 ```yaml
 api:
-  type: chat                           # Required: chat or completion
+  type: chat                           # Required: chat or anthropic_messages
   streaming: true                      # Optional: enable streaming responses
 
 server:

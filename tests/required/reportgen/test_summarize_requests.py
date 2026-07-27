@@ -496,3 +496,29 @@ def test_summarize_requests_surfaces_prompt_cache_usage() -> None:
     for p in DEFAULT_PERCENTILES:
         expected["median" if p == 50 else f"p{p:g}"] = 10.0
     assert result.successes["prompt_tokens"] == pytest.approx(expected)
+
+
+def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
+    """Servers that report `prompt_tokens_details: null` must not crash."""
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+        response_metrics=UnaryResponseMetrics(
+            output_tokens=2,
+            server_usage={
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "prompt_tokens_details": None,
+            },
+        ),
+    )
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="test_request", info=info, error=None
+    )
+
+    result = summarize_requests([metric], DEFAULT_PERCENTILES)
+
+    prompt_tokens = result.successes["prompt_tokens"]
+    assert prompt_tokens["total"] == pytest.approx(10.0)
+    assert prompt_tokens["cached"] == pytest.approx(0.0)
+    assert prompt_tokens["uncached"] == pytest.approx(10.0)

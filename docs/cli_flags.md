@@ -4,7 +4,7 @@ These command line flags are automatically generated from the internal `Config` 
 
 | Flag | Type | Description |
 | --- | --- | --- |
-| `--api.type` | Enum (completion, chat) | Matches api.type in config |
+| `--api.type` | Enum (completion, chat, anthropic_messages) | Matches api.type in config |
 | `--api.streaming` | boolean | Matches api.streaming in config |
 | `--api.headers` | JSON | Matches api.headers in config |
 | `--api.slo_unit` | str | Matches api.slo_unit in config |

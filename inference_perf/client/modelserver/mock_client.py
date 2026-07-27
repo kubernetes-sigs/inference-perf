@@ -100,7 +100,7 @@ class MockModelServerClient(ModelServerClient):
             )
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages]
 
     def get_prometheus_metric_metadata(self) -> PrometheusMetricMetadata:
         mock_prometheus_metric = ModelServerPrometheusMetric(

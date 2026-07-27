@@ -68,9 +68,10 @@ async def parse_sse_stream(
         - raw_content: The raw string content of the stream
         - response_chunks: Raw JSON strings of content-bearing chunks, 1:1 with
           chunk_times.
-        - server_usage: Last-seen `usage` dict from any chunk that carried one
-          (e.g. trailing `{"choices":[],"usage":{...}}` when stream_options
-          include_usage=true). None if the server didn't emit usage.
+        - server_usage: Merged `usage` fields from chunks that carried one
+          (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
+          `message.usage`/`message_delta.usage`). None if the server didn't
+          emit usage.
     """
     output_text = ""
     chunk_times: List[float] = []
@@ -95,8 +96,13 @@ async def parse_sse_stream(
                             break
                         try:
                             data = json.loads(data_str)
-                            if usage := data.get("usage"):
-                                server_usage = usage
+                            usage = data.get("usage")
+                            if not isinstance(usage, dict):
+                                message_data = data.get("message")
+                                if isinstance(message_data, dict):
+                                    usage = message_data.get("usage")
+                            if isinstance(usage, dict):
+                                server_usage = {**(server_usage or {}), **usage}
                             if content := extract_content(data):
                                 output_text += content
                                 chunk_times.append(message_time)
