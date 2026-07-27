@@ -9,7 +9,7 @@
     "plan": ["PLNAUTH", "PLNBTCH", "PLNONLN", "PLNRPT"],
     "table": ["INVOICE", "ACCOUNT", "LEDGER", "CUSTOMER"]
   },
-  "tool_names": ["get_bp_stats", "get_lock_waits", "get_log_activity", "get_thread_detail", "get_deadlock_events", "get_message_log", "get_plan_stats", "run_reorg"],
+  "tool_names": ["get_bp_stats", "get_lock_waits", "get_log_activity", "get_thread_detail", "get_deadlock_events", "get_message_log", "get_plan_stats", "run_reorg", "explain_sql"],
   "tool_descriptions": {
     "get_bp_stats": "Return recent bufferpool statistics (hit ratio, get-page, sync/async reads) for a bufferpool on a Db2 subsystem.",
     "get_lock_waits": "List current lock waits on a subsystem: waiter/holder threads, resource, and wait time in ms.",
@@ -18,7 +18,8 @@
     "get_deadlock_events": "Return recent deadlock/timeout events with the victim thread and the resource involved.",
     "get_message_log": "Fetch recent console messages (DSNxxxx) for a subsystem; may return a not-found/connection-error payload when the log is unreachable.",
     "get_plan_stats": "Return access-path and execution statistics for a plan: rows examined, index usage, and elapsed time.",
-    "run_reorg": "Run a REORG on a table or index (a change action); returns the utility job status and reclaimed space."
+    "run_reorg": "Run a REORG on a table or index (a change action); returns the utility job status and reclaimed space.",
+    "explain_sql": "Run EXPLAIN on a submitted SQL statement and return its access-path plan (index usage, join order, estimated cost)."
   },
   "tool_parameters": {
     "get_bp_stats": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "bufferpool": {"type": "string", "description": "Bufferpool name, e.g. BP0."}}, "required": ["db_instance", "bufferpool"]},
@@ -28,7 +29,8 @@
     "get_deadlock_events": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}}, "required": ["db_instance"]},
     "get_message_log": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "since": {"type": "string", "description": "Return messages since this timestamp (HH:MM:SS)."}}, "required": ["db_instance"]},
     "get_plan_stats": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "plan": {"type": "string", "description": "Plan name to report on."}}, "required": ["db_instance", "plan"]},
-    "run_reorg": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "table": {"type": "string", "description": "Table to reorganize."}}, "required": ["db_instance", "table"]}
+    "run_reorg": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "table": {"type": "string", "description": "Table to reorganize."}}, "required": ["db_instance", "table"]},
+    "explain_sql": {"type": "object", "properties": {"db_instance": {"type": "string", "description": "Db2 subsystem id."}, "body": {"type": "string", "description": "The SQL statement to EXPLAIN.", "x-payload-tokens": 90}}, "required": ["db_instance", "body"]}
   },
   "result_templates": {
     "get_bp_stats": "bufferpool {bufferpool} on {db_instance}\n| time | bp | hit_ratio | getpage | sync_read | async_read |\n| {t0} | {bp0} | {hit_ratio0} | {getpage0} | {sync0} | {async0} |\n| {t1} | {bp1} | {hit_ratio1} | {getpage1} | {sync1} | {async1} |\n| {t2} | {bp2} | {hit_ratio2} | {getpage2} | {sync2} | {async2} |",
@@ -39,6 +41,7 @@
     "get_message_log": "get_message_log {db_instance}: ERROR DSNL027I subsystem unreachable — no messages returned (connection timed out after {n0}ms). since={t0}",
     "get_plan_stats": "plan stats {db_instance} plan={plan}: rows_examined={n0} index_used={pct0}% elapsed_ms={elapsed_ms0} sync_io={sync0}",
     "run_reorg": "run_reorg {db_instance} table={table}: utility=REORG status=COMPLETE rows={n0} reclaimed_pct={pct0}% elapsed_s={n1}",
+    "explain_sql": "EXPLAIN on {db_instance}:\n  access path: TBSCAN on {table} (no matching index) est_cost={n0} est_rows={n1}\n  join: NLJOIN order=[{table}] sort={pct0}% index_used={pct1}%\n  advice: consider an index on the predicate columns of {table}",
     "default": "result for {entity}: value={n0} at {t0}"
   },
   "objective_template": "{verb} {symptom} on {db_instance}: identify root cause and recommend remediation.",
@@ -61,6 +64,12 @@
     "{t0} DSNI031I {db_instance} deadlock victim=thr-{n0} resource={table} reason=00C90088",
     "{t0} metric {db_instance} commit_ms={elapsed_ms0} class2_cpu={cpu0} getpage_rate={rate0}",
     "{t0} DSNB250E {db_instance} bufferpool {bufferpool} sync I/O elevated sync_read={sync0}"
+  ],
+  "payload_templates": [
+    "SELECT c.id, c.status, SUM(l.amount) AS total FROM {table} c JOIN LEDGER l ON l.acct = c.id WHERE c.plan = '{plan}' AND c.updated > CURRENT DATE - {n0} DAYS GROUP BY c.id, c.status HAVING SUM(l.amount) > {n1} ORDER BY total DESC FETCH FIRST {n2} ROWS ONLY;",
+    "UPDATE {table} SET status = 'REVIEW', updated = CURRENT TIMESTAMP WHERE plan = '{plan}' AND balance < {n0} AND region = '{region}';",
+    "WITH recent AS (SELECT acct, MAX(ts) AS last_ts FROM LEDGER WHERE ts > CURRENT DATE - {n0} DAYS GROUP BY acct) SELECT a.id FROM {table} a JOIN recent r ON r.acct = a.id WHERE a.plan = '{plan}';",
+    "DELETE FROM {table} WHERE status = 'STALE' AND updated < CURRENT DATE - {n1} DAYS;"
   ],
   "compaction_summary_template": "{verb} {symptom} on {db_instance} (plan {plan}, table {table}). So far: ran {tool_a}, {tool_b}, and {tool_c}; collected bufferpool, lock-wait, and log-activity diagnostics. Findings are still partial; continuing to isolate the bottleneck."
 }

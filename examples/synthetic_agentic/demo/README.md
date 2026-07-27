@@ -24,7 +24,7 @@ is that call's OUTPUT (not a separate event). Watch how the per-call input messa
 | 01 | `01_bare_no_tools` | Bare non-agentic baseline (no tools) | 1 event/session (the answer is the call's OUTPUT, not a separate event); no tools in requests |
 | 02 | `02_multiturn_no_tools` | Multi-turn conversation, NO tools — pure conversation growth | 3 events; input msg count grows 1→3→5 across rounds; prompt tokens increase per round; no tools |
 | 03 | `03_single_agent_tool_loop` | A tool-loop (introduces tools) — tool-loop growth | 3 events (principal + 2 tool turns; last turn's OUTPUT is the answer); input grows 1→3→5; catalog advertised |
-| 04 | `04_long_tool_loop` | Long tool-loop (`tool_turns_per_loop`=5) — growth made obvious | 6 events; input msg count grows 1→3→5→7→9→11; prompt tokens climb every turn |
+| 04 | `04_long_tool_loop` | Long tool-loop (`tool_loop_depth`=5) — growth made obvious | 6 events; input msg count grows 1→3→5→7→9→11; prompt tokens climb every turn |
 | 05 | `05_multiturn_with_tools` | Multi-turn AND tool-loops (both growth mechanisms combined) | 6 events; input msg count grows 1→3→3→5→5→7; prompt tokens INCREASE across rounds |
 | 06 | `06_parallel_tool_calls` | K>1 tool calls per turn (best-effort) | 3 tool_calls + 3 matching results per turn |
 | 07 | `07_chat_with_tools_varying` | Per-round tool usage varies | mix of answer-only and tool-using rounds |

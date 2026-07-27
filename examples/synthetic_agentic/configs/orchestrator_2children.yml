@@ -6,12 +6,12 @@ data:
     num_sessions: 3
     seed: 100
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 1}       # one orchestration round
+    turns_per_session: {type: fixed, mean: 1}       # one orchestration round
     fanout_probability: 1.0                            # always spawn
     sub_agents_per_spawn: {type: fixed, mean: 2}       # EXACTLY 2 children
     max_depth: 1                                        # children are leaves (no further nesting)
-    tool_turns_per_loop: {type: fixed, mean: 0}        # children answer directly → each = 1 clean call
-    tool_definitions_per_agent: {type: fixed, mean: 4}
+    tool_loop_depth: {type: fixed, mean: 0}        # children answer directly → each = 1 clean call
+    tool_catalog_size_per_agent: {type: fixed, mean: 4}
     max_events_per_session: 512
     input_tokens_per_turn:  {type: fixed, mean: 120}
     output_tokens_per_turn: {type: fixed, mean: 40}

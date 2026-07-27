@@ -327,29 +327,71 @@ class ContextCompactionConfig(BaseModel):
 
 
 class SyntheticAgenticConfig(SessionReplayConfig):
-    """Procedural multi-agent agentic session generation (§8)."""
+    """Procedural multi-agent agentic session generation."""
 
-    # Required — the four workload-shape decisions (no default)
+    # Required: load volume + per-turn token sizing (these drive the load, so the user
+    # must choose them; there is no neutral default token profile).
     num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
-    rounds_per_session: Distribution = Field(..., description="N principal inputs to the root; N=1 autonomous")
-    fanout_probability: float = Field(..., ge=0.0, le=1.0, description="P(an agent execution spawns sub-agents)")
-    theme_mix: Dict[str, float] = Field(..., description="theme name -> weight")
+    input_tokens_per_turn: Distribution = Field(..., description="per-turn input tokens")
+    output_tokens_per_turn: Distribution = Field(..., description="per-turn output tokens (plain-text turns)")
+
+    # Structural/content shape: sensible defaults, override to shape the workload.
+    turns_per_session: Distribution = Field(
+        default_factory=lambda: Distribution(type="fixed", mean=1),
+        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn",
+    )
+    fanout_probability: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Probability an agent spawns sub-agents (instead of just answering), rolled fresh for "
+            "each of the root's turns and once for each sub-agent. Default 0 = single-agent; 1 = always "
+            "spawn (full tree to max_depth)."
+        ),
+    )
+    theme_mix: Dict[str, float] = Field(
+        default_factory=lambda: {"generic": 0.25, "db2_latency_incident": 0.25, "research_rag": 0.25, "code_change_task": 0.25},
+        description="theme name -> weight; default is an equal mix of the four built-in themes",
+    )
 
     # Defaulted
-    seed: int = Field(42, description="Base seed for stable per-session RNG (§2.3a)")
+    seed: int = Field(42, description="Base seed for stable per-session RNG")
     shared_system_prompt_len: int = Field(0, ge=0, description="Invariant system-prompt head length in tokens")
-    tool_turns_per_loop: Optional[Distribution] = Field(None, description="tool-call TURNS per loop (fallback fixed 2)")
+    tool_loop_depth: Optional[Distribution] = Field(
+        None,
+        description=(
+            "How many times an agent goes around its tool loop before answering -- each iteration "
+            "is a model call that emits a tool call and gets a result. 0 = answer directly (no tool "
+            "loop). Then the agent makes one more model call for its final answer, so total model "
+            "calls = this value + 1. Drawn fresh for each of the root's turns, and once for each "
+            "sub-agent. Fallback fixed 2."
+        ),
+    )
     sub_agents_per_spawn: Optional[Distribution] = Field(None, description="K children per spawn (fallback uniform 2-4)")
     max_depth: int = Field(2, ge=0, description="Hard recursion terminator")
     max_events_per_session: int = Field(64, gt=0, description="Self-limiting event budget")
-    tool_definitions_per_agent: Optional[Distribution] = Field(None, description="advertised catalog size (fallback fixed 8)")
-    parallel_tool_calls_per_turn: Optional[Distribution] = Field(
-        None, description="calls per ordinary tool turn (fallback fixed 1)"
+    tool_catalog_size_per_agent: Optional[Distribution] = Field(
+        None, description="advertised tool-catalog size per agent (fallback fixed 8)"
     )
-    input_tokens_per_turn: Distribution = Field(..., description="per-turn input tokens")
-    output_tokens_per_turn: Distribution = Field(..., description="per-turn output tokens (plain-text turns)")
-    tool_call_latency_sec: Distribution = Field(..., description="machine/agent wait_ms gaps")
-    user_think_time_sec: Optional[Distribution] = Field(None, description="human gap before rounds 2..N")
+    parallel_tool_calls_per_step: Optional[Distribution] = Field(
+        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1)"
+    )
+    tool_call_latency_sec: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Pause between an agent's steps, in seconds, modelling how long a tool takes "
+            "to run (the tool round-trip). Held as an offline wait that frees the GPU. "
+            "Omit to use the default (fixed 1s)."
+        ),
+    )
+    user_think_time_sec: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Pause before each follow-up turn (turns 2..N), in seconds, modelling the user's "
+            "read/think/reply time. Omit to use the default (fixed 10s)."
+        ),
+    )
     max_model_len: Optional[int] = Field(None, description="fail-fast context-length ceiling")
 
     # Context compaction: omit to never compact (pure growth). When set,
@@ -363,7 +405,8 @@ class SyntheticAgenticConfig(SessionReplayConfig):
         ),
     )
 
-    # Pinned inert / not for synthetic (§2.2a, C3)
+    # Inherited from SessionReplayConfig but inert for synthetic generation: pinned
+    # so a synthetic config can't accidentally enable trace-replay-only behavior.
     inject_random_session_id: bool = Field(False, frozen=True)
     duplicate_sessions_target: Optional[int] = Field(None, frozen=True)
     override_tool_call_max_tokens: bool = Field(False)
@@ -380,7 +423,7 @@ class SyntheticAgenticConfig(SessionReplayConfig):
 
     @model_validator(mode="after")
     def validate_max_model_len(self) -> "SyntheticAgenticConfig":
-        # Fail-fast context-length ceiling check (§8). Uses the mean of
+        # Fail-fast context-length ceiling check. Uses the mean of
         # input_tokens_per_turn as the "typical" per-turn input size: mean is
         # always a meaningful, well-defined statistic for every Distribution
         # type (fixed, uniform, normal, ...), unlike max which for some

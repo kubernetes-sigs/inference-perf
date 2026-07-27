@@ -9,10 +9,10 @@ data:
     num_sessions: 4
     seed: 5
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 4}
+    turns_per_session: {type: fixed, mean: 4}
     fanout_probability: 0.0
-    tool_turns_per_loop: {type: uniform, min: 0, max: 3}   # VARIES per round
-    tool_definitions_per_agent: {type: fixed, mean: 8}
+    tool_loop_depth: {type: uniform, min: 0, max: 3}   # VARIES per round
+    tool_catalog_size_per_agent: {type: fixed, mean: 8}
     input_tokens_per_turn:  {type: fixed, mean: 250}
     output_tokens_per_turn: {type: fixed, mean: 60}
     tool_call_latency_sec:  {type: fixed, mean: 1}

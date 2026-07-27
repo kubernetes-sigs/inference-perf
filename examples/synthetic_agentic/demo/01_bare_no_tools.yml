@@ -9,10 +9,10 @@ data:
     num_sessions: 5
     seed: 1
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 1}     # single autonomous turn
+    turns_per_session: {type: fixed, mean: 1}     # single autonomous turn
     fanout_probability: 0.0                          # no sub-agents
-    tool_turns_per_loop: {type: fixed, mean: 0}      # answer directly
-    tool_definitions_per_agent: {type: fixed, mean: 0}  # NO tools advertised (bare baseline)
+    tool_loop_depth: {type: fixed, mean: 0}      # answer directly
+    tool_catalog_size_per_agent: {type: fixed, mean: 0}  # NO tools advertised (bare baseline)
     input_tokens_per_turn:  {type: fixed, mean: 200}
     output_tokens_per_turn: {type: fixed, mean: 80}
     tool_call_latency_sec:  {type: fixed, mean: 1}

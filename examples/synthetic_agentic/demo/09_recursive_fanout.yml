@@ -9,12 +9,12 @@ data:
     num_sessions: 4
     seed: 7
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 1}
+    turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 1.0
     sub_agents_per_spawn: {type: fixed, mean: 2}
     max_depth: 2                                       # children can spawn grandchildren
-    tool_turns_per_loop: {type: fixed, mean: 1}
-    tool_definitions_per_agent: {type: fixed, mean: 6}
+    tool_loop_depth: {type: fixed, mean: 1}
+    tool_catalog_size_per_agent: {type: fixed, mean: 6}
     max_events_per_session: 512
     input_tokens_per_turn:  {type: fixed, mean: 200}
     output_tokens_per_turn: {type: fixed, mean: 50}

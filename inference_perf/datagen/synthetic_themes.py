@@ -25,31 +25,31 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 class Theme(BaseModel):
-    """A synthetic-session theme.
+    """A synthetic-session theme: the content layer that makes a generated session
+    look like a real workload in some domain.
 
-    Beyond the original required fields (`verbs`, `entities`, `tool_names`,
-    `result_templates` with a `default` key, `objective_template`) the schema
-    now carries three enrichment fields, all with safe empty/`None` defaults so
-    older/other themes keep loading unchanged:
+    Required fields (`verbs`, `entities`, `tool_names`, `result_templates` with a
+    `default` key, `objective_template`) define the core content. The remaining
+    fields are optional, each with a safe empty/`None` default:
 
-    - `tool_descriptions`: per-tool one-line descriptions (keyed by the base
-      tool name). `_tool_definitions` looks each up and emits it into BOTH the
-      top-level and nested `function.description` of the OpenAI tool schema.
-      Missing entries fall back to a generic sentence. Synthetic suffixed
-      duplicates (`get_bp_stats_7`) reuse their base tool's description.
+    - `tool_descriptions`: per-tool one-line descriptions (keyed by base tool name),
+      emitted into both the top-level and nested `function.description` of the tool
+      schema. Missing entries fall back to a generic sentence; suffixed duplicates
+      (`get_bp_stats_7`) reuse their base tool's description.
+    - `tool_parameters`: per-tool JSON-Schema `parameters` object; tools without one
+      get a generic non-empty schema so no tool is parameterless.
+    - `intro_doc_templates`: long "someone pasted this" documents (an incident ticket,
+      a metrics dump, a config excerpt) that open a session's first user turn.
+    - `filler_templates`: domain snippets (log lines, metric rows, stack frames) that
+      build the per-theme filler word pool used to pad turns; empty -> the shared
+      Shakespeare corpus.
+    - `payload_templates`: domain snippets for large tool-call payload args (code,
+      SQL, a drafted answer); empty -> falls back to `filler_templates`.
+    - `compaction_summary_template`: recap sentence for a context-compaction round.
+    - `followup_templates` / `followup_connectives`: phrasing for follow-up turns.
 
-    - `intro_doc_templates`: long, realistic "someone pasted this" documents
-      (an incident ticket, a metrics dump, a config excerpt, a log slice) that
-      ride the FIRST user turn of a session. One is chosen + seeded per session
-      and prepended to the round-0 objective (kept intact as fixed_content).
-      Placeholders follow the same field-name heuristics as result templates
-      (`{tN}` time, `{nN}`/`{msN}`/`{countN}` number, `{entity}` entity pool).
-
-    - `filler_templates`: domain-appropriate snippets (log lines, metric rows,
-      stack frames) used to build the per-theme filler word pool INSTEAD of the
-      Shakespeare corpus, so padding reads like more of the same pasted content.
-      Rendered + seeded, then split into words. Empty -> the generator falls
-      back to the shared Shakespeare corpus.
+    Template placeholders follow field-name heuristics (`{tN}` time, `{nN}` number,
+    a name matching an `entities` category -> that category's pool).
     """
 
     name: str
@@ -72,6 +72,13 @@ class Theme(BaseModel):
     followup_connectives: list[str] = []
     intro_doc_templates: list[str] = []
     filler_templates: list[str] = []
+    # Optional filler source for LARGE tool-call PAYLOAD args (content/code/patch/body/...)
+    # -- distinct from `filler_templates` (which pads turns and reads like telemetry).
+    # A payload should look like what the tool actually carries: a coding tool's payload
+    # is CODE, a DBA tool's is SQL, a research tool's is a DRAFTED ANSWER. Rendered like
+    # filler_templates (each snippet gets seeded field values) into a word pool the payload
+    # is drawn from. Omit -> payloads fall back to `filler_templates`, then the shared corpus.
+    payload_templates: list[str] = []
     # Optional recap sentence prepended to a context-compaction round's fresh prompt,
     # standing in for the dropped transcript. Filled like objective_template ({verb} +
     # entity/pinned placeholders) PLUS {tool_a}/{tool_b}/{tool_c} drawn from this theme's
@@ -136,7 +143,6 @@ GENERIC_THEME = Theme(
         "get_service_health",
         "query_metrics",
         "search_logs",
-        "get_trace",
         "list_recent_deploys",
         "get_dependency_status",
         "get_error_budget",
@@ -145,12 +151,12 @@ GENERIC_THEME = Theme(
         "run_synthetic_probe",
         "get_exception_trace",
         "get_config_snapshot",
+        "apply_remediation",
     ],
     tool_descriptions={
         "get_service_health": "Return the current health summary (status, p50/p99 latency, error rate) for a named service.",
         "query_metrics": "Query a time-series metric (latency, throughput, saturation) over a window and return sampled points.",
         "search_logs": "Full-text search structured application logs for a service, returning matching lines with timestamps.",
-        "get_trace": "Fetch a distributed trace by id and return its span breakdown with per-span durations.",
         "list_recent_deploys": "List recent deployments for a service with commit sha, author, and rollout timestamps.",
         "get_dependency_status": "Report reachability and latency of a service's upstream dependencies (DBs, caches, brokers).",
         "get_error_budget": "Return the remaining SLO error budget and burn rate for a service over the trailing window.",
@@ -159,12 +165,14 @@ GENERIC_THEME = Theme(
         "run_synthetic_probe": "Run an active synthetic request against a service endpoint and return the observed latency/status.",
         "get_exception_trace": "Fetch the most recent unhandled-exception stack trace captured for a service.",
         "get_config_snapshot": "Return the current effective runtime configuration for a service as a JSON object.",
+        "apply_remediation": "Apply a submitted remediation to a service: a config patch or runbook script to roll out.",
     },
     # Realistic SRE-toolbox parameter schemas. Property names that match an
     # `entities` category (`service`, `dep`, `region`) are threaded to the
     # round's pinned subject by the generator; enum/int props exercise the other
     # arg types. Several tools are multi-required-param so complex tool calls are
-    # generated (query_metrics, get_trace, search_logs, run_synthetic_probe).
+    # generated (query_metrics, search_logs, run_synthetic_probe). apply_remediation
+    # carries a large `body` payload (a remediation script/config, from payload_templates).
     tool_parameters={
         "get_service_health": {
             "type": "object",
@@ -204,14 +212,6 @@ GENERIC_THEME = Theme(
                 "limit": {"type": "integer", "description": "Maximum number of matching lines to return."},
             },
             "required": ["service", "query"],
-        },
-        "get_trace": {
-            "type": "object",
-            "properties": {
-                "trace_id": {"type": "string", "description": "Distributed-trace id to fetch."},
-                "service": {"type": "string", "description": "Service the trace originated from."},
-            },
-            "required": ["trace_id", "service"],
         },
         "list_recent_deploys": {
             "type": "object",
@@ -280,6 +280,18 @@ GENERIC_THEME = Theme(
             },
             "required": ["service"],
         },
+        "apply_remediation": {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string", "description": "Service to apply the remediation to."},
+                "body": {
+                    "type": "string",
+                    "description": "The remediation script / config block to apply.",
+                    "x-payload-tokens": 120,
+                },
+            },
+            "required": ["service", "body"],
+        },
     },
     result_templates={
         "get_service_health": (
@@ -297,13 +309,6 @@ GENERIC_THEME = Theme(
             "  {t0} ERROR pool: could not acquire connection within {ms0}ms (in_use={in_use0}/{max0})\n"
             "  {t1} WARN  upstream {dep} responded {status0} after {ms1}ms\n"
             "  {t2} ERROR request aborted after {ms2}ms deadline"
-        ),
-        "get_trace": (
-            "trace_id=tr-{n0} total_ms={total_ms} spans={count0}\n"
-            "  {service} SERVER {ms0}ms\n"
-            "  -> {dep} db.query {ms1}ms\n"
-            "  -> {dep} cache.get {ms2}ms (miss)\n"
-            "  -> {dep} http.call {ms3}ms"
         ),
         "list_recent_deploys": (
             "recent deploys for {service}:\n"
@@ -357,6 +362,10 @@ GENERIC_THEME = Theme(
             '"flags": {{"new_pricing_engine": true, "async_writes": false}}, '
             '"limits": {{"pool_max": {max0}, "timeout_ms": {ms0}}}, '
             '"region": "{region}", "as_of": "{t0}"}}'
+        ),
+        "apply_remediation": (
+            "remediation applied to {service}: rollout {pct0}% complete, {n0} pods updated, "
+            "restarts={n1}, health=OK at {t0} (region {region})"
         ),
         "default": "result for {entity}: value={n0} at {t0}",
     },
@@ -413,6 +422,61 @@ GENERIC_THEME = Theme(
         "{t0} ERROR {service} deadline exceeded after {ms0}ms downstream={dep}",
         "{t0} INFO  deploy {service} sha=a{n0}f rollout={rollout_pct}% healthy={healthy0} unhealthy={unhealthy0}",
         "{t0} DEBUG trace tr-{n0} span={dep} dur={dur0}ms parent={service}",
+    ],
+    # Domain PAYLOAD shape for large tool-call body args (apply_remediation): ops
+    # config/scripts (YAML-ish blocks, kubectl/shell runbooks) -- NOT prose or logs.
+    # Kept free of LITERAL braces: the payload pool is built by splitting rendered
+    # snippets into words, so a literal `{`/`}` (even a doubled/escaped one) would
+    # survive into a body and trip the no-brace-leak invariant. Only real
+    # placeholders ({service}/{dep}/{region}/{nN}/{msN}/{pct0}) appear.
+    payload_templates=[
+        (
+            "kubectl -n prod set env deploy/{service} MAX_CONN={n0} POOL_TIMEOUT_MS={ms0} "
+            "&& kubectl -n prod scale deploy/{service} --replicas={n1} "
+            "&& kubectl -n prod rollout status deploy/{service} --timeout={ms1}ms"
+        ),
+        (
+            "apiVersion: apps/v1\n"
+            "kind: Deployment\n"
+            "metadata:\n"
+            "  name: {service}\n"
+            "spec:\n"
+            "  replicas: {n0}\n"
+            "  template:\n"
+            "    spec:\n"
+            "      restartPolicy: OnFailure\n"
+            "      containers:\n"
+            "        - name: {service}\n"
+            "          resources:\n"
+            "            limits:\n"
+            "              cpu: {n1}m\n"
+            "              memory: {n2}Mi\n"
+            "          env:\n"
+            "            - name: UPSTREAM\n"
+            "              value: {dep}"
+        ),
+        (
+            "for pod in $(kubectl -n prod get pods -l app={service} -o name); do\n"
+            "  kubectl -n prod rollout restart $pod\n"
+            "  sleep {n0}\n"
+            "done\n"
+            "# drain connections to {dep} before cycling; target rollout {pct0}% in {region}"
+        ),
+        (
+            "circuitBreaker:\n"
+            "  service: {service}\n"
+            "  dependency: {dep}\n"
+            "  maxConnections: {n0}\n"
+            "  timeoutMs: {ms0}\n"
+            "  retries: {n1}\n"
+            "  ejectAfterErrors: {n2}\n"
+            "  region: {region}"
+        ),
+        (
+            "helm upgrade {service} ./charts/{service} --namespace prod --atomic "
+            "--set replicas={n0} --set pool.max={n1} --set pool.timeoutMs={ms0} "
+            "--set upstream.host={dep} --set region={region} --timeout {ms1}ms"
+        ),
     ],
     compaction_summary_template=(
         "{verb} {symptom} on {service} (region {region}, dependency {dep}). "

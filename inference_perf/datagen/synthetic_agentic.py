@@ -24,6 +24,7 @@ Python's salted `hash()` entirely and derive all randomness from `numpy`
 import hashlib
 import json
 import logging
+import string
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -75,26 +76,29 @@ def sample_int(dist: Optional[Distribution], rng: np.random.Generator, fallback:
     return int(val)
 
 
+def _pick(rng: np.random.Generator, seq):
+    """Deterministically pick one element of `seq` using `rng` (one draw)."""
+    return seq[int(rng.integers(0, len(seq)))]
+
+
 # --- Filler fitting -------------------------------------------------------
 #
-# Free-text turns (e.g. an agent's objective/summary line) are padded with
-# filler so the turn's token count matches a sampled target, while keeping
-# the "real" content the model should attend to distinguishable from the
-# padding. The padding is wrapped in a <context>...</context> block that BOUNDS
-# it on both sides and frames it as SUPPLEMENTARY BACKGROUND (not the primary
-# task); the real content is emitted LAST, after the block (highest-attention/
-# recency slot). This follows Anthropic's XML-tag guidance + the "spotlighting"
-# data-delimiter pattern. The framing is deliberately SOFT rather than "ignore
-# this random filler": now that a theme's filler is domain-relevant (log lines /
-# metric rows, not Shakespeare), telling the model the realistic-looking content
-# is garbage-to-ignore both undercuts realism and reads oddly. "Supplementary
-# background, focus on the task below" keeps the region non-load-bearing (the
-# model is steered to the task, so randomized/repeated padding doesn't derail it)
-# WITHOUT claiming plausible content is noise. The framing lives INSIDE the block
-# so it stays self-contained if this content is later re-injected into a growing
-# transcript. TOOL_CALL_MARGIN is the token headroom reserved elsewhere in the
-# generator so a tool-call turn's fixed overhead doesn't blow past its target; it
-# lives here because it's part of the same token-budgeting vocabulary as fit_filler.
+# Free-text turns (e.g. an agent's objective/summary line) are padded with filler
+# so the turn's token count matches a sampled target, while keeping the "real"
+# content the model should attend to distinguishable from the padding. The padding
+# is wrapped in a <context>...</context> block that bounds it on both sides and
+# frames it as supplementary background; the real content is emitted LAST, after the
+# block (the highest-attention recency slot). The framing is soft ("supplementary
+# background, focus on the task below") rather than "ignore this filler", because a
+# theme's filler is domain-relevant (log lines / metric rows), so calling it
+# garbage-to-ignore would read oddly; steering the model to the task keeps the
+# padding non-load-bearing without claiming plausible content is noise. The framing
+# lives INSIDE the block so it stays self-contained if this content is later
+# re-injected into a growing transcript.
+#
+# TOOL_CALL_MARGIN is token headroom reserved so a tool-call turn's fixed overhead
+# doesn't blow past its target; it lives here as part of the same token-budgeting
+# vocabulary as fit_filler.
 
 TOOL_CALL_MARGIN = 64
 # Opening head of the filler block (emitted BEFORE the padding words) and its
@@ -111,13 +115,12 @@ def _tool_call_max_tokens(tokenizer, calls: List[Dict[str, Any]]) -> int:
     """max_tokens for a FORCED tool-call turn = tokens(serialized calls) + margin.
 
     A forced tool-call event must give the replay model enough budget to emit the
-    WHOLE tool call (function name + arguments + the model's tool-call framing). A
-    near-zero budget (the old default) truncates generation mid-JSON, and a real
-    model then leaks chat-template control tokens (<|im_end|> etc.) into the
-    `arguments` string; replaying that malformed assistant message 400s the next
-    turn. TOOL_CALL_MARGIN covers the model's per-call preamble on top of the exact
-    serialized calls. Deterministic: a pure function of `calls` + the tokenizer,
-    no rng."""
+    WHOLE tool call (function name + arguments + the model's tool-call framing). Too
+    small a budget truncates generation mid-JSON, and a real model then leaks
+    chat-template control tokens (<|im_end|> etc.) into the `arguments` string;
+    replaying that malformed assistant message 400s the next turn. TOOL_CALL_MARGIN
+    covers the model's per-call preamble on top of the exact serialized calls.
+    Deterministic: a pure function of `calls` + the tokenizer, no rng."""
     if not calls:
         return TOOL_CALL_MARGIN
     return int(tokenizer.count_tokens(json.dumps(calls))) + TOOL_CALL_MARGIN
@@ -174,20 +177,13 @@ def _corpus_words() -> List[str]:
 _FILLER_POOL_RENDER_COUNT = 24
 
 
-def theme_filler_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
-    """Build a DOMAIN-appropriate filler word pool from a theme's snippets.
+def _render_word_pool(theme, templates: List[str], seed: int, path: tuple) -> Optional[List[str]]:
+    """Render a list of theme snippet templates into a whitespace-split word pool.
 
-    Renders `_FILLER_POOL_RENDER_COUNT` of the theme's `filler_templates` (log
-    lines / metric rows / stack frames), each seeded independently so the pool
-    reads like a paste of MORE of the same content, then splits the rendered
-    text into whitespace words. Returns None when the theme carries no
-    `filler_templates`, signalling `fit_filler` to fall back to the shared
-    Shakespeare corpus. Deterministic for a given (seed, path).
-
-    `path` is the reserved seed sub-path prefix under which per-snippet
-    sub-seeds are derived (appending a snippet index).
+    Renders `_FILLER_POOL_RENDER_COUNT` snippets (cycling `templates`), each seeded
+    independently so the pool reads like a paste of MORE of the same content.
+    Returns None if `templates` is empty. Deterministic for a given (seed, path).
     """
-    templates = theme.filler_templates or []
     if not templates:
         return None
     words: List[str] = []
@@ -196,6 +192,28 @@ def theme_filler_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
         rendered = _render_theme_template(theme, tpl, seed, (*path, i))
         words.extend(rendered.split())
     return words or None
+
+
+def theme_filler_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
+    """Build a DOMAIN-appropriate filler word pool from a theme's `filler_templates`
+    (log lines / metric rows / stack frames), used to pad turns. Returns None when the
+    theme carries none, signalling `fit_filler` to fall back to the shared Shakespeare
+    corpus. `path` is the reserved seed sub-path prefix. Deterministic per (seed, path).
+    """
+    return _render_word_pool(theme, theme.filler_templates or [], seed, path)
+
+
+def theme_payload_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
+    """Build the word pool for LARGE tool-call PAYLOAD args (content/code/patch/...).
+
+    Uses the theme's `payload_templates` (domain payload shape: code / SQL / a drafted
+    answer) so a payload looks like what the tool carries, NOT like the telemetry that
+    pads turns. Falls back to `filler_templates` when a theme declares no payload
+    templates, so a payload then reads like that theme's filler. Deterministic per
+    (seed, path).
+    """
+    pool = _render_word_pool(theme, theme.payload_templates or [], seed, path)
+    return pool if pool is not None else theme_filler_words(theme, seed, path)
 
 
 # Number of corpus words tokenized ONCE to estimate the corpus's average
@@ -345,11 +363,20 @@ def fit_filler(
 # Determinism: every random draw comes from a child_rng derived from the
 # per-session seed and a stable graph-path tuple; no wall-clock, no hash().
 
-# Fallbacks for optional distributions (§8 documented defaults).
-_FB_TOOL_TURNS = Distribution(type="fixed", mean=2)
+# Fallbacks for optional distribution knobs (used when the config leaves them unset).
+_FB_STEPS = Distribution(type="fixed", mean=2)
 _FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
 _FB_SUB_AGENTS = Distribution(type="uniform", min=2, max=4)
 _FB_PARALLEL = Distribution(type="fixed", mean=1)
+# Wait-time fallbacks (seconds), each set to a realistic value for what it models:
+# a tool round-trip is ~1s; a human reading an answer and typing a follow-up is ~10s.
+_FB_TOOL_LATENCY = Distribution(type="fixed", mean=1)
+_FB_USER_THINK = Distribution(type="fixed", mean=10)
+
+# Minimum events an agent occupies: one principal call whose output IS the answer
+# (tool loop depth 0, no spawn). A tool loop or a spawn adds its own events on top,
+# guarded separately at each emit.
+_MIN_AGENT_COST = 1
 
 # Appended to a SPAWNED sub-agent's objective so its terminal turn concludes with
 # a prose SUMMARY (the report the orchestrator receives via the merge's
@@ -366,12 +393,24 @@ SUBAGENT_REPORT_DIRECTIVE = (
     "as plain prose (2-3 sentences) for the orchestrator; do not call a tool in your final message."
 )
 
+# Appended to the ROOT agent's terminal turn (the turn that answers the USER, not an
+# orchestrator) so its final message is prose, not tool-call text. Without it a tool-primed
+# root, whose transcript ends in tool results, tends to emit a `<tool_call>{...}` block as
+# plain text on the answer turn even under tool_choice="none" (the API suppresses a
+# STRUCTURED call, but the model can still WRITE tool-call syntax). Same two load-bearing
+# parts as the sub-agent directive ("plain prose" + "do not call a tool"), reworded for a
+# user-facing answer. Cosmetic/realism only: benchmark-neutral (request shape, growth, and
+# termination are unaffected). The root/single-agent answer is to the user, not a report.
+ROOT_ANSWER_DIRECTIVE = (
+    "Now provide your final answer to the user in plain prose; do not call a tool in your final message."
+)
+
 # Canonical structural tool used to spawn sub-agents. It is NOT a theme tool:
 # it must be advertised on any event that FORCES it (dispatch events, via
 # expected_output_tool_names) or EMITS it (the merge event, which stores
-# dispatch_agent tool_calls in its message history). inv #2 requires every
-# forced/emitted tool name to appear in that turn's tool_definitions with a
-# top-level `name` key, so its shape mirrors `_tool_definitions` output exactly.
+# dispatch_agent tool_calls in its message history). Every forced/emitted tool name
+# must appear in that turn's tool_definitions with a top-level `name` key, so its
+# shape mirrors `_tool_definitions` output exactly.
 # Generic non-empty parameter schema for any tool a theme did not give an
 # explicit spec (and for synthetic suffixed duplicates). A single required
 # string field is enough to anchor the model's forced tool-call generation so it
@@ -383,14 +422,25 @@ _FALLBACK_TOOL_PARAMS: Dict[str, Any] = {
 }
 
 # String tool-call args whose whole point is a LARGE payload (a file's new
-# contents, a patch, a code block). For these, the tiny `f"{prop}-NNN"` stub is
-# unrealistic; instead draw a fixed modest chunk of the theme's own filler pool
-# (code-shaped for a coding theme) so the call carries realistic content + token
-# weight. Non-payload string args (path, symbol, pattern) keep the short stub.
+# contents, a patch, a code block, a query body). For these, the tiny `f"{prop}-NNN"`
+# stub is unrealistic; instead draw a chunk of the theme's own filler pool
+# (code-shaped for a coding theme, log/metric-shaped for an ops theme) so the call
+# carries realistic content + token weight. Non-payload string args (path, symbol,
+# pattern) keep the short stub.
+#
+# SIZE is a PER-TOOL, PER-ARGUMENT property, set by the theme on the argument's schema
+# via `"x-payload-tokens": N` (in words). This lives with the tool (like its schema,
+# description, and result template) because how big a payload a given tool carries is a
+# property of THAT tool -- a `write_file` writes a whole file; an `apply_patch` a diff;
+# an `execute_code` a script. When a payload arg has no `x-payload-tokens`, it falls
+# back to `_DEFAULT_PAYLOAD_WORDS` (a modest chunk). The user picks the workload by
+# choosing the theme; there is no confusing global knob whose effect depends on which
+# tools happen to be advertised.
 _PAYLOAD_ARG_NAMES = frozenset(
     {"content", "code", "patch", "diff", "body", "new_string", "old_string", "text", "snippet"}
 )
-_PAYLOAD_ARG_WORDS = 48  # ~a modest code chunk; fixed (no knob)
+_DEFAULT_PAYLOAD_WORDS = 48  # fallback when the theme sets no x-payload-tokens on the arg
+_PAYLOAD_TOKENS_KEY = "x-payload-tokens"  # per-arg schema hint (in words) for payload size
 
 DISPATCH_AGENT_NAME = "dispatch_agent"
 DISPATCH_AGENT_TOOL_DEF: Dict[str, Any] = {
@@ -408,8 +458,9 @@ DISPATCH_AGENT_TOOL_DEF: Dict[str, Any] = {
 
 
 def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
-    """Build `n` tool definitions, each with a TOP-LEVEL `name` key (inv #2) and
-    a human-readable description.
+    """Build `n` tool definitions, each with a TOP-LEVEL `name` key (required so a
+    forced/emitted call name is always an advertised tool) and a human-readable
+    description.
 
     Cycles the theme's tool_names and suffixes duplicates so names stay unique
     when the requested catalog is larger than the theme's list. The description
@@ -444,6 +495,18 @@ def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
     return out
 
 
+def _entity_subs(theme, rng: np.random.Generator, pinned: Dict[str, str]) -> Dict[str, str]:
+    """Template substitutions for a subject line: a leading `verb` draw, then one
+    value per declared entity category. A pinned category uses its fixed value and
+    skips the draw, so the text references the session's fixed subject.
+    """
+    subs: Dict[str, str] = {"verb": _pick(rng, theme.verbs)}
+    for key, vals in theme.entities.items():
+        if vals:
+            subs[key] = pinned.get(key) or _pick(rng, vals)
+    return subs
+
+
 def _render_objective(theme, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
     """Render a single principal objective string from the theme templates.
 
@@ -452,16 +515,11 @@ def _render_objective(theme, rng: np.random.Generator, pinned: Optional[Dict[str
     primary subject (e.g. `service`/`db_instance`, `symptom`) as the round's
     intro doc + follow-ups. `verb` is drawn from `theme.verbs` (never pinned).
     """
-    pinned = pinned or {}
-    verb = theme.verbs[int(rng.integers(0, len(theme.verbs)))]
-    subs: Dict[str, str] = {"verb": verb}
-    for key, vals in theme.entities.items():
-        if vals:
-            subs[key] = pinned.get(key) or vals[int(rng.integers(0, len(vals)))]
+    subs = _entity_subs(theme, rng, pinned or {})
     try:
         return theme.objective_template.format(**subs)
     except (KeyError, IndexError):
-        return f"{verb}: complete the task."
+        return f"{subs['verb']}: complete the task."
 
 
 def _render_followup(theme, objective: str, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
@@ -478,13 +536,13 @@ def _render_followup(theme, objective: str, rng: np.random.Generator, pinned: Op
     pinned = pinned or {}
     connective = ""
     if theme.followup_connectives:
-        connective = theme.followup_connectives[int(rng.integers(0, len(theme.followup_connectives)))]
+        connective = _pick(rng, theme.followup_connectives)
     if theme.followup_templates:
-        tpl = theme.followup_templates[int(rng.integers(0, len(theme.followup_templates)))]
+        tpl = _pick(rng, theme.followup_templates)
         subs: Dict[str, str] = {}
         for key, vals in theme.entities.items():
             if vals:
-                subs[key] = pinned.get(key) or vals[int(rng.integers(0, len(vals)))]
+                subs[key] = pinned.get(key) or _pick(rng, vals)
         try:
             rendered = tpl.format(**subs)
         except (KeyError, IndexError):
@@ -557,14 +615,10 @@ def _render_compaction_summary(
     tpl = theme.compaction_summary_template
     if not tpl:
         return ""
-    pinned = pinned or {}
-    verb = theme.verbs[int(rng.integers(0, len(theme.verbs)))]
-    subs: Dict[str, str] = {"verb": verb}
-    for key, vals in theme.entities.items():
-        if vals:
-            subs[key] = pinned.get(key) or vals[int(rng.integers(0, len(vals)))]
-    # Tool slots: draw up to three distinct advertised tool names (fall back to
-    # repeating/blank if the catalog is smaller), so the recap lists REAL tools.
+    subs = _entity_subs(theme, rng, pinned or {})
+    # Tool slots: fill up to three from the advertised catalog (repeat the last / a
+    # placeholder when the catalog is smaller), so the recap lists REAL tools. These
+    # are deterministic index picks, not rng draws.
     names = [str(td.get("name", "")) for td in tool_defs if td.get("name")]
     for idx, slot in enumerate(("tool_a", "tool_b", "tool_c")):
         subs[slot] = names[idx] if idx < len(names) else (names[-1] if names else "the tools")
@@ -694,7 +748,7 @@ def _seeded_count_value(rng: np.random.Generator) -> str:
 
 
 def _seeded_status_code_value(rng: np.random.Generator) -> str:
-    return str(_STATUS_CODES[int(rng.integers(0, len(_STATUS_CODES)))])
+    return str(_pick(rng, _STATUS_CODES))
 
 
 def _seeded_time_value(rng: np.random.Generator) -> str:
@@ -710,7 +764,7 @@ def _seeded_entity_value(theme, rng: np.random.Generator) -> str:
         pool.extend(vals)
     if not pool:
         return f"entity-{int(rng.integers(0, 999))}"
-    return pool[int(rng.integers(0, len(pool)))]
+    return _pick(rng, pool)
 
 
 def _seeded_typed_entity_value(theme, category: str, rng: np.random.Generator) -> str:
@@ -724,7 +778,7 @@ def _seeded_typed_entity_value(theme, category: str, rng: np.random.Generator) -
     vals = theme.entities.get(category) or []
     if not vals:
         return _seeded_entity_value(theme, rng)
-    return vals[int(rng.integers(0, len(vals)))]
+    return _pick(rng, vals)
 
 
 # The primary-subject entity categories a round pins to keep its intro doc,
@@ -746,13 +800,13 @@ def _pinned_primary_entities(theme, rng: np.random.Generator) -> Dict[str, str]:
     `_render_followup` so a round's task text and its pasted document name the
     SAME service/subsystem + symptom (a live model flags a doc about one service
     paired with a task about another). Empty when the theme declares none of the
-    primary categories (renderer then draws every field as before).
+    primary categories, in which case the renderer draws every field freely.
     """
     out: Dict[str, str] = {}
     for cat in _PRIMARY_ENTITY_CATEGORIES:
         vals = theme.entities.get(cat) or []
         if vals:
-            out[cat] = vals[int(rng.integers(0, len(vals)))]
+            out[cat] = _pick(rng, vals)
     return out
 
 
@@ -766,13 +820,13 @@ def _pinned_focus_entities(theme, rng: np.random.Generator) -> Dict[str, str]:
     single-target investigation -- `list_dir(focus) -> read_file(focus_file) ->
     grep(focus_symbol) -> run_tests(focus_test)` all reference the same target that
     prior results showed, instead of each turn drawing an unrelated entity.
-    Deterministic; drawn once per session at a stable seed sub-path. A theme with
-    only the primary categories yields the same values it already did.
+    Deterministic; drawn once per session at a stable seed sub-path. For a theme with
+    only the primary categories, this pin covers exactly those categories.
     """
     out: Dict[str, str] = {}
     for cat, vals in theme.entities.items():
         if vals:
-            out[cat] = vals[int(rng.integers(0, len(vals)))]
+            out[cat] = _pick(rng, vals)
     return out
 
 
@@ -915,8 +969,6 @@ def _render_theme_template(theme, tpl: str, seed: int, path: tuple, pinned: Opti
     derived (appending a stable per-field index), so different fields draw from
     independent streams and different renders never collide.
     """
-    import string
-
     pinned = pinned or {}
 
     # Distinct field names in first-appearance order -> one stable sub-seed each.
@@ -1004,6 +1056,7 @@ def _render_tool_arguments(
     path: tuple,
     pinned: Optional[Dict[str, str]] = None,
     word_pool: Optional[List[str]] = None,
+    payload_pool: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build an arguments object that CONFORMS to a tool's `parameters` schema.
 
@@ -1015,6 +1068,8 @@ def _render_tool_arguments(
       - enum -> a seeded choice from the enum;
       - integer/number -> a seeded int;
       - boolean -> a seeded bool;
+      - a large-PAYLOAD arg (content/code/patch/...) -> a chunk of the theme's filler
+        pool sized by the arg's `x-payload-tokens` schema hint (words), else a default;
       - string (default) -> a seeded entity token.
     Only `required` props are emitted, so the JSON is always schema-valid and
     non-empty (a non-empty forced tool call is what stops the model cleanly).
@@ -1039,14 +1094,20 @@ def _render_tool_arguments(
             args[prop] = int(prop_rng.integers(0, 999))
         elif ptype == "boolean":
             args[prop] = bool(int(prop_rng.integers(0, 2)))
-        elif _strip_index(prop) in _PAYLOAD_ARG_NAMES and word_pool:
-            # A big-payload prop (content/patch/new_string/...): a write/edit tool's
-            # whole point is the payload it carries. Draw a fixed modest chunk of the
-            # theme's filler pool (code-shaped for a coding theme) so the call has
-            # realistic content + token weight instead of a tiny `content-417` stub.
-            # Seeded start offset so multiple payload args in one call differ.
-            start = int(prop_rng.integers(0, max(1, len(word_pool))))
-            args[prop] = " ".join(_cycled_words(word_pool, _PAYLOAD_ARG_WORDS, start=start))
+        elif _strip_index(prop) in _PAYLOAD_ARG_NAMES and (payload_pool or word_pool):
+            # A big-payload prop (content/patch/new_string/...): a write/edit/execute
+            # tool's whole point is the payload it carries. Draw a chunk from the theme's
+            # PAYLOAD pool (domain payload shape: code / SQL / a drafted answer) so the
+            # call has realistic content + token weight instead of a tiny `content-417`
+            # stub; falls back to the turn-filler pool if the theme has no payload
+            # templates. SIZE is a per-arg property the theme declares on the schema
+            # (`x-payload-tokens`, in words); absent -> _DEFAULT_PAYLOAD_WORDS. Seeded
+            # start offset so multiple payload args in one call differ.
+            pool: List[str] = payload_pool or word_pool or []
+            n_words = spec.get(_PAYLOAD_TOKENS_KEY, _DEFAULT_PAYLOAD_WORDS) if isinstance(spec, dict) else _DEFAULT_PAYLOAD_WORDS
+            n_words = max(1, int(n_words))
+            start = int(prop_rng.integers(0, max(1, len(pool))))
+            args[prop] = " ".join(_cycled_words(pool, n_words, start=start))
         else:
             # Plain string prop that is NOT an entity category and has no enum
             # (e.g. `bufferpool`, `endpoint`, `job_id`). Draw a token DERIVED FROM
@@ -1079,8 +1140,8 @@ def _render_intro_doc(theme, seed: int, path: tuple, pinned: Optional[Dict[str, 
 def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
     """Build a replay graph for one synthetic session.
 
-    Emits N rounds (from `rounds_per_session`); each round is an accumulating
-    chain of `k+1` calls (from `tool_turns_per_loop`, fallback fixed 2):
+    Emits N rounds (from `turns_per_session`); each round is an accumulating
+    chain of `k+1` calls (from `tool_loop_depth`, fallback fixed 2):
     a principal call plus `k` tool-turn calls, where each event's INPUT is the
     growing transcript and the LAST call's OUTPUT is the answer (no separate
     answer event — k=0 collapses to a single principal call). Round r+1's
@@ -1101,10 +1162,13 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     # Reserved seed sub-path 60 (fresh; does not collide with 0/1/2 or any
     # per-agent path). Per-snippet sub-seeds append an index under (60,).
     filler_pool = theme_filler_words(theme, seed, (60,))
+    # Distinct pool for large tool-call payload args (code/SQL/drafted-answer shape),
+    # from the theme's payload_templates (falls back to filler_pool). Fresh sub-path 68.
+    payload_pool = theme_payload_words(theme, seed, (68,))
 
-    n_rounds = sample_int(cfg.rounds_per_session, child_rng(seed, 0), cfg.rounds_per_session)
-    tool_defs_n = sample_int(cfg.tool_definitions_per_agent, child_rng(seed, 1), _FB_TOOL_DEFS)
-    # §8: tool_definitions_per_agent=0 is the bare non-agentic / plain-chat
+    n_rounds = sample_int(cfg.turns_per_session, child_rng(seed, 0), cfg.turns_per_session)
+    tool_defs_n = sample_int(cfg.tool_catalog_size_per_agent, child_rng(seed, 1), _FB_TOOL_DEFS)
+    # tool_catalog_size_per_agent=0 is the bare non-agentic / plain-chat
     # baseline — NO tools advertised at all. Floor at 0 (not 1) so that value
     # flows through to an empty catalog; `_tool_definitions(theme, 0)` returns [].
     tool_defs = _tool_definitions(theme, max(0, tool_defs_n))
@@ -1167,33 +1231,23 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         )
 
     def _system_head() -> Optional[Dict[str, Any]]:
-        # Aliasing guard (§4.2/§6 option b): the invariant system head rides
+        # Aliasing guard: the invariant system head rides
         # EVERY agent's first call, but each event must own a DISTINCT dict so
         # that mutating one event's messages never corrupts another. Return a
         # fresh shallow copy each time (system_msg itself is treated read-only).
         return dict(system_msg) if system_msg is not None else None
 
-    def _min_agent_cost() -> int:
-        # Minimum events an agent occupies regardless of its tool-loop / spawn.
-        # Under the corrected event model (each call carries the cumulative
-        # transcript; the terminal answer is the LAST call's OUTPUT, not a
-        # separate lone-assistant event) the smallest possible agent is a single
-        # principal call whose expected_output IS the answer (k=0, no spawn).
-        # Tool turns are >= 0; a spawn adds its own cost, guarded separately at
-        # the spawn decision.
-        return 1
-
-    # Per-round bookkeeping for §4.1 context growth: _build_agent (when is_root)
-    # publishes the current round's principal event id + its input message count
-    # here so the next round can build the shared/output segments that re-inject
-    # the growing transcript.
-    root_principal_meta: Dict[str, Any] = {}
+    # Per-round bookkeeping for context growth: _build_agent (when is_root) publishes
+    # the current round's TERMINAL event id + its full input length here, so the next
+    # round can build shared/output segments that re-inject the whole prior turn (its
+    # tool loop and its answer) as growing context.
+    root_terminal_meta: Dict[str, Any] = {}
 
     def _answer_text(agent_seed_path: tuple) -> tuple:
         """Render the agent's terminal answer text + its sampled token size.
 
-        Reuses the pre-existing (…, 4) [size] and (…, 5) [filler] sub-seeds the
-        old separate answer event drew from, so determinism paths are stable.
+        Draws the size from sub-seed (…, 4) and the filler from (…, 5), off the
+        agent's seed path, so the answer is deterministic per agent.
         """
         out_tokens = sample_int(cfg.output_tokens_per_turn, child_rng(seed, *agent_seed_path, 4), cfg.output_tokens_per_turn)
         ans = fit_filler(
@@ -1215,11 +1269,10 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     ) -> Optional[str]:
         """Build ONE agent's execution and return its TERMINAL event id.
 
-        Under the corrected event model each event is exactly one LLM call whose
-        INPUT is the cumulative conversation transcript ending in a user or tool
-        message; the assistant reply that call produces is the event's OUTPUT
-        (expected_output), NOT a separate lone-assistant event. The agent is a
-        linear accumulating chain:
+        Each event is exactly one LLM call whose INPUT is the cumulative conversation
+        transcript ending in a user or tool message; the assistant reply that call
+        produces is the event's OUTPUT (expected_output), not a separate lone-assistant
+        event. The agent is a linear accumulating chain:
 
             principal -> t0 -> t1 -> ... -> t{k-1}(terminal)   [k tool results]
 
@@ -1234,7 +1287,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         system head (a per-event copy). Returns None if the agent's minimum cost
         (one terminal call) does not fit the remaining event budget.
         """
-        if len(events) + _min_agent_cost() > budget:
+        if len(events) + _MIN_AGENT_COST > budget:
             return None
 
         # --- principal input event (agent's FIRST call: carries system head) ---
@@ -1257,7 +1310,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             )
             sized_task_msgs[-1] = last
         if principal_segments is not None:
-            # §4.1 context-growth path: `task_msgs` is the FULL growing transcript
+            # Context-growth path: `task_msgs` is the FULL growing transcript
             # (already includes the system head as its first message, so the shared
             # segment — which sources the prior round's principal INPUT — covers it).
             # We must NOT prepend the head again here or it would double and break
@@ -1270,25 +1323,25 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             principal_segs = []
 
         # --- decide k tool-turns up front (governs whether principal is terminal) ---
-        k = sample_int(cfg.tool_turns_per_loop, child_rng(seed, *agent_seed_path, 100), _FB_TOOL_TURNS)
+        k = sample_int(cfg.tool_loop_depth, child_rng(seed, *agent_seed_path, 100), _FB_STEPS)
         k = max(0, k)
-        # §8 bare baseline: with an empty tool catalog (tool_definitions_per_agent=0)
+        # Bare baseline: with an empty tool catalog (tool_catalog_size_per_agent=0)
         # a tool-loop turn cannot emit a valid forced call — the `name` lookup
         # `tool_defs[j % len(tool_defs)]` would divide by / index an empty list,
-        # and inv #2 (call name must appear in tool_definitions) is unsatisfiable.
-        # A catalog-less agent therefore emits ZERO tool turns and just answers.
+        # cannot satisfy the rule that a forced call name must be an advertised tool.
+        # A catalog-less agent therefore emits ZERO tool-loop steps and just answers.
         if not tool_defs:
             k = 0
 
-        # Will this agent spawn sub-agents? Decided up front (same reserved seed
-        # path as before) so we know whether the tool loop's last event is the
-        # agent terminal (plain answer output) or a hand-off into the fan-out.
+        # Will this agent spawn sub-agents? Decided up front so we know whether the
+        # tool loop's last event is the agent terminal (plain answer output) or a
+        # hand-off into the fan-out.
         spawn_roll = float(child_rng(seed, *agent_seed_path, 7).random())
         will_spawn = spawn_roll < cfg.fanout_probability and depth < cfg.max_depth
 
         # Per-turn parallel-call helper: build the K calls + K results for turn t.
         def _turn_calls_and_results(t: int) -> tuple:
-            n_calls = sample_int(cfg.parallel_tool_calls_per_turn, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
+            n_calls = sample_int(cfg.parallel_tool_calls_per_step, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
             n_calls = max(1, n_calls)
             calls: List[Dict[str, Any]] = []
             results: List[Dict[str, Any]] = []
@@ -1311,13 +1364,19 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 # (t,30) or the result draw (t,9,j).
                 params_schema = tool_def.get("function", {}).get("parameters", {})
                 arg_obj = _render_tool_arguments(
-                    params_schema, theme, seed, (*agent_seed_path, t, 31, j), pinned=pinned, word_pool=filler_pool
+                    params_schema,
+                    theme,
+                    seed,
+                    (*agent_seed_path, t, 31, j),
+                    pinned=pinned,
+                    word_pool=filler_pool,
+                    payload_pool=payload_pool,
                 )
                 calls.append(
                     {
                         "id": tc_id,
                         "type": "function",
-                        # inv #1: arguments are json.dumps-ed strings.
+                        # tool-call arguments are json.dumps-ed strings.
                         "function": {"name": call_name, "arguments": json.dumps(arg_obj)},
                     }
                 )
@@ -1334,7 +1393,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             return calls, results, names
 
         # The principal's OUTPUT: the first tool call (turn 0) if the loop runs,
-        # else the plain answer. If it will spawn but has no tool turns, the
+        # else the plain answer. If it will spawn but has no tool-loop steps, the
         # principal still outputs plain text and the merge follows.
         principal_is_terminal = (k == 0) and not will_spawn
         first_calls: List[Dict[str, Any]] = []  # populated only when k >= 1 (silences strict unbound check)
@@ -1353,14 +1412,38 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             )
         else:
             ans_text, ans_tokens = (_answer_text(agent_seed_path) if principal_is_terminal else ("", 0))
-            # k=0 SUB-AGENT whose principal IS its terminal (answers with no tool
-            # loop): append the same summarize nudge as the LAST message so its one
-            # answer is a PROSE report, not tool-call text. A spawned child's
-            # principal is a fresh [user] task with NO input_segments (the runtime
-            # then replays original_messages verbatim), so appending a message needs
-            # no segment bookkeeping. Guard on empty segs to stay cursor-safe.
-            if principal_is_terminal and not is_root and not principal_segs:
-                principal_msgs = [*principal_msgs, {"role": "user", "content": SUBAGENT_REPORT_DIRECTIVE}]
+            # k=0 terminal principal (the agent answers with NO tool loop): append a
+            # trailing "answer in plain prose, no tool call" nudge as the LAST message
+            # so its one answer is PROSE, not tool-call text. A SUB-AGENT gets the report
+            # directive; the ROOT gets the user-answer directive.
+            #   - No input_segments (a fresh sub-agent task, or a round-0 root prompt):
+            #     the runtime replays original_messages verbatim -> just append, no
+            #     segment bookkeeping.
+            #   - WITH input_segments (a round r>=1 root follow-up: shared+output+unique):
+            #     append AND bump the trailing `unique` segment's message_count by 1 so
+            #     sum(message_count) == len(principal_msgs) stays exact. The next round's
+            #     shared prefix covers the nudge automatically, since it sources this
+            #     terminal event's full (nudge-included) input.
+            # A no-tools agent cannot emit tool-call text, so the ROOT answer nudge is
+            # pointless there -> gate the root path on a non-empty catalog (this keeps the
+            # bare/no-tools baseline a clean single [user] turn). A sub-agent always gets
+            # the report directive.
+            want_nudge = principal_is_terminal and (not is_root or bool(tool_defs))
+            if want_nudge:
+                directive = SUBAGENT_REPORT_DIRECTIVE if not is_root else ROOT_ANSWER_DIRECTIVE
+                principal_msgs = [*principal_msgs, {"role": "user", "content": directive}]
+                if principal_segs:
+                    tail = principal_segs[-1]
+                    assert tail.type == "unique", "expected trailing unique segment on a round r>=1 principal"
+                    principal_segs = [
+                        *principal_segs[:-1],
+                        InputSegment(
+                            type="unique",
+                            message_count=tail.message_count + 1,
+                            token_count=tail.token_count,
+                            source_event_id=tail.source_event_id,
+                        ),
+                    ]
             _emit(
                 principal_id,
                 principal_msgs,
@@ -1375,13 +1458,6 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             )
         if is_root and not root_ids:
             root_ids.append(principal_id)
-        if is_root:
-            # Publish this round's principal id + its INPUT length so the NEXT
-            # round's `shared` segment can source it (§4.1): the shared prefix's
-            # message_count MUST equal len(this principal's input) so the runtime
-            # slice `get_messages_by_event_id(src)[:message_count]` matches exactly.
-            root_principal_meta["id"] = principal_id
-            root_principal_meta["input_len"] = len(principal_msgs)
 
         # Per-agent accumulation cursor. `prev` tracks the immediately-prior
         # event of THIS agent so each successor can build its growing transcript
@@ -1393,8 +1469,9 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         #                  prefix content — length must equal input_len)
         #   out_calls   -- the tool calls the prior event OUTPUTS, so this event
         #                  can build the matching result messages + an output-slot
-        #                  placeholder assistant carrying those same ids (build-time
-        #                  inv #3). Empty when the prior output was plain text.
+        #                  placeholder assistant carrying those same ids (so each
+        #                  tool_call is matched by exactly one role:tool result).
+        #                  Empty when the prior output was plain text.
         prev_id = principal_id
         prev_input_len = len(principal_msgs)
         prev_msgs: List[Dict[str, Any]] = list(principal_msgs)
@@ -1415,8 +1492,8 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 break
             _, results, _ = _turn_calls_and_results(t)
             # The output-slot placeholder assistant carries the prior event's
-            # emitted calls (same ids as `results`), so build-time inv #3 holds:
-            # exactly these calls are matched by exactly these results.
+            # emitted calls (same ids as `results`), so exactly these calls are
+            # matched by exactly these results.
             output_placeholder = {"role": "assistant", "tool_calls": [dict(c) for c in prev_out_calls]}
             turn_msgs = [*prev_msgs, output_placeholder, *results]
             turn_segs = [
@@ -1425,31 +1502,40 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 InputSegment(type="unique", message_count=len(results), token_count=0, source_event_id=None),
             ]
             turn_id = f"{agent_prefix}:t{t}"
+            tool_latency = cfg.tool_call_latency_sec or _FB_TOOL_LATENCY
             turn_wait = int(
-                sample_from_distribution(cfg.tool_call_latency_sec, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000
+                sample_from_distribution(tool_latency, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000
             )
             is_last_turn = t == k - 1
             turn_is_terminal = is_last_turn and not will_spawn
             if turn_is_terminal:
                 # OUTPUT is the plain answer.
                 ans_text, ans_tokens = _answer_text(agent_seed_path)
-                # SUB-AGENT terminal turn: append a trailing "summarize your
-                # outcome, no tool call" nudge as the LAST message, so the child's
-                # final turn produces a PROSE report (the orchestrator receives it
-                # via the merge's tool_output slot) instead of tool-call text. It
-                # must be at the END (recency) -- a tool-primed model mimics the
-                # recent tool-call cadence if the transcript ends in a tool result;
-                # a directive buried at turn 0 loses. The nudge is fresh content, so
-                # it rides the `unique` segment (message_count += 1) -> cursor math
-                # stays exact. Root/orchestrator terminals are NOT reports -> skip.
-                if not is_root:
-                    nudge = {"role": "user", "content": SUBAGENT_REPORT_DIRECTIVE}
-                    turn_msgs = [*turn_msgs, nudge]
-                    turn_segs = [
-                        InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
-                        InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_id),
-                        InputSegment(type="unique", message_count=len(results) + 1, token_count=0, source_event_id=None),
-                    ]
+                # Terminal turn: append a trailing "answer in plain prose, no tool call"
+                # nudge as the LAST message, so the final turn produces PROSE instead of
+                # tool-call text. It must be at the END (recency) -- a tool-primed model
+                # mimics the recent tool-call cadence if the transcript ends in a tool
+                # result; a directive buried at turn 0 loses. The nudge is fresh content,
+                # so it rides the `unique` segment (message_count += 1) -> cursor math
+                # stays exact. A SUB-AGENT gets the report directive (its answer is a
+                # report to the orchestrator); the ROOT gets the user-answer directive
+                # (its answer goes to the user). The nudge is part of this terminal turn's
+                # transcript, so the next round carries it forward like any other message.
+                directive = SUBAGENT_REPORT_DIRECTIVE if not is_root else ROOT_ANSWER_DIRECTIVE
+                nudge = {"role": "user", "content": directive}
+                turn_msgs = [*turn_msgs, nudge]
+                # The nudge is one more fresh message, so extend the trailing `unique`
+                # segment by 1 to keep sum(message_count) == len(turn_msgs).
+                last_seg = turn_segs[-1]
+                turn_segs = [
+                    *turn_segs[:-1],
+                    InputSegment(
+                        type="unique",
+                        message_count=last_seg.message_count + 1,
+                        token_count=last_seg.token_count,
+                        source_event_id=last_seg.source_event_id,
+                    ),
+                ]
                 _emit(
                     turn_id,
                     turn_msgs,
@@ -1492,12 +1578,20 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             # this agent's terminal — no separate answer follows). Only spawn if
             # it all fits; otherwise this agent stays a plain leaf whose current
             # `prev` event must become terminal.
-            min_spawn_cost = K * (1 + _min_agent_cost()) + 1
+            min_spawn_cost = K * (1 + _MIN_AGENT_COST) + 1
             if K > 0 and len(events) + min_spawn_cost <= budget:
                 dispatch_pairs: List[tuple] = []  # (dispatch_id, tc_id)
                 child_terminals: List[str] = []
                 spawn_ok = True
                 for c in range(K):
+                    # Per-emit budget guard: the dispatch event plus the child's own
+                    # minimum must both still fit. min_spawn_cost is only a lower bound
+                    # (a child with its own tool loop or nested spawn costs more than
+                    # one event), so the budget is re-checked before each spawn to keep
+                    # len(graph.events) <= max_events_per_session.
+                    if len(events) + _MIN_AGENT_COST + 1 > budget:
+                        spawn_ok = False
+                        break
                     # --- single-call dispatch event (fresh [user] context; its
                     # OUTPUT is the one dispatch_agent tool_call — never dangles,
                     # and a fresh [user] input never ends in assistant) ---
@@ -1555,7 +1649,10 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                     dispatch_pairs.append((disp_id, tc_id, dispatch_args))
                     child_terminals.append(child_terminal)
 
-                if spawn_ok and dispatch_pairs:
+                # The merge is one more event, so it must also fit the budget; when it
+                # does not, skip it and leave prev_id at the pre-spawn terminal (final
+                # normalization turns that into the agent's terminal).
+                if spawn_ok and dispatch_pairs and len(events) + 1 <= budget:
                     # --- ONE merge event: the parent's pre-spawn transcript
                     # (shared-only prepend — introduces NO unmatched tool_call, so
                     # it can never dangle) followed by [dispatch call, child
@@ -1569,7 +1666,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                     merge_deps: Dict[str, str] = {prev_id: "full_match"}
                     for (disp_id, tc_id, disp_args), child_term in zip(dispatch_pairs, child_terminals, strict=True):
                         # Reconstruct the [assistant dispatch call, tool result]
-                        # pair per child so inv #3 holds (one call, one result).
+                        # pair per child (one call, one matching result).
                         # Same args as the dispatch event emitted (objective), so
                         # the reconstructed call conforms to DISPATCH_AGENT_TOOL_DEF.
                         merge_msgs.append(
@@ -1596,12 +1693,12 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                     ans_text, ans_tokens = _answer_text(agent_seed_path)
                     # A NON-ROOT merge is a SPAWNING sub-agent's terminal -> its output
                     # is THIS agent's report to ITS parent (folded up via the parent's
-                    # tool_output). So it needs the same trailing summarize nudge as a
+                    # tool_output), so it gets the same trailing summarize nudge as a
                     # leaf sub-agent's terminal, so nested reports read as prose too.
-                    # (The ROOT merge is the orchestrator's final answer, not a report
-                    # to anyone -> left unchanged.) The nudge is fresh content -> a
-                    # trailing `unique` segment (message_count 1) keeps cursor math
-                    # exact (merge ends in role:tool otherwise; now ends in user).
+                    # (The ROOT merge is the orchestrator's final answer, not a report to
+                    # anyone, so it gets no nudge.) The nudge is fresh content, so a
+                    # trailing `unique` segment (message_count 1) makes the merge end in a
+                    # user message and keeps cursor math exact.
                     if not is_root:
                         merge_msgs = [*merge_msgs, {"role": "user", "content": SUBAGENT_REPORT_DIRECTIVE}]
                         merge_segs = [*merge_segs, InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None)]
@@ -1645,14 +1742,23 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 expected_output_tokens=ans_tokens,
             )
 
+        if is_root:
+            # Publish the TERMINAL event's id + its full input length so the next
+            # round carries the whole turn forward (its tool loop AND answer), like a
+            # real multi-turn agent. The next round's `shared` prefix sources this
+            # terminal and its message_count MUST equal len(the terminal's input), so
+            # the runtime slice get_messages_by_event_id(terminal)[:message_count]
+            # matches exactly.
+            root_terminal_meta["id"] = prev_id
+            root_terminal_meta["input_len"] = len(events[prev_id].call.messages)
+
         return prev_id
 
     prev_answer_id: Optional[str] = None
-    # The running conversation transcript used to build round K>=1's growing
-    # context (§4.1). After each round it becomes the placeholder prefix the
-    # next round's `shared` segment covers; the shared segment re-injects the
-    # LIVE version at replay, so the exact placeholder content only needs to be
-    # coherent + deterministic and of the RIGHT length.
+    # The running conversation transcript used to build a round's growing context.
+    # After each round it becomes the placeholder prefix the next round's `shared`
+    # segment covers; the shared segment re-injects the LIVE version at replay, so
+    # the placeholder only needs to be coherent, deterministic, and the right length.
     transcript: List[Dict[str, Any]] = []
 
     # Context compaction: sample the per-session trigger/target ONCE (so a
@@ -1673,27 +1779,22 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     )
 
     for r in range(n_rounds):
-        # Stop STARTING new rounds when even the minimum agent (principal +
-        # answer) won't fit (§8) — never truncate mid-round. Deeper fan-out is
+        # Stop starting new rounds once even the minimum agent (principal + answer)
+        # won't fit the event budget; never truncate mid-round. Deeper fan-out is
         # budget-guarded inside _build_agent.
-        if len(events) + _min_agent_cost() > budget:
+        if len(events) + _MIN_AGENT_COST > budget:
             break
 
-        # Coherence: pin the session's PRIMARY subject entities ONCE (service/
-        # db_instance + symptom) and feed the SAME pinned values to EVERY round's
-        # objective, intro doc, and follow-up, so (a) the pasted document and the
-        # task name the same service + symptom, and (b) a multi-round conversation
-        # stays on ONE subject instead of drifting across services each turn (a
-        # live model flags both). SESSION-scoped, not round-scoped: the seed omits
-        # `r` (sub-path (62,) off the session seed) so all rounds share it. Fresh
-        # sub-path — does not collide with per-round draws objective (r,1),
-        # think-time (r,2), followup (r,3), intro-doc (r,61).
-        # Session-scoped pin. The FOCUS pin (every entity category, seed 63) gives the
-        # tool loop a coherent single target (the file/symbol/test it investigates);
-        # the PRIMARY pin (service/db_instance/symptom/region, seed 62) overrides the
-        # shared keys so the round's subject is unchanged. Threaded into objective,
-        # intro doc, follow-ups, AND every tool call/result -> the whole session
-        # references one coherent subject + focus.
+        # Session-scoped subject pin, threaded into every round's objective, intro
+        # doc, follow-up, and every tool call/result so the whole session references
+        # one coherent subject + focus (a live model flags a doc about one service
+        # paired with a task about another, or a conversation that drifts subjects).
+        # Two pins, merged with the primary winning on shared keys:
+        #   - focus pin (every entity category, sub-path 63): the ONE file/symbol/
+        #     test/dep the tool loop investigates.
+        #   - primary pin (service/db_instance/symptom/region, sub-path 62): the
+        #     round's subject, kept fixed across all rounds.
+        # Both omit `r` so every round shares them.
         pinned = {
             **_pinned_focus_entities(theme, child_rng(seed, 63)),
             **_pinned_primary_entities(theme, child_rng(seed, 62)),
@@ -1712,11 +1813,12 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             intro = _render_intro_doc(theme, seed, (r, 61), pinned=pinned)
             if intro:
                 obj = f"{intro}\n{obj}"
-        # wait_ms: round 1 uses tool_call_latency; rounds 2..N use user_think_time if set.
+        # Round 0's principal has no preceding wait; rounds 2..N wait a human
+        # read/think/reply gap (user_think_time_sec) before the follow-up turn.
         if r == 0:
             principal_wait = 0
         else:
-            think_dist = cfg.user_think_time_sec if cfg.user_think_time_sec is not None else cfg.tool_call_latency_sec
+            think_dist = cfg.user_think_time_sec or _FB_USER_THINK
             # Sample as a float and scale to ms BEFORE truncating to int, so a
             # fractional-second mean (e.g. 0.5s) doesn't collapse to 0/1s.
             principal_wait = int(sample_from_distribution(think_dist, 1, rng=child_rng(seed, r, 2))[0] * 1000)
@@ -1772,18 +1874,21 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             preds = [prev_answer_id] if prev_answer_id else []
             dep_types = {prev_answer_id: "full_match"} if prev_answer_id else {}
         else:
-            # Round K>=1 (§4.1 growing context). Layout of the principal's
-            # original_messages and matching segments (cursor-aligned 1:1):
+            # Round K>=1 (growing context). Carry the WHOLE prior turn forward, like a
+            # real multi-turn agent: the prior round's terminal INPUT (its full tool
+            # loop) plus the terminal's OUTPUT (the answer), then the new follow-up.
+            # Layout of the principal's original_messages and matching segments
+            # (cursor-aligned 1:1):
             #   [ transcript... , answer_placeholder , followup ]
-            #   [ shared(count=len(transcript), src=prev principal)   ]  -> prior turns
-            #   [ output(1, src=prev answer)                          ]  -> prior answer
-            #   [ unique(1)                                           ]  -> new follow-up
+            #   [ shared(count=len(transcript), src=prev terminal) ]  -> prior turn's full loop
+            #   [ output(1, src=prev terminal)                     ]  -> prior turn's answer
+            #   [ unique(1)                                        ]  -> new follow-up
             # sum(message_count) == len(original_messages), so the runtime cursor
             # math in _build_messages_with_substitution is exact (no IndexError).
-            prev_principal_id = root_principal_meta["id"]
-            prev_principal_len = root_principal_meta["input_len"]
+            prev_terminal_id = root_terminal_meta["id"]
+            prev_terminal_len = root_terminal_meta["input_len"]
             followup = _render_followup(theme, obj, child_rng(seed, r, 3), pinned=pinned)
-            # The `shared` prefix must be exactly prev_principal_len messages; the
+            # The `shared` prefix must be exactly prev_terminal_len messages; the
             # accumulated `transcript` is kept at that length as the placeholder.
             prefix_msgs = list(transcript)
             answer_placeholder = {"role": "assistant", "content": "PLACEHOLDER_PRIOR_ANSWER"}
@@ -1791,15 +1896,15 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             task_msgs = [*prefix_msgs, answer_placeholder, followup_msg]
             principal_segments = [
                 InputSegment(
-                    type="shared", message_count=prev_principal_len, token_count=0, source_event_id=prev_principal_id
+                    type="shared", message_count=prev_terminal_len, token_count=0, source_event_id=prev_terminal_id
                 ),
-                InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_answer_id),
+                InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_terminal_id),
                 InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
             ]
-            # BOTH sources must also be predecessors so substitution runs after
-            # require_async has awaited them (full_match is DOT-only).
-            preds = [prev_principal_id, prev_answer_id]
-            dep_types = {prev_principal_id: "full_match", prev_answer_id: "full_match"}
+            # The terminal source must also be a predecessor so substitution runs after
+            # require_async has awaited it (full_match is DOT-only).
+            preds = [prev_terminal_id]
+            dep_types = {prev_terminal_id: "full_match"}
 
         terminal = _build_agent(
             0,
@@ -1816,11 +1921,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         if terminal is None:
             break
         prev_answer_id = terminal
-        # The next round's `shared` prefix must equal THIS round's principal
-        # INPUT (its message_count is root_principal_meta["input_len"]). Take the
-        # principal event's own messages verbatim — they ARE that input — as the
-        # placeholder transcript, so len(prefix) == published input_len exactly.
-        transcript = list(events[root_principal_meta["id"]].call.messages)
+        # The next round's `shared` prefix must equal THIS round's terminal INPUT
+        # (its message_count is root_terminal_meta["input_len"]). Take the terminal
+        # event's own messages verbatim — they ARE that input (the full tool loop) —
+        # as the placeholder transcript, so len(prefix) == published input_len exactly.
+        transcript = list(events[root_terminal_meta["id"]].call.messages)
 
     return ReplayGraph(events=events, root_event_ids=root_ids, source_file="synthetic")
 
@@ -1850,7 +1955,7 @@ class SyntheticAgenticDataGenerator(ReplayGraphSessionGeneratorBase):
         base_seed: Optional[int] = None,
         num_workers: int = 1,
     ) -> None:
-        synthetic_config = getattr(config, "synthetic_agentic", None)
+        synthetic_config = config.synthetic_agentic
         if synthetic_config is None:
             raise ValueError("synthetic_agentic configuration is required for SyntheticAgenticDataGenerator")
 

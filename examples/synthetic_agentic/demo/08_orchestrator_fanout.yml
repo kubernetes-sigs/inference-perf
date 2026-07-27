@@ -11,12 +11,12 @@ data:
     num_sessions: 4
     seed: 6
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 1}
+    turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 1.0                            # always spawn
     sub_agents_per_spawn: {type: fixed, mean: 2}       # exactly 2 children
     max_depth: 1                                        # children don't recurse
-    tool_turns_per_loop: {type: fixed, mean: 3}        # each child runs a 3-turn tool loop, then answers
-    tool_definitions_per_agent: {type: fixed, mean: 6}
+    tool_loop_depth: {type: fixed, mean: 3}        # each child runs a 3-turn tool loop, then answers
+    tool_catalog_size_per_agent: {type: fixed, mean: 6}
     max_events_per_session: 512
     input_tokens_per_turn:  {type: fixed, mean: 250}
     output_tokens_per_turn: {type: fixed, mean: 60}

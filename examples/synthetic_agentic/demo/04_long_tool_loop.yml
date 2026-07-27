@@ -1,4 +1,4 @@
-# DEMO 04 — Long single-agent tool-loop (tool_turns_per_loop > 3): watch the loop GROW.
+# DEMO 04 — Long single-agent tool-loop (tool_loop_depth > 3): watch the loop GROW.
 # One turn that makes 5 sequential tool calls, then answers. Same shape as 03 but longer, so
 # the accumulating tool-loop transcript is unmistakable: each turn re-injects the prior
 # [assistant tool_call, tool result] pair on top of everything before it.
@@ -11,10 +11,10 @@ data:
     num_sessions: 5
     seed: 4
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 1}
+    turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 0.0
-    tool_turns_per_loop: {type: fixed, mean: 5}      # 5 tool calls, then answer (> 3)
-    tool_definitions_per_agent: {type: fixed, mean: 8}
+    tool_loop_depth: {type: fixed, mean: 5}      # 5 tool calls, then answer (> 3)
+    tool_catalog_size_per_agent: {type: fixed, mean: 8}
     input_tokens_per_turn:  {type: fixed, mean: 300}
     output_tokens_per_turn: {type: fixed, mean: 80}
     tool_call_latency_sec:  {type: fixed, mean: 1}

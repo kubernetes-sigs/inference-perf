@@ -12,10 +12,10 @@ data:
     num_sessions: 5
     seed: 2
     theme_mix: {generic: 1.0}
-    rounds_per_session: {type: fixed, mean: 3}     # 3 human turns -> growing context
+    turns_per_session: {type: fixed, mean: 3}     # 3 human turns -> growing context
     fanout_probability: 0.0                          # no sub-agents
-    tool_turns_per_loop: {type: fixed, mean: 0}      # answer directly each round
-    tool_definitions_per_agent: {type: fixed, mean: 0}  # NO tools advertised
+    tool_loop_depth: {type: fixed, mean: 0}      # answer directly each round
+    tool_catalog_size_per_agent: {type: fixed, mean: 0}  # NO tools advertised
     input_tokens_per_turn:  {type: fixed, mean: 200}
     output_tokens_per_turn: {type: fixed, mean: 60}
     tool_call_latency_sec:  {type: fixed, mean: 1}
