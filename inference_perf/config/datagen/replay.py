@@ -14,9 +14,9 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.common import Distribution, DistributionType, StrictBaseModel
 
 
 class TraceFormat(Enum):
@@ -392,7 +392,17 @@ class SyntheticAgenticConfig(SessionReplayConfig):
             "read/think/reply time. Omit to use the default (fixed 10s)."
         ),
     )
-    max_model_len: Optional[int] = Field(None, description="fail-fast context-length ceiling")
+    max_model_len: Optional[int] = Field(
+        None,
+        description=(
+            "Fail-fast context-length ceiling (tokens). When set, a config whose single largest "
+            "request -- worst-case inputs (system head + tool catalog + accumulated turns + tool "
+            "loop) plus the output to generate -- would exceed this is rejected at load, instead "
+            "of 400-ing mid-run. Uses each distribution's clip ceiling (`max`) as the worst case. "
+            "Excludes the model's per-message chat-template wrapper (~10-15 tok/msg), so set this "
+            "at or a little below your model's true window. Omit to skip the check."
+        ),
+    )
 
     # Context compaction: omit to never compact (pure growth). When set,
     # both trigger_tokens and target_tokens are required (enforced by the submodel).
@@ -423,23 +433,85 @@ class SyntheticAgenticConfig(SessionReplayConfig):
 
     @model_validator(mode="after")
     def validate_max_model_len(self) -> "SyntheticAgenticConfig":
-        # Fail-fast context-length ceiling check. Uses the mean of
-        # input_tokens_per_turn as the "typical" per-turn input size: mean is
-        # always a meaningful, well-defined statistic for every Distribution
-        # type (fixed, uniform, normal, ...), unlike max which for some
-        # distribution types is just an unconfigured default ceiling rather
-        # than a value the sampler is actually likely to produce. A config
-        # whose shared invariant system-prompt head plus a *typical* turn
-        # already exceeds the model's context window is obviously going to
-        # overrun in practice, so we reject it here rather than let it fail
-        # deep inside a live benchmark run.
-        if self.max_model_len is not None:
-            projected = self.shared_system_prompt_len + self.input_tokens_per_turn.mean
-            if projected > self.max_model_len:
-                raise ValueError(
-                    "max_model_len is too small for this configuration: "
-                    f"shared_system_prompt_len ({self.shared_system_prompt_len}) + "
-                    f"input_tokens_per_turn.mean ({self.input_tokens_per_turn.mean}) = {projected} "
-                    f"exceeds max_model_len ({self.max_model_len})"
-                )
+        # Fail-fast context-length ceiling. Reject a config whose single
+        # LARGEST request would exceed the model's window, so it fails at load
+        # instead of 400-ing deep inside a live run. We model the whole final
+        # message (all inputs + the output we must still generate), not just a
+        # bare turn, because the naive one-turn check happily passes configs
+        # (e.g. a 487-tool catalog) that then overrun live.
+        #
+        # Worst-case sizing per distribution. The sampler HARD-CLIPS every draw
+        # to [min, max] (sample_from_distribution), so the realized value never
+        # exceeds `max` -- for fixed it is exactly `mean` (max is ignored). We
+        # therefore take the worst case as `max` for every distribution EXCEPT
+        # fixed (which uses `mean`). This matters because Distribution's unset
+        # fields carry stale defaults (`mean` defaults to 512, `max` to 1024),
+        # and only the field a given type actually samples from is meaningful:
+        # a uniform ignores `mean`, a fixed ignores `max`. Reading the wrong one
+        # would inject a bogus 512/1024 into the projection. None-valued optional
+        # knobs fall back to the SAME fixed defaults the generator uses (matched
+        # by value, not import, to avoid a config -> datagen circular import).
+        if self.max_model_len is None:
+            return self
+
+        import math
+
+        def _hi(dist: Optional[Distribution], fallback_fixed_mean: float) -> int:
+            # Worst-case value a knob can contribute. None => the generator's
+            # fixed fallback (its `mean`). fixed => its `mean`. All other types
+            # are clipped to `max`, so `max` is the true achievable ceiling.
+            if dist is None:
+                return int(math.ceil(fallback_fixed_mean))
+            if dist.type == DistributionType.FIXED:
+                return int(math.ceil(dist.mean))
+            return int(math.ceil(dist.max))
+
+        # ~170 tok per advertised tool: real serialized theme tool schemas
+        # (name + description + JSON-Schema params) measure ~140-166 tok each
+        # across the built-in themes; 170 is the rounded-up ceiling so the
+        # estimate over-, never under-, counts the catalog.
+        CATALOG_TOKENS_PER_TOOL = 170
+
+        head = self.shared_system_prompt_len
+        # input/output tokens are required fields (never None), so their fallback
+        # is unreachable -- passed as 0 to make that explicit.
+        in_hi = _hi(self.input_tokens_per_turn, 0)
+        out_hi = _hi(self.output_tokens_per_turn, 0)
+        turns_hi = _hi(self.turns_per_session, 1)
+        k_hi = max(0, _hi(self.tool_loop_depth, 2))  # generator _FB_STEPS = fixed 2
+        par_hi = max(1, _hi(self.parallel_tool_calls_per_step, 1))  # _FB_PARALLEL = fixed 1
+        catalog = _hi(self.tool_catalog_size_per_agent, 8) * CATALOG_TOKENS_PER_TOOL  # _FB_TOOL_DEFS = fixed 8
+
+        # A single agent turn runs a tool loop whose transcript GROWS each
+        # iteration: iteration t re-injects the prior turn plus its output-call
+        # message and `par` tool results. The deepest step therefore carries the
+        # turn's input + k*(one output-call msg + par results). We size a tool
+        # result as ~one output turn (results echo the payload-sized call args;
+        # there is no separate tool-result-size knob), so the loop adds
+        # k*(out + par*out) on top of the turn's input.
+        per_turn_loop = in_hi + k_hi * (out_hi + par_hi * out_hi)
+
+        # Peak A -- the ROOT's final turn: the whole accumulated transcript
+        # (every prior turn's input AND answer) plus this turn's own loop, then
+        # one more output to generate.
+        root_peak = head + catalog + turns_hi * per_turn_loop + out_hi
+        # Peak B -- a SUB-AGENT's single request: one input turn + its full tool
+        # loop + one output (no user turns of its own). Today sub-agents share
+        # the root's depth/catalog knobs, so root_peak >= sub_peak whenever
+        # turns_hi >= 1; the max() keeps the check correct if sub-agents ever
+        # get independent depth/catalog knobs.
+        sub_peak = head + catalog + per_turn_loop + out_hi
+        projected = max(root_peak, sub_peak)
+
+        if projected > self.max_model_len:
+            raise ValueError(
+                f"max_model_len ({self.max_model_len}) is too small for this configuration: "
+                f"the peak request is ~{projected} tokens and would overrun the model's context "
+                f"window (prompt + generated output). Breakdown: system_head({head}) + "
+                f"tool_catalog({_hi(self.tool_catalog_size_per_agent, 8)} tools x{CATALOG_TOKENS_PER_TOOL}"
+                f"={catalog}) + turns({turns_hi}) x per_turn_loop({per_turn_loop}) + output({out_hi}), "
+                f"where per_turn_loop = input({in_hi}) + tool_loop_depth({k_hi}) x "
+                f"(output({out_hi}) + parallel({par_hi}) x output). Reduce input/output/catalog/turns/"
+                f"tool_loop_depth, or raise max_model_len."
+            )
         return self

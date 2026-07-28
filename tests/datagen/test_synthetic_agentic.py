@@ -927,21 +927,80 @@ def test_theme_mix_valid_accepted():
 @pytest.mark.parametrize(
     "kwargs, should_raise",
     [
-        # overrun: shared prompt alone exceeds the cap -> fail-fast.
+        # overrun: shared prompt head alone exceeds the cap -> fail-fast.
         ({"max_model_len": 1000, "shared_system_prompt_len": 2000}, True),
-        # None: no ceiling configured -> no fail-fast check performed.
-        ({"max_model_len": None, "shared_system_prompt_len": 2000}, False),
-        # comfortable: shared_system_prompt_len + input mean well under the cap.
+        # None: no ceiling configured -> no fail-fast check performed, even for
+        # a config whose peak clearly would overrun.
+        ({"max_model_len": None, "input_tokens_per_turn": Distribution(type="fixed", mean=500_000)}, False),
+        # comfortable: small everything, generous ceiling.
+        ({"max_model_len": 200_000}, False),
+        # CATALOG is counted: a huge catalog alone (2000 tools x ~170 = ~340K)
+        # overruns a 131K cap even though every token knob is tiny. The old
+        # one-turn check missed this -- it never counted the catalog.
+        ({"max_model_len": 131_072, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, True),
+        # ...same catalog, ample ceiling -> accepted (the catalog isn't rejected
+        # per se; only when it makes the PEAK overrun).
+        ({"max_model_len": 500_000, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, False),
+        # OUTPUT is counted: tiny input, but a uniform output whose clip ceiling
+        # (max) is enormous -> peak includes that output and overruns.
         (
             {
-                "max_model_len": 100_000,
-                "shared_system_prompt_len": 100,
-                "input_tokens_per_turn": Distribution(type="fixed", mean=20),
+                "max_model_len": 131_072,
+                "input_tokens_per_turn": Distribution(type="fixed", mean=100),
+                "output_tokens_per_turn": Distribution(type="uniform", min=5, max=200_000),
+                "tool_loop_depth": Distribution(type="fixed", mean=0),
+            },
+            True,
+        ),
+        # MULTI-TURN accumulation is counted: a per-turn size that fits alone
+        # overruns once many turns accumulate (turns x per_turn_loop).
+        (
+            {
+                "max_model_len": 131_072,
+                "input_tokens_per_turn": Distribution(type="fixed", mean=30_000),
+                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
+                "tool_loop_depth": Distribution(type="fixed", mean=0),
+                "turns_per_session": Distribution(type="fixed", mean=10),  # 10 x 30k = 300k
+            },
+            True,
+        ),
+        # TYPE-AWARE worst case, fixed: a fixed distribution uses its `mean`
+        # (its `max` is the stale 1024 default and must be IGNORED). mean 50k
+        # overruns a 40k cap.
+        (
+            {
+                "max_model_len": 40_000,
+                "input_tokens_per_turn": Distribution(type="fixed", mean=50_000),
+                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
+                "tool_loop_depth": Distribution(type="fixed", mean=0),
+            },
+            True,
+        ),
+        # TYPE-AWARE worst case, uniform: a uniform uses its `max` (its `mean` is
+        # the stale 512 default and must be IGNORED). Here max is small (100), so
+        # despite a large stale mean the config FITS -- proving we don't read the
+        # bogus 512.
+        (
+            {
+                "max_model_len": 50_000,
+                "input_tokens_per_turn": Distribution(type="uniform", min=10, max=100),
+                "output_tokens_per_turn": Distribution(type="fixed", mean=100),
+                "tool_loop_depth": Distribution(type="fixed", mean=0),
             },
             False,
         ),
     ],
-    ids=["overrun", "none", "comfortable_fit"],
+    ids=[
+        "head_overrun",
+        "none_never_checks",
+        "comfortable_fit",
+        "catalog_counted_reject",
+        "catalog_counted_accept",
+        "output_counted",
+        "multiturn_accumulation_counted",
+        "fixed_uses_mean_not_default_max",
+        "uniform_uses_max_not_default_mean",
+    ],
 )
 def test_max_model_len_fail_fast(kwargs, should_raise):
     from pydantic import ValidationError
@@ -952,6 +1011,42 @@ def test_max_model_len_fail_fast(kwargs, should_raise):
     else:
         cfg = _cfg(**kwargs)
         assert cfg.max_model_len == kwargs["max_model_len"]
+
+
+def test_max_model_len_counts_tool_loop_depth():
+    # The tool loop's transcript grows each iteration, so a DEEP loop is part of
+    # the peak request. A config that fits at loop depth 0 must be rejected at a
+    # large enough loop depth, all else equal -- proving the loop term is in the
+    # projection (and that a single-shot sub-agent's own loop is sized, not just
+    # the root's multi-turn accumulation).
+    from pydantic import ValidationError
+
+    common = dict(
+        max_model_len=131_072,
+        input_tokens_per_turn=Distribution(type="fixed", mean=5_000),
+        output_tokens_per_turn=Distribution(type="fixed", mean=5_000),
+        turns_per_session=Distribution(type="fixed", mean=1),
+    )
+    # loop depth 0: peak ~ head + catalog + input + output, well under 131K.
+    cfg = _cfg(tool_loop_depth=Distribution(type="fixed", mean=0), **common)
+    assert cfg.max_model_len == 131_072
+    # loop depth 12: per_turn_loop ~ 5000 + 12*(5000+5000) = 125000, + output
+    # pushes the peak over 131K -> rejected.
+    with pytest.raises(ValidationError):
+        _cfg(tool_loop_depth=Distribution(type="fixed", mean=12), **common)
+
+
+def test_max_model_len_message_has_breakdown():
+    # The rejection message itemises the peak so a user can see which knob to
+    # cut (catalog, turns, loop, input, output).
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as ei:
+        _cfg(max_model_len=1000, tool_catalog_size_per_agent=Distribution(type="fixed", mean=500))
+    msg = str(ei.value)
+    assert "peak request" in msg
+    assert "tool_catalog" in msg
+    assert "per_turn_loop" in msg
 
 
 # --- Event-model fix: each call carries the cumulative transcript ----------
