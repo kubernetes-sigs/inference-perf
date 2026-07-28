@@ -84,12 +84,16 @@ jobs:
 
             // All required workflows green: unlabel every open PR whose
             // current head is this commit.
-            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+            // `listPullRequestsAssociatedWithCommit` does not reliably resolve an
+            // upstream PR when the head commit exists only in a contributor's fork.
+            // List open PRs and match their current head SHA instead.
+            const prs = await github.paginate(github.rest.pulls.list, {
               ...context.repo,
-              commit_sha: headSha,
+              state: 'open',
+              per_page: 100,
             });
             for (const pr of prs) {
-              if (pr.state !== 'open' || pr.head.sha !== headSha) continue;
+              if (pr.head.sha !== headSha) continue;
               if (!pr.labels.some(l => l.name === GATE_LABEL)) continue;
               try {
                 await github.rest.issues.removeLabel({
