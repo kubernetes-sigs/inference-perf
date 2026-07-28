@@ -70,6 +70,7 @@ from inference_perf.config.metrics import (
 )
 from inference_perf.config.reportgen import (
     GoodputConfig,
+    PerRequestFieldsConfig,
     PrometheusMetricsReportConfig,
     ReportConfig,
     RequestLifecycleMetricsReportConfig,
@@ -103,6 +104,7 @@ __all__ = [
     "ModelServerType",
     "MultiLoRAConfig",
     "OTelTraceReplayConfig",
+    "PerRequestFieldsConfig",
     "PrometheusClientConfig",
     "PrometheusMetricsReportConfig",
     "ReportConfig",
