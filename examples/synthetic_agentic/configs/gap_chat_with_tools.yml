@@ -4,7 +4,7 @@ data:
   synthetic_agentic:
     num_sessions: 4
     seed: 201
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 4}          # 4 human turns
     fanout_probability: 0.0
     tool_loop_depth: {type: uniform, min: 0, max: 3} # VARYING per round: some k=0 (answer), some k>0 (tools)

@@ -1,5 +1,7 @@
 # DEMO 01 — Bare non-agentic baseline (the simplest shape).
-# One agent, one turn, NO tools advertised at all: just [user question] -> [assistant answer].
+# One agent, one turn, NO tools advertised at all: [system head, user question] -> [assistant answer].
+# (Every agent call carries the fixed shared system head; shared_system_prompt_len defaults to 1000.
+#  Set it to 0 for a truly head-less [user] -> [assistant] baseline.)
 # WHAT TO LOOK FOR: 1 event/session (the answer is the call's OUTPUT, not a separate event);
 # requests carry NO tools; plain chat completion.
 api: {type: chat, streaming: false}
@@ -8,7 +10,7 @@ data:
   synthetic_agentic:
     num_sessions: 5
     seed: 1
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 1}     # single autonomous turn
     fanout_probability: 0.0                          # no sub-agents
     tool_loop_depth: {type: fixed, mean: 0}      # answer directly

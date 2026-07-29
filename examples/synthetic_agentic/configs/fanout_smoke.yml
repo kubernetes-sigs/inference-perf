@@ -8,7 +8,7 @@ data:
   synthetic_agentic:
     num_sessions: 5
     seed: 7
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 1.0                          # always spawn
     sub_agents_per_spawn: {type: fixed, mean: 2}     # K=2 children

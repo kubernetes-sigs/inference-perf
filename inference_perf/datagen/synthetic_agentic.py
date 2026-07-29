@@ -35,7 +35,13 @@ from inference_perf.config.datagen.replay import SyntheticAgenticConfig
 from inference_perf.config.common import Distribution
 from inference_perf.datagen.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
-from inference_perf.datagen.synthetic_themes import GENERIC_THEME, Theme, load_theme
+from inference_perf.datagen.synthetic_themes import (
+    GENERIC_THEME,
+    ROOT_SYSTEM_PROMPTS,
+    SUBAGENT_SYSTEM_PROMPTS,
+    Theme,
+    load_theme,
+)
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution.utils import sample_from_distribution
 
@@ -344,6 +350,76 @@ def fit_filler(
         if corrected != n_words:
             n_words = corrected
             buf = _emit(n_words)
+    return buf
+
+
+# Header that introduces the filler padding appended AFTER a real system prompt,
+# when the prompt is shorter than the requested head length. Unlike fit_filler
+# (which frames filler as supplementary <context> and puts the real content
+# last), the system head keeps the REAL prompt FIRST -- it is the standing
+# instruction the agent must attend to -- and pads the remainder with a clearly
+# labeled operational-context block, so the head reads like a real system prompt
+# topped up with background rather than duplicated or filler-fronted text.
+_SYSTEM_HEAD_FILLER_HEADER = "\n\n## Operational context\n"
+
+
+def _render_system_head(
+    tokenizer,
+    target_tokens: int,
+    is_root: bool,
+    rng: np.random.Generator,
+    word_pool: Optional[List[str]] = None,
+) -> str:
+    """Render an agent's system head: a real, role-appropriate system prompt fitted
+    to `target_tokens`.
+
+    A prompt is drawn (seeded) from ROOT_SYSTEM_PROMPTS (orchestrator/assistant) or
+    SUBAGENT_SYSTEM_PROMPTS (spawned worker) by role. The REAL prompt is kept whole
+    and FIRST; if it is shorter than the target, a labeled "## Operational context"
+    block padded with filler makes up the remainder. If the prompt alone already
+    meets or exceeds the target, it is truncated (token-wise) to the target -- no
+    filler, no duplication. Deterministic given `rng`.
+    """
+    pool = ROOT_SYSTEM_PROMPTS if is_root else SUBAGENT_SYSTEM_PROMPTS
+    prompt = _pick(rng, pool)
+    prompt_tokens = tokenizer.count_tokens(prompt)
+
+    if prompt_tokens >= target_tokens:
+        # Real prompt already fills the budget: truncate to the target (keep the
+        # opening, which carries the role + policy) rather than pad. Truncate by
+        # words and correct down until it fits, so we never exceed the target.
+        words = prompt.split()
+        # Proportional first cut, then trim word-by-word to land at/under target.
+        keep = max(1, int(len(words) * target_tokens / max(1, prompt_tokens)))
+        while keep > 1 and tokenizer.count_tokens(" ".join(words[:keep])) > target_tokens:
+            keep -= 1
+        return " ".join(words[:keep])
+
+    # Prompt fits with room to spare: append a labeled filler block for the
+    # remainder. filler_budget accounts for the prompt + the header (mandatory).
+    words = word_pool if word_pool else _corpus_words()
+    header_cost = tokenizer.count_tokens(prompt + _SYSTEM_HEAD_FILLER_HEADER)
+    filler_budget = target_tokens - header_cost
+    if filler_budget <= 0 or not words:
+        return prompt
+
+    sample = _cycled_words(words, min(_RATIO_SAMPLE_WORDS, len(words)))
+    sample_tokens = _untruncated_len(tokenizer, " ".join(sample))
+    tokens_per_word = (sample_tokens / len(sample)) if sample and sample_tokens > 0 else 1.0
+
+    def _emit(n_words: int) -> str:
+        chunk = " ".join(_cycled_words(words, max(1, n_words)))
+        return f"{prompt}{_SYSTEM_HEAD_FILLER_HEADER}{chunk}"
+
+    n_words = max(1, int(np.ceil(filler_budget / tokens_per_word)))
+    buf = _emit(n_words)
+    actual = _untruncated_len(tokenizer, buf)
+    filler_actual = actual - header_cost
+    if actual != target_tokens and filler_actual > 0:
+        observed_ratio = filler_actual / n_words
+        corrected = max(1, int(np.ceil(filler_budget / observed_ratio)))
+        if corrected != n_words:
+            buf = _emit(corrected)
     return buf
 
 
@@ -1184,16 +1260,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     else:
         fanout_tool_defs = [*tool_defs, DISPATCH_AGENT_TOOL_DEF]
 
-    system_msg: Optional[Dict[str, Any]] = None
-    if cfg.shared_system_prompt_len > 0:
-        content = fit_filler(
-            tokenizer,
-            cfg.shared_system_prompt_len,
-            theme.system_prompt or "",
-            rng=child_rng(seed, 2),
-            word_pool=filler_pool,
-        )
-        system_msg = {"role": "system", "content": content}
+    # The system head is built PER AGENT (see _system_head below): a real,
+    # role-appropriate system prompt (root vs sub-agent) is drawn per agent and
+    # fitted to shared_system_prompt_len, so the root and its sub-agents carry
+    # DIFFERENT heads -- like a real harness, where an orchestrator and a spawned
+    # worker ship different system prompts.
 
     def _emit(
         event_id,
@@ -1232,12 +1303,25 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             t_end_ms=0,
         )
 
-    def _system_head() -> Optional[Dict[str, Any]]:
-        # Aliasing guard: the invariant system head rides
-        # EVERY agent's first call, but each event must own a DISTINCT dict so
-        # that mutating one event's messages never corrupts another. Return a
-        # fresh shallow copy each time (system_msg itself is treated read-only).
-        return dict(system_msg) if system_msg is not None else None
+    def _system_head(is_root: bool, agent_seed_path: tuple) -> Optional[Dict[str, Any]]:
+        # Build this agent's system head: a real, role-appropriate system prompt
+        # (root orchestrator vs spawned worker) fitted to shared_system_prompt_len.
+        # None when the head length is 0 (head-less baseline). The pick is seeded
+        # on the agent's own path (+ reserved sub-index 2, the former head path) so
+        # it is deterministic per agent and byte-identical per (config, seed), while
+        # different agents/roles get different heads. Each call returns a fresh dict
+        # (every event owns a DISTINCT message dict; the head rides each agent's
+        # FIRST call, and events must never alias a shared dict).
+        if cfg.shared_system_prompt_len <= 0:
+            return None
+        content = _render_system_head(
+            tokenizer,
+            cfg.shared_system_prompt_len,
+            is_root=is_root,
+            rng=child_rng(seed, *agent_seed_path, 2),
+            word_pool=filler_pool,
+        )
+        return {"role": "system", "content": content}
 
     # Per-round bookkeeping for context growth: _build_agent (when is_root) publishes
     # the current round's TERMINAL event id + its full input length here, so the next
@@ -1320,7 +1404,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             principal_msgs = sized_task_msgs
             principal_segs: List[InputSegment] = principal_segments
         else:
-            head = _system_head()
+            head = _system_head(is_root, agent_seed_path)
             principal_msgs = ([head] if head else []) + sized_task_msgs
             principal_segs = []
 
@@ -2005,8 +2089,9 @@ class SyntheticAgenticDataGenerator(ReplayGraphSessionGeneratorBase):
         theme choice is stable per (config, session_index) and independent of
         the graph's own random draws.
         """
-        names = list(self.synthetic_config.theme_mix.keys())
-        weights = np.array([self.synthetic_config.theme_mix[n] for n in names], dtype=np.float64)
+        theme_weights = self.synthetic_config.theme_weights()
+        names = list(theme_weights.keys())
+        weights = np.array([theme_weights[n] for n in names], dtype=np.float64)
         weights = weights / weights.sum()
         rng = child_rng(session_seed(self.synthetic_config.seed, session_index), 999)
         return self._themes[names[int(rng.choice(len(names), p=weights))]]

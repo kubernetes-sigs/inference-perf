@@ -8,7 +8,7 @@ data:
   synthetic_agentic:
     num_sessions: 5
     seed: 42
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 1}     # autonomous
     fanout_probability: 0.0                          # single agent
     tool_loop_depth: {type: fixed, mean: 2}      # 2 tool turns then answer

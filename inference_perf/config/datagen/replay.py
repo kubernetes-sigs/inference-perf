@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -326,6 +326,14 @@ class ContextCompactionConfig(BaseModel):
     )
 
 
+class ThemeSpec(BaseModel):
+    """Explicit per-theme entry in `theme_mix`: `{weight: W}`. A bare float in
+    `theme_mix` is also accepted and is equivalent to `{weight: <float>}`. The
+    block form leaves room for future per-theme overrides."""
+
+    weight: float = Field(..., ge=0.0, description="Relative sampling weight for this theme")
+
+
 class SyntheticAgenticConfig(SessionReplayConfig):
     """Procedural multi-agent agentic session generation."""
 
@@ -350,14 +358,39 @@ class SyntheticAgenticConfig(SessionReplayConfig):
             "spawn (full tree to max_depth)."
         ),
     )
-    theme_mix: Dict[str, float] = Field(
-        default_factory=lambda: {"generic": 0.25, "db2_latency_incident": 0.25, "research_rag": 0.25, "code_change_task": 0.25},
-        description="theme name -> weight; default is an equal mix of the four built-in themes",
+    theme_mix: Dict[str, Union[float, ThemeSpec]] = Field(
+        default_factory=lambda: cast(
+            Dict[str, Union[float, ThemeSpec]],
+            {
+                "generic": ThemeSpec(weight=0.25),
+                "db2_latency_incident": ThemeSpec(weight=0.25),
+                "research_rag": ThemeSpec(weight=0.25),
+                "code_change_task": ThemeSpec(weight=0.25),
+            },
+        ),
+        description=(
+            "theme name -> weight. Preferred form is an explicit block, `{name: {weight: W}}`; "
+            "a bare float `{name: W}` is also accepted for brevity. Default is an equal mix of the "
+            "four built-in themes. Use theme_weights() to read normalized {name: float}."
+        ),
     )
+
+    def theme_weights(self) -> Dict[str, float]:
+        """Normalize theme_mix (bare-float or {weight: ...} block) to {name: float}."""
+        return {name: (spec.weight if isinstance(spec, ThemeSpec) else float(spec)) for name, spec in self.theme_mix.items()}
 
     # Defaulted
     seed: int = Field(42, description="Base seed for stable per-session RNG")
-    shared_system_prompt_len: int = Field(0, ge=0, description="Invariant system-prompt head length in tokens")
+    shared_system_prompt_len: int = Field(
+        1000,
+        ge=0,
+        description=(
+            "Tokens of a fixed system-prompt head that opens EVERY agent call (the standing "
+            "'system head' real agents carry: tool instructions, policies). Defaults to 1000 "
+            "because virtually every agentic flow ships a non-trivial system prompt; set 0 only "
+            "for a deliberately head-less baseline."
+        ),
+    )
     tool_loop_depth: Optional[Distribution] = Field(
         None,
         description=(
@@ -425,10 +458,11 @@ class SyntheticAgenticConfig(SessionReplayConfig):
     def validate_theme_mix(self) -> "SyntheticAgenticConfig":
         if not self.theme_mix:
             raise ValueError("theme_mix must be non-empty (at least one theme name -> weight)")
-        if any(w < 0 for w in self.theme_mix.values()):
-            raise ValueError(f"theme_mix weights must all be >= 0, got: {self.theme_mix}")
-        if sum(self.theme_mix.values()) <= 0:
-            raise ValueError(f"theme_mix weights must sum to a positive value (at least one weight > 0), got: {self.theme_mix}")
+        weights = self.theme_weights()  # normalizes bare-float and {weight: ...} forms
+        if any(w < 0 for w in weights.values()):
+            raise ValueError(f"theme_mix weights must all be >= 0, got: {weights}")
+        if sum(weights.values()) <= 0:
+            raise ValueError(f"theme_mix weights must sum to a positive value (at least one weight > 0), got: {weights}")
         return self
 
     @model_validator(mode="after")

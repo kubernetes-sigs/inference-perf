@@ -10,7 +10,7 @@ data:
   synthetic_agentic:
     num_sessions: 5
     seed: 4
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 0.0
     tool_loop_depth: {type: fixed, mean: 5}      # 5 tool calls, then answer (> 3)

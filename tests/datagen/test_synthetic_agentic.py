@@ -262,16 +262,22 @@ def test_no_agent_beyond_max_depth():
             assert int(m.group(1)) <= 1
 
 
-def test_subagent_first_call_carries_identical_system_head():
-    # The invariant system head rides EVERY agent's first call, byte-identical.
-    # Verify a sub-agent's first (dispatch) event carries the same {role:"system"}
-    # message the root's first call gets.
+def test_agent_first_call_carries_role_appropriate_system_head():
+    # Every agent's first call carries a {role:"system"} head, drawn from the
+    # ROLE-appropriate pool: the root/orchestrator from ROOT_SYSTEM_PROMPTS, a
+    # spawned sub-agent from SUBAGENT_SYSTEM_PROMPTS -- so the root and its
+    # sub-agents carry DIFFERENT heads (like a real harness), not one identical
+    # head. Each head is a distinct dict (no aliasing).
+    from inference_perf.datagen.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
+
     cfg = _cfg(
         fanout_probability=1.0,
         max_depth=2,
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
         max_events_per_session=2048,
-        shared_system_prompt_len=32,
+        # above the longest prompt (~540 words in _WordTok units) so each head is
+        # the full real prompt + filler, keeping its opening intact for the checks.
+        shared_system_prompt_len=800,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
 
@@ -281,20 +287,31 @@ def test_subagent_first_call_carries_identical_system_head():
                 return m
         return None
 
-    # root first call = the sole root event's principal
+    def _opening(head):
+        # the real prompt precedes any appended "## Operational context" filler
+        return head["content"].split("## Operational context")[0].strip()
+
+    root_openings = {p.split("## Operational context")[0].strip() for p in ROOT_SYSTEM_PROMPTS}
+    sub_openings = {p.split("## Operational context")[0].strip() for p in SUBAGENT_SYSTEM_PROMPTS}
+
+    # root first call -> a ROOT prompt
     root_id = g.root_event_ids[0]
     root_system = _system_msg(g.events[root_id])
     assert root_system is not None, "root first call carries a system head"
+    assert _opening(root_system) in root_openings, "root head comes from ROOT_SYSTEM_PROMPTS"
 
-    # a sub-agent's first event: the child's principal (the ':sub' branch's first event)
+    # each sub-agent first call -> a SUBAGENT prompt (and NOT the root's head)
+    seen_dicts = [root_system]
     sub_firsts = [ev for eid, ev in g.events.items() if ":sub" in eid and ":principal" in eid]
     assert sub_firsts, "at least one sub-agent principal event exists"
     for ev in sub_firsts:
         sm = _system_msg(ev)
         assert sm is not None, "sub-agent first call carries a system head"
-        assert sm == root_system, "sub-agent system head is byte-identical to root's"
-        # aliasing guard: must be a distinct object (a copy), not the same dict
-        assert sm is not root_system, "system head is copied per event, not aliased"
+        assert _opening(sm) in sub_openings, "sub-agent head comes from SUBAGENT_SYSTEM_PROMPTS"
+        assert sm["content"] != root_system["content"], "sub-agent head differs from the root's"
+        for prior in seen_dicts:
+            assert sm is not prior, "each event's system head is a distinct dict (no aliasing)"
+        seen_dicts.append(sm)
 
 
 def test_event_budget_cost_is_k_plus_1_per_round():
@@ -928,7 +945,48 @@ def test_theme_mix_valid_accepted():
     # Regression guard: a normal, non-empty, positive-weight mix must still
     # construct without raising.
     cfg = _cfg(theme_mix={"generic": 0.5, "db2_latency_incident": 0.5})
-    assert cfg.theme_mix == {"generic": 0.5, "db2_latency_incident": 0.5}
+    assert cfg.theme_weights() == {"generic": 0.5, "db2_latency_incident": 0.5}
+
+
+def test_theme_mix_accepts_both_shapes_equivalently():
+    # theme_mix accepts BOTH the bare float {name: W} and the explicit weight
+    # block {name: {weight: W}}; the two normalize to the same weights and, for
+    # a given seed, pick the same theme per session. A mix of both forms in one
+    # config is allowed too.
+    bare = _cfg(theme_mix={"generic": 0.25, "db2_latency_incident": 0.75})
+    block = _cfg(theme_mix={"generic": {"weight": 0.25}, "db2_latency_incident": {"weight": 0.75}})
+    mixed = _cfg(theme_mix={"generic": 0.25, "db2_latency_incident": {"weight": 0.75}})
+    assert bare.theme_weights() == block.theme_weights() == mixed.theme_weights() == {
+        "generic": 0.25,
+        "db2_latency_incident": 0.75,
+    }
+    # identical weighted draws across sessions (same seed -> same theme choices)
+    from inference_perf.config.datagen.config import DataConfig, DataGenType
+    from inference_perf.datagen.synthetic_agentic import SyntheticAgenticDataGenerator
+
+    gb = SyntheticAgenticDataGenerator(
+        api_config=_min_api(),
+        config=DataConfig(type=DataGenType.SyntheticAgentic, synthetic_agentic=bare),
+        tokenizer=_WordTok(),
+        num_workers=1,
+    )
+    gk = SyntheticAgenticDataGenerator(
+        api_config=_min_api(),
+        config=DataConfig(type=DataGenType.SyntheticAgentic, synthetic_agentic=block),
+        tokenizer=_WordTok(),
+        num_workers=1,
+    )
+    picks_b = [gb._pick_theme(i).name for i in range(20)]
+    picks_k = [gk._pick_theme(i).name for i in range(20)]
+    assert picks_b == picks_k, "bare and weight-block forms must pick the same themes per session"
+
+
+def test_theme_mix_weight_block_rejects_negative():
+    # A negative weight in the explicit block form is rejected at the submodel.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _cfg(theme_mix={"generic": {"weight": -1.0}})
 
 
 @pytest.mark.parametrize(
@@ -1115,13 +1173,14 @@ def test_no_lone_assistant_input():
 
 
 def test_bare_single_round_is_one_event():
-    # rounds=1, k=0 (empty catalog), fanout 0 -> EXACTLY 1 event. Its input is
-    # [user] (+ system if configured); its expected_output is the (non-empty)
-    # answer text; it is NOT a tool call.
+    # rounds=1, k=0 (empty catalog), fanout 0 -> EXACTLY 1 event. With
+    # shared_system_prompt_len=0 (head-less baseline) its input is [user]; its
+    # expected_output is the (non-empty) answer text; it is NOT a tool call.
     cfg = _cfg(
         turns_per_session=Distribution(type="fixed", mean=1),
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
         fanout_probability=0.0,
+        shared_system_prompt_len=0,  # explicit head-less baseline (default is now 1000)
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     assert len(g.events) == 1, f"expected exactly 1 event, got {sorted(g.events)}"
@@ -1131,7 +1190,7 @@ def test_bare_single_round_is_one_event():
     assert ev.call.expected_output_is_tool_call is False
     assert ev.call.expected_output, "terminal answer text must be non-empty"
 
-    # With a system prompt, the input is [system, user].
+    # With a system prompt (the default), the input is [system, user].
     cfg_sys = _cfg(
         turns_per_session=Distribution(type="fixed", mean=1),
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
@@ -1144,6 +1203,57 @@ def test_bare_single_round_is_one_event():
     assert [m.get("role") for m in evs.call.messages] == ["system", "user"]
 
 
+def test_shared_system_prompt_len_defaults_to_nonzero():
+    # Virtually every agentic flow ships a system prompt, so the DEFAULT head is
+    # non-zero (1000): a config that does not set shared_system_prompt_len still
+    # opens each agent call with a system message.
+    cfg = SyntheticAgenticConfig(
+        num_sessions=1,
+        input_tokens_per_turn=Distribution(type="fixed", mean=20),
+        output_tokens_per_turn=Distribution(type="fixed", mean=10),
+    )
+    assert cfg.shared_system_prompt_len == 1000
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    principal = g.events["synthN0:r0:principal"]
+    assert principal.call.messages[0].get("role") == "system", "default config opens with a system head"
+
+
+def test_render_system_head_fits_truncates_and_is_deterministic():
+    # _render_system_head keeps a real role-appropriate prompt FIRST and fits the
+    # requested length: pads with a labeled block when short, truncates the prompt
+    # (no filler header) when the prompt alone exceeds the target, and is
+    # deterministic given the rng.
+    import numpy as np
+    from inference_perf.datagen.synthetic_agentic import _render_system_head
+    from inference_perf.datagen.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
+
+    tok = _WordTok()
+    # _WordTok counts words; the real prompts are ~430-540 words, so a target
+    # ABOVE the longest exercises the pad path and one BELOW the shortest
+    # exercises the truncate path.
+
+    # large target (> longest prompt): real ROOT prompt + labeled filler block, ~= target
+    big = _render_system_head(tok, 800, is_root=True, rng=np.random.default_rng(0))
+    assert "## Operational context" in big, "short prompt padded with a labeled filler block"
+    assert big.split("## Operational context")[0].strip() in {
+        p.split("## Operational context")[0].strip() for p in ROOT_SYSTEM_PROMPTS
+    }
+    assert abs(tok.count_tokens(big) - 800) <= 5, "fitted head lands near the target length"
+
+    # tiny target < prompt length: truncated, NO filler header, never exceeds target
+    tiny = _render_system_head(tok, 8, is_root=False, rng=np.random.default_rng(0))
+    assert "## Operational context" not in tiny, "truncated head has no filler block"
+    assert tok.count_tokens(tiny) <= 8, "truncated head does not exceed the target"
+    assert any(
+        tiny.split()[0] == p.split()[0] for p in SUBAGENT_SYSTEM_PROMPTS
+    ), "truncated head keeps the real prompt's opening"
+
+    # determinism: same rng seed -> identical head (pad path)
+    a = _render_system_head(tok, 700, is_root=True, rng=np.random.default_rng(3))
+    b = _render_system_head(tok, 700, is_root=True, rng=np.random.default_rng(3))
+    assert a == b
+
+
 def test_tool_loop_context_grows():
     # single-agent k=3, fanout 0 -> the agent's events' input message counts
     # grow like the OTel reference / real Exgentic (1, 3, 5, 7 for k=3, ignoring
@@ -1153,6 +1263,7 @@ def test_tool_loop_context_grows():
         tool_loop_depth=Distribution(type="fixed", mean=3),
         parallel_tool_calls_per_step=Distribution(type="fixed", mean=1),
         fanout_probability=0.0,
+        shared_system_prompt_len=0,  # isolate loop growth from the head (default is now 1000)
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     # k+1 = 4 events for one round.
@@ -1225,12 +1336,13 @@ def test_substitution_survives_all_shapes():
     # Drive tool-loop events AND a fan-out merge through the REAL substitution
     # with a populated registry: no IndexError, transcript reconstructs, prior
     # turns are present.
-    # --- tool loop ---
+    # --- tool loop --- (head-less so accumulation math stays literal)
     cfg = _cfg(
         turns_per_session=Distribution(type="fixed", mean=1),
         tool_loop_depth=Distribution(type="fixed", mean=3),
         parallel_tool_calls_per_step=Distribution(type="fixed", mean=1),
         fanout_probability=0.0,
+        shared_system_prompt_len=0,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     ordered = _ordered_agent_events(g, "synthN0:r0")
@@ -3210,7 +3322,12 @@ def test_payload_render_deterministic():
 
 def _compaction_cfg(**kw):
     """A multi-round single-agent config (no tools in the loop, so rounds are the
-    only growth) tuned for compaction tests in _WordTok units."""
+    only growth) tuned for compaction tests in _WordTok units.
+
+    shared_system_prompt_len is pinned to 0 so the compacted fresh principal is
+    [user] (summary at messages[0]) and the tuned triggers stay in head-less
+    token units; the head is a fixed one-time cost orthogonal to the round-chain
+    growth these tests exercise (the default is now 1000)."""
     base = dict(
         num_sessions=1,
         seed=7,
@@ -3222,6 +3339,7 @@ def _compaction_cfg(**kw):
         input_tokens_per_turn=Distribution(type="fixed", mean=20),
         output_tokens_per_turn=Distribution(type="fixed", mean=10),
         tool_call_latency_sec=Distribution(type="fixed", mean=1),
+        shared_system_prompt_len=0,
     )
     base.update(kw)
     return SyntheticAgenticConfig(**base)

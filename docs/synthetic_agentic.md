@@ -91,14 +91,14 @@ turn the agent runs a *tool loop* (call a tool, read the result, repeat) then an
 | `output_tokens_per_turn` | Size of a plain-text answer. (Tool-*call* outputs are sized from the call the generator builds, not this knob.) | **required** |
 | `turns_per_session` | User turns to the root agent (1 = autonomous, N = interactive multi-turn; context accumulates across turns). | fixed 1 |
 | `fanout_probability` | Chance an agent spawns sub-agents instead of just answering (rolled per root turn and per sub-agent). 0 = single-agent, 1 = full tree to `max_depth`. | 0 |
-| `theme_mix` | Content theme(s) + weights: `generic`, `db2_latency_incident`, `research_rag`, `code_change_task`. | equal mix of all four |
+| `theme_mix` | Content theme(s) + weights: `generic`, `db2_latency_incident`, `research_rag`, `code_change_task`. Each entry is `{name: {weight: W}}` (a bare `{name: W}` float is also accepted). | equal mix of all four |
 | `tool_loop_depth` | How many times an agent goes around its tool loop before answering. 0 = answer directly; total model calls = this + 1. | fixed 2 |
 | `parallel_tool_calls_per_step` | Tool calls emitted in a single response (one loop iteration's width). | fixed 1 |
 | `tool_catalog_size_per_agent` | Number of tools advertised to the agent (prefill / KV stress). | fixed 8 |
 | `sub_agents_per_spawn` | How many children a spawning agent creates. | uniform 2–4 |
 | `max_depth` | Hard cap on sub-agent tree depth (a depth-`max_depth` agent never spawns). | 2 |
 | `max_events_per_session` | Budget on LLM calls per session, so a dense fan-out can't explode. | 64 |
-| `shared_system_prompt_len` | Tokens of a fixed system-prompt head that opens **every** agent call (the standing "system head" real agents carry). | 0 (none) |
+| `shared_system_prompt_len` | Tokens of a fixed system-prompt head that opens **every** agent call (the standing "system head" real agents carry). Set 0 for a head-less baseline. | 1000 |
 | `context_compaction` | `{trigger_tokens, target_tokens}`: when a turn's accumulated input crosses `trigger_tokens`, the next turn starts fresh with a `target_tokens`-sized summary replacing the transcript (a prefill drop + KV reset). | off (pure growth) |
 | `tool_call_latency_sec` | Pause between an agent's steps, modelling tool round-trip time (an offline wait that frees the GPU). | fixed 1s |
 | `user_think_time_sec` | Pause before each follow-up turn (turns 2..N), modelling user read/think time. | fixed 10s |
@@ -116,7 +116,7 @@ data:
   synthetic_agentic:
     num_sessions: 100
     turns_per_session:  {type: uniform, min: 3, max: 8}
-    theme_mix: {code_change_task: 1.0}
+    theme_mix: {code_change_task: {weight: 1.0}}
     tool_loop_depth: {type: uniform, min: 0, max: 4}     # some turns answer directly, some loop deep
     tool_catalog_size_per_agent: {type: fixed, mean: 20}
     input_tokens_per_turn:  {type: lognormal, mean: 2000, std_dev: 800}
@@ -137,7 +137,7 @@ data:
     fanout_probability: 0.5                          # ~half the agents delegate
     sub_agents_per_spawn: {type: uniform, min: 1, max: 3}
     max_depth: 2
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     tool_loop_depth: {type: fixed, mean: 2}
     input_tokens_per_turn:  {type: fixed, mean: 400}
     output_tokens_per_turn: {type: fixed, mean: 80}

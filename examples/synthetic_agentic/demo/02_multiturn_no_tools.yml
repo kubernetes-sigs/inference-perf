@@ -11,7 +11,7 @@ data:
   synthetic_agentic:
     num_sessions: 5
     seed: 2
-    theme_mix: {generic: 1.0}
+    theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 3}     # 3 human turns -> growing context
     fanout_probability: 0.0                          # no sub-agents
     tool_loop_depth: {type: fixed, mean: 0}      # answer directly each round

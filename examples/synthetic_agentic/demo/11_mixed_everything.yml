@@ -8,7 +8,7 @@ data:
   synthetic_agentic:
     num_sessions: 10
     seed: 9
-    theme_mix: {generic: 0.5, db2_latency_incident: 0.5}
+    theme_mix: {generic: {weight: 0.5}, db2_latency_incident: {weight: 0.5}}
     turns_per_session: {type: uniform, min: 1, max: 3}
     fanout_probability: 0.4
     sub_agents_per_spawn: {type: uniform, min: 2, max: 3}
