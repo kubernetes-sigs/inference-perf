@@ -389,8 +389,9 @@ _MIN_AGENT_COST = 1
 # and "do not call a tool in your final message". Only children get this; a
 # root/single-agent answer is not a report to anyone.
 SUBAGENT_REPORT_DIRECTIVE = (
-    "When your task is complete, conclude with a concise final summary of the outcome "
-    "as plain prose (2-3 sentences) for the orchestrator; do not call a tool in your final message."
+    "This is your final turn; no further tool calls will be executed. Report back to the "
+    "orchestrator now: summarize what you found and concluded in 2-3 sentences of plain prose. "
+    "Do not emit a tool call."
 )
 
 # Appended to the ROOT agent's terminal turn (the turn that answers the USER, not an
@@ -402,7 +403,8 @@ SUBAGENT_REPORT_DIRECTIVE = (
 # user-facing answer. Cosmetic/realism only: benchmark-neutral (request shape, growth, and
 # termination are unaffected). The root/single-agent answer is to the user, not a report.
 ROOT_ANSWER_DIRECTIVE = (
-    "Now provide your final answer to the user in plain prose; do not call a tool in your final message."
+    "This is your final turn; no further tool calls will be executed. Provide your final answer "
+    "to the user now, in plain prose. Do not emit a tool call."
 )
 
 # Canonical structural tool used to spawn sub-agents. It is NOT a theme tool:
@@ -1569,139 +1571,147 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             prev_msgs = turn_msgs
             prev_out_calls = next_out_calls
 
-        # --- optional fan-out: spawn K sub-agents + one merge (merge is terminal) ---
+        # --- optional fan-out: ONE spawn event (parallel dispatch_agent calls) +
+        # the spawned children + ONE merge (merge is this agent's terminal) ---
+        #
+        # This mirrors how a real harness (e.g. Claude Code) spawns sub-agents: the
+        # agent's own reasoning turn emits N parallel Agent/dispatch tool_calls in a
+        # SINGLE assistant message (carrying the agent's full head + accumulated
+        # context), then the N sub-agent reports come back as N tool results. There
+        # is NO separate headless "dispatch-only" call per child. So the spawn is
+        # structurally a tool round of width K whose tool is dispatch_agent:
+        #   spawn event  : input = parent transcript, OUTPUT = [dispatch_agent x K]
+        #   merge event  : input = parent transcript + [that assistant] + [K tool
+        #                  results]; OUTPUT = the plain answer (agent terminal).
         if will_spawn:
             K = sample_int(cfg.sub_agents_per_spawn, child_rng(seed, *agent_seed_path, 8), _FB_SUB_AGENTS)
             K = max(0, K)
-            # Whole-spawn minimum cost: per child a dispatch event (1) + minimal
-            # child (one terminal call), plus one shared merge event (which is
-            # this agent's terminal — no separate answer follows). Only spawn if
-            # it all fits; otherwise this agent stays a plain leaf whose current
-            # `prev` event must become terminal.
-            min_spawn_cost = K * (1 + _MIN_AGENT_COST) + 1
+            # Whole-spawn minimum cost: one spawn event + one minimal child per K +
+            # one merge (this agent's terminal). Only spawn if it all fits; else the
+            # agent stays a plain leaf whose current `prev` event becomes terminal.
+            min_spawn_cost = 1 + K * _MIN_AGENT_COST + 1
             if K > 0 and len(events) + min_spawn_cost <= budget:
-                dispatch_pairs: List[tuple] = []  # (dispatch_id, tc_id)
-                child_terminals: List[str] = []
-                spawn_ok = True
+                # Child objectives are pinned to the PARENT's subject entity, so the
+                # whole fan-out is ONE coherent investigation (the orchestrator's
+                # incident) rather than each child probing an unrelated service. The
+                # VERB is still drawn freely, so children take different ANGLES on the
+                # same subject ("Analyze" vs "Triage" the same service) -- exactly the
+                # real parallel-sub-agent pattern. One dispatch_agent call per child;
+                # its args CONFORM to DISPATCH_AGENT_TOOL_DEF (objective required) so
+                # the forced call is non-empty + valid, and the call ids match the K
+                # tool results the merge reconstructs below.
+                spawn_id = f"{agent_prefix}:d{depth}:spawn"
+                dispatch_calls: List[Dict[str, Any]] = []
+                child_objs: List[str] = []
                 for c in range(K):
-                    # Per-emit budget guard: the dispatch event plus the child's own
-                    # minimum must both still fit. min_spawn_cost is only a lower bound
-                    # (a child with its own tool loop or nested spawn costs more than
-                    # one event), so the budget is re-checked before each spawn to keep
-                    # len(graph.events) <= max_events_per_session.
-                    if len(events) + _MIN_AGENT_COST + 1 > budget:
-                        spawn_ok = False
-                        break
-                    # --- single-call dispatch event (fresh [user] context; its
-                    # OUTPUT is the one dispatch_agent tool_call — never dangles,
-                    # and a fresh [user] input never ends in assistant) ---
-                    disp_id = f"{agent_prefix}:d{depth}:disp{c}"
-                    tc_id = f"dispatch_{agent_prefix}_{c}"
-                    # Child objective is pinned to the PARENT's subject entity, so the
-                    # whole fan-out is ONE coherent investigation (the orchestrator's
-                    # incident) rather than each child probing an unrelated service.
-                    # The VERB is still drawn freely, so children take different ANGLES
-                    # on the same subject ("Analyze" vs "Triage" the same service) --
-                    # exactly the real parallel-sub-agent pattern.
                     child_obj = _render_objective(theme, child_rng(seed, *agent_seed_path, c, 1), pinned=pinned)
-                    dispatch_ctx = {"role": "user", "content": f"Dispatch a sub-agent to: {child_obj}"}
-                    # The dispatch call's arguments CONFORM to DISPATCH_AGENT_TOOL_DEF
-                    # (objective required) so the forced call is non-empty + valid.
-                    dispatch_args = json.dumps({"objective": child_obj})
-                    # Size the forced dispatch call from the SAME one-call JSON the
-                    # merge reconstructs below, so max_tokens covers the whole call.
-                    dispatch_call = [
+                    child_objs.append(child_obj)
+                    dispatch_calls.append(
                         {
-                            "id": tc_id,
+                            "id": f"dispatch_{agent_prefix}_{c}",
                             "type": "function",
-                            "function": {"name": DISPATCH_AGENT_NAME, "arguments": dispatch_args},
+                            "function": {"name": DISPATCH_AGENT_NAME, "arguments": json.dumps({"objective": child_obj})},
                         }
-                    ]
-                    _emit(
-                        disp_id,
-                        [dispatch_ctx],
-                        [prev_id],
-                        {prev_id: "full_match"},
-                        [],
-                        0,
-                        True,
-                        [DISPATCH_AGENT_NAME],
-                        defs=fanout_tool_defs,
-                        expected_output_tokens=_tool_call_max_tokens(tokenizer, dispatch_call),
                     )
-                    # --- recurse into the child agent (depth+1); child starts CLEAN ---
+                # The spawn event rides the parent chain: its input CONTINUES from the
+                # parent's last input (shared-only prepend, exactly like the old merge's
+                # prefix -- introduces NO unmatched prior tool_call, so nothing dangles)
+                # plus a fresh `unique` user step asking to delegate. Its OUTPUT is the
+                # K parallel dispatch_agent calls (matched by the merge's K results).
+                spawn_ctx = {"role": "user", "content": f"Delegate this work to {K} sub-agent(s) and synthesize their findings."}
+                spawn_msgs = [*prev_msgs, spawn_ctx]
+                spawn_segs = [
+                    InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                    InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
+                ]
+                # Emit the spawn event, then build the K children from it. The spawn's
+                # K dispatch calls are matched at replay by the merge's K tool results,
+                # and the runtime rewrites those results' ids to the model's LIVE calls
+                # IN ORDER (output-segment id-rewrite), so the merge MUST supply exactly
+                # K results -- fewer would leave live calls unmatched (dangling). We
+                # therefore spawn ATOMICALLY: build all K children, and if any child
+                # fails to fit, roll the whole spawn back (drop the spawn event + any
+                # children already built) and fall back to the pre-spawn terminal.
+                # min_spawn_cost already reserved 1 (spawn) + K minimal children + 1
+                # (merge); a child can still exceed its minimum (own loop / nested
+                # spawn), so the per-child re-check catches an over-budget child.
+                spawn_input_len = len(spawn_msgs)
+                events_before_spawn = list(events.keys())
+                _emit(
+                    spawn_id,
+                    spawn_msgs,
+                    [prev_id],
+                    {prev_id: "full_match"},
+                    spawn_segs,
+                    0,
+                    True,
+                    [DISPATCH_AGENT_NAME] * K,
+                    defs=fanout_tool_defs,
+                    expected_output_tokens=_tool_call_max_tokens(tokenizer, dispatch_calls),
+                )
+                child_terminals: List[str] = []
+                for c in range(K):
+                    # Room for this child's minimum PLUS the still-pending merge (+1).
+                    if len(events) + _MIN_AGENT_COST + 1 > budget:
+                        break
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
-                    child_task = [{"role": "user", "content": child_obj}]
+                    child_task = [{"role": "user", "content": child_objs[c]}]
                     child_terminal = _build_agent(
                         depth + 1,
                         child_prefix,
                         child_task,
-                        [disp_id],
-                        {disp_id: "full_match"},
+                        [spawn_id],
+                        {spawn_id: "full_match"},
                         0,
                         False,
                         (*agent_seed_path, 200 + c),
                         pinned=pinned,  # child's own turns stay on the parent's subject
                     )
                     if child_terminal is None:
-                        spawn_ok = False
                         break
-                    dispatch_pairs.append((disp_id, tc_id, dispatch_args))
                     child_terminals.append(child_terminal)
 
-                # The merge is one more event, so it must also fit the budget; when it
-                # does not, skip it and leave prev_id at the pre-spawn terminal (final
-                # normalization turns that into the agent's terminal).
-                if spawn_ok and dispatch_pairs and len(events) + 1 <= budget:
-                    # --- ONE merge event: the parent's pre-spawn transcript
-                    # (shared-only prepend — introduces NO unmatched tool_call, so
-                    # it can never dangle) followed by [dispatch call, child
-                    # result] pairs. The merge is the agent TERMINAL: its OUTPUT is
-                    # the plain answer (no trailing answer event). ---
+                if len(child_terminals) == K and len(events) + 1 <= budget:
+                    # --- ONE merge event: the SPAWN event's transcript (shared) + the
+                    # spawn's assistant reply (the K dispatch calls, one `output`
+                    # message sourcing the spawn event) + K tool results (one
+                    # `tool_output` per child, carrying that child's report). This
+                    # matches the real [assistant, tool x K] shape. The merge is the
+                    # agent TERMINAL: its OUTPUT is the plain answer. inv #3 holds: the
+                    # K tool results carry the K dispatch call ids (rewritten to the
+                    # live spawn calls in order at replay). ---
+                    merge_msgs: List[Dict[str, Any]] = list(spawn_msgs)
                     merge_segs: List[InputSegment] = [
-                        InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                        InputSegment(type="shared", message_count=spawn_input_len, token_count=0, source_event_id=spawn_id),
                     ]
-                    merge_msgs: List[Dict[str, Any]] = list(prev_msgs)
-                    merge_preds: List[str] = [prev_id]
-                    merge_deps: Dict[str, str] = {prev_id: "full_match"}
-                    for (disp_id, tc_id, disp_args), child_term in zip(dispatch_pairs, child_terminals, strict=True):
-                        # Reconstruct the [assistant dispatch call, tool result]
-                        # pair per child (one call, one matching result).
-                        # Same args as the dispatch event emitted (objective), so
-                        # the reconstructed call conforms to DISPATCH_AGENT_TOOL_DEF.
+                    merge_msgs.append({"role": "assistant", "tool_calls": [dict(c) for c in dispatch_calls]})
+                    merge_segs.append(InputSegment(type="output", message_count=1, token_count=0, source_event_id=spawn_id))
+                    for c, child_term in enumerate(child_terminals):
                         merge_msgs.append(
-                            {
-                                "role": "assistant",
-                                "tool_calls": [
-                                    {
-                                        "id": tc_id,
-                                        "type": "function",
-                                        "function": {"name": DISPATCH_AGENT_NAME, "arguments": disp_args},
-                                    }
-                                ],
-                            }
+                            {"role": "tool", "tool_call_id": dispatch_calls[c]["id"], "content": "PLACEHOLDER"}
                         )
-                        merge_msgs.append({"role": "tool", "tool_call_id": tc_id, "content": "PLACEHOLDER"})
-                        merge_segs.append(InputSegment(type="output", message_count=1, token_count=0, source_event_id=disp_id))
                         merge_segs.append(
                             InputSegment(type="tool_output", message_count=1, token_count=0, source_event_id=child_term)
                         )
-                        merge_preds += [disp_id, child_term]
-                        merge_deps[disp_id] = "full_match"
+                    merge_preds: List[str] = [spawn_id, *child_terminals]
+                    merge_deps: Dict[str, str] = {spawn_id: "full_match"}
+                    for child_term in child_terminals:
                         merge_deps[child_term] = "full_match"
                     merge_id = f"{agent_prefix}:d{depth}:merge"
                     ans_text, ans_tokens = _answer_text(agent_seed_path)
-                    # A NON-ROOT merge is a SPAWNING sub-agent's terminal -> its output
-                    # is THIS agent's report to ITS parent (folded up via the parent's
-                    # tool_output), so it gets the same trailing summarize nudge as a
-                    # leaf sub-agent's terminal, so nested reports read as prose too.
-                    # (The ROOT merge is the orchestrator's final answer, not a report to
-                    # anyone, so it gets no nudge.) The nudge is fresh content, so a
-                    # trailing `unique` segment (message_count 1) makes the merge end in a
-                    # user message and keeps cursor math exact.
-                    if not is_root:
-                        merge_msgs = [*merge_msgs, {"role": "user", "content": SUBAGENT_REPORT_DIRECTIVE}]
-                        merge_segs = [*merge_segs, InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None)]
+                    # The merge is a TERMINAL turn ending in a tool result (the last
+                    # child's report), so -- exactly like a tool-loop terminal -- it gets
+                    # a trailing answer nudge so its output is PROSE, not tool-call text
+                    # (this turn is deeply tool-primed, the most likely to leak a
+                    # <tool_call> block under tool_choice="none"). A NON-ROOT merge is a
+                    # SPAWNING sub-agent's terminal, so its output is a REPORT to its
+                    # parent (report directive); the ROOT merge is the orchestrator's
+                    # final answer to the USER (answer directive). The nudge is fresh
+                    # content, so a trailing `unique` segment (message_count 1) makes the
+                    # merge end in a user message and keeps cursor math exact.
+                    merge_directive = ROOT_ANSWER_DIRECTIVE if is_root else SUBAGENT_REPORT_DIRECTIVE
+                    merge_msgs = [*merge_msgs, {"role": "user", "content": merge_directive}]
+                    merge_segs = [*merge_segs, InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None)]
                     _emit(
                         merge_id,
                         merge_msgs,
@@ -1716,6 +1726,15 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         expected_output_tokens=ans_tokens,
                     )
                     prev_id = merge_id
+                else:
+                    # Atomic rollback: not all K children fit (or the merge would not),
+                    # so the spawn can't be completed danglelessly. Drop the spawn event
+                    # AND any children already built, restoring the graph to exactly its
+                    # pre-spawn state. prev_id stays at the pre-spawn terminal; the final
+                    # normalization re-emits that as a plain answer.
+                    for eid in list(events.keys()):
+                        if eid not in events_before_spawn:
+                            del events[eid]
             # If the spawn was rolled but did not fit / produced no children, the
             # current `prev` event may still advertise a tool call as its output;
             # the final normalization below re-emits it as a plain-answer terminal.

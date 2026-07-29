@@ -15,6 +15,7 @@ from inference_perf.datagen.synthetic_agentic import (
     _tool_call_max_tokens,
     _accumulated_wire_tokens,
     _FALLBACK_TOOL_PARAMS,
+    DISPATCH_AGENT_NAME,
 )
 from inference_perf.config.common import Distribution
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig, ContextCompactionConfig
@@ -489,10 +490,13 @@ def test_parallel_default_is_single_call():
         assert calls[0]["id"] == tool_msgs[0]["tool_call_id"]
 
 
-def test_dispatch_still_single_call_under_parallel_knob():
-    # The knob must NOT leak into sub-agent dispatch turns: with parallel fixed 3
-    # AND fanout forced, every dispatch_agent tool-call turn STILL has exactly 1
-    # call (the fan-out mechanism depends on single-call dispatch).
+def test_spawn_emits_sub_agents_per_spawn_dispatch_calls_not_parallel_knob():
+    # A spawn event emits exactly sub_agents_per_spawn parallel dispatch_agent calls
+    # (one per child) in a SINGLE assistant output -- mirroring how a real harness
+    # emits N Agent tool_calls at once. This spawn WIDTH is governed by
+    # sub_agents_per_spawn, NOT parallel_tool_calls_per_step: with parallel fixed 3
+    # but sub_agents_per_spawn fixed 2, each spawn advertises exactly 2 dispatch
+    # calls (the knob does not leak into the spawn width).
     cfg = _cfg(
         parallel_tool_calls_per_step=Distribution(type="fixed", mean=3),
         fanout_probability=1.0,
@@ -501,16 +505,16 @@ def test_dispatch_still_single_call_under_parallel_knob():
         max_events_per_session=2048,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
-    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
-    assert dispatch_events, "fan-out dispatch events materialized"
-    for ev in dispatch_events:
-        # dispatch events carry NO stored assistant tool_call (0 calls, 0 results);
-        # the single dispatch call is the EXPECTED output. Assert its expected
-        # output is a single tool name and no parallel calls leaked in.
+    spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
+    assert spawn_events, "fan-out spawn events materialized"
+    # the OLD per-child headless dispatch event is gone
+    assert not [eid for eid in g.events if ":disp" in eid], "no headless dispatch events remain"
+    for ev in spawn_events:
+        # The spawn's EXPECTED output is K parallel dispatch_agent calls (K=2 here).
         assert ev.call.expected_output_is_tool_call is True
-        assert ev.call.expected_output_tool_names == ["dispatch_agent"]
-        n_calls = sum(len(m.get("tool_calls", [])) for m in ev.call.messages if m.get("tool_calls"))
-        assert n_calls == 0, "dispatch event stores no parallel calls"
+        assert ev.call.expected_output_tool_names == ["dispatch_agent", "dispatch_agent"], (
+            f"spawn width should equal sub_agents_per_spawn (2), got {ev.call.expected_output_tool_names}"
+        )
 
 
 def test_parallel_tool_calls_preserves_determinism():
@@ -721,8 +725,8 @@ def _assert_inv2_over_graph(g):
 
 def test_dispatch_agent_is_in_tool_definitions():
     # fanout forced, normal catalog: every event that forces a tool or stores a
-    # tool_call must advertise that tool (inv #2). Specifically the dispatch
-    # events must both FORCE dispatch_agent and ADVERTISE it, so replay's
+    # tool_call must advertise that tool (inv #2). Specifically the spawn event
+    # must both FORCE dispatch_agent (K times) and ADVERTISE it, so replay's
     # tool_choice forcing does not silently degrade to "required".
     cfg = _cfg(
         fanout_probability=1.0,
@@ -734,11 +738,14 @@ def test_dispatch_agent_is_in_tool_definitions():
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     _assert_inv2_over_graph(g)
 
-    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
-    assert dispatch_events, "fan-out dispatch events materialized"
-    for ev in dispatch_events:
-        assert ev.call.expected_output_tool_names == ["dispatch_agent"], "dispatch event forces dispatch_agent"
-        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in dispatch event tool_definitions"
+    spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
+    assert spawn_events, "fan-out spawn events materialized"
+    for ev in spawn_events:
+        # spawn forces K dispatch_agent calls (all named dispatch_agent).
+        assert ev.call.expected_output_tool_names == ["dispatch_agent", "dispatch_agent"], (
+            "spawn event forces sub_agents_per_spawn dispatch_agent calls"
+        )
+        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in spawn event tool_definitions"
 
     # the merge event emits dispatch_agent calls in its message history -> inv #2 applies there too.
     merge_events = [ev for eid, ev in g.events.items() if eid.endswith(":merge")]
@@ -750,7 +757,7 @@ def test_dispatch_agent_is_in_tool_definitions():
 
 def test_dispatch_agent_present_even_with_empty_theme_catalog():
     # tool_catalog_size_per_agent=0 + fanout: theme catalog is empty, but the
-    # dispatch tool is STRUCTURAL, so dispatch events must advertise exactly
+    # dispatch tool is STRUCTURAL, so the spawn event must advertise exactly
     # [dispatch_agent] (not []).
     cfg = _cfg(
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
@@ -763,9 +770,9 @@ def test_dispatch_agent_present_even_with_empty_theme_catalog():
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     _assert_inv2_over_graph(g)
 
-    dispatch_events = [ev for eid, ev in g.events.items() if ":disp" in eid]
-    assert dispatch_events, "fan-out dispatch events materialized even with empty theme catalog"
-    for ev in dispatch_events:
+    spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
+    assert spawn_events, "fan-out spawn events materialized even with empty theme catalog"
+    for ev in spawn_events:
         defs = ev.call.tool_definitions or []
         names = [td["name"] for td in defs if "name" in td]
         assert names == ["dispatch_agent"], f"expected exactly [dispatch_agent], got {names}"
@@ -2241,58 +2248,149 @@ def test_fanout_children_pinned_to_parent_entity():
                 users = [m["content"] for m in ev.call.messages if m["role"] == "user"]
                 if users:
                     orch = _service(users[-1])
-        # child dispatch objectives
+        # child objectives now live in each spawned sub-agent's principal user turn
+        # (the child task the spawn hands off); read them from the sub principals.
         kids = []
         for eid, ev in g.events.items():
-            if ":disp" in eid:
+            if ":sub" in eid and eid.endswith(":principal"):
                 users = [m["content"] for m in ev.call.messages if m["role"] == "user"]
+                # the child objective is the FIRST user message (a trailing report-
+                # directive nudge may follow it on a k=0 sub-agent).
                 if users:
-                    kids.append(_service(users[-1]))
+                    kids.append(_service(users[0]))
         assert orch is not None, f"session {idx}: no orchestrator service parsed"
-        assert kids, f"session {idx}: no child dispatch objectives"
+        assert kids, f"session {idx}: no child objectives"
         for k in kids:
             assert k == orch, f"session {idx}: child service {k!r} != orchestrator {orch!r} (fan-out not coherent)"
 
 
-def test_subagent_terminal_ends_with_report_directive():
-    # A spawned sub-agent's TERMINAL turn must END with the summarize-report nudge
-    # (recency -> the child produces a PROSE report, not tool-call text). The nudge
-    # is the LAST message and is a `user` message; cursor math stays exact
-    # (sum(seg.message_count) == len(messages)). NON-terminal child turns, the
-    # root/orchestrator, and the merge must NOT end with it.
-    from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE
+def test_spawn_output_is_parallel_dispatch_calls_in_one_message():
+    # Real-world fan-out shape: an agent spawns N sub-agents by emitting N
+    # dispatch_agent tool_calls in a SINGLE assistant output (like Claude Code's
+    # one call emitting 3 Agent tool_uses), NOT via N separate headless dispatch
+    # events. Verify the spawn event's expected output is exactly K dispatch_agent
+    # calls (K = sub_agents_per_spawn), and that NO headless dispatch node exists.
+    K = 3
+    cfg = _cfg(
+        theme_mix={"generic": 1.0},
+        turns_per_session=Distribution(type="fixed", mean=1),
+        fanout_probability=1.0,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        max_depth=1,
+        tool_loop_depth=Distribution(type="fixed", mean=1),
+        max_events_per_session=512,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    # No headless per-child dispatch event remains from the old shape.
+    assert not [eid for eid in g.events if ":disp" in eid]
+    spawns = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
+    assert spawns, "at least one spawn event"
+    for ev in spawns:
+        assert ev.call.expected_output_is_tool_call is True
+        assert ev.call.expected_output_tool_names == [DISPATCH_AGENT_NAME] * K, (
+            f"spawn emits {K} parallel dispatch calls, got {ev.call.expected_output_tool_names}"
+        )
 
+
+def test_merge_reconstructs_single_assistant_with_matched_tool_results():
+    # The merge event mirrors the real [assistant(N tool_calls), tool xN] block:
+    # exactly ONE assistant message carrying N dispatch_agent calls, followed by N
+    # role:tool results whose tool_call_ids are exactly those N call ids (inv #3).
+    K = 3
+    cfg = _cfg(
+        theme_mix={"generic": 1.0},
+        turns_per_session=Distribution(type="fixed", mean=1),
+        fanout_probability=1.0,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        max_depth=1,
+        tool_loop_depth=Distribution(type="fixed", mean=0),
+        max_events_per_session=512,
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    merges = [ev for eid, ev in g.events.items() if eid.endswith(":merge")]
+    assert merges, "at least one merge event"
+    for ev in merges:
+        msgs = ev.call.messages
+        assistants_with_calls = [m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls")]
+        # exactly ONE assistant carrying the N dispatch calls (a single block).
+        assert len(assistants_with_calls) == 1, "merge has one N-call assistant block"
+        calls = assistants_with_calls[0]["tool_calls"]
+        assert len(calls) == K and all(c["function"]["name"] == DISPATCH_AGENT_NAME for c in calls)
+        call_ids = [c["id"] for c in calls]
+        tool_ids = [m.get("tool_call_id") for m in msgs if m.get("role") == "tool"]
+        assert tool_ids == call_ids, f"tool result ids {tool_ids} must match call ids {call_ids} (inv #3)"
+
+
+def test_fanout_graph_is_byte_identical_across_rebuilds():
+    # Determinism under the new fan-out shape: same (config, index) -> byte-identical
+    # graph (event ids, order, and every message).
+    cfg = _cfg(
+        theme_mix={"generic": 1.0},
+        fanout_probability=1.0,
+        sub_agents_per_spawn=Distribution(type="uniform", min=2, max=3),
+        max_depth=2,
+        tool_loop_depth=Distribution(type="uniform", min=0, max=2),
+        max_events_per_session=512,
+    )
+    for idx in range(3):
+        g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        assert list(g1.events.keys()) == list(g2.events.keys())
+        for eid in g1.events:
+            assert g1.events[eid].call.messages == g2.events[eid].call.messages
+            assert (
+                g1.events[eid].call.expected_output_tool_names == g2.events[eid].call.expected_output_tool_names
+            )
+
+
+def test_subagent_terminal_ends_with_report_directive():
+    # Every SUB-AGENT terminal (a leaf child's answer turn AND a spawning sub-agent's
+    # merge) ends with the summarize-report nudge (recency -> a PROSE report, not
+    # tool-call text). The nudge is the LAST message and is a `user` message; cursor
+    # math stays exact. Non-terminal child tool-turns must NOT end with it. (The ROOT
+    # merge ends with the ANSWER directive, not this one -- covered separately.)
+    from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE, ROOT_ANSWER_DIRECTIVE
+
+    # depth 2 so there are BOTH leaf-child terminals AND sub-agent (non-root) merges.
     cfg = _cfg(
         theme_mix={"generic": 1.0},
         turns_per_session=Distribution(type="fixed", mean=1),
         fanout_probability=1.0,
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
-        max_depth=1,
-        tool_loop_depth=Distribution(type="fixed", mean=3),
+        max_depth=2,
+        tool_loop_depth=Distribution(type="fixed", mean=2),
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     frag = SUBAGENT_REPORT_DIRECTIVE
 
-    def ends_with_nudge(ev):
+    def ends_with(ev, text):
         msgs = ev.call.messages
-        return bool(msgs) and msgs[-1].get("role") == "user" and frag in str(msgs[-1].get("content", ""))
+        return bool(msgs) and msgs[-1].get("role") == "user" and text in str(msgs[-1].get("content", ""))
 
     saw_child_terminal = False
+    saw_subagent_merge = False
     for eid, ev in g.events.items():
         is_child = ":sub" in eid
         is_terminal = not ev.call.expected_output_is_tool_call  # answer turn, not a tool-call turn
+        is_merge = eid.endswith(":merge")
         if is_child and is_terminal:
             saw_child_terminal = True
-            assert ends_with_nudge(ev), f"child terminal {eid} must END with the report nudge"
-            # cursor math must remain exact after the appended message
-            if ev.call.input_segments:
+            if is_merge:
+                saw_subagent_merge = True
+            assert ends_with(ev, frag), f"sub-agent terminal {eid} must END with the report nudge"
+            if ev.call.input_segments:  # cursor math stays exact after the appended message
                 segsum = sum(s.message_count for s in ev.call.input_segments)
                 assert segsum == len(ev.call.messages), f"{eid}: segment sum {segsum} != {len(ev.call.messages)}"
+        elif not is_child and is_merge:
+            # the ROOT merge ends with the ANSWER directive, not the report one.
+            assert ends_with(ev, ROOT_ANSWER_DIRECTIVE), f"root merge {eid} must end with the answer directive"
+            assert not ends_with(ev, frag)
         else:
-            # everything else (root terminals, non-terminal child tool-turns, merge) must NOT end with it
-            assert not ends_with_nudge(ev), f"{eid} should NOT end with the sub-agent report nudge"
+            # non-terminal child tool-turns must NOT end with the report nudge.
+            assert not ends_with(ev, frag), f"{eid} should NOT end with the sub-agent report nudge"
     assert saw_child_terminal, "expected >=1 sub-agent terminal turn"
+    assert saw_subagent_merge, "expected >=1 non-root (sub-agent) merge terminal"
 
 
 def test_root_terminal_ends_with_answer_directive():
