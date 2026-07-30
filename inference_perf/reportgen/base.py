@@ -853,7 +853,12 @@ class ReportGenerator:
                 lifecycle_reports.append(report_file)
 
         if report_config.prometheus:
-            lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+            # This runs after the load has already been sent; a failure here must cost the
+            # Prometheus section, not the lifecycle reports the run already produced.
+            try:
+                lifecycle_reports.extend(self.generate_prometheus_metrics_report(runtime_parameters, report_config.prometheus))
+            except Exception:
+                logger.exception("Prometheus metrics report generation failed; continuing without it")
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:

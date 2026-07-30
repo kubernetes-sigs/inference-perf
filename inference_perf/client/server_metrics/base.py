@@ -56,14 +56,15 @@ class PerfRuntimeParameters:
 
 
 class ModelServerMetrics(BaseModel):
-    # --- Common to every model server: required (each client's metadata always declares them) ---
+    # --- Common to every real model server; defaulted so a client that declares no metrics
+    # (e.g. the mock client's empty BaseMetrics) still validates and reports zeros ---
     # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
-    prompt_tokens: CounterResult | HistogramResult
-    output_tokens: CounterResult | HistogramResult
-    requests: CounterResult
-    request_latency: HistogramResult
-    queue_length: GaugeResult
-    time_per_output_token: HistogramResult
+    prompt_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
+    output_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
+    requests: CounterResult = Field(default_factory=CounterResult)
+    request_latency: HistogramResult = Field(default_factory=HistogramResult)
+    queue_length: GaugeResult = Field(default_factory=GaugeResult)
+    time_per_output_token: HistogramResult = Field(default_factory=HistogramResult)
 
     # --- Server-specific: optional (only some model servers expose these) ---
     # Latency

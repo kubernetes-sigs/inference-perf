@@ -16,7 +16,7 @@ from inference_perf.client.modelserver.metrics import (
 
 
 def _required_metrics() -> Dict[str, Metric[Any]]:
-    """The fields ModelServerMetrics requires; every real client's metadata declares them."""
+    """The common ModelServerMetrics fields; every real client's metadata declares them."""
     return {
         "prompt_tokens": CounterMetric("fake:pt"),
         "output_tokens": CounterMetric("fake:ot"),
@@ -64,6 +64,23 @@ def test_get_model_server_metrics_uses_custom_metrics_by_default() -> None:
 
     assert isinstance(result, ModelServerMetrics)
     assert result.inter_token_latency.avg == 1.23
+
+
+def test_get_model_server_metrics_empty_metadata_returns_defaults() -> None:
+    """A client that declares no metrics (the mock model server) yields an all-zeros result, not a crash.
+
+    Regression test: report generation runs after the load has been sent, so a ValidationError
+    here would have cost the user every report of a completed run (mock server + Prometheus
+    metrics client is a legal config combination).
+    """
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+
+    with patch.object(PrometheusMetricsClient, "execute_query") as execute:
+        result = client.get_model_server_metrics(BaseMetrics(), query_duration=30, query_eval_time=100)
+
+    execute.assert_not_called()
+    assert result == ModelServerMetrics()
 
 
 def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
