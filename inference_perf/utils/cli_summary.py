@@ -491,13 +491,15 @@ def _build_error_table(
     successes_by_stage: Dict[int, int],
     failures_by_stage: Dict[int, Dict[str, Any]],
     substitutions_by_stage: Dict[int, int],
+    title: str = "Request Error Summary",
+    successes_label: str = "Successes",
 ) -> Table:
     """Build the per-stage error summary table."""
     labels = _collect_error_labels(failures_by_stage)
     has_substitutions = any(substitutions_by_stage.get(s, 0) > 0 for s in sorted_stages)
-    table = Table(title="[bold magenta]Request Error Summary[/bold magenta]", show_header=True, header_style="bold cyan")
+    table = Table(title=f"[bold magenta]{title}[/bold magenta]", show_header=True, header_style="bold cyan")
     table.add_column("Stage", justify="right")
-    table.add_column("Successes", justify="right")
+    table.add_column(successes_label, justify="right")
     if has_substitutions:
         table.add_column("Bad Tool Calls Substitutions", justify="right")
     for label in labels:
@@ -530,6 +532,8 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
     successes_by_stage: Dict[int, int] = {}
     failures_by_stage: Dict[int, Dict[str, Any]] = {}
     substitutions_by_stage: Dict[int, int] = {}
+    session_successes_by_stage: Dict[int, int] = {}
+    session_failures_by_stage: Dict[int, Dict[str, Any]] = {}
 
     for report in reports:
         stage_id = extract_stage_id(report.name)
@@ -543,10 +547,29 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
         if session_stage_id is not None:
             sub_entry = report.contents.get("total_recorded_substitutions", 0)
             substitutions_by_stage[session_stage_id] = sub_entry.get("count", 0) if isinstance(sub_entry, dict) else sub_entry
+            session_successes_by_stage[session_stage_id] = report.contents.get("num_sessions_succeeded", 0)
+            session_failures = report.contents.get("failures", {})
+            session_failures_by_stage[session_stage_id] = (
+                session_failures.get("by_label", {}) if isinstance(session_failures, dict) else {}
+            )
 
-    if not successes_by_stage and not failures_by_stage:
-        return
-
-    sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
     console = Console()
-    console.print(_build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage))
+
+    if successes_by_stage or failures_by_stage:
+        sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
+        console.print(_build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage))
+
+    # Only worth a table when a session actually failed; a clean replay run would
+    # otherwise print a table whose only column is the success count.
+    if any(session_failures_by_stage.values()):
+        sorted_session_stages = sorted(set(session_successes_by_stage) | set(session_failures_by_stage))
+        console.print(
+            _build_error_table(
+                sorted_session_stages,
+                session_successes_by_stage,
+                session_failures_by_stage,
+                {},
+                title="Session Error Summary",
+                successes_label="Sessions Succeeded",
+            )
+        )
