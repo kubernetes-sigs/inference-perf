@@ -36,12 +36,15 @@ from inference_perf.config import (
 from asyncio import (
     CancelledError,
     Semaphore,
+    Task,
+    TimeoutError as AsyncioTimeoutError,
     create_task,
     gather,
     run,
     sleep,
     set_event_loop_policy,
     get_event_loop,
+    wait_for,
 )
 import sys
 
@@ -58,7 +61,7 @@ from types import FrameType
 import time
 import multiprocessing as mp
 from queue import Empty
-from multiprocessing.synchronize import Barrier as SyncBarrier, Event as SyncEvent
+from multiprocessing.synchronize import Event as SyncEvent
 from multiprocessing.sharedctypes import Synchronized
 from concurrent.futures import TimeoutError
 from functools import partial
@@ -79,6 +82,17 @@ import signal
 from inference_perf.observability.logging import get_console
 
 logger = logging.getLogger(__name__)
+
+# Stage-teardown tuning. The teardown protocol is bounded end to end: workers
+# give in-flight requests `stage_teardown_grace_seconds` (LoadConfig) to finish
+# naturally, then cancel and reap the remainder within _WIND_DOWN_REAP_SECONDS.
+# The main process allows the worker grace plus _TEARDOWN_MARGIN_SECONDS before
+# broadcasting the force-stop signal, then _FORCE_REAP_SECONDS more before
+# terminating (and respawning) workers that still have not reached the stage
+# rendezvous. Report generation therefore always runs.
+_WIND_DOWN_REAP_SECONDS = 10.0
+_TEARDOWN_MARGIN_SECONDS = 15.0
+_FORCE_REAP_SECONDS = 20.0
 
 
 class RequestQueueData(NamedTuple):
@@ -103,7 +117,9 @@ class Worker(mp.Process):
         active_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
-        stage_barrier: Optional[SyncBarrier] = None,
+        force_stop_signal: Optional[SyncEvent] = None,
+        stage_done_counter: Optional["Synchronized[int]"] = None,
+        teardown_grace_seconds: float = 120.0,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -119,7 +135,12 @@ class Worker(mp.Process):
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
         self.base_seed = base_seed
-        self.stage_barrier = stage_barrier
+        self.force_stop_signal = force_stop_signal
+        self.stage_done_counter = stage_done_counter
+        self.teardown_grace_seconds = teardown_grace_seconds
+        # True while the stage is winding down: in-flight requests may finish,
+        # but no new requests are dispatched to the model server.
+        self.draining = False
         # Snapshot the parent's effective root log level so the worker
         # interpreter (which under forkserver/spawn does not inherit the
         # parent's basicConfig) can configure its own handler to surface
@@ -157,7 +178,12 @@ class Worker(mp.Process):
                 await sleep(0)
 
             # Process requests in loop
-            while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.skip:
+            while (
+                self.request_phase.is_set()
+                and not self.cancel_signal.is_set()
+                and not self.skip
+                and not self.stop_signal.is_set()
+            ):
                 await semaphore.acquire()
                 try:
                     # Use partial to pass named arg
@@ -204,6 +230,15 @@ class Worker(mp.Process):
                             )
                             return  # Exit this task, finally block will clean up
 
+                        # Stage is winding down: in-flight requests may finish,
+                        # but nothing new is sent to the model server. This also
+                        # unwinds session-replay dependency chains quickly - a
+                        # successor woken by its predecessor exits here instead
+                        # of dispatching.
+                        if self.draining:
+                            logger.debug(f"[Worker {self.id}] stage tearing down, not dispatching new request")
+                            return
+
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
@@ -246,23 +281,66 @@ class Worker(mp.Process):
             # Reset skip
             self.skip = False
 
-            if self.cancel_signal.is_set():
-                logger.debug(f"[Worker {self.id}] cancelling tasks with {self.active_requests_counter.value} active requests")
-                for task in tasks:
-                    task.cancel()
-                while self.request_phase.is_set():
-                    await sleep(0)
-                logger.debug(f"[Worker {self.id}] done cancelling")
-            if not self.request_phase.is_set():
-                await gather(*tasks)
+            if self.cancel_signal.is_set() or not self.request_phase.is_set():
+                await self._wind_down_stage(tasks)
                 tasks = []
                 LocalUserSession.clear_instances()
-                if self.stage_barrier:
-                    self.stage_barrier.wait()
+                if self.stage_done_counter is not None:
+                    with self.stage_done_counter.get_lock():
+                        self.stage_done_counter.value += 1
+                # Hold until the main process acknowledges the stage boundary by
+                # clearing cancel_signal, so one stage cannot be reported done
+                # twice by the same worker.
+                while self.cancel_signal.is_set() and not self.stop_signal.is_set():
+                    await sleep(0.05)
                 logger.debug(f"[Worker {self.id}] waiting for next phase")
-                self.request_phase.wait()
+                while not self.request_phase.is_set() and not self.stop_signal.is_set():
+                    self.request_phase.wait(timeout=0.5)
 
         logger.debug(f"[Worker {self.id}] stopped")
+
+    async def _wind_down_stage(self, tasks: List["Task[None]"]) -> None:
+        """Bounded end-of-stage wind-down; always returns.
+
+        In-flight requests get up to teardown_grace_seconds to finish naturally
+        (recording their metrics). Tasks still parked on session predecessors
+        unwind quickly because new dispatches are gated off by self.draining.
+        Whatever remains after the grace is cancelled and reaped within a fixed
+        bound, so the worker always reaches the stage rendezvous.
+        """
+        self.draining = True
+        try:
+            pending = [t for t in tasks if not t.done()]
+            if pending:
+                logger.debug(
+                    f"[Worker {self.id}] stage teardown: waiting up to {self.teardown_grace_seconds:.0f}s "
+                    f"for {len(pending)} in-flight tasks"
+                )
+                deadline = time.perf_counter() + self.teardown_grace_seconds
+                while pending and time.perf_counter() < deadline:
+                    if self.force_stop_signal is not None and self.force_stop_signal.is_set():
+                        break
+                    await sleep(0.25)
+                    pending = [t for t in pending if not t.done()]
+            if pending:
+                logger.warning(f"[Worker {self.id}] cancelling {len(pending)} tasks still running at stage teardown")
+                for task in pending:
+                    task.cancel()
+                try:
+                    await wait_for(gather(*pending, return_exceptions=True), timeout=_WIND_DOWN_REAP_SECONDS)
+                except (AsyncioTimeoutError, TimeoutError):
+                    stuck = sum(1 for t in pending if not t.done())
+                    logger.error(f"[Worker {self.id}] abandoning {stuck} tasks that did not respond to cancellation")
+            # Surface real task failures. Before this rework they were re-raised
+            # by an unguarded gather at teardown, killing the worker process and
+            # stranding the main process at the stage rendezvous.
+            for task in tasks:
+                if task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc is not None:
+                        logger.error(f"[Worker {self.id}] task failed during stage: {type(exc).__name__}: {exc}")
+        finally:
+            self.draining = False
 
     def run(self) -> None:
         # forkserver/spawn workers start from a fresh interpreter without the
@@ -308,6 +386,13 @@ class LoadGenerator:
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
+        self.teardown_grace_seconds = load_config.stage_teardown_grace_seconds
+        # Set by mp_run; broadcast to workers when the teardown grace expires
+        # so they cancel whatever is still in flight.
+        self._force_stop_signal: Optional[SyncEvent] = None
+        # Number of stage teardowns completed so far; each worker's
+        # stage_done_counter must reach this value at the stage rendezvous.
+        self._expected_stage_done = 0
         signal.signal(signal.SIGINT, self._sigint_handler)
 
         # Validate that datagen type matches load_type
@@ -619,6 +704,19 @@ class LoadGenerator:
                     del session_spans[sid]
                 break
 
+            # Fail fast on worker death instead of waiting out the stage
+            # timeout: sessions assigned to a dead worker can never complete.
+            if self.workers and any(not w.is_alive() for w in self.workers):
+                if progress_ctx and stage_task:
+                    progress_ctx.remove_task(stage_task)
+                    stage_task = None
+                logger.error(f"Stage {stage_id}: a worker process died unexpectedly; failing stage")
+                stage_status = StageStatus.FAILED
+                for sid in list(session_spans.keys()):
+                    otel_instr.end_session_span(session_spans[sid], "Worker process died")
+                    del session_spans[sid]
+                break
+
             # Check for completed sessions
             newly_completed = []
             for session_idx in list(active_session_indices):
@@ -699,22 +797,11 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
-        # Cancel in-flight tasks and drain stranded queue items.
-        # In the happy path this is a no-op (all items already processed).
-        # In the failure path, process_failure sends a completion notification
-        # immediately — before the worker picks up all items from the queue.
-        # Without this, request_queue.join() hangs on items that never got task_done().
-        if cancel_signal is not None:
-            cancel_signal.set()
-            await sleep(1)
-            while active_requests_counter.value > 0:
-                await sleep(1)
-            request_queue.drain()
-            cancel_signal.clear()
-
-        # Clear the request_phase event to force worker gather
-        request_phase.clear()
-        request_queue.join()
+        # Bounded teardown: stop dispatching, give in-flight requests the
+        # configured grace to complete (their metrics are kept), then force
+        # the stage boundary. Guaranteed to return, so reports always generate.
+        if not await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal):
+            stage_status = StageStatus.FAILED
 
         # End stage-level span if trace_per_stage is enabled
         if stage_span is not None:
@@ -733,6 +820,110 @@ class LoadGenerator:
         )
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
+        )
+
+    async def _teardown_stage(
+        self,
+        stage_id: int,
+        request_queue: RequestQueue[RequestQueueData],
+        request_phase: SyncEvent,
+        cancel_signal: Optional[SyncEvent],
+    ) -> bool:
+        """Bounded stage teardown; always returns, so reports always generate.
+
+        Stops dispatch immediately, gives in-flight requests the configured
+        grace to finish (their metrics are kept), then forces the boundary:
+        the force-stop signal makes workers cancel whatever is left, and any
+        worker that still fails to reach the stage rendezvous (died, or its
+        event loop is wedged) is terminated and respawned so subsequent stages
+        run at full capacity. Returns True when every worker wound down
+        cleanly, False when the stage had to be forced.
+        """
+        if cancel_signal is not None:
+            cancel_signal.set()
+        request_phase.clear()
+
+        clean = True
+        if self.workers:
+            self._expected_stage_done += 1
+            expected = self._expected_stage_done
+            grace_deadline = time.perf_counter() + self.teardown_grace_seconds + _TEARDOWN_MARGIN_SECONDS
+            force_deadline: Optional[float] = None
+            while True:
+                pending = [
+                    w
+                    for w in self.workers
+                    if w.is_alive() and (w.stage_done_counter is None or w.stage_done_counter.value < expected)
+                ]
+                if not pending:
+                    break
+                now = time.perf_counter()
+                if force_deadline is None and now >= grace_deadline:
+                    logger.warning(
+                        "Stage %d: teardown grace expired; forcing cancellation of in-flight work on %d worker(s)",
+                        stage_id,
+                        len(pending),
+                    )
+                    if self._force_stop_signal is not None:
+                        self._force_stop_signal.set()
+                    force_deadline = now + _FORCE_REAP_SECONDS
+                elif force_deadline is not None and now >= force_deadline:
+                    for worker in pending:
+                        logger.error("Stage %d: terminating worker %d stuck in teardown", stage_id, worker.id)
+                        worker.terminate()
+                    clean = False
+                    break
+                await sleep(0.25)
+
+        # Nobody is pulling anymore: remove undispatched items left in the queue.
+        request_queue.drain()
+        if self._force_stop_signal is not None:
+            self._force_stop_signal.clear()
+        if cancel_signal is not None:
+            cancel_signal.clear()
+
+        # Replace workers that did not survive the stage (terminated above, or
+        # died earlier e.g. from an OOM kill) so later stages keep full capacity.
+        for idx, worker in enumerate(self.workers):
+            if not worker.is_alive() and worker.exitcode is None:
+                continue  # never started; leave to caller
+            if not worker.is_alive() or (
+                worker.stage_done_counter is not None and worker.stage_done_counter.value < self._expected_stage_done
+            ):
+                clean = False
+                worker.join(timeout=5.0)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=5.0)
+                logger.warning("Stage %d: worker %d did not survive the stage; respawning", stage_id, worker.id)
+                self.workers[idx] = self._respawn_worker(worker)
+                self.workers[idx].start()
+        return clean
+
+    def _respawn_worker(self, dead: Worker) -> Worker:
+        """Build a replacement for a dead worker, sharing the same IPC objects.
+
+        The replacement forks from the main process' current state, and its
+        stage-done counter starts at the current expected value so it is
+        considered up to date at the next rendezvous.
+        """
+        stage_done_counter: "Synchronized[int]" = mp.Value("i", self._expected_stage_done)
+        return Worker(
+            dead.id,
+            dead.client,
+            dead.request_queue,
+            dead.datagen,
+            dead.max_concurrency,
+            dead.stop_signal,
+            dead.cancel_signal,
+            dead.request_phase,
+            dead.finished_requests_counter,
+            dead.active_requests_counter,
+            dead.shared_max_concurrency,
+            dead.base_seed,
+            force_stop_signal=dead.force_stop_signal,
+            stage_done_counter=stage_done_counter,
+            teardown_grace_seconds=dead.teardown_grace_seconds,
         )
 
     async def run_stage(
@@ -822,22 +1013,11 @@ class LoadGenerator:
         if progress_ctx and stage_task:
             progress_ctx.remove_task(stage_task)
 
-        # Trigger cleanup if timed out or received SIGINT
-        if (timed_out or self.interrupt_sig) and cancel_signal:
-            # Cancel signal must be set before request_phase
-            # Allow time for workers to process the signal
-            cancel_signal.set()
-            await sleep(1)
-            while active_requests_counter.value > 0:
-                await sleep(1)
-            request_queue.drain()
-            cancel_signal.clear()
+        stage_status = StageStatus.FAILED if (timed_out or self.interrupt_sig) else StageStatus.COMPLETED
+        # Bounded teardown: stop dispatching, give in-flight requests the
+        # configured grace to complete, then force the stage boundary.
+        if not await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal):
             stage_status = StageStatus.FAILED
-        else:
-            stage_status = StageStatus.COMPLETED
-        # Clear the request_phase event to force worker gather
-        request_phase.clear()
-        request_queue.join()
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
@@ -943,9 +1123,10 @@ class LoadGenerator:
         request_phase: SyncEvent = mp.Event()
         stop_signal: SyncEvent = mp.Event()
         cancel_signal: SyncEvent = mp.Event()
-        # Synchronize workers and main at stage boundaries so workers finish
-        # in-flight requests and clear session state before the next stage begins.
-        stage_barrier: SyncBarrier = mp.Barrier(self.num_workers + 1)
+        # Broadcast when the teardown grace expires so workers cancel whatever
+        # is still in flight (see _teardown_stage).
+        force_stop_signal: SyncEvent = mp.Event()
+        self._force_stop_signal = force_stop_signal
         # start workers in the request phase
         request_phase.set()
 
@@ -956,6 +1137,10 @@ class LoadGenerator:
                 shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
+
+            # Per-worker stage-done counter for the stage rendezvous: the worker
+            # increments it after winding down each stage (see _teardown_stage).
+            stage_done_counter: "Synchronized[int]" = mp.Value("i", 0)
 
             self.workers.append(
                 Worker(
@@ -971,7 +1156,9 @@ class LoadGenerator:
                     active_requests_counter,
                     shared_max_concurrency,
                     self.base_seed,
-                    stage_barrier,
+                    force_stop_signal=force_stop_signal,
+                    stage_done_counter=stage_done_counter,
+                    teardown_grace_seconds=self.teardown_grace_seconds,
                 )
             )
             self.workers[-1].start()
@@ -1071,7 +1258,8 @@ class LoadGenerator:
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
 
-                stage_barrier.wait()
+                # Stage rendezvous already happened inside _teardown_stage
+                # (bounded, liveness-aware), so no barrier is needed here.
 
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:

@@ -232,6 +232,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--load.trace.format` | Enum (AzurePublicDataset) | Matches load.trace.format in config |
 | `--load.circuit_breakers` | JSON | Matches load.circuit_breakers in config |
 | `--load.request_timeout` | float | Matches load.request_timeout in config |
+| `--load.stage_teardown_grace_seconds` | float | How long to let in-flight requests finish after a stage ends or times out, before they are cancelled. Teardown is bounded: once the grace (plus a fixed margin) expires, remaining work is force-cancelled and unresponsive workers are terminated and respawned, so report generation always runs. Set to 0 to cancel in-flight requests immediately at stage end. |
 | `--load.lora_traffic_split` | JSON | Matches load.lora_traffic_split in config |
 | `--load.base_seed` | int | Matches load.base_seed in config |
 | `--metrics.type` | Enum (prometheus, default) | Matches metrics.type in config |
