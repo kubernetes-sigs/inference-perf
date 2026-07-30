@@ -53,6 +53,7 @@ def generate_baseline(output_path: Path):
         shutil.rmtree(temp_dir)
 
     print("--- Generating baseline coverage from 'main' ---")
+    output_path.unlink(missing_ok=True)
     try:
         # 1. Create a temporary worktree of the main branch
         try:
@@ -77,10 +78,17 @@ def generate_baseline(output_path: Path):
         # Use the current project's pyproject.toml for coverage config to ensure consistent settings (e.g. omit rules)
         # We need to map the project_root to the absolute path
         config_path = project_root / "pyproject.toml"
-        run_command(
-            f"pdm run pytest --cov=inference_perf --cov-config={config_path.absolute()} --cov-report=json:{output_path.absolute()} tests/",
-            cwd=temp_dir,
-        )
+        try:
+            run_command(
+                f"pdm run pytest --cov=inference_perf --cov-config={config_path.absolute()} --cov-report=json:{output_path.absolute()} tests/",
+                cwd=temp_dir,
+            )
+        except subprocess.CalledProcessError:
+            # A red main must not block the PR that fixes it: pytest-cov writes the
+            # report even when tests fail, and that coverage is still a valid baseline.
+            if not output_path.exists():
+                raise
+            print("⚠️ Tests failed on 'main'; using its coverage report as the baseline anyway.")
 
         print(f"✅ Baseline generated: {output_path.name}")
     finally:
