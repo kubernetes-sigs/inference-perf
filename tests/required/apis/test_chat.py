@@ -122,8 +122,8 @@ def test_count_prompt_tokens_includes_tool_definitions() -> None:
             }
         ],
     )
-    # 3 (message) + at least 5 (tool description)
-    assert data._count_prompt_tokens(tokenizer) > 3
+    # 3 (message) + 15 (json.dumps'd tool_definitions, whitespace-tokenized)
+    assert data._count_prompt_tokens(tokenizer) == 18
 
 
 @pytest.mark.asyncio

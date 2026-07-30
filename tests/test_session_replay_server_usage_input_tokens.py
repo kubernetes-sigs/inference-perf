@@ -152,8 +152,8 @@ class TestNonStreamingServerUsage:
 
         info = await api_data.process_response(response, _make_config(streaming=False), _make_tokenizer())
 
-        # 1 (message "hi") + tokens from the serialized tool definition.
-        assert info.request_metrics.text.input_tokens > 1
+        # 1 (message "hi") + 15 (json.dumps'd tool_definitions, whitespace-tokenized)
+        assert info.request_metrics.text.input_tokens == 16
 
 
 class TestStreamingServerUsage:
