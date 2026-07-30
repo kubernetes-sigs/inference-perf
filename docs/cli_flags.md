@@ -14,6 +14,7 @@ These command line flags are automatically generated from the internal `Config` 
 | `--api.response_format.name` | str | Matches api.response_format.name in config |
 | `--api.response_format.json_schema` | JSON | Matches api.response_format.json_schema in config |
 | `--api.session_id_header_key` | str | Matches api.session_id_header_key in config |
+| `--api.use_server_prompt_tokens` | boolean | Matches api.use_server_prompt_tokens in config |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Matches data.type in config |
 | `--data.path` | str | Matches data.path in config |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |

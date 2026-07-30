@@ -30,6 +30,10 @@ load:
 api:
   type: chat
   streaming: true
+  use_server_prompt_tokens: true # Recommended for long-context traces: records the server's
+                                 # usage.prompt_tokens instead of re-tokenizing the full
+                                 # conversation client-side on every event, which is CPU-intensive
+                                 # and can cap the achievable send rate (issue #648).
 
 server:
   type: mock # or openai/vllm/sglang/tgi
