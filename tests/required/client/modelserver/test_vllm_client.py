@@ -17,6 +17,7 @@ of vLLM's wire format (stop_reason/prompt_logprobs in every choice)."""
 from backend_client_suite import CHAT_TEXT, COMPLETION_TEXT, MODEL, Backend, BackendClientSuite
 
 from inference_perf.client.modelserver.vllm_client import vLLMModelServerClient
+from inference_perf.config import APIType
 
 BACKEND = Backend(
     client_cls=vLLMModelServerClient,
@@ -173,6 +174,7 @@ BACKEND = Backend(
             }
         ],
     },
+    expected_supported_apis=[APIType.Completion, APIType.Chat, APIType.AnthropicMessages],
     expected_metric_filters=[f"model_name='{MODEL}'"],
     queue_metric_name="vllm:num_requests_waiting",
 )

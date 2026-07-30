@@ -18,6 +18,7 @@ streaming delta, flat {"error", "error_type"} body at 422)."""
 from backend_client_suite import CHAT_TEXT, COMPLETION_TEXT, MODEL, Backend, BackendClientSuite
 
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
+from inference_perf.config import APIType
 
 BACKEND = Backend(
     client_cls=TGImodelServerClient,
@@ -147,6 +148,7 @@ BACKEND = Backend(
         "object": "list",
         "data": [{"id": MODEL, "object": "model", "created": 0, "owned_by": "meta-llama"}],
     },
+    expected_supported_apis=[APIType.Completion, APIType.Chat],
     expected_metric_filters=[],
     queue_metric_name="tgi_queue_size",
 )

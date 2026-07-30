@@ -17,6 +17,7 @@ of SGLang's wire format (matched_stop in every choice, unprefixed request ids)."
 from backend_client_suite import CHAT_TEXT, COMPLETION_TEXT, MODEL, Backend, BackendClientSuite
 
 from inference_perf.client.modelserver.sglang_client import SGlangModelServerClient
+from inference_perf.config import APIType
 
 BACKEND = Backend(
     client_cls=SGlangModelServerClient,
@@ -171,6 +172,7 @@ BACKEND = Backend(
             }
         ],
     },
+    expected_supported_apis=[APIType.Completion, APIType.Chat],
     expected_metric_filters=[f"model_name='{MODEL}'"],
     queue_metric_name="sglang:num_queue_reqs",
 )

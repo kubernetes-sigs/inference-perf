@@ -65,6 +65,7 @@ class Backend:
     error_status: int
     error_response: Dict[str, Any]
     models_response: Dict[str, Any]
+    expected_supported_apis: List[APIType]
     expected_metric_filters: List[str]
     queue_metric_name: str
 
@@ -368,7 +369,7 @@ class BackendClientSuite:
 
     def test_supported_apis_and_metric_metadata(self) -> None:
         client = make_client(self.backend, APIConfig(type=APIType.Completion, streaming=False))
-        assert client.get_supported_apis() == [APIType.Completion, APIType.Chat]
+        assert client.get_supported_apis() == self.backend.expected_supported_apis
         # metric_filters is defined per-subclass, not on the shared base client.
         assert cast(Any, client).metric_filters == self.backend.expected_metric_filters
         metadata = client.get_prometheus_metric_metadata()
