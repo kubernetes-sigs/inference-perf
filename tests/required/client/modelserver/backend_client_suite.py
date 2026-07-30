@@ -373,6 +373,5 @@ class BackendClientSuite:
         # metric_filters is defined per-subclass, not on the shared base client.
         assert cast(Any, client).metric_filters == self.backend.expected_metric_filters
         metadata = client.get_prometheus_metric_metadata()
-        queue_metric = metadata["avg_queue_length"]
-        assert queue_metric is not None
-        assert queue_metric.name == self.backend.queue_metric_name
+        assert metadata.queue_length.metric_name == self.backend.queue_metric_name
+        assert metadata.filters == ",".join(self.backend.expected_metric_filters)
