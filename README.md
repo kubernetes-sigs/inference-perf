@@ -89,7 +89,7 @@ Explore detailed documentation for specific topics:
 | Topic | Description | Link |
 | :--- | :--- | :--- |
 | **Configuration** | Full YAML configuration schema and options. | [config.md](./docs/config.md) |
-| **CLI Flags** | Overriding configuration via command line flags. | [cli_flags.md](./docs/cli_flags.md) |
+| **CLI Flags** | All command line flags: global options and configuration overrides. | [cli_flags.md](./docs/cli_flags.md) |
 | **Load Generation** | Detailed explanation of load patterns and multi-worker setup. | [loadgen.md](./docs/loadgen.md) |
 | **Metrics** | Definitions of TTFT, TPOT, ITL, etc. | [metrics.md](./docs/metrics.md) |
 | **Goodput** | How to measure requests meeting SLOs. | [goodput.md](./docs/goodput.md) |

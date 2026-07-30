@@ -1,9 +1,13 @@
 # Inference-Perf CLI Flags
 
-These command line flags are automatically generated from the internal `Config` schema. You can override any configuration directly from the CLI without using a yaml configuration file.
+These command line flags are automatically generated from the CLI parser. The global flags at the top of the table control the tool itself; every other flag is generated from the internal `Config` schema and overrides that configuration directly from the CLI without using a yaml configuration file.
 
 | Flag | Type | Description |
 | --- | --- | --- |
+| `-c`, `--config_file` | str | Config File |
+| `-a`, `--analyze` | list of str | Path to a report directories to analyze |
+| `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
+| `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
 | `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |

@@ -70,7 +70,7 @@ from inference_perf.metrics.request_collector import (
 )
 from inference_perf.circuit_breaker import init_circuit_breakers
 from inference_perf.reportgen import ReportGenerator
-from inference_perf.utils import CustomTokenizer, ReportFile, add_pydantic_args, unflatten_dict
+from inference_perf.utils import CustomTokenizer, ReportFile, add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
 from inference_perf.observability.logging import setup_logging
 import asyncio
@@ -122,13 +122,7 @@ def main_cli() -> None:
 
     # Parse command line arguments
     parser = ArgumentParser()
-    parser.add_argument("-c", "--config_file", help="Config File", required=False)
-    parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False)
-    parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False)
-    parser.add_argument(
-        "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    )
-
+    base_args = add_global_args(parser)
     add_pydantic_args(parser, Config)
 
     args = parser.parse_args()
@@ -139,7 +133,6 @@ def main_cli() -> None:
         analyze_reports(args.analyze, args.unified_analysis_dir)
         return
 
-    base_args = {"config_file", "analyze", "unified_analysis_dir", "log_level"}
     cli_overrides_flat = {k: v for k, v in vars(args).items() if k not in base_args}
     cli_overrides = unflatten_dict(cli_overrides_flat)
 

@@ -16,6 +16,45 @@ def unwrap_type(annotation: typing.Any) -> typing.Tuple[typing.Any, bool]:
     return annotation, False
 
 
+def add_global_args(
+    parser: argparse.ArgumentParser,
+    docs: typing.Optional[typing.List[str]] = None,
+) -> typing.Set[str]:
+    """
+    Adds the global (non-Config) CLI arguments. Both the runtime parser and the docs
+    generator build these from this single definition so the two cannot drift apart.
+
+    Appends a markdown doc row for each argument to `docs` and returns the set of
+    argparse dests so callers can separate global args from Config overrides.
+    """
+    if docs is None:
+        docs = []
+
+    actions = [
+        parser.add_argument("-c", "--config_file", help="Config File", required=False),
+        parser.add_argument("-a", "--analyze", nargs="*", help="Path to a report directories to analyze", required=False),
+        parser.add_argument("-u", "--unified_analysis_dir", help="Unified analysis directory path", required=False),
+        parser.add_argument(
+            "--log-level", help="Logging level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        ),
+    ]
+
+    for action in actions:
+        flags = ", ".join(f"`{opt}`" for opt in action.option_strings)
+        if action.choices is not None:
+            arg_type = f"Enum ({', '.join(str(choice) for choice in action.choices)})"
+        elif action.nargs == "*":
+            arg_type = "list of str"
+        else:
+            arg_type = "str"
+        help_text = action.help or ""
+        if action.default is not None:
+            help_text = f"{help_text} (default: {action.default})"
+        docs.append(f"| {flags} | {arg_type} | {help_text} |")
+
+    return {action.dest for action in actions}
+
+
 def add_pydantic_args(
     parser: argparse.ArgumentParser | argparse._ArgumentGroup,
     model_cls: type[BaseModel],

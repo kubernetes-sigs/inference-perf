@@ -4,12 +4,12 @@ import sys
 import typing
 from pathlib import Path
 from pydantic import BaseModel
-from inference_perf.utils.cli_parser import add_pydantic_args
+from inference_perf.utils.cli_parser import add_global_args, add_pydantic_args
 from inference_perf.config import Config
 
 HEADER = """# Inference-Perf CLI Flags
 
-These command line flags are automatically generated from the internal `Config` schema. You can override any configuration directly from the CLI without using a yaml configuration file.
+These command line flags are automatically generated from the CLI parser. The global flags at the top of the table control the tool itself; every other flag is generated from the internal `Config` schema and overrides that configuration directly from the CLI without using a yaml configuration file.
 
 | Flag | Type | Description |
 | --- | --- | --- |
@@ -18,7 +18,8 @@ These command line flags are automatically generated from the internal `Config` 
 
 def generate_doc() -> str:
     parser = argparse.ArgumentParser()
-    docs = []
+    docs: list[str] = []
+    add_global_args(parser, docs=docs)
     add_pydantic_args(parser, Config, docs=docs)
     return HEADER + "\n".join(docs) + "\n"
 
