@@ -65,7 +65,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
 
@@ -76,6 +76,7 @@ class CompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
@@ -94,6 +95,7 @@ class CompletionAPIData(InferenceAPIData):
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(
+                    server_request_id=server_request_id,
                     request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                     lora_adapter=lora_adapter,
                 )
@@ -101,6 +103,7 @@ class CompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,

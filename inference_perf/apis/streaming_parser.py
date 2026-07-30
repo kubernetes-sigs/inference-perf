@@ -44,7 +44,7 @@ class StreamInterruptedError(Exception):
 
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]], Optional[str]]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -60,7 +60,7 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
+        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id):
         - output_text: The concatenated text content from all chunks
         - chunk_times: Timestamps for content-bearing chunks only. Role-only
           deltas, usage-only chunks, [DONE] signals, and unparseable messages
@@ -72,6 +72,8 @@ async def parse_sse_stream(
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
+        - server_request_id: Server-assigned request ID (e.g. `data.id`, `data.message.id`,
+          or HTTP headers like `x-request-id`).
     """
     output_text = ""
     chunk_times: List[float] = []
@@ -79,6 +81,7 @@ async def parse_sse_stream(
     raw_content = b""
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
+    server_request_id: Optional[str] = None
 
     try:
         async for chunk in response.content.iter_any():
@@ -96,6 +99,10 @@ async def parse_sse_stream(
                             break
                         try:
                             data = json.loads(data_str)
+                            if not server_request_id:
+                                server_request_id = data.get("id")
+                                if not server_request_id and isinstance(data.get("message"), dict):
+                                    server_request_id = data["message"].get("id")
                             usage = data.get("usage")
                             if not isinstance(usage, dict):
                                 message_data = data.get("message")
@@ -118,4 +125,11 @@ async def parse_sse_stream(
         # what the server actually sent instead of an empty response body.
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
+    if not server_request_id and response and hasattr(response, "headers"):
+        headers = response.headers
+        if hasattr(headers, "get"):
+            val = headers.get("x-request-id")
+            if isinstance(val, str):
+                server_request_id = val
+
+    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage, server_request_id

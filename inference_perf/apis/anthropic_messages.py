@@ -264,13 +264,13 @@ def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str |
 
 async def parse_anthropic_stream_response(
     response: ClientResponse,
-) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
+) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None, str | None]:
     extract_content, build_output_message = _build_anthropic_stream_handlers()
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
         response,
         extract_content=extract_content,
     )
-    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
+    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage, server_request_id
 
 
 class AnthropicMessagesAPIData(InferenceAPIData):
@@ -314,11 +314,13 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
+                server_request_id,
             ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(
                     text=Text(
                         input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer)
@@ -336,6 +338,11 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             )
 
         data = await response.json()
+        server_request_id = data.get("id")
+        if not server_request_id and response and hasattr(response, "headers") and hasattr(response.headers, "get"):
+            val = response.headers.get("x-request-id")
+            if isinstance(val, str):
+                server_request_id = val
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
@@ -347,6 +354,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             "output_text": output_text,
         }
         return InferenceInfo(
+            server_request_id=server_request_id,
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
