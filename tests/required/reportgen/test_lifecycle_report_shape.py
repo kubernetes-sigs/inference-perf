@@ -169,9 +169,9 @@ def test_lifecycle_report_shape_populated() -> None:
         assert k in t, f"missing throughput key {k}"
         assert t[k] > 0, f"expected {k} > 0"
 
-    # request_size_bytes, prompt_len, output_len
+    # request_size_bytes, prompt_tokens, output_len
     _assert_summary(s["request_size_bytes"])
-    _assert_summary(s["prompt_len"])
+    _assert_summary(s["prompt_tokens"])
     _assert_summary(s["output_len"])
 
     # image nested
@@ -193,7 +193,7 @@ def test_lifecycle_report_shape_populated() -> None:
     f = report["failures"]
     assert f["count"] == 0
     assert f["request_latency"] is None
-    assert f["prompt_len"] is None
+    assert f["prompt_tokens"] == {"total": 0.0, "cached": 0.0, "uncached": 0.0}
 
 
 def test_lifecycle_report_shape_with_failures() -> None:
@@ -230,5 +230,5 @@ def test_lifecycle_report_shape_with_failures() -> None:
     assert report["successes"]["count"] == 1
     assert report["failures"]["count"] == 1
     _assert_summary(report["failures"]["request_latency"])
-    _assert_summary(report["failures"]["prompt_len"])
+    _assert_summary(report["failures"]["prompt_tokens"])
     assert report["failures"]["by_label"]["500 - Internal Server Error"]["count"] == 1

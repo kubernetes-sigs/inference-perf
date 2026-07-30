@@ -199,12 +199,12 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             norm_tpot_p90 = f"{p90:0.1f}"
 
         # Token Length extraction
-        prompt_len = successes.get("prompt_len")
+        prompt_tokens = successes.get("prompt_tokens")
         prompt_mean = prompt_med = prompt_p90 = "-"
-        if prompt_len:
-            prompt_mean = f"{prompt_len.get('mean', 0.0):0.1f}"
-            prompt_med = f"{prompt_len.get('median', 0.0):0.1f}"
-            prompt_p90 = f"{prompt_len.get('p90', 0.0):0.1f}"
+        if prompt_tokens:
+            prompt_mean = f"{prompt_tokens.get('mean', 0.0):0.1f}"
+            prompt_med = f"{prompt_tokens.get('median', 0.0):0.1f}"
+            prompt_p90 = f"{prompt_tokens.get('p90', 0.0):0.1f}"
 
         output_len = successes.get("output_len")
         output_mean = output_med = output_p90 = "-"

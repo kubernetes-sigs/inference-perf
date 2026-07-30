@@ -207,10 +207,9 @@ def test_summarize_requests_surfaces_output_token_usage() -> None:
 def test_summarize_requests_token_usage_propagates_percentile_keys() -> None:
     """The requested percentiles surface on both server-sourced token metrics.
 
-    output_tokens / prompt_tokens carry the same per-request distribution keys
-    as output_len / prompt_len: mean/min/max plus one key per requested
-    percentile (p50 -> 'median'). Locks in that whatever percentile list the
-    run passes feeds these metrics too.
+    output_tokens / prompt_tokens carry mean/min/max plus one key per
+    requested percentile (p50 -> 'median'), same as output_len. Locks in
+    that whatever percentile list the run passes feeds these metrics too.
     """
     metrics = []
     for completion_tokens in range(1, 101):  # 1..100

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import base64
+import json
 import logging
 import os
 import time
@@ -450,6 +451,18 @@ class ChatCompletionAPIData(InferenceAPIData):
             audio=self.realized_audios,
         )
 
+    def _resolve_prompt_tokens(self, server_usage: Optional[Dict[str, Any]], tokenizer: CustomTokenizer) -> int:
+        """Input tokens as reported by the server, falling back to client-side tokenization.
+
+        Server-reported ``usage.prompt_tokens`` is the source of truth when present —
+        it reflects exactly what the server tokenized (including tool definitions and
+        chat-template overhead), which client-side tokenization can only approximate.
+        """
+        prompt_tokens = server_usage.get("prompt_tokens") if server_usage else None
+        if prompt_tokens is not None:
+            return int(prompt_tokens)
+        return self._count_prompt_tokens(tokenizer)
+
     def get_api_type(self) -> APIType:
         return APIType.Chat
 
@@ -520,9 +533,12 @@ class ChatCompletionAPIData(InferenceAPIData):
         return payload
 
     def _count_prompt_tokens(self, tokenizer: CustomTokenizer) -> int:
-        # Count text in shared prefix (if any) plus text in each message. Only
-        # text parts of structured content count — image/video/audio bytes
-        # don't contribute to text-token totals here.
+        # Count text in shared prefix (if any) plus text in each message, plus
+        # tool definitions (if any). Only text parts of structured content
+        # count — image/video/audio bytes don't contribute to text-token
+        # totals here. Tool definitions are serialized the same way they're
+        # sent on the wire (see to_request_body) since the server tokenizes
+        # them as part of the prompt.
         total = tokenizer.count_tokens(self.prefix_text) if self.prefix_text else 0
         total += sum(
             tokenizer.count_tokens(
@@ -537,6 +553,8 @@ class ChatCompletionAPIData(InferenceAPIData):
             for msg in self.messages
             if msg.content
         )
+        if self.tool_definitions:
+            total += tokenizer.count_tokens(json.dumps(self.tool_definitions, ensure_ascii=False))
         return total
 
     async def process_response(
@@ -546,7 +564,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
-            prompt_len = self._count_prompt_tokens(tokenizer)
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
             # never contains.
@@ -565,7 +583,8 @@ class ChatCompletionAPIData(InferenceAPIData):
             )
 
         data = await response.json()
-        prompt_len = self._count_prompt_tokens(tokenizer)
+        server_usage = data.get("usage")
+        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         choices = data.get("choices", [])
         if len(choices) == 0:
             return InferenceInfo(
@@ -576,6 +595,6 @@ class ChatCompletionAPIData(InferenceAPIData):
         output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
             lora_adapter=lora_adapter,
         )

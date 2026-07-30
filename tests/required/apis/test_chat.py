@@ -13,11 +13,13 @@
 # limitations under the License.
 import base64
 import logging
-from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from typing import Any, AsyncGenerator, Iterator, List, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientResponse
 
+from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIType
@@ -30,6 +32,38 @@ from inference_perf.payloads import (
     SyntheticFramesVideoSpec,
     SyntheticImageSpec,
 )
+
+
+def _make_tokenizer() -> MagicMock:
+    tok = MagicMock()
+    tok.count_tokens = lambda text, **kw: max(1, len((text or "").split()))
+    return tok
+
+
+def _make_config(streaming: bool) -> MagicMock:
+    cfg = MagicMock()
+    cfg.streaming = streaming
+    return cfg
+
+
+class _FakeStreamingResponse:
+    """Minimal aiohttp ClientResponse stand-in that yields preset SSE bytes."""
+
+    def __init__(self, chunks: List[bytes]) -> None:
+        self.status = 200
+        self.headers = {"content-type": "text/event-stream"}
+        self.content = self._make_content(chunks)
+
+    @staticmethod
+    def _make_content(chunks: List[bytes]) -> MagicMock:
+        content = MagicMock()
+
+        async def iter_any() -> AsyncGenerator[bytes, None]:
+            for chunk in chunks:
+                yield chunk
+
+        content.iter_any = iter_any
+        return content
 
 
 @pytest.mark.asyncio
@@ -68,6 +102,82 @@ def test_count_prompt_tokens_without_prefix_text_unchanged() -> None:
 
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="five tokens in this prompt")])
     assert data._count_prompt_tokens(tokenizer) == 5
+
+
+def test_count_prompt_tokens_includes_tool_definitions() -> None:
+    """``_count_prompt_tokens`` should count tool_definitions tokens too —
+    tool schemas are serialized into the prompt the server actually sees,
+    so omitting them undercounts prompt length."""
+    tokenizer = MagicMock()
+    tokenizer.count_tokens.side_effect = lambda s, **kw: len(s.split())
+
+    data = ChatCompletionAPIData(
+        messages=[ChatMessage(role="user", content="three words here")],
+        tool_definitions=[
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "five tokens for this tool",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    )
+    # 3 (message) + at least 5 (tool description)
+    assert data._count_prompt_tokens(tokenizer) > 3
+
+
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_uses_server_prompt_tokens() -> None:
+    """When the server reports usage.prompt_tokens, request_metrics.text.input_tokens
+    is resolved from it rather than client-side tokenization"""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "hello there"}}],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 2},
+        }
+    )
+
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+
+    assert info.request_metrics.text.input_tokens == 42
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_falls_back_without_server_usage() -> None:
+    """No usage in the response body falls back to client-side tokenization."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="one two three")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(return_value={"choices": [{"message": {"content": "hi"}}]})
+
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+
+    assert info.request_metrics.text.input_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
+    """Streaming trailing usage chunk resolves input_tokens the same way as non-streaming."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    sse = (
+        b'data: {"choices": [{"delta": {"content": "hello"}}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 17, "completion_tokens": 1}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    info = await data.process_response(response, _make_config(streaming=True), tokenizer)
+
+    assert info.request_metrics.text.input_tokens == 17
 
 
 def _reset_multimodal_progress_state() -> None:

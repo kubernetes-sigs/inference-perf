@@ -138,7 +138,7 @@ def mock_report_data() -> ResponsesSummary:
                 "total_tokens_per_sec": 271.83536208261364,
                 "requests_per_sec": 1.0171575756131475,
             },
-            "prompt_len": {
+            "prompt_tokens": {
                 "mean": 204.1,
                 "min": 196.0,
                 "p0.1": 196.059,
@@ -171,7 +171,7 @@ def mock_report_data() -> ResponsesSummary:
                 "max": 68.0,
             },
         },
-        failures={"count": 0, "request_latency": {}, "prompt_len": {}},
+        failures={"count": 0, "request_latency": {}, "prompt_tokens": {}},
     )
 
 
@@ -205,10 +205,10 @@ async def test_analyze_reports(tmp_path: Path, mock_report_data: ResponsesSummar
     assert _extract_latency_metric(mock_report_data.successes["latency"], "time_to_first_token", True) == 31.12733216257766
     assert _extract_latency_metric(mock_report_data.successes["latency"], "inter_token_latency", True) == 3.4734172405264743
 
-    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "input_tokens_per_sec") is None
-    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "output_tokens_per_sec") is None
-    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "total_tokens_per_sec") is None
-    assert _extract_throughput_metric(mock_report_data.failures["prompt_len"], "requests_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_tokens"], "input_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_tokens"], "output_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_tokens"], "total_tokens_per_sec") is None
+    assert _extract_throughput_metric(mock_report_data.failures["prompt_tokens"], "requests_per_sec") is None
 
     assert _extract_throughput_metric(mock_report_data.successes["throughput"], "input_tokens_per_sec") == 207.6018611826434
     assert _extract_throughput_metric(mock_report_data.successes["throughput"], "output_tokens_per_sec") == 64.23350089997027

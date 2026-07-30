@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
@@ -33,6 +33,18 @@ class CompletionAPIData(InferenceAPIData):
 
     def get_route(self) -> str:
         return "/v1/completions"
+
+    def _resolve_prompt_tokens(self, server_usage: Optional[Dict[str, Any]], tokenizer: CustomTokenizer) -> int:
+        """Input tokens as reported by the server, falling back to client-side tokenization.
+
+        Server-reported ``usage.prompt_tokens`` is the source of truth when present —
+        it reflects exactly what the server tokenized, which client-side tokenization
+        can only approximate.
+        """
+        prompt_tokens = server_usage.get("prompt_tokens") if server_usage else None
+        if prompt_tokens is not None:
+            return int(prompt_tokens)
+        return tokenizer.count_tokens(self.prompt)
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -57,7 +69,7 @@ class CompletionAPIData(InferenceAPIData):
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
 
-            prompt_len = tokenizer.count_tokens(self.prompt)
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
             # never contains.
@@ -77,7 +89,8 @@ class CompletionAPIData(InferenceAPIData):
             )
         else:
             data = await response.json()
-            prompt_len = tokenizer.count_tokens(self.prompt)
+            server_usage = data.get("usage")
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(
@@ -89,6 +102,6 @@ class CompletionAPIData(InferenceAPIData):
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=data.get("usage")),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,
             )

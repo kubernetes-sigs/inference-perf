@@ -180,11 +180,12 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
 
 
 def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
-    """Input tokens as reported by the server (usage.prompt_tokens).
+    """Input tokens already resolved at request time (request_metrics.text.input_tokens).
 
-    Reports the aggregate total/cached/uncached split alongside the per-request
-    distribution (min/mean/max/percentiles). Falls back to the client-side
-    input_tokens when the server does not report usage.
+    The per-request value is the server-reported usage.prompt_tokens when the server
+    provided it, otherwise the client-side tokenization — resolved once by
+    _resolve_prompt_tokens at response-processing time and stored in request_metrics.
+    Also reports the cached/uncached split from usage.prompt_tokens_details when present.
     """
     prompt_tokens_total = 0.0
     prompt_tokens_cached = 0.0
@@ -193,10 +194,9 @@ def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percenti
     for metric in metrics:
         response_metrics = metric.info.response_metrics
         server_usage = response_metrics.server_usage if response_metrics else None
-        prompt_tokens = server_usage.get("prompt_tokens") if server_usage else metric.info.request_metrics.text.input_tokens
         prompt_tokens_details = (server_usage.get("prompt_tokens_details") or {}) if server_usage else {}
 
-        prompt_tokens_value = safe_float(prompt_tokens)
+        prompt_tokens_value = safe_float(metric.info.request_metrics.text.input_tokens)
         prompt_tokens_total += prompt_tokens_value
         per_request.append(prompt_tokens_value)
         prompt_tokens_cached += safe_float(prompt_tokens_details.get("cached_tokens"))
@@ -638,9 +638,6 @@ def summarize_requests(
             "audios_per_sec": (sum(audio_counts) / total_time if total_time > 0 else 0.0),
         },
         "request_size_bytes": summarize([float(x) for x in request_sizes], percentiles),
-        "prompt_len": summarize(
-            [safe_float(success.info.request_metrics.text.input_tokens) for success in all_successful], percentiles
-        ),
         "image": {
             "count": summarize(image_counts, percentiles),
             "pixels": summarize([safe_float(inst.pixels) for inst in all_images], percentiles),
@@ -681,9 +678,7 @@ def summarize_requests(
         failures={
             "count": len(all_failed),
             "request_latency": summarize([(failed.end_time - failed.start_time) for failed in all_failed], percentiles),
-            "prompt_len": summarize(
-                [safe_float(failed.info.request_metrics.text.input_tokens) for failed in all_failed], percentiles
-            ),
+            "prompt_tokens": summarize_prompt_token_usage(all_failed, percentiles),
             "by_label": build_error_counts(
                 [(m.error.error_type, m.error.error_msg, m.session_id) for m in all_failed if m.error is not None],
                 max_error_messages,

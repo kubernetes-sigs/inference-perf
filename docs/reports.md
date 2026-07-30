@@ -43,7 +43,10 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
       "min": 0.5831485409980814,
       "p90": 11.684405915999378
     },
-    "prompt_len": {
+    "prompt_tokens": {
+      "total": 0.0,
+      "cached": 0.0,
+      "uncached": 0.0,
       "mean": 0.0,
       "min": 0.0,
       "p90": 0.0,

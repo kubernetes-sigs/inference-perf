@@ -856,21 +856,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         logger.debug(f"process_response called for event {self.event_id}")
         output_text: str = ""
 
-        def _get_text(content: Any) -> str:
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                return "".join(
-                    [
-                        item.get("text", "")
-                        for item in content
-                        if isinstance(item, dict) and item.get("type") in ("text", "input_text")
-                    ]
-                )
-            return ""
-
         actual_tool_names: List[str] = []
-
         if config.streaming:
             # Accumulate tool_call chunks and reasoning_content alongside text content.
             # delta.tool_calls is a list of partial objects; each chunk carries an
@@ -927,8 +913,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             if reasoning_text:
                 streaming_output_message["reasoning_content"] = reasoning_text
 
-            prompt_text = "".join([_get_text(msg.content) for msg in self.messages if msg.content])
-            prompt_len = tokenizer.count_tokens(prompt_text)
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             server_completion_tokens = server_usage.get("completion_tokens") if server_usage else None
             if server_completion_tokens is not None:
                 output_len = int(server_completion_tokens)
@@ -954,7 +939,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             actual_tool_names = [tool_call_chunks[i]["function"]["name"] for i in sorted(tool_call_chunks)]
         else:
             data = await response.json()
-            prompt_len = tokenizer.count_tokens("".join([_get_text(m.content) for m in self.messages]))
+            server_usage = data.get("usage")
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
             output_message: Optional[Dict[str, Any]] = None
             tool_calls = None
@@ -979,8 +965,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
                 if reasoning_content:
                     output_message["reasoning_content"] = reasoning_content
-            usage = data.get("usage") or {}
-            server_completion_tokens = usage.get("completion_tokens")
+            server_completion_tokens = server_usage.get("completion_tokens") if server_usage else None
             if server_completion_tokens is not None:
                 output_len = int(server_completion_tokens)
             else:
@@ -990,7 +975,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=output_message,
@@ -1129,7 +1114,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
-                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
                     )
                 ),
                 response_metrics=StreamedResponseMetrics(
@@ -1154,7 +1139,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     text=Text(
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
-                        else count_anthropic_prompt_tokens(self.messages, tokenizer)
+                        else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
                     )
                 ),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len),

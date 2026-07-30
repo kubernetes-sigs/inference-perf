@@ -181,8 +181,13 @@ def build_anthropic_request_body(
     return payload
 
 
-def count_anthropic_prompt_tokens(messages: list[ChatMessage], tokenizer: CustomTokenizer) -> int:
-    return sum(tokenizer.count_tokens(_content_text(message.content)) for message in messages)
+def count_anthropic_prompt_tokens(
+    messages: list[ChatMessage], tokenizer: CustomTokenizer, tool_definitions: list[dict[str, Any]] | None = None
+) -> int:
+    total = sum(tokenizer.count_tokens(_content_text(message.content)) for message in messages)
+    if tool_definitions:
+        total += tokenizer.count_tokens(json.dumps(tool_definitions, ensure_ascii=False))
+    return total
 
 
 def _event_index(data: dict[str, Any], fallback: int) -> int:
@@ -293,7 +298,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
         )
 
     def _count_prompt_tokens(self, tokenizer: CustomTokenizer) -> int:
-        return count_anthropic_prompt_tokens(self.messages, tokenizer)
+        return count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
 
     async def process_response(
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: str | None = None
