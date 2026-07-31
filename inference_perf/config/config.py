@@ -71,7 +71,7 @@ class Config(StrictBaseModel):
                 )
         if self.report and self.report.request_lifecycle:
             # metrics_only is only allowed with per_request, otherwise it's a no-op
-            self.api.metrics_only = (
+            self.api.metrics_only = bool(
                 self.report.request_lifecycle.metrics_only and self.report.request_lifecycle.per_request
             )
         return self

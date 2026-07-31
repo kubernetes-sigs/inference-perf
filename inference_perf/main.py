@@ -138,7 +138,7 @@ def main_cli() -> None:
 
     config = read_config(args.config_file, cli_overrides)
     # metrics_only is only allowed with per_request, otherwise it's a no-op
-    config.api.metrics_only = (
+    config.api.metrics_only = bool(
         config.report.request_lifecycle.metrics_only and config.report.request_lifecycle.per_request
     )
 

@@ -760,7 +760,7 @@ def summarize_requests(
             "videos_per_sec": (sum(video_counts) / total_time if total_time > 0 else 0.0),
             "audios_per_sec": (sum(audio_counts) / total_time if total_time > 0 else 0.0),
         },
-        "request_size_bytes": summarize([float(x) for x in request_sizes], percentiles),
+        "request_size_bytes": summarize([safe_float(x) for x in request_sizes], percentiles),
         "prompt_len": summarize(
             [safe_float(success.info.request_metrics.text.input_tokens) for success in all_successful], percentiles
         ),
