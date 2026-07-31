@@ -18,6 +18,17 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
+| `--data.bimodal.mode_a_system_prompt_len` | int | Length of shared system prompt for Mode A requests |
+| `--data.bimodal.mode_a_groups` | int | Number of groups for Mode A requests |
+| `--data.bimodal.mode_a_user_prompt_len` | string | Length or distribution of Mode A user prompt in tokens |
+| `--data.bimodal.mode_a_output_len` | string | Length or distribution of Mode A output generation in tokens |
+| `--data.bimodal.mode_b_system_prompt_len` | int | Length of shared system prompt for Mode B requests |
+| `--data.bimodal.mode_b_groups` | int | Number of groups for Mode B requests |
+| `--data.bimodal.mode_b_user_prompt_len` | string | Length or distribution of Mode B user prompt in tokens |
+| `--data.bimodal.mode_b_output_len` | string | Length or distribution of Mode B output generation in tokens |
+| `--data.bimodal.mode_a_ratio` | float | Proportion of Mode A requests (0.0 to 1.0) |
+| `--data.bimodal.num_prompts_per_group` | int | Number of unique user prompt variations pre-generated per group |
+| `--data.bimodal.seed` | int | Random seed for reproducibility |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |

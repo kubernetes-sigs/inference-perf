@@ -17,6 +17,7 @@ from typing import Optional, Union
 from pydantic import AliasChoices, ConfigDict, Field, model_validator
 
 from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.datagen.bimodal import BimodalConfig
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -40,6 +41,7 @@ class DataGenType(Enum):
     WekaTraceReplay = "weka_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
+    Bimodal = "bimodal"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -146,4 +148,8 @@ class DataConfig(StrictBaseModel):
 
     visionarena: Optional[VisionArenaConfig] = Field(
         default=None, description="VisionArena-Chat dataset settings. Only used by the 'visionarena' type."
+    )
+
+    bimodal: Optional[BimodalConfig] = Field(
+        default=None, description="Settings for bimodal distribution. Only used by 'bimodal' type."
     )

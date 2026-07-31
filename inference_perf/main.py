@@ -45,6 +45,7 @@ from inference_perf.datagen import (
     WekaTraceReplayDataGenerator,
     ConversationReplayDataGenerator,
     VisionArenaDataGenerator,
+    BimodalDataGenerator,
 )
 from inference_perf.client.modelserver import (
     ModelServerClient,
@@ -287,6 +288,7 @@ def main_cli() -> None:
                 DataGenType.OTelTraceReplay,
                 DataGenType.WekaTraceReplay,
                 DataGenType.ConversationReplay,
+                DataGenType.Bimodal,
             }
         ):
             if tokenizer is None:
@@ -334,6 +336,9 @@ def main_cli() -> None:
         if config.data.type == DataGenType.VisionArena and config.data.visionarena is None:
             raise Exception(f"{config.data.type.value} data generator requires 'visionarena' to be configured")
 
+        if config.data.type == DataGenType.Bimodal and config.data.bimodal is None:
+            raise Exception(f"{config.data.type.value} data generator requires 'bimodal' to be configured")
+
         if config.data.type == DataGenType.ShareGPT:
             datagen = HFShareGPTDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.CNNDailyMail:
@@ -363,6 +368,8 @@ def main_cli() -> None:
             datagen = WekaTraceReplayDataGenerator(
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
+        elif config.data.type == DataGenType.Bimodal:
+            datagen = BimodalDataGenerator(config.api, config.data, tokenizer)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

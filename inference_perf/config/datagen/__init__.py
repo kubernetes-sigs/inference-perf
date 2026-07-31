@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.config.datagen.bimodal import BimodalConfig
 from inference_perf.config.datagen.config import (
     DataConfig,
     DataGenType,
@@ -42,6 +43,7 @@ from inference_perf.config.datagen.visionarena import VisionArenaConfig
 __all__ = [
     "AnyResolution",
     "AudioDatagenConfig",
+    "BimodalConfig",
     "ConversationReplayConfig",
     "DataConfig",
     "DataGenType",
