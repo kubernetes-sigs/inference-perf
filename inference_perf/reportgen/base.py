@@ -38,10 +38,6 @@ from inference_perf.config import (
     GoodputConfig,
 )
 from inference_perf.metrics import SessionMetricsCollector
-from inference_perf.reportgen.br.v0_2 import (
-    build_partial_report,
-    generate_run_uid,
-)
 from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
@@ -897,6 +893,10 @@ class ReportGenerator:
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
             # own partials on top to produce a full BR0.2 document.
+            # Imported here rather than at module top: the br.v0_2 adapter
+            # imports effective_output_tokens from this module.
+            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_run_uid
+
             br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
             for metric in request_metrics:
                 if metric.stage_id is not None:
@@ -906,6 +906,7 @@ class ReportGenerator:
                     stage_metrics,
                     tokenizer,
                     run_uid=generate_run_uid(br_stage_id),
+                    use_server_output_tokens=use_server_output_tokens,
                 )
                 lifecycle_reports.append(
                     ReportFile(

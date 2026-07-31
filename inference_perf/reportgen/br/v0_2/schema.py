@@ -20,6 +20,7 @@
 # the vendored files directly so a future schema bump only touches the vendored
 # files.
 from .base import (
+    UNITS_BANDWIDTH,
     UNITS_GEN_LATENCY,
     UNITS_GEN_THROUGHPUT,
     UNITS_MEMORY,
@@ -118,6 +119,7 @@ __all__ = [
     "TimeSeriesRequestPerformance",
     "TimeSeriesResourceMetrics",
     "TimeSeriesThroughput",
+    "UNITS_BANDWIDTH",
     "UNITS_GEN_LATENCY",
     "UNITS_GEN_THROUGHPUT",
     "UNITS_MEMORY",

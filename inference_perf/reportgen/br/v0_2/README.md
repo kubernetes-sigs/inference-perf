@@ -1,10 +1,12 @@
 # BR0.2 report generation
 
-Native emission of [llm-d-benchmark v0.2.0](https://github.com/llm-d/llm-d-benchmark/tree/main/llmdbenchmark/analysis/benchmark_report) (BR0.2) reports alongside inference-perf's existing report formats.
+Native emission of [llm-d-benchmark v0.2](https://github.com/llm-d/llm-d-benchmark/tree/main/llmdbenchmark/analysis/benchmark_report) (BR0.2) partial reports alongside inference-perf's existing report formats. See [docs/br_v0_2.md](../../../../docs/br_v0_2.md) for user-facing documentation.
 
 ## Responsibility split
 
-inference-perf owns the BR0.2 `results` section only (the performance measurements derived from the run). Everything else — stack configuration, run/scenario metadata — is supplied by the user as a **partial report** (a BR0.2-shaped YAML/JSON file with `results` omitted). At report time, inference-perf loads the partial, fills `results`, validates the merged document against the BR0.2 schema, and emits one report per stage.
+inference-perf writes only the fields it can speak to truthfully from the run itself: the schema `version`, the `run` block (a generated `uid` plus the wall-clock `time` window of the stage), and the `results` block built from the actual request metrics. Everything else (stack configuration, scenario, run metadata like `eid`/`user`/`description`) is deliberately absent so a downstream composer (the llm-d-benchmark CLI, wrapper scripts, ad-hoc `yq` merges) can merge another producer's partial on top without any inference-perf field silently overwriting their data.
+
+Emission is unconditional and has no config surface: every run drops one `inference-perf.partial.stage_<n>.yaml` per stage, mirroring the existing per-stage lifecycle reports.
 
 ## File layout
 
@@ -13,10 +15,10 @@ inference-perf owns the BR0.2 `results` section only (the performance measuremen
 | `base.py` | **Vendored** from upstream | `BenchmarkReport` base class, `Units` / `WorkloadGenerator` enums, unit-group constants. |
 | `schema_v0_2.py` | **Vendored** from upstream | Top-level BR0.2 pydantic models (`Run`, `Scenario`, `Results`, `Statistics`, etc.). |
 | `schema_v0_2_components.py` | **Vendored** from upstream | Component subtype hierarchy (`ComponentStandardizedBase` + concrete kinds). |
-| `schema.py` | inference-perf | Facade that re-exports every public symbol from the vendored files. **Import from here**, not from the vendored files directly — a schema bump should only touch the vendored files. |
-| `adapter.py` | inference-perf | `build_results(request_metrics, tokenizer)` — projects inference-perf `RequestLifecycleMetric`s into a BR0.2 `Results` object. Pure function, no I/O. |
-| `partial_report.py` | inference-perf | `load_partial_report` / `validate_partial_report` / `merge_results` — load a user-supplied partial (local or GCS), reject anything that already populates `results`, and merge with the adapter's output. |
-| `__init__.py` | inference-perf | Re-exports the inference-perf-owned API surface (`build_results`, `merge_results`, `load_partial_report`, `validate_partial_report`, `PartialReportError`). |
+| `schema.py` | inference-perf | Facade that re-exports every public symbol from the vendored files. **Import from here**, not from the vendored files directly; a schema bump should only touch the vendored files. |
+| `adapter.py` | inference-perf | `build_results(request_metrics, tokenizer, use_server_output_tokens)`: projects inference-perf `RequestLifecycleMetric`s into a BR0.2 `Results` object. Pure function, no I/O. |
+| `partial_report.py` | inference-perf | `build_partial_report` / `generate_run_uid`: assemble the per-stage partial dict (`version` + `run` + `results`) with `None` fields stripped so it deep-merges cleanly. |
+| `__init__.py` | inference-perf | Re-exports the inference-perf-owned API surface (`build_results`, `build_partial_report`, `generate_run_uid`). |
 
 ## Resyncing the vendored schema
 

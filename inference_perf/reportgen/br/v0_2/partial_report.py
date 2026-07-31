@@ -51,15 +51,19 @@ def build_partial_report(
     tokenizer: CustomTokenizer | None,
     *,
     run_uid: str,
+    use_server_output_tokens: bool = False,
 ) -> Dict[str, Any]:
     """Build the inference-perf partial of a BR0.2 report for one stage.
 
     Returns a plain dict, ready to be serialized as YAML and dropped alongside
     the other report files. ``None``-valued fields are stripped so the file
     yq-merges cleanly with partials from other producers.
+
+    Pass the same ``use_server_output_tokens`` as the native lifecycle
+    reports so both reports of the run agree on token counts.
     """
     run = Run(uid=run_uid, time=_build_run_time(stage_metrics))
-    results = build_results(stage_metrics, tokenizer)
+    results = build_results(stage_metrics, tokenizer, use_server_output_tokens)
 
     return {
         "version": VERSION,

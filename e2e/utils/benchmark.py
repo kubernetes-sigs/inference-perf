@@ -76,6 +76,9 @@ async def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir
 def _find_report_files(path: Path) -> Optional[List[Path]]:
     """Return the JSON and YAML report files under path (if any)."""
     candidates = list(path.glob("**/*.json")) + list(path.glob("**/*.yaml"))
+    # The harness writes its own config echo (config_input.yaml) into the same
+    # directory; it is not a report.
+    candidates = [c for c in candidates if c.name != "config_input.yaml"]
     if not candidates:
         return None
     return candidates
