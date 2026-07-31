@@ -663,7 +663,6 @@ def summarize_requests(
                 else:
                     ttft = None
                     tpot = None
-
                 response_metrics.ttft_sec = ttft
                 response_metrics.tpot_sec = tpot
             ttft_values.append(ttft)

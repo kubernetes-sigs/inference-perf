@@ -142,7 +142,6 @@ def main_cli() -> None:
         config.report.request_lifecycle.metrics_only and config.report.request_lifecycle.per_request
     )
 
-
     # Set stage rates to high values if using concurrent load type
     if config.load.type == LoadType.CONCURRENT:
         # The validation is now handled by Pydantic in the config classes

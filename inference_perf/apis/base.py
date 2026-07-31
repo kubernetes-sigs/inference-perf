@@ -40,7 +40,6 @@ class StreamedResponseMetrics(ResponseMetrics):
     tpot_sec: Optional[float] = None
 
 
-
 class InferenceInfo(BaseModel):
     request_metrics: RequestMetrics
     response_metrics: Optional[SerializeAsAny[ResponseMetrics]] = None
