@@ -522,3 +522,53 @@ def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
     assert prompt_tokens["total"] == pytest.approx(10.0)
     assert prompt_tokens["cached"] == pytest.approx(0.0)
     assert prompt_tokens["uncached"] == pytest.approx(10.0)
+
+
+def test_summarize_requests_metrics_only_mode() -> None:
+    """Verifies that summarize_requests correctly calculates TTFT, TPOT, and request sizes when metrics_only=True."""
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+        response_metrics=StreamedResponseMetrics(
+            response_chunks=[],
+            chunk_times=[1.5, 3.5],
+            output_tokens=11,
+            output_token_times=[],
+        ),
+    )
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=1.0,
+        end_time=3.5,
+        request_data="",
+        response_data="",
+        request_size_bytes=256,
+        info=info,
+        error=None,
+    )
+
+    result = summarize_requests([metric], DEFAULT_PERCENTILES)
+    successes = result.successes
+
+    # TTFT = chunk_times[0] (1.5) - start_time (1.0) = 0.5
+    assert successes["latency"]["time_to_first_token"]["mean"] == pytest.approx(0.5)
+    # TPOT = (chunk_times[1] (3.5) - chunk_times[0] (1.5)) / (11 - 1) = 2.0 / 10 = 0.2
+    assert successes["latency"]["time_per_output_token"]["mean"] == pytest.approx(0.2)
+    # Request size bytes uses metric.request_size_bytes (256)
+    assert successes["request_size_bytes"]["mean"] == pytest.approx(256.0)
+
+
+def test_metrics_only_config_gating() -> None:
+    """Verifies that api.metrics_only is True ONLY when both metrics_only and per_request are True."""
+    from inference_perf.config import Config, ReportConfig
+    from inference_perf.config.reportgen import RequestLifecycleMetricsReportConfig
+
+    # Case 1: metrics_only=True, per_request=False -> api.metrics_only=False
+    cfg1 = Config(report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=False)))
+    assert cfg1.api.metrics_only is False
+
+    # Case 2: metrics_only=True, per_request=True -> api.metrics_only=True
+    cfg2 = Config(report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=True)))
+    assert cfg2.api.metrics_only is True
+
+

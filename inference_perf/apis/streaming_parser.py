@@ -43,7 +43,9 @@ class StreamInterruptedError(Exception):
 
 
 async def parse_sse_stream(
-    response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
+    response: ClientResponse,
+    extract_content: Callable[[dict[str, Any]], Optional[str]],
+    metrics_only: bool = False,
 ) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
@@ -58,22 +60,27 @@ async def parse_sse_stream(
         extract_content: Function to extract text content from parsed JSON data.
                         Should return the text content or None if not found.
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+        metrics_only: If True, drops raw content and response chunks to conserve memory
+                      and trims chunk_times to at most [first_chunk_time, last_chunk_time].
 
     Returns:
         Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
         - output_text: The concatenated text content from all chunks
         - chunk_times: Timestamps for content-bearing chunks only. Role-only
           deltas, usage-only chunks, [DONE] signals, and unparseable messages
-          are excluded so they don't corrupt downstream TPOT/TTFT/ITL.
-        - raw_content: The raw string content of the stream
+          are excluded so they don't corrupt downstream TPOT/TTFT/ITL. If
+          metrics_only=True, then only include timestamps for first and last chunk.
+        - raw_content: The raw string content of the stream (empty if metrics_only=True)
         - response_chunks: Raw JSON strings of content-bearing chunks, 1:1 with
-          chunk_times.
+          chunk_times (empty if metrics_only=True).
         - server_usage: Merged `usage` fields from chunks that carried one
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
     """
     output_text = ""
+    first_time: Optional[float] = None
+    last_time: Optional[float] = None
     chunk_times: List[float] = []
     buffer = b""
     raw_content = b""
@@ -82,7 +89,8 @@ async def parse_sse_stream(
 
     try:
         async for chunk in response.content.iter_any():
-            raw_content += chunk
+            if not metrics_only:
+                raw_content += chunk
             buffer += chunk
             while b"\n\n" in buffer:
                 message, buffer = buffer.split(b"\n\n", 1)
@@ -105,8 +113,12 @@ async def parse_sse_stream(
                                 server_usage = {**(server_usage or {}), **usage}
                             if content := extract_content(data):
                                 output_text += content
-                                chunk_times.append(message_time)
-                                response_chunks.append(data_str.decode("utf-8", errors="ignore"))
+                                if first_time is None:
+                                    first_time = message_time
+                                last_time = message_time
+                                if not metrics_only:
+                                    chunk_times.append(message_time)
+                                    response_chunks.append(data_str.decode("utf-8", errors="ignore"))
                         except (json.JSONDecodeError, IndexError):
                             continue
                 if done:
@@ -118,4 +130,12 @@ async def parse_sse_stream(
         # what the server actually sent instead of an empty response body.
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
+    if metrics_only:
+        chunk_times = (
+            [first_time, last_time]
+            if (first_time is not None and last_time is not None and first_time != last_time)
+            else ([first_time] if first_time is not None else [])
+        )
+
+    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore") if not metrics_only else "", response_chunks, server_usage
+

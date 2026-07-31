@@ -37,7 +37,9 @@ class RequestLifecycleMetricsReportConfig(StrictBaseModel):
         description="Cap on the number of distinct example error messages retained per error label in the failure "
         "report, and per substitution entry.",
     )
-
+    metrics_only: Optional[bool] = Field(
+        default=False, description="Drops raw request/response text and SSE chunk buffers to produce lightweight report."
+    )
 
 class PrometheusMetricsReportConfig(StrictBaseModel):
     summary: Optional[bool] = Field(default=True, description="Generate a summary report across the whole run.")

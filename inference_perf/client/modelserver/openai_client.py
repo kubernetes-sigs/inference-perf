@@ -514,11 +514,14 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.labels:
             info.labels = data.labels
 
+        metrics_only = getattr(self.client.api_config, "metrics_only", False)
+        request_bytes = len(request_data.encode("utf-8")) if request_data else 0
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
-            request_data=request_data,
-            response_data=response_content,
+            request_data="" if metrics_only else request_data,
+            response_data="" if metrics_only else response_content,
+            request_size_bytes=request_bytes,
             info=info,
             error=error,
             start_time=start,

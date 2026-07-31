@@ -251,6 +251,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--report.request_lifecycle.percentiles` | JSON | Percentiles reported for each metric. |
 | `--report.request_lifecycle.use_server_output_tokens` | boolean | Use the server-reported output token counts in metrics instead of tokenizing the response text. |
 | `--report.request_lifecycle.max_error_messages` | int | Cap on the number of distinct example error messages retained per error label in the failure report, and per substitution entry. |
+| `--report.request_lifecycle.metrics_only` | boolean | Drops raw request/response text and SSE chunk buffers to produce lightweight report. |
 | `--report.prometheus.summary` | boolean | Generate a summary report across the whole run. |
 | `--report.prometheus.per_stage` | boolean | Generate a report for each load stage. |
 | `--report.session_lifecycle.summary` | boolean | Generate a summary report across the whole run. |

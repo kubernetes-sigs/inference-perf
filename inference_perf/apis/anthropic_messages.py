@@ -259,11 +259,13 @@ def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str |
 
 async def parse_anthropic_stream_response(
     response: ClientResponse,
+    metrics_only: bool = False,
 ) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
     extract_content, build_output_message = _build_anthropic_stream_handlers()
     output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
         response,
         extract_content=extract_content,
+        metrics_only=metrics_only,
     )
     return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
 
@@ -309,7 +311,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
-            ) = await parse_anthropic_stream_response(response)
+            ) = await parse_anthropic_stream_response(response, metrics_only=config.metrics_only)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)

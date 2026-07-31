@@ -36,6 +36,9 @@ class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
     output_token_times: List[float] = []
+    ttft_sec: Optional[float] = None
+    tpot_sec: Optional[float] = None
+
 
 
 class InferenceInfo(BaseModel):
@@ -69,11 +72,18 @@ class RequestLifecycleMetric(BaseModel):
     end_time: float
     request_data: str
     response_data: Optional[str] = None
+    request_size_bytes: int = 0
     info: InferenceInfo
     error: Optional[ErrorResponseInfo]
 
     ttft_slo_sec: Optional[float] = None
     tpot_slo_sec: Optional[float] = None
+
+    @property
+    def computed_request_size_bytes(self) -> int:
+        if self.request_size_bytes > 0:
+            return self.request_size_bytes
+        return len(self.request_data.encode("utf-8")) if self.request_data else 0
 
 
 class SessionLifecycleMetric(BaseModel):

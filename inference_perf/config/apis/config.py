@@ -82,3 +82,6 @@ class APIConfig(StrictBaseModel):
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
+    metrics_only: Optional[bool] = Field(
+        default=False, description="Drops raw request/response text and SSE chunk buffers to produce lightweight report."
+    )

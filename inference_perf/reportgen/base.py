@@ -642,30 +642,43 @@ def summarize_requests(
         else:
             ntpot_values.append(0.0)
 
-        # Check if streamable: Must have more than 1 output token timestamp
+        # Check if streamable: Must have output token timestamps or trimmed chunk_times
         response_metrics = m.info.response_metrics
-        if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
-            # TTFT: First Token Time - Start Time
-            ttft = response_metrics.output_token_times[0] - m.start_time
-            ttft_values.append(ttft)
-
-            # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
-            duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
-            tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-            if tpot_output_tokens > 1:
-                tpot = duration / (tpot_output_tokens - 1)
+        if isinstance(response_metrics, StreamedResponseMetrics):
+            if response_metrics.ttft_sec is not None:
+                ttft = response_metrics.ttft_sec
+                tpot = response_metrics.tpot_sec
             else:
-                tpot = None
+                token_times = response_metrics.output_token_times or response_metrics.chunk_times
+                if token_times:
+                    # TTFT: First Token Time - Start Time
+                    ttft = token_times[0] - m.start_time
+                    # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
+                    duration = token_times[-1] - token_times[0]
+                    tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
+                    if tpot_output_tokens > 1 and len(token_times) > 1:
+                        tpot = duration / (tpot_output_tokens - 1)
+                    else:
+                        tpot = None
+                else:
+                    ttft = None
+                    tpot = None
+
+                response_metrics.ttft_sec = ttft
+                response_metrics.tpot_sec = tpot
+            ttft_values.append(ttft)
             tpot_values.append(tpot)
 
             # Add inter-token deltas
             request_itl = []
-            for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False):
-                inter_token_latencies.append(t2 - t1)
-                request_itl.append(t2 - t1)
-
-            if request_itl:
+            if len(response_metrics.output_token_times) > 1:
+                for t1, t2 in zip(response_metrics.output_token_times, response_metrics.output_token_times[1:], strict=False):
+                    inter_token_latencies.append(t2 - t1)
+                    request_itl.append(t2 - t1)
                 itl_values.append(sum(request_itl) / len(request_itl))
+            elif tpot is not None:
+                inter_token_latencies.append(tpot)
+                itl_values.append(tpot)
             else:
                 itl_values.append(None)
         else:
@@ -690,7 +703,7 @@ def summarize_requests(
     valid_tpot = [v for v in tpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
 
-    request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
+    request_sizes = [x.computed_request_size_bytes for x in all_successful]
     all_images = []
     all_videos = []
     all_audios = []
@@ -906,19 +919,26 @@ class ReportGenerator:
                 lifecycle_reports.append(report_file)
 
         if report_config.request_lifecycle.per_request:
-            report_file = ReportFile(
-                name="per_request_lifecycle_metrics",
-                contents=[
+            contents = []
+            is_metrics_only = report_config.request_lifecycle.metrics_only
+            for metric in request_metrics:
+                if is_metrics_only and isinstance(metric.info.response_metrics, StreamedResponseMetrics):
+                    metric.info.response_metrics.chunk_times = []
+                    metric.info.response_metrics.output_token_times = []
+                contents.append(
                     {
                         "start_time": metric.start_time,
                         "end_time": metric.end_time,
                         "request": metric.request_data,
                         "response": metric.response_data,
+                        "request_size_bytes": metric.request_size_bytes,
                         "info": metric.info.model_dump() if metric.info else None,
                         "error": metric.error.model_dump() if metric.error else None,
                     }
-                    for metric in request_metrics
-                ],
+                )
+            report_file = ReportFile(
+                name="per_request_lifecycle_metrics",
+                contents=contents,
             )
             lifecycle_reports.append(report_file)
 

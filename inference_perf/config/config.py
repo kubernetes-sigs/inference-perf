@@ -69,6 +69,11 @@ class Config(StrictBaseModel):
                     f"but got '{self.load.type.value}'. Trace replay with dependencies requires "
                     f"session-based load dispatch to properly handle event dependencies and timing."
                 )
+        if self.report and self.report.request_lifecycle:
+            # metrics_only is only allowed with per_request, otherwise it's a no-op
+            self.api.metrics_only = (
+                self.report.request_lifecycle.metrics_only and self.report.request_lifecycle.per_request
+            )
         return self
 
 

@@ -136,3 +136,38 @@ async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
     # The bytes received before the break are retained, not discarded.
     assert "Hello" in err.raw_content
     assert "world" in err.raw_content
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_metrics_only() -> None:
+    """Verifies that parse_sse_stream when metrics_only=True drops response_chunks and
+    raw_content, while keeping chunk_times trimmed to [first_chunk_time, last_chunk_time]."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": " "}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "world"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+        mock_response, extract_content, metrics_only=True
+    )
+
+    assert output_text == "Hello world"
+    assert len(chunk_times) == 2
+    assert raw_content == ""
+    assert response_chunks == []
+
