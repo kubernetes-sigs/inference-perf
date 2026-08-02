@@ -177,7 +177,7 @@ class BackendClientSuite:
 
         info = await data.process_response(cast(ClientResponse, response), config, stub_tokenizer())
 
-        assert info.request_metrics.text.input_tokens == 5
+        assert info.request_metrics.text.input_tokens == 7  # input tokens count overriden by server count
         assert info.response_metrics is not None
         assert info.response_metrics.output_tokens == 5
         assert data.model_response == COMPLETION_TEXT
@@ -194,7 +194,7 @@ class BackendClientSuite:
 
         info = await data.process_response(cast(ClientResponse, response), config, stub_tokenizer())
 
-        assert info.request_metrics.text.input_tokens == 6
+        assert info.request_metrics.text.input_tokens == 12  # input tokens count overriden by server count
         assert info.response_metrics is not None
         assert info.response_metrics.output_tokens == 6
         usage = info.response_metrics.server_usage
