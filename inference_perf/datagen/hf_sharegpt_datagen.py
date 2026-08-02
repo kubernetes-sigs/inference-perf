@@ -40,11 +40,8 @@ class HFShareGPTDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
         if config.path is not None:
-            # check if the path is valid
             if not os.path.exists(config.path):
                 raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
-            # depending on whether the dataset is a single file or a directory, we need to load it differently
-            # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
                 self.sharegpt_dataset = itertools.cycle(
                     load_dataset("json", data_files=config.path, streaming=True, split="train")
@@ -69,7 +66,6 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.data_key = "conversations"
         self.role_key = "from"
         self.content_key = "value"
-        # initialize data collection
         next(self.sharegpt_dataset)
 
     def get_supported_apis(self) -> List[APIType]:
@@ -80,10 +76,13 @@ class HFShareGPTDataGenerator(DataGenerator):
             return
         if self.api_config.type == APIType.Completion:
             yield from self.get_completion_data()
-        elif self.api_config.type == APIType.Chat:
+            return
+        if self.api_config.type == APIType.Chat:
             yield from self.get_chat_data()
-        elif self.api_config.type == APIType.AnthropicMessages:
+            return
+        if self.api_config.type == APIType.AnthropicMessages:
             yield from self.get_anthropic_messages_data()
+            return
         raise Exception("Unsupported API type")
 
     def get_completion_data(self) -> Generator[InferenceAPIData, None, None]:
@@ -130,9 +129,6 @@ class HFShareGPTDataGenerator(DataGenerator):
         if isinstance(conversation, dict):
             pass
         elif isinstance(conversation, str):
-            # https://github.com/kubernetes-sigs/inference-perf/issues/429:
-            # The dataset sometimes contains a string containing a JSON
-            # object rather than the object itself for some reason.
             conversation = json.loads(conversation)
             assert isinstance(conversation, dict)
         else:
