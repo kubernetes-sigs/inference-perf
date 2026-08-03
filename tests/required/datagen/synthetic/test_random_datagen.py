@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
@@ -106,6 +107,81 @@ def test_random_datagen_excludes_special_tokens() -> None:
     encoded_ids = tokenizer.get_tokenizer().encode(real_data.prompt)
     for token in encoded_ids:
         assert token not in [1, 2, 3]
+
+
+class ChatTemplateDummyCustomTokenizer(DummyCustomTokenizer):
+    """Dummy with a 2-word 'chat template' so wrapping math is testable."""
+
+    def has_chat_template(self) -> bool:
+        return True
+
+    def apply_chat_template(self, text: str) -> str:
+        return f"<user> {text} <assistant>"
+
+
+def test_random_datagen_use_chat_template_wraps_prompt() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = ChatTemplateDummyCustomTokenizer()
+
+    generator = RandomDataGenerator(api_config, data_config, tokenizer)
+    for i in range(5):
+        real_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+        assert isinstance(real_data, CompletionAPIData)
+        assert real_data.prompt.startswith("<user> ")
+        assert real_data.prompt.endswith(" <assistant>")
+        # The configured length targets the fully templated prompt.
+        assert tokenizer.count_tokens(real_data.prompt, add_special_tokens=False) == generator.input_lengths[i]
+        # Templated prompts must tell the server not to prepend another BOS.
+        assert real_data.add_special_tokens is False
+
+
+def test_random_datagen_without_chat_template_leaves_request_untouched() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    generator = RandomDataGenerator(api_config, data_config, DummyCustomTokenizer())
+    real_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
+    assert isinstance(real_data, CompletionAPIData)
+    assert real_data.add_special_tokens is None
+
+
+def test_random_datagen_use_chat_template_requires_template() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+
+    class NoTemplateDummy(DummyCustomTokenizer):
+        def has_chat_template(self) -> bool:
+            return False
+
+    with pytest.raises(ValueError, match="no chat template"):
+        RandomDataGenerator(api_config, data_config, NoTemplateDummy())
+
+
+def test_random_datagen_use_chat_template_min_length_guard() -> None:
+    api_config = APIConfig(type=APIType.Completion, streaming=True)
+    # Targets of 1-2 tokens cannot exceed the dummy template's 2-token overhead.
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=1, max=2, mean=2, std_dev=1, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    with pytest.raises(ValueError, match="chat template overhead"):
+        RandomDataGenerator(api_config, data_config, ChatTemplateDummyCustomTokenizer())
 
 
 def test_random_datagen_distribution_types() -> None:

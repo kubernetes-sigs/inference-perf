@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -87,6 +87,7 @@ def converge_to_exact_length_text(
     target_len: int,
     initial_tokens: List[int],
     adjust_tokens_fn: Callable[[List[int], int, int], List[int]],
+    wrap_fn: Optional[Callable[[str], str]] = None,
 ) -> Tuple[str, List[int]]:
     """Generate text tokenizing to exactly target_len; return (text, ids).
 
@@ -94,6 +95,13 @@ def converge_to_exact_length_text(
     and returns new tokens. The returned ids let callers compose with another
     chunk at the token level instead of by string concat (which would
     re-tokenize across the boundary).
+
+    When ``wrap_fn`` is given (e.g. a chat template), each candidate text is
+    wrapped before counting and the WRAPPED text is returned, so target_len
+    applies to the final string that goes on the wire. The wrapped text is
+    counted with add_special_tokens=False because the wrapper embeds its own
+    special tokens; the returned ids remain the unwrapped content ids.
+    Callers must ensure target_len exceeds the wrapper's fixed overhead.
     """
     if target_len <= 0:
         return "", []
@@ -109,7 +117,11 @@ def converge_to_exact_length_text(
         if isinstance(text, list):
             text = " ".join(text)
 
-        current_len = tokenizer.count_tokens(text)
+        if wrap_fn is None:
+            current_len = tokenizer.count_tokens(text)
+        else:
+            text = wrap_fn(text)
+            current_len = tokenizer.count_tokens(text, add_special_tokens=False)
 
         if current_len == target_len:
             return text, current_tokens
@@ -129,8 +141,13 @@ def generate_random_exact_length_text(
     valid_token_ids: np.ndarray,
     tokenizer: CustomTokenizer,
     target_len: int,
+    wrap_fn: Optional[Callable[[str], str]] = None,
 ) -> Tuple[str, List[int]]:
-    """Generate random text tokenizing to exactly target_len; return (text, ids)."""
+    """Generate random text tokenizing to exactly target_len; return (text, ids).
+
+    With ``wrap_fn`` set, target_len applies to the wrapped text; see
+    converge_to_exact_length_text.
+    """
     if target_len <= 0:
         return "", []
 
@@ -150,4 +167,5 @@ def generate_random_exact_length_text(
         target_len=target_len,
         initial_tokens=initial_tokens,
         adjust_tokens_fn=adjust_tokens,
+        wrap_fn=wrap_fn,
     )

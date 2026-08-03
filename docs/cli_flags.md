@@ -222,6 +222,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
 | `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
 | `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
+| `--data.use_chat_template` | boolean | Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it on the completions path, reproducing the request shape of harnesses that benchmark with chat templating enabled. The input length distribution targets the fully templated prompt, so the server-side prefill token count still matches the configured length. Only used by the 'random' type. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
 | `--load.stages` | JSON | Load stages to run in sequence. The stage fields depend on the load type. |

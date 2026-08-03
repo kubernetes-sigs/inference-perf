@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Callable, Generator, List, Optional
 
 import numpy as np
 
@@ -91,6 +91,26 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.vocab_size, self.special_token_ids, self.valid_token_ids = init_vocab_sampling(self.tokenizer)
 
+        self.wrap_fn: Optional[Callable[[str], str]] = None
+        if config.use_chat_template:
+            if not self.tokenizer.has_chat_template():
+                raise ValueError(
+                    "data.use_chat_template is set but the tokenizer has no chat template. "
+                    "Point tokenizer.pretrained_model_name_or_path at a chat/instruct model "
+                    "or disable use_chat_template."
+                )
+            # The configured input lengths apply to the fully templated prompt, so a
+            # target at or below the template's fixed overhead is unsatisfiable.
+            template_overhead = self.tokenizer.count_tokens(self.tokenizer.apply_chat_template(""), add_special_tokens=False)
+            min_input = int(self.input_lengths.min())
+            if min_input <= template_overhead:
+                raise ValueError(
+                    f"Minimum input length ({min_input}) must exceed the chat template overhead "
+                    f"({template_overhead} tokens) when use_chat_template is set: input lengths "
+                    "target the fully templated prompt."
+                )
+            self.wrap_fn = self.tokenizer.apply_chat_template
+
     def _generate_random_token_ids(self, length: int) -> List[int]:
         """Generates a list of random token IDs of a specified length."""
         return random_token_ids(self.rng, self.valid_token_ids, length)
@@ -99,7 +119,9 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Generates a string that tokenizes to exactly target_len."""
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for generating exact length prompts.")
-        text, _ = generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, target_len)
+        text, _ = generate_random_exact_length_text(
+            self.rng, self.valid_token_ids, self.tokenizer, target_len, wrap_fn=self.wrap_fn
+        )
         return text
 
     def get_request_count(self) -> int:
@@ -123,7 +145,10 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.api_config.type == APIType.Completion:
             length = self.input_lengths[n]
             text = self._generate_exact_length_text(length)
-            return CompletionAPIData(prompt=text, max_tokens=self.output_lengths[n])
+            # Templated prompts already embed their special tokens; ask the server
+            # not to prepend another BOS so its prefill count matches the target.
+            add_special_tokens = False if self.wrap_fn is not None else None
+            return CompletionAPIData(prompt=text, max_tokens=self.output_lengths[n], add_special_tokens=add_special_tokens)
         else:
             raise Exception("Unsupported API type")
 

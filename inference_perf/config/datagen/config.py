@@ -147,3 +147,13 @@ class DataConfig(StrictBaseModel):
     visionarena: Optional[VisionArenaConfig] = Field(
         default=None, description="VisionArena-Chat dataset settings. Only used by the 'visionarena' type."
     )
+
+    use_chat_template: bool = Field(
+        default=False,
+        description=(
+            "Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it"
+            " on the completions path, reproducing the request shape of harnesses that benchmark with chat"
+            " templating enabled. The input length distribution targets the fully templated prompt, so the"
+            " server-side prefill token count still matches the configured length. Only used by the 'random' type."
+        ),
+    )

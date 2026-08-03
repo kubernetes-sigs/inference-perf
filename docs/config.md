@@ -327,6 +327,10 @@ tokenizer:
   pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
 data:
   type: random
+  use_chat_template: false  # wrap each prompt in the tokenizer's chat template (single user turn) before sending.
+                            # Input lengths then target the fully templated prompt, so the server-side prefill
+                            # token count still matches the configured length. Requires a tokenizer with a chat
+                            # template, and every input length must exceed the template's fixed token overhead.
   input_distribution:
     min: 10             # min length of the synthetic prompts
     max: 100            # max length of the synthetic prompts

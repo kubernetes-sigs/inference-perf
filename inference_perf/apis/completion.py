@@ -27,12 +27,21 @@ class CompletionAPIData(InferenceAPIData):
     prompt: str
     max_tokens: int = 0
     model_response: str = ""
+    # None keeps the server's default. False is for prompts that already embed
+    # their special tokens (e.g. chat-templated text): it stops the server from
+    # prepending another BOS, so its prompt_tokens matches the client's count.
+    add_special_tokens: Optional[bool] = None
 
     def get_api_type(self) -> APIType:
         return APIType.Completion
 
     def get_route(self) -> str:
         return "/v1/completions"
+
+    def _count_prompt_tokens(self, tokenizer: CustomTokenizer) -> int:
+        return tokenizer.count_tokens(
+            self.prompt, add_special_tokens=self.add_special_tokens if self.add_special_tokens is not None else True
+        )
 
     def _resolve_prompt_tokens(self, server_usage: Optional[Dict[str, Any]], tokenizer: CustomTokenizer) -> int:
         """Input tokens as reported by the server, falling back to client-side tokenization.
@@ -44,7 +53,7 @@ class CompletionAPIData(InferenceAPIData):
         prompt_tokens = server_usage.get("prompt_tokens") if server_usage else None
         if prompt_tokens is not None:
             return int(prompt_tokens)
-        return tokenizer.count_tokens(self.prompt)
+        return self._count_prompt_tokens(tokenizer)
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -58,6 +67,7 @@ class CompletionAPIData(InferenceAPIData):
             "ignore_eos": ignore_eos,
             "stream": streaming,
             **({"stream_options": {"include_usage": True}} if streaming else {}),
+            **({"add_special_tokens": self.add_special_tokens} if self.add_special_tokens is not None else {}),
         }
 
     async def process_response(

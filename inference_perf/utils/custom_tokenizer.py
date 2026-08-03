@@ -38,5 +38,21 @@ class CustomTokenizer:
             ).input_ids
         )
 
+    def has_chat_template(self) -> bool:
+        return getattr(self.tokenizer, "chat_template", None) is not None
+
+    def apply_chat_template(self, text: str) -> str:
+        """Render text as a single user turn of the tokenizer's chat template.
+
+        The rendered string already contains the template's special tokens
+        (e.g. BOS), so it must be tokenized/counted with
+        add_special_tokens=False to avoid double-counting them.
+        """
+        rendered = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": text}], add_generation_prompt=True, tokenize=False
+        )
+        assert isinstance(rendered, str)
+        return rendered
+
     def get_tokenizer(self) -> PreTrainedTokenizerBase:
         return self.tokenizer

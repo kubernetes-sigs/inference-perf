@@ -70,6 +70,20 @@ async def test_completion_api_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_completion_api_data_add_special_tokens() -> None:
+    # Chat-templated prompts embed their own special tokens; the request must
+    # carry add_special_tokens=False so the server doesn't prepend another BOS.
+    data = CompletionAPIData(prompt="<bos>templated", add_special_tokens=False)
+    body = await data.to_request_body("test-model", 100, False, False)
+    assert body["add_special_tokens"] is False
+
+    # Default (None) keeps the request body unchanged.
+    default_data = CompletionAPIData(prompt="plain")
+    default_body = await default_data.to_request_body("test-model", 100, False, False)
+    assert "add_special_tokens" not in default_body
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_api_data_with_tools() -> None:
     tool_defs = [
         {

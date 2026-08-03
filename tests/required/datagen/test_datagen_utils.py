@@ -79,3 +79,30 @@ def test_generate_exact_length_text_zero_len() -> None:
     )
     assert result == ""
     assert ids == []
+
+
+def test_generate_exact_length_text_with_wrap_fn() -> None:
+    tokenizer = DummyCustomTokenizer()
+
+    # Wrapper adds a fixed 2-word overhead, mimicking a chat template.
+    def wrap(text: str) -> str:
+        return f"<open> {text} <close>"
+
+    def adjust_tokens(current_tokens: List[int], current_len: int, target_len: int) -> List[int]:
+        diff = current_len - target_len
+        if diff > 0:
+            return current_tokens[:-diff]
+        return current_tokens + [40] * -diff
+
+    result, ids = converge_to_exact_length_text(
+        tokenizer=tokenizer,
+        target_len=5,
+        initial_tokens=[10, 20, 30, 40, 50],
+        adjust_tokens_fn=adjust_tokens,
+        wrap_fn=wrap,
+    )
+
+    # target_len applies to the WRAPPED text, which is what gets returned.
+    assert tokenizer.count_tokens(result, add_special_tokens=False) == 5
+    assert result == "<open> 10 20 30 <close>"
+    assert ids == [10, 20, 30]
