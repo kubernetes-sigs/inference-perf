@@ -15,23 +15,23 @@ import pathlib
 
 import yaml
 
-from inference_perf.reportgen.br.v0_2.schema import VERSION, BenchmarkReportV02
+from inference_perf.reportgen.br.v0_2.schema import VERSION, BenchmarkReportV021
 
 
-FIXTURE = pathlib.Path(__file__).parent / "br_v0_2_example.yaml"
+FIXTURE = pathlib.Path(__file__).parent / "br_v0_2_1_example.yaml"
 
 
 def test_schema_version() -> None:
-    assert VERSION == "0.2"
+    assert VERSION == "0.2.1"
 
 
 def test_upstream_example_validates_against_vendored_schema() -> None:
-    """Catches schema drift: if upstream changes BR0.2 in a way our vendored
+    """Catches schema drift: if upstream changes BR0.2.1 in a way our vendored
     schema can't parse, this fails."""
     with FIXTURE.open() as f:
         data = yaml.safe_load(f)
-    report = BenchmarkReportV02.model_validate(data)
-    assert report.version == "0.2"
+    report = BenchmarkReportV021.model_validate(data)
+    assert report.version == "0.2.1"
     assert report.run.uid == data["run"]["uid"]
     assert report.scenario is not None and report.scenario.stack is not None
     assert len(report.scenario.stack) == len(data["scenario"]["stack"])

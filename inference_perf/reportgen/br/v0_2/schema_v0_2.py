@@ -1,4 +1,4 @@
-# Vendored from llm-d/llm-d-benchmark @ e0b95468e27eff59e09d70275044d6c8a17890b7
+# Vendored from llm-d/llm-d-benchmark @ 2c1e326e22c47c0e53028914d72ff360a8ce2e79
 # Source: llmdbenchmark/analysis/benchmark_report/schema_v0_2.py
 # Do not edit; resync from upstream when bumping the BR0.2 schema.
 """
@@ -852,6 +852,75 @@ class ComponentHealth(BaseModel):
 
 
 ###############################################################################
+# Session-level metrics
+###############################################################################
+
+
+class SessionRequests(BaseModel):
+    """Session-level request statistics."""
+
+    model_config = MODEL_CONFIG.copy()
+
+    total: int = Field(..., ge=0)
+    """Total number of sessions."""
+    succeeded: int | None = Field(None, ge=0)
+    """Number of sessions that completed successfully."""
+    failed: int | None = Field(None, ge=0)
+    """Number of sessions that failed."""
+    total_events: int | None = Field(None, ge=0)
+    """Total number of events (requests) across all sessions."""
+    total_events_completed: int | None = Field(None, ge=0)
+    """Total number of events that completed successfully."""
+    total_events_cancelled: int | None = Field(None, ge=0)
+    """Total number of events that were cancelled."""
+    session_rate: Statistics | None = None
+    """Rate of session completions per second."""
+    session_duration: Statistics | None = None
+    """Distribution of session durations in seconds."""
+    events_per_session: Statistics | None = None
+    """Distribution of event (request) counts per session."""
+    events_cancelled_per_session: Statistics | None = None
+    """Distribution of cancelled event counts per session."""
+    input_tokens_per_session: Statistics | None = None
+    """Distribution of total input tokens consumed per session."""
+    output_tokens_per_session: Statistics | None = None
+    """Distribution of total output tokens produced per session."""
+
+    @model_validator(mode="after")
+    def check_units(self):
+        if self.session_rate and self.session_rate.units not in UNITS_REQUEST_THROUGHPUT:
+            raise ValueError(
+                f'Invalid units "{self.session_rate.units}", must be one of: {" ".join(UNITS_REQUEST_THROUGHPUT)}'
+            )
+        if self.session_duration and self.session_duration.units not in UNITS_TIME:
+            raise ValueError(f'Invalid units "{self.session_duration.units}", must be one of: {" ".join(UNITS_TIME)}')
+        if self.events_per_session and self.events_per_session.units not in UNITS_QUANTITY:
+            raise ValueError(f'Invalid units "{self.events_per_session.units}", must be one of: {" ".join(UNITS_QUANTITY)}')
+        if self.events_cancelled_per_session and self.events_cancelled_per_session.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.events_cancelled_per_session.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        if self.input_tokens_per_session and self.input_tokens_per_session.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.input_tokens_per_session.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        if self.output_tokens_per_session and self.output_tokens_per_session.units not in UNITS_QUANTITY:
+            raise ValueError(
+                f'Invalid units "{self.output_tokens_per_session.units}", must be one of: {" ".join(UNITS_QUANTITY)}'
+            )
+        return self
+
+
+class SessionPerformance(BaseModel):
+    """Session-level performance metrics."""
+
+    model_config = MODEL_CONFIG.copy()
+
+    sessions: SessionRequests | None = None
+    """Session counts and per-session distributions."""
+
+
+###############################################################################
 # Benchmark Report top-level classes
 ###############################################################################
 
@@ -910,6 +979,9 @@ class Results(BaseModel):
 
     request_performance: RequestPerformance | None = None
     """Request-level performance metrics."""
+
+    session_performance: SessionPerformance | None = None
+    """Session-level performance metrics."""
 
     observability: Observability | None = None
     """Observability metrics."""

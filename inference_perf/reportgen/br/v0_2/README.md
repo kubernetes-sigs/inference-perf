@@ -1,6 +1,6 @@
 # BR0.2 report generation
 
-Native emission of [llm-d-benchmark v0.2](https://github.com/llm-d/llm-d-benchmark/tree/main/llmdbenchmark/analysis/benchmark_report) (BR0.2) partial reports alongside inference-perf's existing report formats. See [docs/br_v0_2.md](../../../../docs/br_v0_2.md) for user-facing documentation.
+Native emission of [llm-d-benchmark v0.2.1](https://github.com/llm-d/llm-d-benchmark/tree/main/llmdbenchmark/analysis/benchmark_report) (BR0.2) partial reports alongside inference-perf's existing report formats. See [docs/br_v0_2.md](../../../../docs/br_v0_2.md) for user-facing documentation.
 
 ## Responsibility split
 
@@ -14,6 +14,7 @@ Emission is unconditional and has no config surface: every run drops one `infere
 |------|-------|---------|
 | `base.py` | **Vendored** from upstream | `BenchmarkReport` base class, `Units` / `WorkloadGenerator` enums, unit-group constants. |
 | `schema_v0_2.py` | **Vendored** from upstream | Top-level BR0.2 pydantic models (`Run`, `Scenario`, `Results`, `Statistics`, etc.). |
+| `schema_v0_2_1.py` | **Vendored** from upstream | v0.2.1 point release: multimodal payload statistics. Extends v0.2 in place by overriding the request aggregates and the report root's containment chain. |
 | `schema_v0_2_components.py` | **Vendored** from upstream | Component subtype hierarchy (`ComponentStandardizedBase` + concrete kinds). |
 | `schema.py` | inference-perf | Facade that re-exports every public symbol from the vendored files. **Import from here**, not from the vendored files directly; a schema bump should only touch the vendored files. |
 | `adapter.py` | inference-perf | `build_results(request_metrics, tokenizer, use_server_output_tokens)`: projects inference-perf `RequestLifecycleMetric`s into a BR0.2 `Results` object. Pure function, no I/O. |
@@ -22,9 +23,9 @@ Emission is unconditional and has no config surface: every run drops one `infere
 
 ## Resyncing the vendored schema
 
-The three vendored files map 1:1 to upstream files in `llmdbenchmark/analysis/benchmark_report/`. Each has a header pinning the upstream commit SHA. To bump the BR0.2 schema:
+The four vendored files map 1:1 to upstream files in `llmdbenchmark/analysis/benchmark_report/`. Each has a header pinning the upstream commit SHA. To bump the BR0.2 schema:
 
-1. Copy the three upstream files over `base.py`, `schema_v0_2.py`, `schema_v0_2_components.py`.
+1. Copy the four upstream files over `base.py`, `schema_v0_2.py`, `schema_v0_2_1.py`, `schema_v0_2_components.py`.
 2. Update the SHA in each header.
 3. Adjust `schema.py` if new public symbols were added upstream.
 4. Re-run `tests/reportgen/br/v0_2/`.

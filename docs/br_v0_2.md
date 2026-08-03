@@ -25,12 +25,13 @@ inference-perf.partial.stage_1.yaml
 
 alongside the native reports. Each file is a valid BR0.2 document on its
 own (required schema fields are populated; optional sections are absent)
-and can be consumed directly or merged with other partials.
+and can be consumed directly or merged with other partials. The emitted
+`version` is `0.2.1`, the current point release of the BR0.2 schema family.
 
 ## What inference-perf fills
 
 ```yaml
-version: "0.2"
+version: "0.2.1"
 run:
   uid: inference-perf-stage-0-a1b2c3d4
   time:
@@ -87,15 +88,15 @@ def deep_merge(x, y):
 merged = deep_merge(a, b)
 ```
 
-The merged document validates against `BenchmarkReportV02` in
+The merged document validates against `BenchmarkReportV021` in
 `inference_perf/reportgen/br/v0_2/schema.py`.
 
 ## Schema source
 
 The pydantic models in
-`inference_perf/reportgen/br/v0_2/{base,schema_v0_2,schema_v0_2_components}.py`
+`inference_perf/reportgen/br/v0_2/{base,schema_v0_2,schema_v0_2_1,schema_v0_2_components}.py`
 are vendored from `llm-d/llm-d-benchmark`. The header of each file pins the
 upstream commit SHA. To resync after a BR0.2 schema bump, replace those
-three files from upstream and re-run
+four files from upstream and re-run
 `tests/reportgen/br/v0_2/test_schema_fixture.py` to confirm round-trip
 validation against the upstream example still holds.

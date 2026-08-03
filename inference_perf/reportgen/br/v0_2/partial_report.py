@@ -38,7 +38,7 @@ from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 from .adapter import build_results
-from .schema_v0_2 import VERSION, Run, RunTime
+from .schema import VERSION, Run, RunTime
 
 
 def generate_run_uid(stage_id: int) -> str:

@@ -1,4 +1,4 @@
-# Vendored from llm-d/llm-d-benchmark @ e0b95468e27eff59e09d70275044d6c8a17890b7
+# Vendored from llm-d/llm-d-benchmark @ 2c1e326e22c47c0e53028914d72ff360a8ce2e79
 # Source: llmdbenchmark/analysis/benchmark_report/schema_v0_2_components.py
 # Do not edit; resync from upstream when bumping the BR0.2 schema.
 """

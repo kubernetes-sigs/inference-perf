@@ -30,7 +30,7 @@ from utils.benchmark import run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.testdata import extract_tarball
 
-from inference_perf.reportgen.br.v0_2.schema import BenchmarkReportV02
+from inference_perf.reportgen.br.v0_2.schema import BenchmarkReportV021
 
 
 TEST_MODEL_NAME = "google/gemma-3-270m"
@@ -127,19 +127,19 @@ async def test_br_v0_2_partial_emitted_and_mergeable() -> None:
 
     for name, partial in partials.items():
         # Inference-perf-owned fields are present and well-formed.
-        assert partial["version"] == "0.2", f"{name}: wrong schema version {partial.get('version')!r}"
+        assert partial["version"] == "0.2.1", f"{name}: wrong schema version {partial.get('version')!r}"
         assert partial["run"]["uid"].startswith("inference-perf-stage-"), f"{name}: missing/malformed run.uid"
         assert "time" in partial["run"] and partial["run"]["time"]["duration"].startswith("PT"), f"{name}: missing run.time"
         assert partial["results"]["request_performance"]["aggregate"]["requests"]["total"] > 0
 
         # Partial alone validates as a BR0.2 document (run.uid + results both
         # populated; scenario is optional).
-        BenchmarkReportV02.model_validate(partial)
+        BenchmarkReportV021.model_validate(partial)
 
         # Merging the composer's partial on top produces a complete BR0.2
         # with both producers' fields preserved.
         merged = _deep_merge(partial, composer_partial)
-        parsed = BenchmarkReportV02.model_validate(merged)
+        parsed = BenchmarkReportV021.model_validate(merged)
         assert parsed.run.uid == partial["run"]["uid"]
         assert parsed.run.description == "br_v0_2 e2e"
         assert parsed.scenario is not None and parsed.scenario.stack is not None

@@ -187,6 +187,7 @@ ignore_missing_imports = true
 module = [
     "inference_perf.reportgen.br.v0_2.base",
     "inference_perf.reportgen.br.v0_2.schema_v0_2",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2_1",
     "inference_perf.reportgen.br.v0_2.schema_v0_2_components",
 ]
 ignore_errors = true

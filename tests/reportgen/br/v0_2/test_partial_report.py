@@ -30,7 +30,7 @@ from inference_perf.apis import (
 )
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_run_uid
-from inference_perf.reportgen.br.v0_2.schema_v0_2 import VERSION
+from inference_perf.reportgen.br.v0_2.schema import VERSION
 
 import yaml
 
