@@ -22,9 +22,42 @@ LLM APIs, reducing code duplication across different API types.
 import json
 import re
 import time
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, NamedTuple, Optional
 
 from aiohttp import ClientResponse
+
+
+class ParsedSSEStream(NamedTuple):
+    """Result of ``parse_sse_stream``, split by generation channel.
+
+    Content and reasoning are tracked separately so downstream metrics can
+    anchor TTFT to the first generated token of either channel while keeping
+    output-length, TPOT, and ITL content-based (#559): reasoning is "thinking",
+    not user-facing output, but the server starts generating at the first
+    reasoning token.
+    """
+
+    # Concatenated delta.content text.
+    output_text: str
+    # Timestamps for content-bearing chunks only. Role-only deltas, usage-only
+    # chunks, [DONE] signals, and unparseable messages are excluded so they
+    # don't corrupt downstream TPOT/TTFT/ITL.
+    chunk_times: List[float]
+    # The raw string content of the entire stream.
+    raw_content: str
+    # Raw JSON strings of content-bearing chunks, 1:1 with chunk_times.
+    response_chunks: List[str]
+    # Merged `usage` fields from chunks that carried one (e.g. OpenAI trailing
+    # `{"choices":[],"usage":{...}}` or Anthropic `message.usage` /
+    # `message_delta.usage`). None if the server didn't emit usage.
+    server_usage: Optional[dict[str, Any]]
+    # Concatenated reasoning-channel text, when extract_reasoning is given.
+    reasoning_text: str
+    # Raw JSON strings of reasoning-bearing chunks, 1:1 with
+    # reasoning_chunk_times.
+    reasoning_chunks: List[str]
+    # Timestamps for reasoning-bearing chunks only.
+    reasoning_chunk_times: List[float]
 
 
 class StreamInterruptedError(Exception):
@@ -48,13 +81,21 @@ class _SSEStreamParser:
 
     _LINE_ENDING = re.compile(rb"\r\n|\r|\n")
 
-    def __init__(self, extract_content: Callable[[dict[str, Any]], Optional[str]]) -> None:
+    def __init__(
+        self,
+        extract_content: Callable[[dict[str, Any]], Optional[str]],
+        extract_reasoning: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+    ) -> None:
         self.extract_content = extract_content
+        self.extract_reasoning = extract_reasoning
         self.output_text_parts: List[str] = []
         self.chunk_times: List[float] = []
         self.raw_content_chunks: List[bytes] = []
         self.response_chunks: List[str] = []
         self.server_usage: Optional[dict[str, Any]] = None
+        self.reasoning_text_parts: List[str] = []
+        self.reasoning_chunks: List[str] = []
+        self.reasoning_chunk_times: List[float] = []
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -80,10 +121,14 @@ class _SSEStreamParser:
                 self.output_text_parts.append(content)
                 self.chunk_times.append(message_time)
                 self.response_chunks.append(data_str)
+            elif self.extract_reasoning is not None and (reasoning := self.extract_reasoning(data)):
+                self.reasoning_text_parts.append(reasoning)
+                self.reasoning_chunk_times.append(message_time)
+                self.reasoning_chunks.append(data_str)
         except (json.JSONDecodeError, IndexError):
             pass
 
-    async def parse(self, response: ClientResponse) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+    async def parse(self, response: ClientResponse) -> ParsedSSEStream:
         buffer = self.buffer
         data_lines = self.data_lines
         raw_chunks_append = self.raw_content_chunks.append
@@ -161,12 +206,23 @@ class _SSEStreamParser:
 
         output_text = "".join(self.output_text_parts)
         raw_content = b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore")
-        return output_text, self.chunk_times, raw_content, self.response_chunks, self.server_usage
+        return ParsedSSEStream(
+            output_text=output_text,
+            chunk_times=self.chunk_times,
+            raw_content=raw_content,
+            response_chunks=self.response_chunks,
+            server_usage=self.server_usage,
+            reasoning_text="".join(self.reasoning_text_parts),
+            reasoning_chunks=self.reasoning_chunks,
+            reasoning_chunk_times=self.reasoning_chunk_times,
+        )
 
 
 async def parse_sse_stream(
-    response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+    response: ClientResponse,
+    extract_content: Callable[[dict[str, Any]], Optional[str]],
+    extract_reasoning: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+) -> ParsedSSEStream:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -180,19 +236,14 @@ async def parse_sse_stream(
         extract_content: Function to extract text content from parsed JSON data.
                         Should return the text content or None if not found.
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+        extract_reasoning: Optional function to extract reasoning-channel text
+                        (e.g. delta.reasoning_content) from parsed JSON data.
+                        Chunks bearing reasoning but no content are recorded in
+                        the reasoning_* fields of the result, not in
+                        chunk_times/response_chunks, so content-based metrics
+                        are unaffected.
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
-        - output_text: The concatenated text content from all chunks
-        - chunk_times: Timestamps for content-bearing chunks only. Role-only
-          deltas, usage-only chunks, [DONE] signals, and unparseable messages
-          are excluded so they don't corrupt downstream TPOT/TTFT/ITL.
-        - raw_content: The raw string content of the stream
-        - response_chunks: Raw JSON strings of content-bearing chunks, 1:1 with
-          chunk_times.
-        - server_usage: Merged `usage` fields from chunks that carried one
-          (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
-          `message.usage`/`message_delta.usage`). None if the server didn't
-          emit usage.
+        A ParsedSSEStream; see its field comments.
     """
-    return await _SSEStreamParser(extract_content).parse(response)
+    return await _SSEStreamParser(extract_content, extract_reasoning).parse(response)
