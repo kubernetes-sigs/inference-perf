@@ -75,27 +75,25 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
-            )
+            parsed = await parse_sse_stream(response, extract_content=lambda data: data.get("choices", [{}])[0].get("text"))
 
-            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+            prompt_len = self._resolve_prompt_tokens(parsed.server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
             # never contains.
-            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
-            self.model_response = output_text
+            output_len = tokenizer.count_tokens(parsed.output_text, add_special_tokens=False)
+            self.model_response = parsed.output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
-                    server_usage=server_usage,
+                    output_token_times=parsed.chunk_times,
+                    server_usage=parsed.server_usage,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content},
+                extra_info={"raw_response": parsed.raw_content},
             )
         else:
             data = await response.json()
