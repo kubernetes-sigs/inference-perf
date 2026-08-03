@@ -266,11 +266,18 @@ async def parse_anthropic_stream_response(
     response: ClientResponse,
 ) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
     extract_content, build_output_message = _build_anthropic_stream_handlers()
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    parsed = await parse_sse_stream(
         response,
         extract_content=extract_content,
     )
-    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
+    return (
+        parsed.output_text,
+        build_output_message(parsed.output_text),
+        parsed.chunk_times,
+        parsed.raw_content,
+        parsed.response_chunks,
+        parsed.server_usage,
+    )
 
 
 class AnthropicMessagesAPIData(InferenceAPIData):
