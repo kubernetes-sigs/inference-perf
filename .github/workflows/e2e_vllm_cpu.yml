@@ -49,6 +49,9 @@ jobs:
       # overlap with dependency installation.
       - name: Start vLLM (CPU mode)
         run: |
+          # Temporary diagnostics while stabilizing this job on hosted runners.
+          nproc
+          free -h
           mkdir -p "$HOME/hf-cache"
           # shm-size/seccomp/SYS_NICE are the invocation vLLM's CPU docs
           # prescribe: the engine's IPC lives in /dev/shm (docker's 64MB
@@ -62,6 +65,7 @@ jobs:
             -v "$HOME/hf-cache:/root/.cache/huggingface" \
             -v "$PWD/e2e/testdata/simple_chat_template.jinja:/simple_chat_template.jinja" \
             -e VLLM_CPU_KVCACHE_SPACE=2 \
+            -e VLLM_LOGGING_LEVEL=DEBUG \
             "$VLLM_IMAGE" \
             "$MODEL" \
             --max-model-len 2048 \
@@ -107,3 +111,11 @@ jobs:
       - name: Server logs on failure
         if: failure()
         run: docker logs vllm-cpu
+
+      # The worker process dies silently between warmup and the first RPC;
+      # only the kernel log can distinguish an OOM kill from a bad instruction.
+      - name: Kernel log on failure
+        if: failure()
+        run: |
+          free -h
+          sudo dmesg | tail -150 || true
