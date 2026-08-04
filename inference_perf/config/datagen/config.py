@@ -154,6 +154,16 @@ class DataConfig(StrictBaseModel):
             "Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it"
             " on the completions path, reproducing the request shape of harnesses that benchmark with chat"
             " templating enabled. The input length distribution targets the fully templated prompt, so the"
-            " server-side prefill token count still matches the configured length. Only used by the 'random' type."
+            " server-side prefill token count still matches the configured length. Only supported by the 'random'"
+            " type; setting it with any other type is a config error."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_use_chat_template_scope(self) -> "DataConfig":
+        if self.use_chat_template and self.type != DataGenType.Random:
+            raise ValueError(
+                f"data.use_chat_template is only supported by the 'random' data generator and would be"
+                f" ignored by type '{self.type.value}'. Unset it or set data.type to 'random'."
+            )
+        return self

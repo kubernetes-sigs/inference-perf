@@ -342,6 +342,30 @@ def test_shared_prefix_seed_field() -> None:
     assert config.data.shared_prefix.seed == 42
 
 
+def test_use_chat_template_rejected_for_non_random_types() -> None:
+    with pytest.raises(Exception, match="only supported by the 'random' data generator"):
+        Config.model_validate(
+            {
+                "data": {
+                    "type": DataGenType.ShareGPT,
+                    "use_chat_template": True,
+                }
+            }
+        )
+
+
+def test_use_chat_template_accepted_for_random_type() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.Random,
+                "use_chat_template": True,
+            }
+        }
+    )
+    assert config.data.use_chat_template is True
+
+
 def test_distribution_variance_conversion() -> None:
     d = Distribution(type=DistributionType.NORMAL, mean=100.0, variance=6400.0, std_dev=0.0)
     assert abs(d.std_dev - 80.0) < 1e-6
