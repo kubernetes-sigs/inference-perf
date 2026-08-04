@@ -1,0 +1,102 @@
+# Live-oracle e2e against a real vLLM server in CPU mode (#606 nightly lane).
+#
+# CPU mode changes generation speed, not token accounting, so a plain runner
+# can check our numbers against a real server's tokenizer, usage accounting,
+# and /metrics exposition (#627, #580, #669) without GPU capacity.
+#
+# Not merge-gating: the tests skip in the gating e2e job (no vLLM there), and
+# this workflow is not in the merge gate's required list. Pull requests that
+# touch the CPU-vLLM tier itself run it for review evidence; the nightly run
+# uses the floating image tag so upstream vLLM drift (renamed metrics, changed
+# accounting) surfaces here instead of in a user's report.
+name: E2E vLLM CPU
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "e2e/utils/vllm_server.py"
+      - "e2e/tests/test_vllm_cpu_*.py"
+      - "e2e/testdata/simple_chat_template.jinja"
+      - ".github/workflows/e2e_vllm_cpu.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  vllm-cpu-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Nightly floats to latest to catch upstream drift early; PR and manual
+      # runs pin for determinism.
+      VLLM_IMAGE: ${{ github.event_name == 'schedule'
+        && 'docker.io/vllm/vllm-openai-cpu:latest-x86_64'
+        || 'docker.io/vllm/vllm-openai-cpu:v0.26.0-x86_64' }}
+      MODEL: facebook/opt-125m
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/hf-cache
+          key: hf-${{ env.MODEL }}
+
+      # Started before the Python setup so the image pull and model download
+      # overlap with dependency installation.
+      - name: Start vLLM (CPU mode)
+        run: |
+          mkdir -p "$HOME/hf-cache"
+          docker run -d --name vllm-cpu \
+            -p 8000:8000 \
+            -v "$HOME/hf-cache:/root/.cache/huggingface" \
+            -v "$PWD/e2e/testdata/simple_chat_template.jinja:/simple_chat_template.jinja" \
+            -e VLLM_CPU_KVCACHE_SPACE=4 \
+            "$VLLM_IMAGE" \
+            "$MODEL" \
+            --max-model-len 2048 \
+            --chat-template /simple_chat_template.jinja \
+            --override-generation-config '{"temperature": 0}'
+
+      - uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pdm sync -d
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              exit 0
+            fi
+            if [ -z "$(docker ps -q -f name=vllm-cpu)" ]; then
+              echo "server exited during startup"
+              docker logs vllm-cpu
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "server not ready in time"
+          docker logs vllm-cpu
+          exit 1
+
+      # Sequential on purpose: the token-accounting test asserts exact
+      # /metrics counter deltas, which assumes exclusive server access.
+      - name: Run vLLM CPU e2e tests
+        env:
+          E2E_VLLM_BASE_URL: http://127.0.0.1:8000
+        run: |
+          pdm run pytest \
+            e2e/tests/test_vllm_cpu_golden_accuracy.py \
+            e2e/tests/test_vllm_cpu_token_mismatch.py \
+            e2e/tests/test_vllm_cpu_metric_names.py \
+            -o log_cli_level=INFO
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker logs vllm-cpu
