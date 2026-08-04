@@ -39,6 +39,10 @@ from inference_perf.client.modelserver.vllm_client import vLLMModelServerClient
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
 
+# One worker for all vLLM CPU tests: the token-mismatch module's /metrics
+# counter deltas need exclusive access to the shared server.
+pytestmark = pytest.mark.xdist_group(name="vllm-cpu-server")
+
 # Vendored tokenizer so building the client stays offline; only the metric
 # name declarations are read from it, never the tokenizer itself.
 GEMMA_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"

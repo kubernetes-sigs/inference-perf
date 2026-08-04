@@ -110,6 +110,10 @@ class VLLMServerRunner(AsyncContextDecorator):
             *("--port", str(port)),
             *("--max-model-len", str(max_model_len)),
             *("--override-generation-config", '{"temperature": 0}'),
+            # Token accounting does not depend on compiled kernels, and
+            # skipping the torch.compile warmup makes startup faster and
+            # more robust on small shared machines.
+            "--enforce-eager",
             *(("--chat-template", str(chat_template)) if chat_template else ()),
             *cmd_args,
         ]

@@ -60,10 +60,12 @@ by killed prior runs.
 depend on a real server's tokenizer, `usage` accounting, and `/metrics`
 exposition (but not on GPU speed) run against a real vLLM in CPU mode:
 `e2e/tests/test_vllm_cpu_*.py`, provisioned by `e2e/utils/vllm_server.py`.
-They target `$E2E_VLLM_BASE_URL` when set (the `E2E vLLM CPU` workflow starts
-the `vllm/vllm-openai-cpu` container and runs them nightly), spawn a `vllm`
-executable from PATH otherwise, and skip when neither exists, so the gating
-e2e job is unaffected.
+They target `$E2E_VLLM_BASE_URL` when set (the `E2E Test on change` workflow
+starts the `vllm/vllm-openai-cpu` container alongside the sim suite and
+exports the URL once it is healthy), spawn a `vllm` executable from PATH
+otherwise, and skip when neither exists, so a run without a server behaves
+exactly as before. All vLLM CPU tests share one `xdist_group` so the
+`/metrics` counter-delta test gets exclusive server access under `-n auto`.
 
 ### How it works
 

@@ -25,7 +25,9 @@ independent server-side ledgers must both agree with the client:
 
 The /metrics deltas assume no other traffic reaches the server during the
 run: fine for a spawned server, and for an external (shared) server only
-when tests run sequentially, as the CPU-vLLM CI job does.
+when no other vLLM CPU test runs concurrently. The ``xdist_group`` mark on
+these modules guarantees that under ``--dist loadgroup`` by pinning every
+vLLM CPU test to a single worker.
 """
 
 import pytest
@@ -40,6 +42,10 @@ from utils.accuracy import (
 from utils.benchmark import run_benchmark_minimal
 from utils.net import get_free_port
 from utils.vllm_server import VLLMServerRunner
+
+# One worker for all vLLM CPU tests: this module's /metrics counter deltas
+# need exclusive access to the shared server.
+pytestmark = pytest.mark.xdist_group(name="vllm-cpu-server")
 
 RATE = 2
 DURATION = 5
