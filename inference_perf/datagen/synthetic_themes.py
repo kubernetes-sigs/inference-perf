@@ -392,18 +392,90 @@ GENERIC_THEME = Theme(
         "apply_remediation",
     ],
     tool_descriptions={
-        "get_service_health": "Return the current health summary (status, p50/p99 latency, error rate) for a named service.",
-        "query_metrics": "Query a time-series metric (latency, throughput, saturation) over a window and return sampled points.",
-        "search_logs": "Full-text search structured application logs for a service, returning matching lines with timestamps.",
-        "list_recent_deploys": "List recent deployments for a service with commit sha, author, and rollout timestamps.",
-        "get_dependency_status": "Report reachability and latency of a service's upstream dependencies (DBs, caches, brokers).",
-        "get_error_budget": "Return the remaining SLO error budget and burn rate for a service over the trailing window.",
-        "check_feature_flags": "List feature-flag states recently changed for a service and who toggled them.",
-        "get_pod_events": "Return recent Kubernetes pod events (restarts, OOMKills, evictions) for a service's workload.",
-        "run_synthetic_probe": "Run an active synthetic request against a service endpoint and return the observed latency/status.",
-        "get_exception_trace": "Fetch the most recent unhandled-exception stack trace captured for a service.",
-        "get_config_snapshot": "Return the current effective runtime configuration for a service as a JSON object.",
-        "apply_remediation": "Apply a submitted remediation to a service: a config patch or runbook script to roll out.",
+        "get_service_health": (
+            "Return a point-in-time health summary for a named service: overall status (healthy/degraded/down), "
+            "p50 and p99 latency in milliseconds, and the current error rate as a percentage. Use this first when "
+            "triaging an incident to quickly confirm whether the service is actually degraded before pulling more "
+            "detailed metrics, logs, or traces, and to decide which follow-up tool is most likely to explain the "
+            "symptom. An optional trailing window controls how recent the summary is; omit it for the live snapshot."
+        ),
+        "query_metrics": (
+            "Query a single time-series metric (latency, throughput, error_rate, or saturation) for a service over "
+            "a given time window and return a small set of sampled points at the requested resolution. Use this "
+            "to see how a symptom trends over time -- whether it is a sudden spike, a slow climb, or already "
+            "recovering -- rather than relying on the single current-value snapshot from get_service_health. "
+            "Narrower windows return more precise recent detail; wider windows are better for spotting slow drift."
+        ),
+        "search_logs": (
+            "Full-text search a service's structured application logs for a query string or pattern and return "
+            "the matching lines with their timestamps, in most-recent-first order up to the requested limit. "
+            "Use this to find the specific error, stack frame, or warning that corresponds to a metrics anomaly, "
+            "or to confirm exactly when a symptom started. Prefer a narrow, specific query over a broad one -- "
+            "a broad query returns many irrelevant matches and makes it harder to spot the line that matters."
+        ),
+        "list_recent_deploys": (
+            "List the most recent deployments for a service, each with its commit sha, the author who shipped it, "
+            "the rollout timestamp, and its rollout status. Use this whenever a symptom's onset roughly lines up "
+            "with a deploy window, since a bad or partial rollout is one of the most common root causes of a "
+            "sudden regression. Cross-reference the returned timestamps against the metric trend from "
+            "query_metrics to confirm or rule out a specific deploy before recommending a rollback."
+        ),
+        "get_dependency_status": (
+            "Report the reachability and observed latency of a service's upstream dependencies -- databases, "
+            "caches, message brokers, and other services it calls -- so a symptom can be attributed to the "
+            "service itself or to something it depends on. Use this after get_service_health confirms a service "
+            "is degraded, to check whether the root cause actually lives one hop further down the call graph. "
+            "An unreachable or slow dependency here usually means the fix belongs to that dependency's owner."
+        ),
+        "get_error_budget": (
+            "Return a service's remaining SLO error budget as a percentage, together with its short- and "
+            "long-window burn rates, for the trailing window requested. Use this to gauge how urgent an incident "
+            "actually is: a service with most of its budget intact can tolerate a slower, more careful "
+            "investigation, while one that is close to exhausting its budget or burning it quickly may justify "
+            "an immediate mitigation even before the root cause is fully understood."
+        ),
+        "check_feature_flags": (
+            "List feature flags for a service that changed recently, including each flag's prior and new state "
+            "and who toggled it. Use this alongside list_recent_deploys when investigating a sudden behavioral "
+            "change, since a flag flip can shift behavior for a subset of traffic without a corresponding "
+            "deploy -- and can be a much faster remediation to reverse than rolling back a whole release. "
+            "Absence of any recent flag changes is itself useful signal that rules out this class of cause."
+        ),
+        "get_pod_events": (
+            "Return recent Kubernetes pod events for a service's workload -- restarts, OOMKills, readiness-probe "
+            "failures, and evictions -- for the trailing window. Use this when a symptom looks like intermittent "
+            "unavailability or latency spikes rather than a steady degradation, since pod churn (crash loops, "
+            "memory pressure, node pressure) often produces exactly that pattern. Correlate the event timestamps "
+            "against query_metrics to see whether latency spikes line up with restarts."
+        ),
+        "run_synthetic_probe": (
+            "Run a single active synthetic request against a specific endpoint on a service, from a chosen "
+            "region, and return the observed latency, HTTP status, and TLS handshake result. Use this to "
+            "actively confirm a suspected symptom in real time rather than relying only on passively-collected "
+            "metrics, and to check whether an issue is region-specific by probing from multiple regions. This is "
+            "a read-only diagnostic action -- it generates one request and has no side effects on the service."
+        ),
+        "get_exception_trace": (
+            "Fetch the most recent unhandled-exception stack trace captured for a service, including the "
+            "exception type, message, and the call stack at the point of failure. Use this once search_logs or "
+            "get_service_health suggests errors are occurring but the log lines alone do not make the failure "
+            "mode clear -- a stack trace usually pinpoints the exact function and dependency involved far faster "
+            "than reconstructing it from scattered log lines."
+        ),
+        "get_config_snapshot": (
+            "Return the current effective runtime configuration for a service as a structured JSON object, "
+            "including active feature flags and any resource limits currently in force. Use this to rule out a "
+            "misconfiguration as the root cause, or to confirm the exact settings a remediation will change "
+            "before applying it. Because this reflects effective runtime state rather than the source-controlled "
+            "config file, it also surfaces manual overrides that may not be visible anywhere else."
+        ),
+        "apply_remediation": (
+            "Apply a remediation to a service -- a configuration patch, a scaling change, or a runbook script -- "
+            "and roll it out to the running workload. This is a state-changing action, so only call it after "
+            "read-only diagnostics (health, metrics, logs, dependency status) have established a specific root "
+            "cause and a remediation that plausibly addresses it; do not call this speculatively while still "
+            "investigating. Returns the rollout status once the change has been applied."
+        ),
     },
     # Realistic SRE-toolbox parameter schemas. Property names that match an
     # `entities` category (`service`, `dep`, `region`) are threaded to the
@@ -607,9 +679,7 @@ GENERIC_THEME = Theme(
         ),
         "default": "result for {entity}: value={n0} at {t0}",
     },
-    objective_template=(
-        "{verb} the {symptom} on {service}: identify the root cause and recommend a remediation."
-    ),
+    objective_template=("{verb} the {symptom} on {service}: identify the root cause and recommend a remediation."),
     followup_templates=[
         "What does the {symptom} on {service} look like over the last hour?",
         "Is {dep} implicated, or is this contained to {service}?",
