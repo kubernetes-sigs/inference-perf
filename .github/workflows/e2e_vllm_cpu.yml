@@ -50,11 +50,18 @@ jobs:
       - name: Start vLLM (CPU mode)
         run: |
           mkdir -p "$HOME/hf-cache"
+          # shm-size/seccomp/SYS_NICE are the invocation vLLM's CPU docs
+          # prescribe: the engine's IPC lives in /dev/shm (docker's 64MB
+          # default kills the worker during startup) and thread binding
+          # wants SYS_NICE. KV cache is sized for a 16GB hosted runner.
           docker run -d --name vllm-cpu \
+            --shm-size=4g \
+            --security-opt seccomp=unconfined \
+            --cap-add SYS_NICE \
             -p 8000:8000 \
             -v "$HOME/hf-cache:/root/.cache/huggingface" \
             -v "$PWD/e2e/testdata/simple_chat_template.jinja:/simple_chat_template.jinja" \
-            -e VLLM_CPU_KVCACHE_SPACE=4 \
+            -e VLLM_CPU_KVCACHE_SPACE=2 \
             "$VLLM_IMAGE" \
             "$MODEL" \
             --max-model-len 2048 \
