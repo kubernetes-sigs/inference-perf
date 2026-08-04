@@ -88,13 +88,14 @@ class vLLMModelServerClient(openAIModelServerClient):
                 "request_params_max_tokens": HistogramMetric("vllm:request_params_max_tokens"),
                 "iteration_tokens": HistogramMetric("vllm:iteration_tokens_total"),
                 "prompt_tokens_cached": CounterMetric('{__name__=~"vllm:prompt_tokens_cached(_total)?"}'),
-                "prompt_tokens_recomputed": CounterMetric('{__name__=~"vllm:prompt_tokens_recomputed(_total)?"}'),
                 "external_prefix_cache_hits": CounterMetric('{__name__=~"vllm:external_prefix_cache_hits(_total)?"}'),
                 "external_prefix_cache_queries": CounterMetric('{__name__=~"vllm:external_prefix_cache_queries(_total)?"}'),
                 "mm_cache_hits": CounterMetric('{__name__=~"vllm:mm_cache_hits(_total)?"}'),
                 "mm_cache_queries": CounterMetric('{__name__=~"vllm:mm_cache_queries(_total)?"}'),
+                # Only exposed when the server runs with VLLM_COMPUTE_NANS_IN_LOGITS=1.
                 "corrupted_requests": CounterMetric("vllm:corrupted_requests"),
                 "request_prefill_kv_computed_tokens": HistogramMetric("vllm:request_prefill_kv_computed_tokens"),
+                # kv_block_* are only exposed when the server runs with --kv-cache-metrics.
                 "kv_block_idle_before_evict": HistogramMetric("vllm:kv_block_idle_before_evict_seconds"),
                 "kv_block_lifetime": HistogramMetric("vllm:kv_block_lifetime_seconds"),
                 "kv_block_reuse_gap": HistogramMetric("vllm:kv_block_reuse_gap_seconds"),

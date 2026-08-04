@@ -82,7 +82,6 @@ class ModelServerMetrics(BaseModel):
     prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
     request_success_count: CounterResult = Field(default_factory=CounterResult)
     prompt_tokens_cached: CounterResult = Field(default_factory=CounterResult)
-    prompt_tokens_recomputed: CounterResult = Field(default_factory=CounterResult)
     external_prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)
     external_prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
     mm_cache_hits: CounterResult = Field(default_factory=CounterResult)

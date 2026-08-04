@@ -412,7 +412,6 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             "request_success_count": metrics.request_success_count.total,
             "iteration_tokens": metrics.iteration_tokens.as_summary(),
             "prompt_tokens_cached": metrics.prompt_tokens_cached.total,
-            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed.total,
             "external_prefix_cache_hit_percent": {
                 "mean": _ratio(metrics.external_prefix_cache_hits.total, metrics.external_prefix_cache_queries.total)
             },
