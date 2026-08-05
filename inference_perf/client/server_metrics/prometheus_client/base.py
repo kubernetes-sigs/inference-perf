@@ -310,6 +310,20 @@ class PrometheusMetricsClient(ServerMetricsClient):
 
             # Execute the query and get the result
             result = self.execute_query(query, str(query_eval_time))
+            if result is None and ":" in summary_metric_metadata.name:
+                # A prometheus_client >= 0.23 exporter escapes the metric's colon separator to an
+                # underscore at exposition time (OpenMetrics scrape negotiation), so e.g.
+                # `sglang:foo` is stored as `sglang_foo`. Rebuild the query against the underscore
+                # form (rebuilding, rather than string-replacing the query, leaves label values intact).
+                prefix, rest = summary_metric_metadata.name.split(":", 1)
+                fallback_metric = ModelServerPrometheusMetric(
+                    f"{prefix}_{rest}",
+                    summary_metric_metadata.op,
+                    summary_metric_metadata.type,
+                    [summary_metric_metadata.filters],
+                )
+                fallback_query = PrometheusQueryBuilder(fallback_metric, query_duration).build_query()
+                result = self.execute_query(fallback_query, str(query_eval_time))
             if result is None:
                 logger.error("Error executing query: %s" % (query))
                 continue
@@ -321,7 +335,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
 
         return model_server_metrics
 
-    def execute_query(self, query: str, eval_time: str) -> float:
+    def execute_query(self, query: str, eval_time: str) -> Optional[float]:
         """
         Executes the given query on the Prometheus server and returns the result.
 
@@ -330,9 +344,9 @@ class PrometheusMetricsClient(ServerMetricsClient):
         eval_time: the time at which the query is evaluated, used to ensure we are querying the correct time range
 
         Returns:
-        The result of the query.
+        The result of the query, or None if it errored or matched no series.
         """
-        query_result = 0.0
+        query_result: Optional[float] = None
         try:
             logger.debug(f"making PromQL query: '{query}'")
             response = requests.get(self.query_url, headers=self.get_headers(), params={"query": query, "time": eval_time})
