@@ -1,3 +1,16 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from typing import Any, Dict, Iterator, List, Tuple
 import pytest
 from pydantic import ValidationError
@@ -81,6 +94,24 @@ def test_get_model_server_metrics_empty_metadata_returns_defaults() -> None:
 
     execute.assert_not_called()
     assert result == ModelServerMetrics()
+
+
+def test_get_model_server_metrics_rejects_unknown_field() -> None:
+    """A declaration whose key is not a ModelServerMetrics field fails before any query runs.
+
+    model_validate ignores extra keys, so without the collection-time guard the metric's
+    queries would run and the results be silently dropped (a zero column, no error).
+    """
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+
+    metadata = BaseMetrics(custom_metrics={**_required_metrics(), "not_a_real_field": CounterMetric("fake:x")})
+
+    with patch.object(PrometheusMetricsClient, "execute_query") as execute:
+        with pytest.raises(ValueError, match="not_a_real_field"):
+            client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    execute.assert_not_called()
 
 
 def test_get_model_server_metrics_rejects_wrong_result_type() -> None:

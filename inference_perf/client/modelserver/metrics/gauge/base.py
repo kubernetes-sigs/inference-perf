@@ -34,6 +34,11 @@ class GaugeResult(BaseModel):
 
 class GaugeMetric(Metric[GaugeResult]):
     def __init__(self, metric_name: str) -> None:
+        # `{__name__=~...}` selector names are counter-only (CounterMetric merges filters into
+        # the braces); here the selector would be wrapped in a second `{...}` group, building
+        # invalid PromQL that fails silently at query time.
+        if metric_name.startswith("{"):
+            raise ValueError(f"GaugeMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
 
     def get_queries(self, duration: float, filters: str) -> List[str]:

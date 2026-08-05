@@ -1,10 +1,26 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from typing import List
+
+import pytest
 
 from inference_perf.client.modelserver.metrics import (
     CounterMetric,
     CounterResult,
     GaugeMetric,
     GaugeResult,
+    HistogramMetric,
     HistogramResult,
 )
 
@@ -78,3 +94,12 @@ def test_counter_metric_merges_filters_into_name_selector() -> None:
 
     assert queries[0] == "sum(increase({__name__=~\"vllm:request_success(_total)?\",model_name='m'}[30s]))"
     assert queries[2] == "sum(rate({__name__=~\"vllm:request_success(_total)?\",model_name='m'}[30s]))"
+
+
+def test_gauge_and_histogram_reject_name_selectors() -> None:
+    """`{__name__=~...}` selector names are counter-only; the other metric types wrap or
+    suffix the name (`{...}{filters}`, `{...}_sum`), which builds invalid PromQL that would
+    fail silently at query time, so they must refuse the name up front."""
+    for metric_type in (GaugeMetric, HistogramMetric):
+        with pytest.raises(ValueError, match="selector"):
+            metric_type(metric_name='{__name__=~"vllm:foo(_total)?"}')

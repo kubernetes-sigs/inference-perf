@@ -119,7 +119,13 @@ class PrometheusMetricsClient(ServerMetricsClient):
         # query+parse (collect), with the container's shared label filters applied. Building the
         # dict and validating it through Pydantic enforces the field's declared result type.
         filters = metrics_metadata.filters
-        collected = {field: metric.collect(execute, query_duration, filters) for field, metric in metrics_metadata}
+        pairs = list(metrics_metadata)
+        # Validation ignores extra keys, so a declaration targeting a nonexistent field would
+        # run its queries and silently drop the results; fail before querying instead.
+        unknown = sorted(field for field, _ in pairs if field not in ModelServerMetrics.model_fields)
+        if unknown:
+            raise ValueError(f"Metrics declared for unknown ModelServerMetrics field(s): {', '.join(unknown)}")
+        collected = {field: metric.collect(execute, query_duration, filters) for field, metric in pairs}
         return ModelServerMetrics.model_validate(collected)
 
     def execute_query(self, query: str, eval_time: str) -> float:
