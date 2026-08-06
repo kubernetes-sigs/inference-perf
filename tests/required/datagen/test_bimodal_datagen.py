@@ -86,6 +86,8 @@ class TestBimodalRatioSampling:
             assert gen1._is_mode_a(i) == gen2._is_mode_a(i)
             req1 = gen1.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
             req2 = gen2.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+            assert isinstance(req1, CompletionAPIData)
+            assert isinstance(req2, CompletionAPIData)
             assert req1.max_tokens == req2.max_tokens
 
 

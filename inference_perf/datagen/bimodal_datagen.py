@@ -154,9 +154,7 @@ class BimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
                     full_text = hf_tokenizer.decode(prefix_ids + suffix_ids, skip_special_tokens=True)
                     full_prompt = full_text if isinstance(full_text, str) else " ".join(full_text)
                 else:
-                    user_text, _ = generate_random_exact_length_text(
-                        self.rng, self.valid_token_ids, self.tokenizer, u_len
-                    )
+                    user_text, _ = generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, u_len)
                     full_prompt = user_text
 
                 prompts_by_group[group_id].append(

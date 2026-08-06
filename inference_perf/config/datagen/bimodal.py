@@ -43,7 +43,5 @@ class BimodalConfig(StrictBaseModel):
     )
 
     mode_a_ratio: float = Field(0.5, ge=0.0, le=1.0, description="Proportion of Mode A requests (0.0 to 1.0)")
-    num_prompts_per_group: int = Field(
-        10, ge=1, description="Number of unique user prompt variations pre-generated per group"
-    )
+    num_prompts_per_group: int = Field(10, ge=1, description="Number of unique user prompt variations pre-generated per group")
     seed: Optional[int] = Field(None, description="Random seed for reproducibility")
