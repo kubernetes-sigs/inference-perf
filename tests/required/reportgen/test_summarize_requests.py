@@ -564,11 +564,13 @@ def test_metrics_only_config_gating() -> None:
     from inference_perf.config.reportgen import RequestLifecycleMetricsReportConfig
 
     # Case 1: metrics_only=True, per_request=False -> api.metrics_only=False
-    cfg1 = Config(report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=False)))
+    cfg1 = Config(
+        report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=False))
+    )
     assert cfg1.api.metrics_only is False
 
     # Case 2: metrics_only=True, per_request=True -> api.metrics_only=True
-    cfg2 = Config(report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=True)))
+    cfg2 = Config(
+        report=ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(metrics_only=True, per_request=True))
+    )
     assert cfg2.api.metrics_only is True
-
-

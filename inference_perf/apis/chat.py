@@ -546,7 +546,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
                 response,
                 extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content"),
-                metrics_only=config.metrics_only,
+                metrics_only=bool(config.metrics_only),
             )
             prompt_len = self._count_prompt_tokens(tokenizer)
             # Generated text is a continuation, not a sequence start: counting it

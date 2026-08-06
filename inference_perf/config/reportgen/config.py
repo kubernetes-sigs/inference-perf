@@ -41,6 +41,7 @@ class RequestLifecycleMetricsReportConfig(StrictBaseModel):
         default=False, description="Drops raw request/response text and SSE chunk buffers to produce lightweight report."
     )
 
+
 class PrometheusMetricsReportConfig(StrictBaseModel):
     summary: Optional[bool] = Field(default=True, description="Generate a summary report across the whole run.")
     per_stage: Optional[bool] = Field(default=False, description="Generate a report for each load stage.")

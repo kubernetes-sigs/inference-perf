@@ -311,7 +311,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
-            ) = await parse_anthropic_stream_response(response, metrics_only=config.metrics_only)
+            ) = await parse_anthropic_stream_response(response, metrics_only=bool(config.metrics_only))
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)

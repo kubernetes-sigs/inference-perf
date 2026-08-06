@@ -137,5 +137,10 @@ async def parse_sse_stream(
             else ([first_time] if first_time is not None else [])
         )
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore") if not metrics_only else "", response_chunks, server_usage
-
+    return (
+        output_text,
+        chunk_times,
+        raw_content.decode("utf-8", errors="ignore") if not metrics_only else "",
+        response_chunks,
+        server_usage,
+    )

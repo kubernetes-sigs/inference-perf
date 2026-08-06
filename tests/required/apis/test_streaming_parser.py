@@ -170,4 +170,3 @@ async def test_parse_sse_stream_metrics_only() -> None:
     assert len(chunk_times) == 2
     assert raw_content == ""
     assert response_chunks == []
-

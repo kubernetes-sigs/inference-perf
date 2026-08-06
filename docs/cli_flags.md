@@ -18,6 +18,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
+| `--api.metrics_only` | boolean | Drops raw request/response text and SSE chunk buffers to produce lightweight report. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
