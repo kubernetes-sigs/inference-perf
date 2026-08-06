@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 from inference_perf.reportgen.base import summarize_requests, ReportGenerator
 from inference_perf.apis.base import (
@@ -137,7 +139,9 @@ def test_itl_not_inflated_by_per_chunk_bos() -> None:
     # Build a one-token-per-chunk stream by decoding each real token id back to text.
     text = "The quick brown fox jumps over the lazy dog"
     ids = hf.encode(text, add_special_tokens=False)
-    chunk_texts = [hf.decode([i]) for i in ids]
+    # transformers>=5.13 types decode() as str | list[str] because it also accepts batched
+    # ids; a flat list[int] is the single-sequence form and always decodes to one str.
+    chunk_texts = [cast(str, hf.decode([i])) for i in ids]
     n = len(ids)
 
     # Sanity: with the BOS the per-chunk sum is inflated by exactly one token per
