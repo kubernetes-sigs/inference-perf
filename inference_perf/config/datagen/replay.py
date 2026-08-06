@@ -500,11 +500,11 @@ class SyntheticAgenticConfig(SessionReplayConfig):
                 return int(math.ceil(dist.mean))
             return int(math.ceil(dist.max))
 
-        # ~170 tok per advertised tool: real serialized theme tool schemas
-        # (name + description + JSON-Schema params) measure ~140-166 tok each
-        # across the built-in themes; 170 is the rounded-up ceiling so the
+        # ~380 tok per advertised tool: real serialized theme tool schemas
+        # (name + description + JSON-Schema params) measure ~235-376 tok each
+        # across the built-in themes; 380 is the rounded-up ceiling so the
         # estimate over-, never under-, counts the catalog.
-        CATALOG_TOKENS_PER_TOOL = 170
+        CATALOG_TOKENS_PER_TOOL = 380
 
         head = self.shared_system_prompt_len
         # input/output tokens are required fields (never None), so their fallback

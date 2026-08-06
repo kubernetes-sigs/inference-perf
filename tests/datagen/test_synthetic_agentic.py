@@ -999,13 +999,13 @@ def test_theme_mix_weight_block_rejects_negative():
         ({"max_model_len": None, "input_tokens_per_turn": Distribution(type="fixed", mean=500_000)}, False),
         # comfortable: small everything, generous ceiling.
         ({"max_model_len": 200_000}, False),
-        # CATALOG is counted: a huge catalog alone (2000 tools x ~170 = ~340K)
+        # CATALOG is counted: a huge catalog alone (2000 tools x ~380 = ~760K)
         # overruns a 131K cap even though every token knob is tiny. The old
         # one-turn check missed this -- it never counted the catalog.
         ({"max_model_len": 131_072, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, True),
         # ...same catalog, ample ceiling -> accepted (the catalog isn't rejected
         # per se; only when it makes the PEAK overrun).
-        ({"max_model_len": 500_000, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, False),
+        ({"max_model_len": 1_000_000, "tool_catalog_size_per_agent": Distribution(type="fixed", mean=2000)}, False),
         # OUTPUT is counted: tiny input, but a uniform output whose clip ceiling
         # (max) is enormous -> peak includes that output and overruns.
         (
