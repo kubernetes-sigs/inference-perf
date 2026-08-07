@@ -26,7 +26,7 @@ Supports:
 """
 
 import json
-from typing import Dict, List, Any, Union, Optional
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 
 def reconstruct_llm_output(response_data: Union[str, Dict[str, Any], List[Any]]) -> str:
@@ -444,6 +444,39 @@ def reconstruct_input_with_token_estimate(
 
 
 # Example usage and testing
+
+
+def _compile_filter(filter_expr: Optional[str]) -> Optional[Callable[..., Any]]:
+    """Compile a filter expression once for reuse.
+
+    Args:
+        filter_expr: Lambda expression string to evaluate (e.g., "lambda x: x['benchmark'] == 'gsm8k'"),
+                    or None for no filtering
+
+    Returns:
+        Compiled filter function, or None if no filter expression provided
+
+    Raises:
+        ValueError: If filter expression is malformed or not callable
+
+    Security Note:
+        This uses eval() on user-provided input. This is acceptable for a local benchmarking tool
+        where the operator controls the configuration, but the filter expression should be treated
+        as trusted input only. Do not expose this to untrusted users.
+    """
+    if not filter_expr:
+        return None
+    try:
+        filter_func = eval(filter_expr, {"__builtins__": {}}, {})
+        if not callable(filter_func):
+            raise ValueError(f"Filter expression must be a callable (lambda), got: {type(filter_func).__name__}")
+        return cast(Callable[..., Any], filter_func)
+    except SyntaxError as e:
+        raise ValueError(f"Invalid filter expression syntax '{filter_expr}': {e}") from e
+    except Exception as e:
+        raise ValueError(f"Failed to compile filter expression '{filter_expr}': {e}") from e
+
+
 if __name__ == "__main__":
     print("=" * 80)
     print("LLM Output Reconstruction Examples")
