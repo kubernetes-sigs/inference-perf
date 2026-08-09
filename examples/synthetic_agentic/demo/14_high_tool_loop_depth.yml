@@ -1,0 +1,45 @@
+# DEMO 14 — High tool-calls-per-turn (tool_loop_depth fixed at 32, > 30).
+# Motivated by real-world usage data: Baumann et al., "SWE-chat: Coding Agent Interactions From
+# Real Users in the Wild" (arXiv:2604.20779), Figure 4(b) shows tool-calls-per-agent-response is
+# dominated by 0 (~43% of turns, plain Q&A) but ALSO has a distinct 30+ bucket (~4-5% of turns) --
+# a single turn where the agent grinds through a long tool loop before answering (e.g. their
+# "Docker compose deployment, then undo release" example logs 106 tool calls in one session).
+# This demo pins tool_loop_depth AT that tail value (fixed, not sampled) on a single turn, so the
+# in-turn loop growth is unmissable and reproducible. Same growth mechanism as demo 04, just past
+# the paper's 30+ threshold instead of 5.
+# WHAT TO LOOK FOR: 33 events/session (1 principal + 32 tool turns; the last turn's OUTPUT is the
+# answer); input message count grows by 2 every tool-loop iteration; prompt tokens climb every
+# turn (unbounded within the run -- this is the single-turn analogue of demo 13's growth).
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 2
+    seed: 14
+    theme_mix: {code_change_task: {weight: 1.0}}
+    turns_per_session: {type: fixed, mean: 1}
+    fanout_probability: 0.0
+    tool_loop_depth: {type: fixed, mean: 32}       # > 30: the paper's long-tool-loop tail
+    tool_catalog_size_per_agent: {type: fixed, mean: 8}
+    max_events_per_session: 64                     # 1 turn x 33 calls, plus headroom
+    input_tokens_per_turn:  {type: fixed, mean: 200}
+    output_tokens_per_turn: {type: fixed, mean: 60}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+    user_think_time_sec:    {type: fixed, mean: 2}
+    bad_tool_call_handling: use_recorded
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-14-hightoolloop"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}
