@@ -31,13 +31,15 @@ Two provisioning modes, resolved in this order:
 2. Spawned: a ``vllm`` executable on PATH is started per runner with
    ``vllm serve``. Slow (a full model load per test) but hermetic.
 
-Zero-tolerance token accounting requires greedy sampling
+Tight token accounting requires greedy sampling
 (``--override-generation-config '{"temperature": 0}'``): the client does not
-send ``temperature``, and under default sampling the model occasionally emits
-special tokens that ``ignore_eos`` generates through but detokenization
-drops, so re-encoding the text undercounts what the server generated. That
-is a real property of text-based counting, not a bug in either side; greedy
-decoding on the tiny default model produces text that round-trips exactly.
+send ``temperature``, so under default sampling every run draws different
+outputs and accuracy failures cannot be replayed. Greedy makes a given
+prompt's output, and therefore any failure, deterministic. It does NOT make
+re-encoding exact: detokenize-then-re-encode is not injective (adjacent
+generated tokens like ``'.' + 'I'`` or ``'\\n' + '\\n'`` re-encode as one
+token), which is a real property of text-based counting, not a bug in either
+side; the accuracy tests bound it instead of assuming it away.
 
 If neither is available, ``is_available()`` is False and tests skip, keeping
 the gating e2e job green without any workflow coupling.
