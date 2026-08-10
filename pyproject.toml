@@ -92,6 +92,11 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 "test" = "pytest tests"
 "test:picked" = "pytest --picked"
 "test:e2e" = "pytest e2e tests/optional -n auto --dist loadgroup {args}"
+# The live-oracle slice: every e2e test that needs a real vLLM server
+# (start one with e2e/vllm_cpu_server.sh). Selection is by naming
+# convention, so a new e2e/tests/test_vllm_*.py joins the slice with no
+# edits here or in CI. Serial on purpose: the modules share one server.
+"test:e2e:live" = {shell = "pytest e2e/tests/test_vllm_*.py {args}"}
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
 
 "check:cov" = "python scripts/check_coverage_regression.py"

@@ -15,24 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VLLM_MODEL: facebook/opt-125m
-      # VERSION TABLE: the vLLM releases we have a vested interest in.
-      # One entry = one release; the live-oracle step below runs the full
-      # slice against a real server of every listed release, sequentially,
-      # all inside this job so everything reports under the one existing
-      # e2e-tests check. Add a release when it starts to matter to a
-      # deployment we care about; prune entries aggressively once they stop
-      # mattering. latest-x86_64 floats with upstream, so a new release's
-      # drift surfaces here before, not at, the next pin bump.
-      #
-      # All listed releases currently expose the same metric names, so one
-      # set of client query declarations holds across the table. When a
-      # release diverges, its slice goes red and forces the explicit
-      # choice: version-aware query declarations (#669) or pruning the
-      # entry.
-      VLLM_VERSIONS: v0.26.0-x86_64 latest-x86_64
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # The version table lives with the tests (e2e/vllm_releases.txt), so
+      # adding or pruning a release is a reviewed code change next to the
+      # tests that run against it. This step only loads it; an empty table
+      # fails here because a zero-iteration live-oracle loop below would
+      # pass silently, and a merge gate whose oracle silently skips gates
+      # nothing.
+      - name: Load vLLM version table
+        run: |
+          versions="$(grep -vE '^[[:space:]]*(#|$)' e2e/vllm_releases.txt | xargs)"
+          [ -n "$versions" ]
+          echo "VLLM_VERSIONS=$versions" >> "$GITHUB_ENV"
+          echo "VLLM_HF_CACHE=$HOME/hf-cache" >> "$GITHUB_ENV"
 
       - name: Cache model weights
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -45,7 +43,6 @@ jobs:
       # yet, so a failure here costs time, not correctness.
       - name: Prefetch vLLM images
         run: |
-          mkdir -p "$HOME/hf-cache"
           for v in $VLLM_VERSIONS; do
             docker pull "docker.io/vllm/vllm-openai-cpu:$v" > /dev/null 2>&1 &
           done
@@ -74,77 +71,39 @@ jobs:
       # cannot start fails the job rather than skipping, because a merge
       # gate whose oracle silently skips gates nothing. Every release runs
       # even after one fails, so a red run names all failed releases.
+      #
+      # What runs lives in the test tree: the release table is
+      # e2e/vllm_releases.txt, the server invocation is
+      # e2e/vllm_cpu_server.sh, and test:e2e:live selects every
+      # e2e/tests/test_vllm_*.py. Only CI plumbing (prefetch, caching, step
+      # summary, artifacts) belongs here.
       - name: Run live-oracle e2e tests per vLLM version
         run: |
           set -uo pipefail
           failed=""
           for v in $VLLM_VERSIONS; do
-            image="docker.io/vllm/vllm-openai-cpu:$v"
+            if e2e/vllm_cpu_server.sh start "$v"; then
+              # A red release must name what it resolved to; latest-x86_64
+              # points at a different release over time.
+              {
+                echo "### $v resolved to"
+                echo '```'
+                curl -sf http://127.0.0.1:8000/version || true
+                echo
+                docker inspect --format '{{index .RepoDigests 0}}' \
+                  "docker.io/vllm/vllm-openai-cpu:$v" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
 
-            # shm-size/seccomp/SYS_NICE are the invocation vLLM's CPU docs
-            # prescribe: the engine's IPC lives in /dev/shm (docker's 64MB
-            # default kills the worker during startup) and thread binding
-            # wants SYS_NICE. KV cache is sized for a 16GB hosted runner.
-            docker run -d --name vllm-cpu \
-              --shm-size=4g \
-              --security-opt seccomp=unconfined \
-              --cap-add SYS_NICE \
-              -p 8000:8000 \
-              -v "$HOME/hf-cache:/root/.cache/huggingface" \
-              -v "$PWD/e2e/testdata/simple_chat_template.jinja:/simple_chat_template.jinja" \
-              -e VLLM_CPU_KVCACHE_SPACE=2 \
-              "$image" \
-              "$VLLM_MODEL" \
-              --max-model-len 2048 \
-              --chat-template /simple_chat_template.jinja \
-              --override-generation-config '{"temperature": 0}' \
-              --enforce-eager
-
-            healthy=""
-            for i in $(seq 1 60); do
-              if curl -sf http://127.0.0.1:8000/health > /dev/null; then
-                healthy=1
-                break
-              fi
-              if [ -z "$(docker ps -q -f name=vllm-cpu)" ]; then
-                break
-              fi
-              sleep 5
-            done
-
-            if [ -z "$healthy" ]; then
-              echo "vLLM CPU server ($v) failed to become healthy" >&2
-              docker logs vllm-cpu > "vllm_server-$v.log" 2>&1 || true
-              tail -100 "vllm_server-$v.log" >&2 || true
-              docker rm -f vllm-cpu > /dev/null 2>&1 || true
+              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 \
+                nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
+                |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+            else
               failed="$failed $v"
-              continue
             fi
 
-            # A red release must name what it resolved to; latest-x86_64
-            # points at a different release over time.
-            {
-              echo "### $v resolved to"
-              echo '```'
-              curl -sf http://127.0.0.1:8000/version || true
-              echo
-              docker inspect --format '{{index .RepoDigests 0}}' "$image" || true
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-
-            # pytest directly, not `pdm run test:e2e`: that script hardcodes
-            # the sim-suite paths, and this slice must fail only on vLLM
-            # signal. No xdist either; three modules sharing one server run
-            # serially anyway.
-            E2E_VLLM_BASE_URL=http://127.0.0.1:8000 \
-              nix develop -c pdm run pytest -o log_cli_level=DEBUG \
-              e2e/tests/test_vllm_cpu_golden_accuracy.py \
-              e2e/tests/test_vllm_cpu_token_mismatch.py \
-              e2e/tests/test_vllm_cpu_metric_names.py \
-              |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
-
-            docker logs vllm-cpu > "vllm_server-$v.log" 2>&1 || true
-            docker rm -f vllm-cpu > /dev/null 2>&1 || true
+            e2e/vllm_cpu_server.sh logs > "vllm_server-$v.log" 2>&1 || true
+            e2e/vllm_cpu_server.sh stop > /dev/null 2>&1 || true
           done
 
           if [ -n "$failed" ]; then

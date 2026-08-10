@@ -1,0 +1,18 @@
+# The vLLM releases the live-oracle e2e slice gates against: tags of
+# docker.io/vllm/vllm-openai-cpu, one per line; comments and blank lines are
+# ignored. The e2e-tests CI job starts a real server of every listed release
+# (via e2e/vllm_cpu_server.sh) and runs the full live-oracle slice
+# (e2e/tests/test_vllm_*.py) against each one, all merge-blocking.
+#
+# Add a release when it starts to matter to a deployment we care about;
+# prune entries aggressively once they stop mattering. latest-x86_64 floats
+# with upstream, so a new release's drift surfaces here before, not at, the
+# next pin bump.
+#
+# All listed releases currently expose the same metric names, so one set of
+# client query declarations holds across the table. When a release diverges,
+# its slice goes red and forces the explicit choice: version-aware query
+# declarations (#669) or pruning the entry.
+
+v0.26.0-x86_64
+latest-x86_64
