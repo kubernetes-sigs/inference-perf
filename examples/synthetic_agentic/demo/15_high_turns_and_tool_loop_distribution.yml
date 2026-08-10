@@ -5,11 +5,7 @@
 # long ones) instead of a uniform worst case.
 # WHAT TO LOOK FOR: wide spread of events/session across the num_sessions run; most sessions
 # finish in a handful of events, a handful run long (30+ turns and/or 30+-call loops); 0 errors.
-api: 
-  type: chat
-  streaming: false
-  headers: 
-    RITS_API_KEY: "e84c8f0e88725dc26bcc2a11bcaf2b53"
+api: {type: chat, streaming: false}
 data:
   type: synthetic_agentic
   synthetic_agentic:
@@ -36,8 +32,8 @@ load:
 
 server:
   type: vllm
-  base_url: "https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/granite-4-1-30b"
-  model_name: "ibm-granite/granite-4.1-30b"
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
 
 storage:
   local_storage: {path: "reports-demo-16-turnstoolloop-dist"}
