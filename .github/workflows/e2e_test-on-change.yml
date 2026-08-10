@@ -13,15 +13,64 @@ on:
 jobs:
   e2e-tests:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@4eae8bea4afaa8f8ea8aa638ab9a7fead2f3d21e # v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          nix develop -c pdm sync -d
+
+      # The vLLM live-oracle modules (e2e/tests/test_vllm_cpu_*.py) skip in
+      # this job: there is no server here. They gate in the vllm-e2e
+      # version-table job below.
+      - name: Run end-to-end tests
+        run: |
+          set -euxo pipefail
+          nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
+
+      - name: Upload test_e2e.out
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test_e2e
+          path: test_e2e.out
+
+  # Real-server oracle for the live-tier slice: CPU mode changes generation
+  # speed, not token accounting, so a plain runner can check our numbers
+  # against a real vLLM's tokenizer, usage accounting, and /metrics
+  # exposition. Unlike a local run, the server here is required: a leg that
+  # cannot start its server fails rather than skips, because a merge gate
+  # whose oracle silently skips gates nothing.
+  vllm-e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      # One version's flake or drift must not cancel the others' signal;
+      # failed legs are re-run individually from the run page.
+      fail-fast: false
+      matrix:
+        # VERSION TABLE: the vLLM releases we have a vested interest in.
+        # One row = one release; every row runs the full live-oracle slice
+        # against a real server of that release, and every row blocks the
+        # merge gate. Add a row when a release starts to matter to a
+        # deployment we care about; prune rows aggressively once they stop
+        # mattering. latest-x86_64 floats with upstream, so a new release's
+        # drift surfaces here before, not at, the next pin bump.
+        #
+        # All listed releases currently expose the same metric names, so one
+        # set of client query declarations holds across the table. When a
+        # release diverges, its leg goes red and forces the explicit choice:
+        # version-aware query declarations (#669) or pruning a row.
+        vllm-version:
+          - v0.26.0-x86_64
+          - latest-x86_64
     env:
-      # Real-server oracle for the live-tier slice (e2e/tests/test_vllm_cpu_*.py):
-      # CPU mode changes generation speed, not token accounting, so a plain
-      # runner can check our numbers against a real vLLM's tokenizer, usage
-      # accounting, and /metrics exposition. Bumping this pin is the moment
-      # upstream drift (renamed metrics, changed accounting) surfaces in those
-      # tests. If the server cannot be started the tests skip, so the sim-based
-      # suite still gates on its own.
-      VLLM_IMAGE: docker.io/vllm/vllm-openai-cpu:v0.26.0-x86_64
+      VLLM_IMAGE: docker.io/vllm/vllm-openai-cpu:${{ matrix.vllm-version }}
       VLLM_MODEL: facebook/opt-125m
     steps:
       - name: Checkout code
@@ -34,8 +83,7 @@ jobs:
           key: hf-${{ env.VLLM_MODEL }}
 
       # Started first so the image pull, model download, and warmup overlap
-      # with the Nix and dependency installation below. Failure is a warning,
-      # not an error: the live-oracle tests skip without a server.
+      # with the Nix and dependency installation below.
       - name: Start vLLM (CPU mode)
         run: |
           mkdir -p "$HOME/hf-cache"
@@ -56,8 +104,7 @@ jobs:
             --max-model-len 2048 \
             --chat-template /simple_chat_template.jinja \
             --override-generation-config '{"temperature": 0}' \
-            --enforce-eager \
-          || echo "::warning::vLLM CPU container failed to start; live-oracle e2e tests will skip"
+            --enforce-eager
 
       - name: Install Nix
         uses: cachix/install-nix-action@4eae8bea4afaa8f8ea8aa638ab9a7fead2f3d21e # v31
@@ -68,8 +115,6 @@ jobs:
         run: |
           nix develop -c pdm sync -d
 
-      # Exports E2E_VLLM_BASE_URL only if the server came up; otherwise the
-      # live-oracle tests skip exactly as they do for a local run without vLLM.
       - name: Wait for vLLM
         run: |
           for i in $(seq 1 60); do
@@ -82,21 +127,42 @@ jobs:
             fi
             sleep 5
           done
-          echo "::warning::vLLM CPU server not healthy; live-oracle e2e tests will skip"
-          docker logs vllm-cpu 2>&1 | tail -50 || true
+          echo "vLLM CPU server (${{ matrix.vllm-version }}) failed to become healthy" >&2
+          docker logs vllm-cpu 2>&1 | tail -100 || true
+          exit 1
 
-      - name: Run end-to-end tests
+      # A red leg must name the release it tested; latest-x86_64 resolves to
+      # a different release over time.
+      - name: Record server version under test
+        run: |
+          {
+            echo "### ${{ matrix.vllm-version }} resolved to"
+            echo '```'
+            curl -sf http://127.0.0.1:8000/version || true
+            echo
+            docker inspect --format '{{index .RepoDigests 0}}' "$VLLM_IMAGE" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # pytest directly, not `pdm run test:e2e`: that script hardcodes the
+      # sim-suite paths, and this slice must fail only on vLLM signal. No
+      # xdist either; three modules sharing one server run serially anyway.
+      - name: Run live-oracle e2e tests
         run: |
           set -euxo pipefail
-          nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
+          nix develop -c pdm run pytest -o log_cli_level=DEBUG \
+            e2e/tests/test_vllm_cpu_golden_accuracy.py \
+            e2e/tests/test_vllm_cpu_token_mismatch.py \
+            e2e/tests/test_vllm_cpu_metric_names.py \
+            |& tee test_vllm_e2e.out
 
       - name: vLLM server logs on failure
         if: failure()
         run: docker logs vllm-cpu || true
 
-      - name: Upload test_e2e.out
+      - name: Upload test_vllm_e2e.out
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: test_e2e
-          path: test_e2e.out
+          name: test_vllm_e2e-${{ matrix.vllm-version }}
+          path: test_vllm_e2e.out
