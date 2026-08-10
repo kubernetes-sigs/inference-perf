@@ -67,7 +67,7 @@
   ],
   "payload_templates": [
     "SELECT c.id, c.status, SUM(l.amount) AS total FROM {table} c JOIN LEDGER l ON l.acct = c.id WHERE c.plan = '{plan}' AND c.updated > CURRENT DATE - {n0} DAYS GROUP BY c.id, c.status HAVING SUM(l.amount) > {n1} ORDER BY total DESC FETCH FIRST {n2} ROWS ONLY;",
-    "UPDATE {table} SET status = 'REVIEW', updated = CURRENT TIMESTAMP WHERE plan = '{plan}' AND balance < {n0} AND region = '{region}';",
+    "UPDATE {table} SET status = 'REVIEW', updated = CURRENT TIMESTAMP WHERE plan = '{plan}' AND balance < {n0};",
     "WITH recent AS (SELECT acct, MAX(ts) AS last_ts FROM LEDGER WHERE ts > CURRENT DATE - {n0} DAYS GROUP BY acct) SELECT a.id FROM {table} a JOIN recent r ON r.acct = a.id WHERE a.plan = '{plan}';",
     "DELETE FROM {table} WHERE status = 'STALE' AND updated < CURRENT DATE - {n1} DAYS;"
   ],
