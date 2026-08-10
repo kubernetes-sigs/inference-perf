@@ -9,10 +9,14 @@
 # with upstream, so a new release's drift surfaces here before, not at, the
 # next pin bump.
 #
-# All listed releases currently expose the same metric names, so one set of
-# client query declarations holds across the table. When a release diverges,
-# its slice goes red and forces the explicit choice: version-aware query
-# declarations (#669) or pruning the entry.
+# Pinned releases carry a committed snapshot of their metric families
+# (e2e/testdata/vllm_metric_families/<tag>.txt): adding a pin means also
+# capturing its golden (see a golden's header for the two commands), and the
+# serverless slice then holds the client's declarations against every pin
+# without a server. latest-x86_64 deliberately has no golden; its live slice
+# is where upstream metric drift goes red first. When declarations and a
+# release genuinely diverge, that red forces the explicit choice:
+# version-aware query declarations (#669) or pruning the entry.
 
 v0.26.0-x86_64
 latest-x86_64

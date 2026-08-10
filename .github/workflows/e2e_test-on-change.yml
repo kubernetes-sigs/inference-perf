@@ -95,7 +95,7 @@ jobs:
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
 
-              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 \
+              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
                 nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
                 |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
             else

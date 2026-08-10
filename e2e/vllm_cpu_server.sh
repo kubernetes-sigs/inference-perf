@@ -25,7 +25,8 @@
 # Release tags come from e2e/vllm_releases.txt. Local repro of the CI slice:
 #
 #   e2e/vllm_cpu_server.sh start v0.26.0-x86_64
-#   E2E_VLLM_BASE_URL=http://127.0.0.1:8000 pdm run test:e2e:live
+#   E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION=v0.26.0-x86_64 \
+#     pdm run test:e2e:live
 #   e2e/vllm_cpu_server.sh stop
 #
 # Environment overrides: VLLM_MODEL, VLLM_PORT, VLLM_HF_CACHE (host-side
@@ -90,7 +91,7 @@ start() {
 
   for _ in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:$PORT/health" > /dev/null; then
-      echo "vLLM ($tag) ready: E2E_VLLM_BASE_URL=http://127.0.0.1:$PORT"
+      echo "vLLM ($tag) ready: E2E_VLLM_BASE_URL=http://127.0.0.1:$PORT E2E_VLLM_VERSION=$tag"
       return 0
     fi
     if [ -z "$("$ENGINE" ps -q -f "name=$NAME")" ]; then
