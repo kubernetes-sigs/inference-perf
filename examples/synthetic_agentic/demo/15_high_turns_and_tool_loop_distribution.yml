@@ -36,6 +36,6 @@ server:
   model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
 
 storage:
-  local_storage: {path: "reports-demo-16-turnstoolloop-dist"}
+  local_storage: {path: "reports-demo-15-turnstoolloop-dist"}
 report:
   request_lifecycle: {summary: true, per_stage: true}

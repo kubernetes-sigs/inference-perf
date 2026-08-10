@@ -1,8 +1,8 @@
   # DEMO 10 — Big tool-catalog inflation (prefill stress).
-# k=0 direct answer, but 30 tools advertised on every request (real agents carry huge catalogs;
-# real Exgentic ~487). Stresses prompt prefill without needing tool calls.
+# 200 tools advertised on every request (real agents carry huge catalogs;
+# real Exgentic ~487). Stresses prompt prefill with forced tool-call selection.
 # WHAT TO LOOK FOR: 1 event/session but large-ish input tokens from the advertised catalog;
-# tools present in the request, none called.
+# tools present in the request, one called.
 api: {type: chat, streaming: false}
 data:
   type: synthetic_agentic
@@ -12,9 +12,9 @@ data:
     theme_mix: {generic: {weight: 1.0}}
     turns_per_session: {type: fixed, mean: 1}
     fanout_probability: 0.0
-    tool_loop_depth: {type: fixed, mean: 0}
-    tool_catalog_size_per_agent: {type: fixed, mean: 30}   # big catalog (bump to ~487 on a big model)
-    input_tokens_per_turn:  {type: fixed, mean: 400}
+    tool_loop_depth: {type: fixed, mean: 1}
+    tool_catalog_size_per_agent: {type: fixed, mean: 200}   # 200-tool catalog
+    input_tokens_per_turn:  {type: fixed, mean: 300}
     output_tokens_per_turn: {type: fixed, mean: 40}
     tool_call_latency_sec:  {type: fixed, mean: 1}
 load:
