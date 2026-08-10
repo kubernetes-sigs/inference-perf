@@ -2,8 +2,7 @@
 # Motivated by real-world usage data: Baumann et al., "SWE-chat: Coding Agent Interactions From
 # Real Users in the Wild" (arXiv:2604.20779), Figure 4(b) shows tool-calls-per-agent-response is
 # dominated by 0 (~43% of turns, plain Q&A) but ALSO has a distinct 30+ bucket (~4-5% of turns) --
-# a single turn where the agent grinds through a long tool loop before answering (e.g. their
-# "Docker compose deployment, then undo release" example logs 106 tool calls in one session).
+# a single turn where the agent grinds through a long tool loop before answering.
 # This demo pins tool_loop_depth AT that tail value (fixed, not sampled) on a single turn, so the
 # in-turn loop growth is unmissable and reproducible. Same growth mechanism as demo 04, just past
 # the paper's 30+ threshold instead of 5.
