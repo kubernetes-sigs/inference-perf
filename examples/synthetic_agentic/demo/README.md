@@ -19,6 +19,12 @@ Demos 01–05 build up the **event model** one growth mechanism at a time (start
 DAG of LLM calls where each call's INPUT is the cumulative transcript so far and the assistant reply
 is that call's OUTPUT (not a separate event). Watch how the per-call input message count grows.
 
+Demos 13–15 push `turns_per_session` / `tool_loop_depth` into the long tail reported by real-world
+usage data (Baumann et al., "SWE-chat: Coding Agent Interactions From Real Users in the Wild",
+arXiv:2604.20779, Figure 4): both distributions are heavily right-skewed with a distinct 30+ bucket
+that alone accounts for ~5% of sessions/turns. 13 and 14 pin one dimension at a fixed tail value (32);
+15 samples both from a clipped lognormal tuned to put ~5% of draws at 30+ while most stay small.
+
 | # | Config | Demonstrates | What to look for |
 |---|--------|--------------|------------------|
 | 01 | `01_bare_no_tools` | Bare non-agentic baseline (no tools) | 1 event/session (the answer is the call's OUTPUT, not a separate event); no tools in requests |
@@ -33,6 +39,9 @@ is that call's OUTPUT (not a separate event). Watch how the per-call input messa
 | 10 | `10_big_catalog` | Tool-catalog inflation (prefill stress) | 1 event but large prompt; 30 tools advertised, none called |
 | 11 | `11_mixed_everything` | Mixed themes + probabilistic fan-out + varying rounds | wide session-size spread; both themes; 0 errors |
 | 12 | `12_realistic_scale` | Real Exgentic scale (~114K-token prompts, 487 tools) | **needs big-context model**; input tokens ~87K–136K |
+| 13 | `13_high_turn_count` | High turn count (`turns_per_session` fixed 32, > 30) | 64 events/session (32 rounds x 2 calls/round); input msg count grows by 2 every round |
+| 14 | `14_high_tool_loop_depth` | High tool-calls-per-turn (`tool_loop_depth` fixed 32, > 30) | 33 events/session (1 principal + 32 tool turns); input msg count grows by 2 every loop iteration |
+| 15 | `15_high_turns_and_tool_loop_distribution` | Realistic distribution for both tails (lognormal, ~5% of draws land at 30+) | wide spread of events/session; most sessions short, a handful run long; 0 errors |
 
 **Verify a run** (reconstructs sessions from Jaeger spans and checks they match intent):
 
