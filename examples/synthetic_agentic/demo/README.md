@@ -7,7 +7,7 @@ Run any demo (with a vLLM server on `localhost:8000`):
 
 ```bash
 python -m inference_perf.main --config examples/synthetic_agentic/demo/01_bare_no_tools.yml
-# or with Jaeger tracing to inspect the per-session event graph:
+# or with Jaeger tracing to inspect the per-session event graph, start Jaeger and a target server (see `examples/otel/run_with_jaeger.sh` for the Jaeger prerequisites), then:
 ./examples/otel/run_with_jaeger.sh examples/synthetic_agentic/demo/01_bare_no_tools.yml
 ```
 
@@ -24,6 +24,10 @@ usage data (Baumann et al., "SWE-chat: Coding Agent Interactions From Real Users
 arXiv:2604.20779, Figure 4): both distributions are heavily right-skewed with a distinct 30+ bucket
 that alone accounts for ~5% of sessions/turns. 13 and 14 pin one dimension at a fixed tail value (32);
 15 samples both from a clipped lognormal tuned to put ~5% of draws at 30+ while most stay small.
+
+Demo 16 exercises `max_events_per_session` as a hard budget cap: a fully recursive fan-out that
+would produce 146 events is truncated to 47 per session. Remaining work is emitted as leaf answer
+calls — budget exhaustion is a clean stop, not a failure.
 
 | # | Config | Demonstrates | What to look for |
 |---|--------|--------------|------------------|
@@ -42,6 +46,7 @@ that alone accounts for ~5% of sessions/turns. 13 and 14 pin one dimension at a 
 | 13 | `13_high_turn_count` | High turn count (`turns_per_session` fixed 32, > 30) | 64 events/session (32 rounds x 2 calls/round); input msg count grows by 2 every round |
 | 14 | `14_high_tool_loop_depth` | High tool-calls-per-turn (`tool_loop_depth` fixed 32, > 30) | 33 events/session (1 principal + 32 tool turns); input msg count grows by 2 every loop iteration |
 | 15 | `15_high_turns_and_tool_loop_distribution` | Realistic distribution for both tails (lognormal, ~5% of draws land at 30+) | wide spread of events/session; most sessions short, a handful run long; 0 errors |
+| 16 | `16_budget_cap` | `max_events_per_session` cap on a deep recursive fan-out (would produce 146 events uncapped) | every session has exactly 47 events; deep sub-agent branches absent; 0 errors — budget exhaustion is a clean stop, not a failure |
 
 **Verify a run** (reconstructs sessions from Jaeger spans and checks they match intent):
 
@@ -51,5 +56,8 @@ python tools/verify_synthetic_via_jaeger.py --expect-sessions 5 --expect-events 
 python tools/verify_synthetic_via_jaeger.py --expect-sessions 5 --expect-events 6   # 04 (long tool-loop)
 python tools/verify_synthetic_via_jaeger.py --expect-sessions 4 --min-peak-concurrency 2   # 08 (parallel sub-agents)
 ```
+
+Use `--expect-events N` for configs with a deterministic per-session event count (e.g., `big_catalog`); use `--min-events` for configs with
+fan-out or variable rounds, where the exact count depends on random draws.
 
 All demos are deterministic: the same config + `seed` produces byte-identical session graphs.
