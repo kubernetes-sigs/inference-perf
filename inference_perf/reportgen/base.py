@@ -935,6 +935,19 @@ class ReportGenerator:
             lifecycle_reports.extend(session_reports)
 
         lifecycle_reports.append(self.generate_config_report())
+
+        # Validate the assembled report set and emit the findings as their own
+        # validation.json report. Validation never takes down report emission
+        # and never fails the run: errors mean the report set is internally
+        # inconsistent (a bug in inference-perf), and they surface in the logs
+        # and in validation.json for test tiers to assert on.
+        try:
+            from inference_perf.reportgen.validation import validate_reports
+
+            lifecycle_reports.append(validate_reports(lifecycle_reports))
+        except Exception:
+            logger.exception("Report validation failed; continuing without validation report")
+
         return lifecycle_reports
 
     def summarize_sessions(
