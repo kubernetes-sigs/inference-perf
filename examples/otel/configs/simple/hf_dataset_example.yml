@@ -1,6 +1,6 @@
 # Example configuration for loading OTel traces from HuggingFace dataset
 # This demonstrates using the hf_dataset_path option to load traces from
-# the Exgentic/agent-llm-traces dataset on HuggingFace Hub
+# the Exgentic/agent-llm-traces-v2 dataset on HuggingFace Hub
 
 api:
   type: chat
@@ -12,7 +12,7 @@ data:
   otel_trace_replay:
     # Load traces from HuggingFace dataset
     # The dataset will be automatically downloaded and cached locally
-    hf_dataset_path: "Exgentic/agent-llm-traces"
+    hf_dataset_path: "Exgentic/agent-llm-traces-v2"
     
     # Model configuration
     use_static_model: true
