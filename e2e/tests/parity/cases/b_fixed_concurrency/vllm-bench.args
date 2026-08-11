@@ -1,0 +1,28 @@
+# Closed loop: --max-concurrency 8 with unbounded request rate, 48 prompts,
+# fixed 128-in / 64-out. Targets the vllm pinned in e2e/utils/vllm_bench.py
+# (VLLM_PINNED_REF); see a_fixed_rate/vllm-bench.args for the per-flag notes
+# read off that tag's benchmark source. The two flags specific to this case:
+#   --max-concurrency wraps each request in an asyncio.Semaphore, so peak
+#     in-flight is exactly this value once the server is slow enough to hold
+#     that many open (the absorber's pacing guarantees it).
+#   --request-rate is left at its default of inf, which dispatches every
+#     request at t=0 and lets the semaphore alone shape the load.
+# --base-url/--model/--tokenizer/--save-result/--result-filename are appended
+# by the harness.
+--endpoint-type
+openai
+--endpoint
+/v1/completions
+--dataset-name
+random
+--num-prompts
+48
+--random-input-len
+128
+--random-output-len
+64
+--random-range-ratio
+0
+--max-concurrency
+8
+--ignore-eos
