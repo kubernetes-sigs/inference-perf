@@ -18,8 +18,11 @@ These are the highest-value checks in the validation layer: every report file
 is derived from the same request metrics, so any disagreement between files
 (stage counts not summing to the run summary, per-request records missing
 from aggregates) means requests were dropped or double-counted somewhere in
-assembly — the #564/#602 regression family. Findings that span files carry no
-single filename and land under the ``global`` key of ``validation.json``.
+assembly — the #564/#602 regression family. Also home to ``stage_rates``, a
+plausibility check on the load sweep itself: stages are expected to ramp the
+request rate upward, so a decreasing rate warns. Findings that span files
+carry no single filename and land under the ``global`` key of
+``validation.json``.
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ class CrossReportValidator(ReportSetValidator):
             self._check_per_request_count,
             self._check_stage_indices,
             self._check_configured_stages,
+            self._check_stage_rates,
         ]
 
     @staticmethod
@@ -157,4 +161,32 @@ class CrossReportValidator(ReportSetValidator):
                     f"config declares {len(stages)} stage(s) but stage(s) {absent} emitted no lifecycle report",
                 )
             )
+        return findings
+
+    def _check_stage_rates(self, reports: ReportSet) -> List[Finding]:
+        """Requested rates must be monotonically increasing across stages.
+
+        Non-decreasing, precisely: a sweep may repeat a rate, but ramping down
+        is a suspicious configuration, not an internal inconsistency — hence a
+        warning. Rates are only ordered while they are all numeric; if any
+        stage carries a future non-numeric rate type, the check skips rather
+        than guess an ordering.
+        """
+        ordered: List[tuple[int, float]] = []
+        for stage_id, contents in sorted(reports.stage_lifecycle_files().items()):
+            rate = get_path(contents, "load_summary", "requested_rate")
+            if not is_number(rate):
+                return []
+            ordered.append((stage_id, float(rate)))
+
+        findings: List[Finding] = []
+        for (prev_id, prev_rate), (stage_id, rate) in zip(ordered, ordered[1:], strict=False):
+            if rate < prev_rate:
+                findings.append(
+                    _global_warning(
+                        f"{self.name}.stage_rates",
+                        f"stage requested rates are not monotonically increasing: stage {stage_id} "
+                        f"requested_rate {rate:g} < stage {prev_id} requested_rate {prev_rate:g}",
+                    )
+                )
         return findings

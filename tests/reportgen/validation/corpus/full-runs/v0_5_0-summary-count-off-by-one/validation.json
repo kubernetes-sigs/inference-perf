@@ -1,0 +1,52 @@
+{
+  "global": {
+    "warnings": [],
+    "errors": [
+      {
+        "check": "cross_report.stage_totals",
+        "severity": "error",
+        "message": "per-stage load_summary.count values sum to 6 but the run summary reports 7 \u2014 requests dropped or double-counted across stages (stages: [0, 1])",
+        "report": null
+      },
+      {
+        "check": "cross_report.per_request_count",
+        "severity": "error",
+        "message": "per_request_lifecycle_metrics.json has 6 record(s) but the run summary reports 7 request(s)",
+        "report": null
+      }
+    ]
+  },
+  "reports": {
+    "summary_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": [
+        {
+          "check": "summary.counts",
+          "severity": "error",
+          "message": "request counts do not reconcile: successes (5) + failures (1) != load_summary.count (7)",
+          "report": "summary_lifecycle_metrics.json"
+        }
+      ]
+    },
+    "stage_0_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    },
+    "stage_1_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    },
+    "per_request_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    },
+    "inference-perf.partial.stage_0.yaml": {
+      "warnings": [],
+      "errors": []
+    },
+    "inference-perf.partial.stage_1.yaml": {
+      "warnings": [],
+      "errors": []
+    }
+  }
+}

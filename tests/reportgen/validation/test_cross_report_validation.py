@@ -87,3 +87,28 @@ def test_fewer_stage_reports_than_configured_stages_is_a_warning() -> None:
 
     result = _validate(reports)
     assert any(f.check == "cross_report.configured_stages" for f in result.global_findings.warnings)
+
+
+def test_decreasing_stage_rate_is_a_warning() -> None:
+    reports, contents = tampered(make_report_set(), STAGE_0_FILE)
+    contents["load_summary"]["requested_rate"] = 2.0  # stage 1 keeps the helpers' rate of 1.0
+
+    result = _validate(reports)
+    assert any(f.check == "cross_report.stage_rates" for f in result.global_findings.warnings)
+
+
+def test_equal_stage_rates_are_clean() -> None:
+    # Monotonically increasing means non-decreasing: a sweep may repeat a
+    # rate, and the helpers give every stage the same rate.
+    result = _validate(make_report_set())
+    assert not any(f.check == "cross_report.stage_rates" for f in result.global_findings.warnings)
+
+
+def test_non_numeric_stage_rate_skips_the_rate_ordering_check() -> None:
+    # Rates are floats today; a future rate type has no defined ordering, so
+    # the check must skip instead of comparing across types.
+    reports, contents = tampered(make_report_set(), STAGE_0_FILE)
+    contents["load_summary"]["requested_rate"] = {"distribution": "poisson", "mean": 2.0}
+
+    result = _validate(reports)
+    assert not any(f.check == "cross_report.stage_rates" for f in result.global_findings.warnings)
