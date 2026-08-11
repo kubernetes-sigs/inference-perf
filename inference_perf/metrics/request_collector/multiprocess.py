@@ -32,12 +32,15 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
 
     def __init__(self) -> None:
         self.queue: "mp.JoinableQueue[Optional[RequestLifecycleMetric]]" = mp.JoinableQueue()
+        self.metrics: list[RequestLifecycleMetric] = []
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         self.queue.put(metric)
 
     async def collect_metrics(self) -> list[RequestLifecycleMetric]:
-        metrics: list[RequestLifecycleMetric] = []
+        # Accumulate onto self.metrics (not a local) so snapshot() can serve
+        # partial results to mid-run readers like the sweep capacity probe.
+        metrics = self.metrics
         event_loop = get_event_loop()
         # prevent get from blocking the executor for too long:
         get_queue = partial(self.queue.get, timeout=0.5)
@@ -70,3 +73,6 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
 
     def get_metrics(self) -> list[RequestLifecycleMetric]:
         return self.metrics
+
+    def snapshot(self) -> list[RequestLifecycleMetric]:
+        return list(self.metrics)
