@@ -1,0 +1,19 @@
+{
+  "global": {
+    "warnings": [],
+    "errors": []
+  },
+  "reports": {
+    "stage_0_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": [
+        {
+          "check": "per_stage.load",
+          "severity": "error",
+          "message": "load_summary.requested_rate is negative: -1.0",
+          "report": "stage_0_lifecycle_metrics.json"
+        }
+      ]
+    }
+  }
+}
