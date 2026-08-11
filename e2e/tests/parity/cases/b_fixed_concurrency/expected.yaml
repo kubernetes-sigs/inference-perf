@@ -1,0 +1,18 @@
+absorber:
+  ttft_ms: 40
+  itl_ms: 3
+workload:
+  num_requests: 48
+  prompt_tokens: 128
+  prompt_tokens_rel_tol: 0.15
+  max_tokens: 64
+  stream: true
+  ignore_eos: true
+load:
+  mode: concurrency
+  concurrency: 8
+tools:
+  vllm-bench:
+    # See a_fixed_rate/expected.yaml: the pinned vllm always issues one initial
+    # single-prompt test request before the measured run.
+    leading_extra_requests: 1
