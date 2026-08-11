@@ -31,7 +31,8 @@ The probe's outputs are named constants with confidence intervals
 symbol namespace: sweep stage definitions may reference them, users may never
 set them, and the harness binds their values after the probe runs. This
 module deliberately has no dependency on the expression grammar or on any
-dispatch/wiring code; it is pure measurement and estimation logic.
+dispatch code; it is measurement and estimation logic, plus one adapter
+(`metrics`) from request lifecycle metrics to rung measurements.
 """
 
 from .estimator import (
@@ -42,6 +43,7 @@ from .estimator import (
     make_rung,
 )
 from .ladder import ConcurrencyLadder, LadderConfig
+from .metrics import LatencyProfile, latency_profile, rung_from_metrics
 from .result import (
     RESERVED_SYMBOLS,
     BoundConstant,
@@ -59,6 +61,7 @@ __all__ = [
     "ConcurrencyLadder",
     "ConfidenceInterval",
     "LadderConfig",
+    "LatencyProfile",
     "ProbeResult",
     "RungResult",
     "SaturationSignal",
@@ -69,5 +72,7 @@ __all__ = [
     "fit_saturating_curve",
     "is_stationary",
     "isotonic_regression",
+    "latency_profile",
     "make_rung",
+    "rung_from_metrics",
 ]

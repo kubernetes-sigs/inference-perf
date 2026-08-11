@@ -31,6 +31,15 @@ class RequestMetricCollector(ABC):
     def get_metrics(self) -> List[RequestLifecycleMetric]:
         raise NotImplementedError
 
+    @abstractmethod
+    def snapshot(self) -> List[RequestLifecycleMetric]:
+        """Copy of the metrics collected so far, safe to read mid-run.
+
+        Unlike `get_metrics`, this must not require the collector to be
+        stopped first; the sweep capacity probe reads it between rungs.
+        """
+        raise NotImplementedError
+
     @asynccontextmanager
     async def start(self) -> AsyncIterator[None]:
         yield

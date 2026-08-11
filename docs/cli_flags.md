@@ -233,6 +233,13 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--load.sweep.num_stages` | int | Number of load stages to generate. |
 | `--load.sweep.stage_duration` | int | Duration of each generated stage in seconds. |
 | `--load.sweep.saturation_percentile` | float | Percentile of observed request rates taken as the saturation point. |
+| `--load.sweep.probe.rung_duration` | float | Measurement window per concurrency rung in seconds. |
+| `--load.sweep.probe.settle_duration` | float | Seconds each rung runs before its measurement window opens. |
+| `--load.sweep.probe.start_concurrency` | int | Concurrency of the first rung, also the unloaded baseline. |
+| `--load.sweep.probe.growth_factor` | float | Multiplier applied to concurrency between rungs. |
+| `--load.sweep.probe.max_concurrency` | int | Concurrency ceiling for the ladder. |
+| `--load.sweep.probe.gain_threshold` | float | Stop when the relative throughput gain between the top two rungs is confidently below this fraction. |
+| `--load.sweep.probe.knee_fraction` | float | Fraction of the saturation rate that defines the knee concurrency. |
 | `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the CPU count. |
 | `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
 | `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |
