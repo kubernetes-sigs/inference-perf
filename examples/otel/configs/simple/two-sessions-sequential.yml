@@ -20,6 +20,10 @@ data:
     # Request settings
     default_max_tokens: 100000
 
+    # Wait indefinitely for predecessor events instead of failing deep chains
+    # whose cumulative ancestor latency exceeds a fixed timeout.
+    predecessor_wait_timeout_sec: 0
+
     # Error handling
     include_errors: true
     skip_invalid_files: true
