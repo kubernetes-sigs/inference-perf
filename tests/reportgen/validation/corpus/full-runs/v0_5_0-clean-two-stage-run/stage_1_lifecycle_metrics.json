@@ -1,0 +1,147 @@
+{
+  "benchmark_time_seconds": 2.0,
+  "load_summary": {
+    "count": 2,
+    "schedule_delay": {
+      "mean": 0.0009999999999994458,
+      "min": 0.0009999999999994458,
+      "max": 0.0009999999999994458,
+      "median": 0.0009999999999994458,
+      "p90": 0.0009999999999994458
+    },
+    "send_duration": 0.5,
+    "requested_rate": 1.0,
+    "achieved_rate": 4.0
+  },
+  "successes": {
+    "count": 2,
+    "latency": {
+      "request_latency": {
+        "mean": 1.25,
+        "min": 1.0,
+        "max": 1.5,
+        "median": 1.25,
+        "p90": 1.45
+      },
+      "normalized_time_per_output_token": {
+        "mean": 0.1375,
+        "min": 0.125,
+        "max": 0.15,
+        "median": 0.1375,
+        "p90": 0.1475
+      },
+      "time_per_output_token": {
+        "mean": 0.12373737373737376,
+        "min": 0.11111111111111123,
+        "max": 0.1363636363636363,
+        "median": 0.12373737373737376,
+        "p90": 0.13383838383838378
+      },
+      "time_to_first_token": {
+        "mean": 0.1237373737373737,
+        "min": 0.11111111111111072,
+        "max": 0.1363636363636367,
+        "median": 0.1237373737373737,
+        "p90": 0.1338383838383841
+      },
+      "inter_token_latency": {
+        "mean": 0.12531565656565657,
+        "min": 0.11111111111111072,
+        "max": 0.1363636363636367,
+        "median": 0.1363636363636349,
+        "p90": 0.1363636363636367
+      }
+    },
+    "throughput": {
+      "input_tokens_per_sec": 105.0,
+      "output_tokens_per_sec": 9.0,
+      "total_tokens_per_sec": 114.0,
+      "requests_per_sec": 1.0,
+      "images_per_sec": 0.0,
+      "videos_per_sec": 0.0,
+      "audios_per_sec": 0.0
+    },
+    "request_size_bytes": {
+      "mean": 2.0,
+      "min": 2.0,
+      "max": 2.0,
+      "median": 2.0,
+      "p90": 2.0
+    },
+    "prompt_len": {
+      "mean": 105.0,
+      "min": 100.0,
+      "max": 110.0,
+      "median": 105.0,
+      "p90": 109.0
+    },
+    "image": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "pixels": null,
+      "bytes": null,
+      "aspect_ratio": null
+    },
+    "video": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "frames": null,
+      "pixels": null,
+      "bytes": null,
+      "aspect_ratio": null
+    },
+    "audio": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "seconds": null,
+      "bytes": null
+    },
+    "prompt_tokens": {
+      "total": 210.0,
+      "cached": 0.0,
+      "uncached": 210.0,
+      "mean": 105.0,
+      "min": 100.0,
+      "max": 110.0,
+      "median": 105.0,
+      "p90": 109.0
+    },
+    "output_len": {
+      "mean": 9.0,
+      "min": 8.0,
+      "max": 10.0,
+      "median": 9.0,
+      "p90": 9.8
+    },
+    "output_tokens": {
+      "total": 18.0,
+      "mean": 9.0,
+      "min": 8.0,
+      "max": 10.0,
+      "median": 9.0,
+      "p90": 9.8
+    },
+    "token_count_mismatches": 0
+  },
+  "failures": {
+    "count": 0,
+    "request_latency": null,
+    "prompt_len": null,
+    "by_label": {}
+  }
+}
