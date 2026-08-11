@@ -1,0 +1,37 @@
+# Open loop: Poisson arrivals at 8 QPS, 40 prompts, fixed 128-in / 64-out.
+# Targets the vllm pinned in e2e/utils/vllm_bench.py (VLLM_PINNED_REF).
+# Every flag below was read off that tag's vllm/benchmarks/serve.py and
+# vllm/benchmarks/datasets.py, which is where the version-dependent semantics
+# live:
+#   --endpoint-type is what selects the request function. --backend also
+#     exists at this pin but is vestigial: it is read only to reject sampling
+#     params on non-OpenAI backends, and this case sets none.
+#   --random-range-ratio 0 means fixed lengths. The sampled range is
+#     [len*(1-r), len*(1+r)] with an inclusive upper bound, so r=0 collapses
+#     both ends onto len. This is the range_ratio footgun that motivated #481,
+#     and it flipped meaning across vllm versions: re-read it on every bump.
+#   --random-input-len is reduced by the tokenizer's special-token count
+#     before sampling, so a BOS-prepending tokenizer offers len-1 prompt
+#     tokens. That is why expected.yaml carries prompt_tokens_rel_tol.
+#   --request-rate draws Poisson inter-arrivals at the default --burstiness 1.0.
+#   --ignore-eos is the only way to get ignore_eos into the payload; stream is
+#     hardcoded true on this endpoint and is not configurable from the CLI.
+# --base-url/--model/--tokenizer/--save-result/--result-filename are appended
+# by the harness.
+--endpoint-type
+openai
+--endpoint
+/v1/completions
+--dataset-name
+random
+--num-prompts
+40
+--random-input-len
+128
+--random-output-len
+64
+--random-range-ratio
+0
+--request-rate
+8
+--ignore-eos
