@@ -33,13 +33,16 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
         self.queue: "mp.JoinableQueue[Optional[Union[RequestLifecycleMetric, List[RequestLifecycleMetric]]]]" = (
             mp.JoinableQueue()
         )
+        self.metrics: list[RequestLifecycleMetric] = []
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
         """Record a single metric directly to the multiprocessing queue."""
         self.queue.put(metric)
 
     async def collect_metrics(self) -> list[RequestLifecycleMetric]:
-        metrics: list[RequestLifecycleMetric] = []
+        # Accumulate onto self.metrics (not a local) so snapshot() can serve
+        # partial results to mid-run readers like the sweep capacity probe.
+        metrics = self.metrics
         event_loop = get_event_loop()
 
         def _drain_batch(max_batch_size: int = 4096) -> tuple[list[RequestLifecycleMetric], bool]:
@@ -103,3 +106,6 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
 
     def get_metrics(self) -> list[RequestLifecycleMetric]:
         return self.metrics
+
+    def snapshot(self) -> list[RequestLifecycleMetric]:
+        return list(self.metrics)

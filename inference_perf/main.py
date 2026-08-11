@@ -442,6 +442,7 @@ def main_cli() -> None:
         session_metrics_collector,
         stage_observer=metrics_hub,
         metrics_registry=metrics_hub.registry,
+        request_metric_collector=collector,
     )
 
     # Wire session metrics collector into reportgen if it exists
