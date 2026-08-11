@@ -101,6 +101,30 @@ def make_mock_api_config_streaming(streaming: bool = False) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
+# SessionReplayConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionReplayConfigPredecessorWaitTimeout:
+    """Test the predecessor_wait_timeout_sec config field."""
+
+    def test_default_is_3600(self) -> None:
+        """Default preserves the previous hardcoded 3600s behavior."""
+        config = SessionReplayConfig()
+        assert config.predecessor_wait_timeout_sec == 3600.0
+
+    def test_accepts_zero(self) -> None:
+        """0 is a valid value, meaning 'wait indefinitely'."""
+        config = SessionReplayConfig(predecessor_wait_timeout_sec=0)
+        assert config.predecessor_wait_timeout_sec == 0
+
+    def test_rejects_negative(self) -> None:
+        """Negative timeouts are rejected."""
+        with pytest.raises(ValidationError):
+            SessionReplayConfig(predecessor_wait_timeout_sec=-1)
+
+
+# ---------------------------------------------------------------------------
 # EventOutputRegistry tests
 # ---------------------------------------------------------------------------
 
@@ -146,6 +170,37 @@ class TestEventOutputRegistry:
         reg = EventOutputRegistry()
         with pytest.raises(TimeoutError):
             asyncio.run(reg.require_async("event_001", timeout_sec=0.1))
+
+    def test_require_async_zero_timeout_waits_indefinitely(self) -> None:
+        """timeout_sec=0 waits indefinitely instead of timing out immediately."""
+        reg = EventOutputRegistry()
+
+        async def _run() -> str:
+            async def producer() -> None:
+                # Longer than any timeout that would previously have fired.
+                await asyncio.sleep(0.2)
+                reg.record("event_001", "delayed output", [])
+
+            asyncio.create_task(producer())
+            return str(await reg.require_async("event_001", timeout_sec=0))
+
+        result = asyncio.run(_run())
+        assert result == "delayed output"
+
+    def test_require_async_zero_timeout_still_propagates_failure(self) -> None:
+        """timeout_sec=0 (indefinite) still raises promptly on predecessor failure."""
+        reg = EventOutputRegistry()
+
+        async def _run() -> None:
+            async def fail_producer() -> None:
+                await asyncio.sleep(0.05)
+                reg.record_failure("event_001")
+
+            asyncio.create_task(fail_producer())
+            await reg.require_async("event_001", timeout_sec=0)
+
+        with pytest.raises(EventFailedError):
+            asyncio.run(_run())
 
     def test_double_record_raises_error(self) -> None:
         """Recording the same event twice should raise ValueError."""
@@ -420,6 +475,66 @@ class TestSessionChatCompletionAPIData:
         # Messages should be substituted
         assert len(api_data.messages) == 2
         assert api_data.messages[1].content == "Predecessor output"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_predecessors_uses_configured_timeout(self) -> None:
+        """wait_for_predecessors_and_substitute forwards predecessor_wait_timeout_sec to require_async."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        registry.record("session_1:event_0", "Predecessor output", [])
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Question")],
+            max_tokens=50,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
+            predecessor_wait_timeout_sec=0,
+        )
+
+        seen_timeouts = []
+        original_require_async = registry.require_async
+
+        async def spy_require_async(event_id: str, timeout_sec: float = 3600.0) -> str:
+            seen_timeouts.append(timeout_sec)
+            return await original_require_async(event_id, timeout_sec=timeout_sec)
+
+        registry.require_async = spy_require_async  # type: ignore[method-assign]
+
+        await api_data.wait_for_predecessors_and_substitute()
+
+        assert seen_timeouts == [0]
+
+    @pytest.mark.asyncio
+    async def test_wait_for_predecessors_zero_timeout_does_not_time_out(self) -> None:
+        """predecessor_wait_timeout_sec=0 waits indefinitely rather than failing immediately."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        api_data = SessionChatCompletionAPIData(
+            messages=[ChatMessage(role="user", content="Question")],
+            max_tokens=50,
+            event_id="session_1:event_1",
+            registry=registry,
+            worker_tracker=tracker,
+            completion_queue=None,
+            total_events_in_session=2,
+            predecessor_event_ids=["session_1:event_0"],
+            predecessor_wait_timeout_sec=0,
+        )
+
+        async def producer() -> None:
+            await asyncio.sleep(0.1)
+            registry.record("session_1:event_0", "Predecessor output", [])
+
+        asyncio.create_task(producer())
+        await api_data.wait_for_predecessors_and_substitute()
+
+        assert api_data.skip_request is False
+        assert not registry.is_event_failed("session_1:event_1")
 
     @pytest.mark.asyncio
     async def test_disable_output_substitution_keeps_recorded(self) -> None:

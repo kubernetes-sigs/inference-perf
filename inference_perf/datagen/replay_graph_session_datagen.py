@@ -275,6 +275,7 @@ class EventOutputRegistry:
         return event_id in self._failed_event_ids
 
     async def require_async(self, event_id: str, timeout_sec: float = 3600.0) -> str:
+        # timeout_sec=0 waits indefinitely (see the asyncio.wait_for call below).
         if event_id in self._failed_event_ids:
             raise EventFailedError(event_id)
 
@@ -295,7 +296,7 @@ class EventOutputRegistry:
         logger.debug(f"Event {event_id} waiting on asyncio signal (zero threads)")
 
         try:
-            await asyncio.wait_for(signal.wait(), timeout=timeout_sec)
+            await asyncio.wait_for(signal.wait(), timeout=timeout_sec if timeout_sec > 0 else None)
         except asyncio.TimeoutError as e:
             raise TimeoutError(
                 f"EventOutputRegistry: output for '{event_id}' not available after "
@@ -339,6 +340,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     inject_random_session_id: bool = False
     session_random_string: Optional[str] = None
     override_tool_call_max_tokens: bool = False
+    # Seconds to wait for predecessors before failing this event. 0 waits indefinitely;
+    # see SessionReplayConfig.predecessor_wait_timeout_sec.
+    predecessor_wait_timeout_sec: float = 3600.0
     # Mitigation for tool-call responses with malformed JSON in `arguments`.
     # `none` (default) is byte-identical to upstream main; `use_recorded`
     # substitutes the recorded assistant message at the affected slot.
@@ -468,7 +472,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             logger.debug(f"Event {self.event_id} waiting for {len(self.predecessor_event_ids)} predecessor(s)")
             try:
                 await asyncio.gather(
-                    *[self.registry.require_async(event_id, timeout_sec=3600.0) for event_id in self.predecessor_event_ids]
+                    *[
+                        self.registry.require_async(event_id, timeout_sec=self.predecessor_wait_timeout_sec)
+                        for event_id in self.predecessor_event_ids
+                    ]
                 )
             except EventFailedError:
                 self._fail_and_notify(session_id, "predecessor failed")
@@ -1743,6 +1750,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
             session_random_string=state.random_string if state else None,
             override_tool_call_max_tokens=self.replay_config.override_tool_call_max_tokens if self.replay_config else False,
+            predecessor_wait_timeout_sec=self.replay_config.predecessor_wait_timeout_sec if self.replay_config else 3600.0,
             # Mitigation knob: read once per event from replay_config. Default
             # NONE keeps the wire format byte-identical to upstream main.
             bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)

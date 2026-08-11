@@ -131,6 +131,11 @@ class SessionReplayConfig(StrictBaseModel):
         ge=0,
         description="Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace.",
     )
+    predecessor_wait_timeout_sec: float = Field(
+        3600.0,
+        ge=0,
+        description="Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely.",
+    )
 
     # Error handling
     include_errors: bool = Field(True, description="Include spans with error status")
