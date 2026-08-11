@@ -1,0 +1,16 @@
+{
+  "global": {
+    "warnings": [],
+    "errors": []
+  },
+  "reports": {
+    "stage_0_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    },
+    "stage_1_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    }
+  }
+}
