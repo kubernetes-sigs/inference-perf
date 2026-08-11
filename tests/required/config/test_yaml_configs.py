@@ -32,6 +32,7 @@ stale config would validate cleanly while quietly losing the setting it meant to
 """
 
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import List
 
@@ -64,6 +65,13 @@ NON_CONFIG_FILES = {
     "examples/tgi/docker-compose.yml": "docker-compose service definition",
     "examples/tgi/prometheus.yml": "Prometheus scrape config",
 }
+# Same idea as NON_CONFIG_FILES, for families of files whose membership grows by convention
+# rather than by edit. A drop-in test case directory must not require a Python change here
+# every time one is added, but the sibling inference-perf config in the same directory still
+# has to be schema-validated, so the exclusion has to be per-file rather than per-directory.
+NON_CONFIG_GLOBS = {
+    "e2e/tests/parity/cases/*/expected.yaml": "tool-parity case invariants, not inference-perf configs",
+}
 
 
 def _tracked_yaml_files() -> List[str]:
@@ -75,14 +83,20 @@ def _tracked_yaml_files() -> List[str]:
     return sorted(p for p in out.split("\n") if p)
 
 
+def _matches_non_config_glob(path: str) -> bool:
+    return any(fnmatch(path, pattern) for pattern in NON_CONFIG_GLOBS)
+
+
 def _is_config(path: str) -> bool:
     if path in CONFIG_FILES:
         return True
-    return any(path.startswith(f"{d}/") for d in CONFIG_DIRS) and path not in NON_CONFIG_FILES
+    if path in NON_CONFIG_FILES or _matches_non_config_glob(path):
+        return False
+    return any(path.startswith(f"{d}/") for d in CONFIG_DIRS)
 
 
 def _is_declared_non_config(path: str) -> bool:
-    if path in NON_CONFIG_FILES:
+    if path in NON_CONFIG_FILES or _matches_non_config_glob(path):
         return True
     return any(path.startswith(prefix) for prefix in NON_CONFIG_PREFIXES)
 
@@ -121,10 +135,11 @@ def test_every_tracked_yaml_is_classified(rel_path: str) -> None:
     """Every tracked YAML is either schema-validated or explicitly declared a non-config.
 
     If this fails for a file you just added, add it to CONFIG_DIRS/CONFIG_FILES if it is an
-    inference-perf config, or to NON_CONFIG_PREFIXES/NON_CONFIG_FILES with a reason if it is
-    not. Silently unvalidated config YAML is what this whole module exists to prevent.
+    inference-perf config, or to NON_CONFIG_PREFIXES/NON_CONFIG_FILES/NON_CONFIG_GLOBS with a
+    reason if it is not. Silently unvalidated config YAML is what this whole module exists to
+    prevent.
     """
     assert _is_config(rel_path) or _is_declared_non_config(rel_path), (
-        f"{rel_path} is neither validated as a config nor declared a non-config. "
-        "Add it to CONFIG_DIRS/CONFIG_FILES or NON_CONFIG_PREFIXES/NON_CONFIG_FILES."
+        f"{rel_path} is neither validated as a config nor declared a non-config. Add it to "
+        "CONFIG_DIRS/CONFIG_FILES or NON_CONFIG_PREFIXES/NON_CONFIG_FILES/NON_CONFIG_GLOBS."
     )
