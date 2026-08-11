@@ -71,6 +71,7 @@ from inference_perf.config.loadgen import (
     MultiLoRAConfig,
     StageGenType,
     StandardLoadStage,
+    ProbeConfig,
     SweepConfig,
     TraceSessionReplayLoadStage,
 )
@@ -135,6 +136,7 @@ __all__ = [
     "StandardLoadStage",
     "StorageConfig",
     "StorageConfigBase",
+    "ProbeConfig",
     "SweepConfig",
     "SyntheticAgenticConfig",
     "SyntheticMultimodalDatagenConfig",
