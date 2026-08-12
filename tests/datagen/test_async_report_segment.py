@@ -388,7 +388,8 @@ def test_dispatch_description_documents_the_envelope_and_ordering():
     desc = DISPATCH_AGENT_DESCRIPTION
     assert "<task-notification>" in desc and "<result>" in desc, "envelope shape documented"
     assert "completion order" in desc.lower(), "delivery ordering documented"
-    assert "not the order the sub-agents were dispatched" in desc, "explicitly warns order != dispatch order"
+    # reports arrive individually, not batched — the orchestrator must expect one at a time
+    assert "one at a time" in desc.lower(), "per-report (non-batched) delivery documented"
     # advertised in BOTH schema positions so any client shape picks it up
     assert DISPATCH_AGENT_TOOL_DEF["description"] == desc
     assert DISPATCH_AGENT_TOOL_DEF["function"]["description"] == desc

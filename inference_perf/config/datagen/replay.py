@@ -450,9 +450,31 @@ class SyntheticAgenticConfig(SessionReplayConfig):
 
     # Inherited from SessionReplayConfig but inert for synthetic generation: pinned
     # so a synthetic config can't accidentally enable trace-replay-only behavior.
-    inject_random_session_id: bool = Field(False, frozen=True)
-    duplicate_sessions_target: Optional[int] = Field(None, frozen=True)
-    override_tool_call_max_tokens: bool = Field(False)
+    inject_random_session_id: bool = Field(
+        False,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned False): sessions are already "
+            "generated with distinct content per session index, so there is no recorded "
+            "session ID to randomize."
+        ),
+    )
+    duplicate_sessions_target: Optional[int] = Field(
+        None,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned None): raise num_sessions to "
+            "generate more sessions instead of duplicating existing ones."
+        ),
+    )
+    override_tool_call_max_tokens: bool = Field(
+        False,
+        description=(
+            "Override tool-call max_tokens to 4096 instead of using the generated call's own "
+            "length. Defaults False here (unlike trace replay) because the generator sizes each "
+            "tool call itself, so the generated length is already correct for this model."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_theme_mix(self) -> "SyntheticAgenticConfig":
