@@ -97,6 +97,20 @@ class SessionLifecycleMetric(BaseModel):
     error: Optional[ErrorResponseInfo] = None
     total_input_tokens: Optional[int] = None
     total_output_tokens: Optional[int] = None
+    # Per-session sum of prompt tokens served from the server-side KV/prefix
+    # cache (usage.prompt_tokens_details.cached_tokens). None when no request in
+    # the session reported server usage (non-streaming, or a vLLM build that
+    # omits or nulls prompt_tokens_details) — distinct from 0, which means the
+    # field was present but no tokens were cached.
+    total_cached_tokens: Optional[int] = None
+    # Denominator for the per-session cache hit rate: sum of the server-reported
+    # usage.prompt_tokens over exactly the requests that contributed to
+    # total_cached_tokens. This is deliberately NOT total_input_tokens, which is
+    # the client-side re-tokenized count — mixing a server numerator with a
+    # client denominator skews the ratio by the tokenizer's disagreement with the
+    # server (chat template and tool-schema overhead the client does not model)
+    # and can push it above 1.0. None whenever total_cached_tokens is None.
+    total_cacheable_input_tokens: Optional[int] = None
 
 
 class InferenceAPIData(BaseModel):

@@ -1,7 +1,8 @@
+from typing import Any
 from typing import cast
 
 import pytest
-from inference_perf.reportgen.base import summarize_requests, ReportGenerator
+from inference_perf.reportgen.base import summarize_requests, summarize_prompt_token_usage, ReportGenerator
 from inference_perf.apis.base import (
     RequestLifecycleMetric,
     InferenceInfo,
@@ -460,6 +461,202 @@ def test_enrich_sessions_honors_use_server_output_tokens() -> None:
     server_session = make_session()
     ReportGenerator._enrich_sessions(None, [server_session], [request_metric], use_server_output_tokens=True)  # type: ignore[arg-type]
     assert server_session.total_output_tokens == 5
+
+
+def _cached_request(session_id: str, input_tokens: int, server_usage: dict[str, Any] | None) -> RequestLifecycleMetric:
+    """A session request whose response optionally carries a server usage dict."""
+    return RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=1.0,
+        request_data="r",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=input_tokens)),
+            response_metrics=StreamedResponseMetrics(output_tokens=1, server_usage=server_usage),
+        ),
+        error=None,
+        session_id=session_id,
+    )
+
+
+def _cache_session(session_id: str = "s1") -> SessionLifecycleMetric:
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"{session_id}.json",
+        start_time=0.0,
+        end_time=1.0,
+        duration_sec=1.0,
+        num_events=1,
+        num_events_completed=1,
+    )
+
+
+def test_enrich_sessions_sums_cached_tokens_across_requests() -> None:
+    """total_cached_tokens sums prompt_tokens_details.cached_tokens over a session's requests."""
+    requests = [
+        _cached_request("s1", 20, {"prompt_tokens": 20, "prompt_tokens_details": {"cached_tokens": 0}}),
+        _cached_request("s1", 40, {"prompt_tokens": 40, "prompt_tokens_details": {"cached_tokens": 20}}),
+        _cached_request("s1", 39, {"prompt_tokens": 39, "prompt_tokens_details": {"cached_tokens": 12}}),
+    ]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    assert session.total_input_tokens == 99
+    assert session.total_cached_tokens == 32  # 0 + 20 + 12
+    assert session.total_cacheable_input_tokens == 99  # server prompt_tokens: 20 + 40 + 39
+
+
+def test_enrich_sessions_cached_none_without_server_usage() -> None:
+    """No request reporting server usage leaves total_cached_tokens as None (not 0)."""
+    requests = [_cached_request("s1", 10, None), _cached_request("s1", 10, None)]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    assert session.total_cached_tokens is None
+    assert session.total_cacheable_input_tokens is None
+    assert session.total_input_tokens == 20
+
+
+def test_enrich_sessions_cached_handles_null_prompt_tokens_details() -> None:
+    """server_usage present with prompt_tokens_details: null contributes nothing (see #664)."""
+    requests = [
+        _cached_request("s1", 10, {"prompt_tokens": 10, "prompt_tokens_details": None}),
+        _cached_request("s1", 10, {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 4}}),
+    ]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    # The null-details request reported no cache info at all, so it contributes to
+    # neither side of the ratio — only the request that did report is counted.
+    assert session.total_cached_tokens == 4
+    assert session.total_cacheable_input_tokens == 10
+
+
+def test_enrich_sessions_cache_denominator_uses_server_prompt_tokens() -> None:
+    """The hit-rate denominator is the server's prompt_tokens, not the client-side count.
+
+    Regression: the denominator was total_input_tokens (a client-side
+    re-tokenization). The client undercounts what the server actually prompts on
+    -- chat template and tool-schema overhead it does not model -- so pairing it
+    with the server-reported cached_tokens inflated the rate, here past 1.0.
+    """
+    # Client re-tokenizes 100 tokens; the server prompted on 120 and cached 110.
+    requests = [_cached_request("s1", 100, {"prompt_tokens": 120, "prompt_tokens_details": {"cached_tokens": 110}})]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    assert session.total_input_tokens == 100  # client count, unchanged
+    assert session.total_cacheable_input_tokens == 120  # server count drives the ratio
+
+    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(110 / 120)
+    assert summary["kv_cache_hit_rate"]["max"] <= 1.0
+
+
+def test_enrich_sessions_cache_matches_stage_level_prompt_token_usage() -> None:
+    """Per-session hit rate agrees with the stage-level prompt_token_usage split.
+
+    Regression: the two lived in one report and disagreed (0.6621 vs 0.64 on this
+    data) because only one of them used the server-side denominator.
+    """
+    client = [900, 1900, 2900, 3900, 4900]  # client under-counts each turn
+    server = [1000, 2000, 3000, 4000, 5000]
+    cached = [0, 900, 1900, 2900, 3900]
+    requests = [
+        _cached_request("s1", c, {"prompt_tokens": s, "prompt_tokens_details": {"cached_tokens": k}})
+        for c, s, k in zip(client, server, cached, strict=True)
+    ]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    stage = summarize_prompt_token_usage(requests, DEFAULT_PERCENTILES)
+    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_rate_aggregate"] == pytest.approx(stage["cached"] / stage["total"])
+
+
+def test_enrich_sessions_cache_reads_anthropic_usage_shape() -> None:
+    """Anthropic's cache_read_input_tokens counts, and its input_tokens excludes it.
+
+    Regression: only the OpenAI/vLLM shape was read, so an Anthropic run reported
+    total_cached_tokens=0 -- indistinguishable from a genuine 0% hit rate.
+    """
+    requests = [_cached_request("s1", 100, {"input_tokens": 20, "output_tokens": 5, "cache_read_input_tokens": 80})]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    assert session.total_cached_tokens == 80
+    # Anthropic's input_tokens is the uncached remainder, so the prompt total is 20 + 80.
+    assert session.total_cacheable_input_tokens == 100
+
+    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(0.8)
+
+
+def test_enrich_sessions_cache_clamps_cached_above_prompt_tokens() -> None:
+    """A cached count exceeding prompt_tokens is clamped instead of yielding a rate > 1."""
+    requests = [_cached_request("s1", 100, {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 150}})]
+    session = _cache_session("s1")
+    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
+
+    assert session.total_cached_tokens == 100
+
+    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["kv_cache_hit_rate"]["max"] == pytest.approx(1.0)
+
+
+def test_summarize_sessions_reports_kv_cache_hit_rate() -> None:
+    """summarize_sessions emits per-session cached totals and the cached/prompt ratio."""
+    with_cache = _cache_session("s1")
+    with_cache.total_input_tokens = 99
+    with_cache.total_cached_tokens = 32  # golden shape from a real qwen32 run
+    with_cache.total_cacheable_input_tokens = 99
+
+    no_cache = _cache_session("s2")
+    no_cache.total_input_tokens = 50
+    no_cache.total_cached_tokens = None  # no server usage — excluded from the ratio
+    no_cache.total_cacheable_input_tokens = None
+
+    # summarize_sessions doesn't use `self`, so call it unbound with a dummy self.
+    summary = ReportGenerator.summarize_sessions(None, [with_cache, no_cache], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["total_cached_tokens"]["mean"] == pytest.approx(32.0)
+    # Only s1 contributes: 32/99. s2 (None) is skipped, not treated as 0.
+    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(32.0 / 99.0)
+    assert summary["sessions_with_cache_info"] == 1
+
+
+def test_summarize_sessions_kv_cache_hit_rate_none_when_no_cache_info() -> None:
+    """With no session reporting cache info, the ratio summary is None, not a crash."""
+    s = _cache_session("s1")
+    s.total_input_tokens = 30
+    s.total_cached_tokens = None
+
+    summary = ReportGenerator.summarize_sessions(None, [s], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_rate"] is None
+    assert summary["kv_cache_hit_rate_aggregate"] is None
+    assert summary["total_cached_tokens"] is None
+    assert summary["sessions_with_cache_info"] == 0
+
+
+def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
+    """The aggregate rate weights sessions by tokens; the percentile mean does not.
+
+    A tiny fully-cached session and a huge uncached one average to 50% as a
+    mean-of-ratios, which misreads a run that cached ~0.1% of its tokens.
+    """
+    small = _cache_session("small")
+    small.total_cached_tokens, small.total_cacheable_input_tokens = 10, 10
+
+    large = _cache_session("large")
+    large.total_cached_tokens, large.total_cacheable_input_tokens = 0, 10000
+
+    summary = ReportGenerator.summarize_sessions(None, [small, large], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(0.5)  # mean of ratios
+    assert summary["kv_cache_hit_rate_aggregate"] == pytest.approx(10 / 10010)  # token-weighted
 
 
 def test_use_server_output_tokens_falls_back_without_usage() -> None:
