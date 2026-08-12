@@ -10,7 +10,7 @@ This workload replays real OpenTelemetry traces from agentic systems. Each sessi
 - **Number of Turns**: Sessions range from 1 to 300 calls per session, with a mean of 22 turns. The distribution is highly variable across different agent harnesses and benchmarks.
 - **Shared Prefix**: 92.0% of calls share prefix with predecessors, averaging 44.6k shared-prefix tokens (45.1k cacheable) per call — massive KV cache hit opportunity. The remaining 8.0% are mostly first calls in sessions (4.57%) plus truly independent calls (3.40%).
 - **Tool Usage**: 65.9% of sessions use tools, with 61.7% of all calls being tool calls. Tool definitions are present in 76.5% of sessions.
-- **Session Duration**: Average 406 seconds (~6.8 minutes), with high variability (std dev: 998 seconds). Some sessions complete in under a second while others run over 2 hours.
+- **Session Duration**: Average 406 seconds (~6.8 minutes) with high variability (std dev: 998 seconds); most sessions fall well below the mean, which a few long-running ones pull up.
 
 > **Replay-time caveat**: the durations above are the ones recorded in the corpus. At replay
 > time each inter-call gap is capped by `max_wait_ms` (default `15000`), so replayed sessions
@@ -49,6 +49,14 @@ Leave headroom for the completion on top of the input: tool-call events are repl
 `max_tokens: 4096` (see `override_tool_call_max_tokens`), so a call with only ~30.5k input
 tokens still overflows a 32k window. Hence the `< 28000` default below.
 
+Each record also carries top-level scalar fields that act as cheap proxies for "how long/large
+is this trace" — useful for dropping oversized sessions without inspecting the full `spans`
+list: `steps` (agent step count), `total_tokens` (tokens summed across the session), and
+`execution_time` (recorded wall-clock seconds). Note they are only approximations of what
+actually runs — `steps` is not the number of spans or replayed LLM calls, and `execution_time`
+is the original recorded duration, not the replayed one (inter-call gaps are capped by
+`max_wait_ms`). Use them to bound trace size, not to predict exact replay behavior.
+
 ```yaml
 data:
   type: otel_trace_replay
@@ -57,6 +65,10 @@ data:
     # Keep only sessions whose largest call fits the served context window.
     # 28000 suits a 32k window; raise to 120000 only if you serve 128k (YaRN enabled).
     filter: "lambda x: x.get('max_tokens', 0) < 28000"
+    # Or drop long/large traces using top-level scalar proxies:
+    # filter: "lambda x: x.get('steps', 0) < 50"
+    # filter: "lambda x: x.get('total_tokens', 0) < 500000"
+    # filter: "lambda x: x.get('execution_time', 0) < 600"
     # Or narrow to a single benchmark:
     # filter: "lambda x: x['benchmark'] == 'tau2_retail'"
 ```
