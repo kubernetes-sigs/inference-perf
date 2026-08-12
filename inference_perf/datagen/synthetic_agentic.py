@@ -26,7 +26,7 @@ import json
 import logging
 import string
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -448,6 +448,15 @@ _FB_PARALLEL = Distribution(type="fixed", mean=1)
 # a tool round-trip is ~1s; a human reading an answer and typing a follow-up is ~10s.
 _FB_TOOL_LATENCY = Distribution(type="fixed", mean=1)
 _FB_USER_THINK = Distribution(type="fixed", mean=10)
+# Output size of a non-terminal async-notification ack turn ("one sub-agent reported,
+# still waiting on the rest").
+#
+# Must stay ABOVE fit_filler's unpaddable fixed cost for the ack's own fixed content
+# (wrapper tags + the sentence, ~34 tokens): below that the budget guard floors to the
+# fixed content alone, which would make every ack in a chain the identical literal and
+# render the per-notification RNG salts inert. 48 clears that floor while keeping the
+# turn short-form.
+_FB_ACK_TOKENS = Distribution(type="fixed", mean=48)
 
 # Minimum events an agent occupies: one principal call whose output IS the answer
 # (tool loop depth 0, no spawn). A tool loop or a spawn adds its own events on top,
@@ -455,8 +464,8 @@ _FB_USER_THINK = Distribution(type="fixed", mean=10)
 _MIN_AGENT_COST = 1
 
 # Appended to a SPAWNED sub-agent's objective so its terminal turn concludes with
-# a prose SUMMARY (the report the orchestrator receives via the merge's
-# tool_output slot) instead of tool-call text. Real sub-agents return a textual
+# a prose SUMMARY (the report the orchestrator receives via the async notification's
+# `async_report` slot) instead of tool-call text. Real sub-agents return a textual
 # summary of their outcome, not a tool call or raw scratch work. Kept THEME-NEUTRAL
 # ("outcome of your task", not "findings") because a sub-agent may perform an
 # action/migration/generation, not only an investigation. The two load-bearing
@@ -482,6 +491,11 @@ ROOT_ANSWER_DIRECTIVE = (
     "This is your final turn; no further tool calls will be executed. Provide your final answer "
     "to the user now, in plain prose. Do not emit a tool call."
 )
+
+# The tool RESULT for an async dispatch_agent call. Content-free by design: an async
+# harness acknowledges the launch immediately and delivers the child's report LATER,
+# out of band, as its own user-role notification message.
+ASYNC_DISPATCH_STUB = "Async agent launched successfully. You will be notified automatically when it completes."
 
 # Canonical structural tool used to spawn sub-agents. It is NOT a theme tool:
 # it must be advertised on any event that FORCES it (dispatch events, via
@@ -514,18 +528,32 @@ _FALLBACK_TOOL_PARAMS: Dict[str, Any] = {
 # back to `_DEFAULT_PAYLOAD_WORDS` (a modest chunk). The user picks the workload by
 # choosing the theme; there is no confusing global knob whose effect depends on which
 # tools happen to be advertised.
-_PAYLOAD_ARG_NAMES = frozenset(
-    {"content", "code", "patch", "diff", "body", "new_string", "old_string", "text", "snippet"}
-)
+_PAYLOAD_ARG_NAMES = frozenset({"content", "code", "patch", "diff", "body", "new_string", "old_string", "text", "snippet"})
 _DEFAULT_PAYLOAD_WORDS = 48  # fallback when the theme sets no x-payload-tokens on the arg
 _PAYLOAD_TOKENS_KEY = "x-payload-tokens"  # per-arg schema hint (in words) for payload size
 
 DISPATCH_AGENT_NAME = "dispatch_agent"
+# The dispatch tool is ASYNC: the call returns a content-free acknowledgment
+# immediately (ASYNC_DISPATCH_STUB) and each sub-agent's actual report arrives
+# LATER, out of band, as its own user-role notification message. The description
+# states that contract, including what to do on a notification that still leaves
+# reports outstanding -- so the "acknowledge briefly and keep waiting" behavior
+# comes from the TOOL's contract.
+DISPATCH_AGENT_DESCRIPTION = (
+    "Launch a sub-agent to work on `objective` asynchronously. Returns immediately with a "
+    "launch acknowledgment, NOT the sub-agent's result: each sub-agent's report is delivered "
+    "later as a separate user message wrapping that report in "
+    "<task-notification><result>...</result></task-notification>. Reports arrive ONE AT A TIME "
+    "and in completion order. Reply to each incoming report with a "
+    "one-sentence acknowledgment (e.g., 'Sub-agent has finished, waiting for others'), and keep waiting."
+)
 DISPATCH_AGENT_TOOL_DEF: Dict[str, Any] = {
     "name": DISPATCH_AGENT_NAME,
     "type": "function",
+    "description": DISPATCH_AGENT_DESCRIPTION,
     "function": {
         "name": DISPATCH_AGENT_NAME,
+        "description": DISPATCH_AGENT_DESCRIPTION,
         "parameters": {
             "type": "object",
             "properties": {"objective": {"type": "string", "description": "The sub-agent's task."}},
@@ -958,7 +986,7 @@ def _clamp_le_by_suffix(values: Dict[str, str], lo_base: str, hi_base: str) -> N
         base = _strip_index(field)
         if base != lo_base:
             continue
-        suffix = field[len(lo_base):]  # the trailing index, e.g. "" or "0"
+        suffix = field[len(lo_base) :]  # the trailing index, e.g. "" or "0"
         hi_field = hi_base + suffix
         if hi_field not in values:
             continue
@@ -992,7 +1020,7 @@ def _sort_percentiles_by_suffix(values: Dict[str, str]) -> None:
             if low.startswith(rank) and (len(low) == len(rank) or not low[len(rank)].isdigit()):
                 # `p50`/`p50_ms`/`p50_ms0` match rank p50; `p500` does NOT
                 # (the char after the rank is a digit -> a different number).
-                suffix = field[len(rank):]
+                suffix = field[len(rank) :]
                 groups.setdefault(suffix, []).append((ri, field))
                 break
     for _suffix, members in groups.items():
@@ -1102,9 +1130,7 @@ def _render_theme_template(theme, tpl: str, seed: int, path: tuple, pinned: Opti
         return tpl
 
 
-def _render_tool_result(
-    theme, call_name: str, seed: int, path: tuple, pinned: Optional[Dict[str, str]] = None
-) -> str:
+def _render_tool_result(theme, call_name: str, seed: int, path: tuple, pinned: Optional[Dict[str, str]] = None) -> str:
     """Render a tool-result content string from the theme's PER-TOOL template
     for `call_name` (falling back to 'default' only if the tool has none),
     filling EVERY placeholder the chosen template declares with a real,
@@ -1182,7 +1208,9 @@ def _render_tool_arguments(
             # (`x-payload-tokens`, in words); absent -> _DEFAULT_PAYLOAD_WORDS. Seeded
             # start offset so multiple payload args in one call differ.
             pool: List[str] = payload_pool or word_pool or []
-            n_words = spec.get(_PAYLOAD_TOKENS_KEY, _DEFAULT_PAYLOAD_WORDS) if isinstance(spec, dict) else _DEFAULT_PAYLOAD_WORDS
+            n_words = (
+                spec.get(_PAYLOAD_TOKENS_KEY, _DEFAULT_PAYLOAD_WORDS) if isinstance(spec, dict) else _DEFAULT_PAYLOAD_WORDS
+            )
             n_words = max(1, int(n_words))
             start = int(prop_rng.integers(0, max(1, len(pool))))
             args[prop] = " ".join(_cycled_words(pool, n_words, start=start))
@@ -1251,10 +1279,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     # flows through to an empty catalog; `_tool_definitions(theme, 0)` returns [].
     tool_defs = _tool_definitions(theme, max(0, tool_defs_n))
     # Fan-out catalog: the theme tools PLUS the structural dispatch_agent tool.
-    # Used ONLY on events that force or emit dispatch_agent (dispatch + merge),
-    # so ordinary/non-fan-out events keep a clean catalog (dispatch_agent is
-    # never advertised when there is no fan-out). Guard against duplication in
-    # case a theme ever names a tool "dispatch_agent".
+    # Used ONLY on events that force or emit dispatch_agent (the spawn event and the
+    # notification events, whose message history carries the dispatch calls), so
+    # ordinary/non-fan-out events keep a clean catalog (dispatch_agent is never
+    # advertised when there is no fan-out). Guard against duplication in case a
+    # theme ever names a tool "dispatch_agent".
     if any(td.get("name") == DISPATCH_AGENT_NAME for td in tool_defs):
         fanout_tool_defs = tool_defs
     else:
@@ -1336,10 +1365,31 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         agent's seed path, so the answer is deterministic per agent.
         """
         out_tokens = sample_int(cfg.output_tokens_per_turn, child_rng(seed, *agent_seed_path, 4), cfg.output_tokens_per_turn)
-        ans = fit_filler(
-            tokenizer, out_tokens, "Summary:", rng=child_rng(seed, *agent_seed_path, 5), word_pool=filler_pool
-        )
+        ans = fit_filler(tokenizer, out_tokens, "Summary:", rng=child_rng(seed, *agent_seed_path, 5), word_pool=filler_pool)
         return ans, out_tokens
+
+    def _ack_text(agent_seed_path: Tuple[Any, ...], c: int) -> Tuple[str, int]:
+        """Render a non-terminal async-notification ack + its sampled token size.
+
+        A notification that still leaves sub-agent reports outstanding cannot be
+        answered yet, so the orchestrator's turn is a brief acknowledgment (the
+        behavior the dispatch tool's own description asks for). Sized from the small
+        fixed `_FB_ACK_TOKENS` rather than `output_tokens_per_turn` -- this is a
+        throwaway one-liner, not a full answer.
+
+        Draws the size from sub-seed (…, c, 10) and the filler from (…, c, 11), off
+        the agent's seed path, so each ack is seeded per-notification and
+        deterministic.
+        """
+        out_tokens = sample_int(_FB_ACK_TOKENS, child_rng(seed, *agent_seed_path, c, 10), _FB_ACK_TOKENS)
+        ack = fit_filler(
+            tokenizer,
+            out_tokens,
+            "Acknowledged; awaiting the remaining sub-agent reports.",
+            rng=child_rng(seed, *agent_seed_path, c, 11),
+            word_pool=filler_pool,
+        )
+        return ack, out_tokens
 
     def _build_agent(
         depth: int,
@@ -1497,7 +1547,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 expected_output_tokens=_tool_call_max_tokens(tokenizer, first_calls),
             )
         else:
-            ans_text, ans_tokens = (_answer_text(agent_seed_path) if principal_is_terminal else ("", 0))
+            ans_text, ans_tokens = _answer_text(agent_seed_path) if principal_is_terminal else ("", 0)
             # k=0 terminal principal (the agent answers with NO tool loop): append a
             # trailing "answer in plain prose, no tool call" nudge as the LAST message
             # so its one answer is PROSE, not tool-call text. A SUB-AGENT gets the report
@@ -1589,9 +1639,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             ]
             turn_id = f"{agent_prefix}:t{t}"
             tool_latency = cfg.tool_call_latency_sec or _FB_TOOL_LATENCY
-            turn_wait = int(
-                sample_from_distribution(tool_latency, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000
-            )
+            turn_wait = int(sample_from_distribution(tool_latency, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000)
             is_last_turn = t == k - 1
             turn_is_terminal = is_last_turn and not will_spawn
             if turn_is_terminal:
@@ -1656,24 +1704,29 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             prev_out_calls = next_out_calls
 
         # --- optional fan-out: ONE spawn event (parallel dispatch_agent calls) +
-        # the spawned children + ONE merge (merge is this agent's terminal) ---
+        # the spawned children + K sequential notification events (the LAST is this
+        # agent's terminal) ---
         #
-        # This mirrors how a real harness (e.g. Claude Code) spawns sub-agents: the
-        # agent's own reasoning turn emits N parallel Agent/dispatch tool_calls in a
-        # SINGLE assistant message (carrying the agent's full head + accumulated
-        # context), then the N sub-agent reports come back as N tool results. There
-        # is NO separate headless "dispatch-only" call per child. So the spawn is
-        # structurally a tool round of width K whose tool is dispatch_agent:
-        #   spawn event  : input = parent transcript, OUTPUT = [dispatch_agent x K]
-        #   merge event  : input = parent transcript + [that assistant] + [K tool
-        #                  results]; OUTPUT = the plain answer (agent terminal).
+        # This mirrors how a real harness (e.g. Claude Code) spawns sub-agents ASYNC:
+        # the agent's own reasoning turn emits N parallel Agent/dispatch tool_calls in
+        # a SINGLE assistant message (carrying the agent's full head + accumulated
+        # context). There is NO separate headless "dispatch-only" call per child. Each
+        # dispatch's tool RESULT is a content-free launch ack -- the child's actual
+        # report arrives LATER, out of band, as its own user-role notification, and the
+        # K reports land ONE AT A TIME. So the tail is:
+        #   spawn event   : input = parent transcript, OUTPUT = [dispatch_agent x K]
+        #   notify{c}     : input = parent transcript + [that assistant] + [K stub tool
+        #                   results] + [child c's report]; OUTPUT = a brief ack while
+        #                   reports are still outstanding, and for c == K-1 the plain
+        #                   answer synthesizing across all children (agent terminal).
         if will_spawn:
             K = sample_int(cfg.sub_agents_per_spawn, child_rng(seed, *agent_seed_path, 8), _FB_SUB_AGENTS)
             K = max(0, K)
             # Whole-spawn minimum cost: one spawn event + one minimal child per K +
-            # one merge (this agent's terminal). Only spawn if it all fits; else the
-            # agent stays a plain leaf whose current `prev` event becomes terminal.
-            min_spawn_cost = 1 + K * _MIN_AGENT_COST + 1
+            # K notification events (one per child report; the LAST is this agent's
+            # terminal). Only spawn if it all fits; else the agent stays a plain leaf
+            # whose current `prev` event becomes terminal.
+            min_spawn_cost = 1 + K * _MIN_AGENT_COST + K
             if K > 0 and len(events) + min_spawn_cost <= budget:
                 # Child objectives are pinned to the PARENT's subject entity, so the
                 # whole fan-out is ONE coherent investigation (the orchestrator's
@@ -1701,8 +1754,19 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 # parent's last input (shared-only prepend, exactly like the old merge's
                 # prefix -- introduces NO unmatched prior tool_call, so nothing dangles)
                 # plus a fresh `unique` user step asking to delegate. Its OUTPUT is the
-                # K parallel dispatch_agent calls (matched by the merge's K results).
-                spawn_ctx = {"role": "user", "content": f"Delegate this work to {K} sub-agent(s) and synthesize their findings."}
+                # K parallel dispatch_agent calls (matched by the K stub tool results).
+                #
+                # This message asks ONLY for the delegation, and deliberately does NOT
+                # say "synthesize their findings": synthesis is requested
+                # once, at the point it is actually due: the LAST notification appends
+                # ROOT_ANSWER_DIRECTIVE / SUBAGENT_REPORT_DIRECTIVE.
+                spawn_ctx = {
+                    "role": "user",
+                    "content": (
+                        f"Delegate this work to {K} sub-agent(s). Their reports will arrive one at a "
+                        f"time as each sub-agent completes."
+                    ),
+                }
                 spawn_msgs = [*prev_msgs, spawn_ctx]
                 spawn_segs = [
                     InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
@@ -1716,9 +1780,9 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 # therefore spawn ATOMICALLY: build all K children, and if any child
                 # fails to fit, roll the whole spawn back (drop the spawn event + any
                 # children already built) and fall back to the pre-spawn terminal.
-                # min_spawn_cost already reserved 1 (spawn) + K minimal children + 1
-                # (merge); a child can still exceed its minimum (own loop / nested
-                # spawn), so the per-child re-check catches an over-budget child.
+                # min_spawn_cost already reserved 1 (spawn) + K minimal children + K
+                # (notifications); a child can still exceed its minimum (own loop /
+                # nested spawn), so the per-child re-check catches an over-budget child.
                 spawn_input_len = len(spawn_msgs)
                 events_before_spawn = list(events.keys())
                 _emit(
@@ -1735,8 +1799,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 )
                 child_terminals: List[str] = []
                 for c in range(K):
-                    # Room for this child's minimum PLUS the still-pending merge (+1).
-                    if len(events) + _MIN_AGENT_COST + 1 > budget:
+                    # Room for this child's minimum PLUS the still-pending notification
+                    # chain. ALL K notifications are still unbuilt at this point (they
+                    # are emitted only after every child succeeds), so the reservation
+                    # is a flat K here, not K-c.
+                    if len(events) + _MIN_AGENT_COST + K > budget:
                         break
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
                     child_task = [{"role": "user", "content": child_objs[c]}]
@@ -1755,67 +1822,132 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         break
                     child_terminals.append(child_terminal)
 
-                if len(child_terminals) == K and len(events) + 1 <= budget:
-                    # --- ONE merge event: the SPAWN event's transcript (shared) + the
-                    # spawn's assistant reply (the K dispatch calls, one `output`
-                    # message sourcing the spawn event) + K tool results (one
-                    # `tool_output` per child, carrying that child's report). This
-                    # matches the real [assistant, tool x K] shape. The merge is the
-                    # agent TERMINAL: its OUTPUT is the plain answer. inv #3 holds: the
-                    # K tool results carry the K dispatch call ids (rewritten to the
-                    # live spawn calls in order at replay). ---
-                    merge_msgs: List[Dict[str, Any]] = list(spawn_msgs)
-                    merge_segs: List[InputSegment] = [
+                if len(child_terminals) == K and len(events) + K <= budget:
+                    # --- ASYNC fan-out tail: the dispatch results are content-free
+                    # acknowledgments, and each child's actual report arrives LATER as
+                    # its own user-role notification -- one event per child, chained
+                    # SEQUENTIALLY.
+                    #
+                    # Base transcript every notification builds on: the SPAWN event's
+                    # input (shared) + the spawn's assistant reply (the K dispatch
+                    # calls, one `output` message sourcing the spawn) + K static stub
+                    # tool results. inv #3 still holds -- the K stub results
+                    # carry the K dispatch call ids (rewritten to the live spawn calls
+                    # in order at replay). ---
+                    base_msgs: List[Dict[str, Any]] = list(spawn_msgs)
+                    base_segs: List[InputSegment] = [
                         InputSegment(type="shared", message_count=spawn_input_len, token_count=0, source_event_id=spawn_id),
                     ]
-                    merge_msgs.append({"role": "assistant", "tool_calls": [dict(c) for c in dispatch_calls]})
-                    merge_segs.append(InputSegment(type="output", message_count=1, token_count=0, source_event_id=spawn_id))
+                    base_msgs.append({"role": "assistant", "tool_calls": [dict(c) for c in dispatch_calls]})
+                    base_segs.append(InputSegment(type="output", message_count=1, token_count=0, source_event_id=spawn_id))
+                    for c in range(K):
+                        base_msgs.append(
+                            {"role": "tool", "tool_call_id": dispatch_calls[c]["id"], "content": ASYNC_DISPATCH_STUB}
+                        )
+                    base_segs.append(InputSegment(type="unique", message_count=K, token_count=0, source_event_id=None))
+
+                    # K sequential notification events. Each one's predecessors are the
+                    # PRIOR link in the chain and its OWN child's terminal, so it cannot
+                    # fire until that child has actually finished -- the child terminal's
+                    # live-measured call duration (real TTFT + decode) IS the timing
+                    # signal for "how long this child took". wait_ms is therefore 0: a
+                    # second, independently-sampled delay on top would double-count that
+                    # latency with no principled way to decompose the two.
+                    notify_prev_id = spawn_id
+                    notify_prev_msgs = base_msgs
+                    notify_prev_len = len(base_msgs)
+                    notify_ids: List[str] = []
                     for c, child_term in enumerate(child_terminals):
-                        merge_msgs.append(
-                            {"role": "tool", "tool_call_id": dispatch_calls[c]["id"], "content": "PLACEHOLDER"}
+                        is_last = c == K - 1
+                        notif_id = f"{agent_prefix}:d{depth}:notify{c}"
+                        # The notification itself: a user message whose CONTENT is
+                        # replaced at replay by this child's live report text
+                        # (`async_report`, sourcing the child terminal).
+                        notif_msgs: List[Dict[str, Any]] = [
+                            *notify_prev_msgs,
+                            {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT"},
+                        ]
+                        if c == 0:
+                            # FIRST notification: its prefix is the spawn's transcript
+                            # plus the dispatch reply plus the stub results, so it needs
+                            # the full `base_segs` layout. Collapsing it into one
+                            # `shared` would (a) claim len(base_msgs) messages from the
+                            # spawn event, which only has spawn_input_len, tripping the
+                            # runtime's length-mismatch fallback, and (b) drop the
+                            # `output` segment, so the spawn's LIVE assistant tool-call
+                            # reply would never be substituted in -- leaving the stub
+                            # results' tool_call_ids dangling.
+                            notif_segs: List[InputSegment] = list(base_segs)
+                        else:
+                            # Later links: the whole prior NOTIFICATION event is the
+                            # prefix, and it really does have notify_prev_len messages,
+                            # so one `shared` sourcing it is exact.
+                            notif_segs = [
+                                InputSegment(
+                                    type="shared",
+                                    message_count=notify_prev_len,
+                                    token_count=0,
+                                    source_event_id=notify_prev_id,
+                                )
+                            ]
+                        notif_segs = [
+                            *notif_segs,
+                            InputSegment(type="async_report", message_count=1, token_count=0, source_event_id=child_term),
+                        ]
+                        if is_last:
+                            # Only the LAST notification is the agent TERMINAL: every
+                            # report is now in, so this is the turn that synthesizes
+                            # across all K children. Like any terminal ending in
+                            # non-assistant content it gets a trailing answer nudge so
+                            # its output is PROSE, not tool-call text. A NON-ROOT
+                            # terminal reports to its parent (report directive); the
+                            # ROOT's is the final answer to the USER (answer directive).
+                            # The nudge is fresh content -> a trailing `unique` segment
+                            # keeps cursor math exact.
+                            directive = ROOT_ANSWER_DIRECTIVE if is_root else SUBAGENT_REPORT_DIRECTIVE
+                            notif_msgs = [*notif_msgs, {"role": "user", "content": directive}]
+                            notif_segs = [
+                                *notif_segs,
+                                InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
+                            ]
+                            expected_output, expected_output_tokens = _answer_text(agent_seed_path)
+                        else:
+                            # Reports still outstanding -> a brief ack and keep waiting.
+                            # No directive MESSAGE is injected: that behavior is part of
+                            # the dispatch tool's own contract
+                            # (DISPATCH_AGENT_DESCRIPTION), the way a real harness
+                            # documents it. It could not live in the notification message
+                            # anyway -- that content is replaced at replay by the child's
+                            # live report.
+                            expected_output, expected_output_tokens = _ack_text(agent_seed_path, c)
+                        _emit(
+                            notif_id,
+                            notif_msgs,
+                            [notify_prev_id, child_term],
+                            {notify_prev_id: "full_match", child_term: "full_match"},
+                            notif_segs,
+                            0,
+                            False,
+                            None,
+                            defs=fanout_tool_defs,
+                            expected_output=expected_output,
+                            expected_output_tokens=expected_output_tokens,
                         )
-                        merge_segs.append(
-                            InputSegment(type="tool_output", message_count=1, token_count=0, source_event_id=child_term)
-                        )
-                    merge_preds: List[str] = [spawn_id, *child_terminals]
-                    merge_deps: Dict[str, str] = {spawn_id: "full_match"}
-                    for child_term in child_terminals:
-                        merge_deps[child_term] = "full_match"
-                    merge_id = f"{agent_prefix}:d{depth}:merge"
-                    ans_text, ans_tokens = _answer_text(agent_seed_path)
-                    # The merge is a TERMINAL turn ending in a tool result (the last
-                    # child's report), so -- exactly like a tool-loop terminal -- it gets
-                    # a trailing answer nudge so its output is PROSE, not tool-call text
-                    # (this turn is deeply tool-primed, the most likely to leak a
-                    # <tool_call> block under tool_choice="none"). A NON-ROOT merge is a
-                    # SPAWNING sub-agent's terminal, so its output is a REPORT to its
-                    # parent (report directive); the ROOT merge is the orchestrator's
-                    # final answer to the USER (answer directive). The nudge is fresh
-                    # content, so a trailing `unique` segment (message_count 1) makes the
-                    # merge end in a user message and keeps cursor math exact.
-                    merge_directive = ROOT_ANSWER_DIRECTIVE if is_root else SUBAGENT_REPORT_DIRECTIVE
-                    merge_msgs = [*merge_msgs, {"role": "user", "content": merge_directive}]
-                    merge_segs = [*merge_segs, InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None)]
-                    _emit(
-                        merge_id,
-                        merge_msgs,
-                        merge_preds,
-                        merge_deps,
-                        merge_segs,
-                        0,
-                        False,
-                        None,
-                        defs=fanout_tool_defs,
-                        expected_output=ans_text,
-                        expected_output_tokens=ans_tokens,
-                    )
-                    prev_id = merge_id
+                        notify_ids.append(notif_id)
+                        notify_prev_id = notif_id
+                        notify_prev_msgs = notif_msgs
+                        notify_prev_len = len(notif_msgs)
+                    # The LAST notification is this agent's terminal.
+                    prev_id = notify_ids[-1]
                 else:
-                    # Atomic rollback: not all K children fit (or the merge would not),
-                    # so the spawn can't be completed danglelessly. Drop the spawn event
-                    # AND any children already built, restoring the graph to exactly its
-                    # pre-spawn state. prev_id stays at the pre-spawn terminal; the final
-                    # normalization re-emits that as a plain answer.
+                    # Atomic rollback: not all K children fit (or the K notification
+                    # events would not), so the spawn can't be completed danglelessly.
+                    # Drop the spawn event AND any children already built, restoring the
+                    # graph to exactly its pre-spawn state. Deleting by "id not in the
+                    # pre-spawn snapshot" covers however many events were added, so it
+                    # needs no adjustment for the notification chain. prev_id stays at
+                    # the pre-spawn terminal; the final normalization re-emits that as a
+                    # plain answer.
                     for eid in list(events.keys()):
                         if eid not in events_before_spawn:
                             del events[eid]
@@ -1876,9 +2008,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         else None
     )
     compaction_target: Optional[int] = (
-        sample_int(compaction.target_tokens, child_rng(seed, 65), compaction.target_tokens)
-        if compaction is not None
-        else None
+        sample_int(compaction.target_tokens, child_rng(seed, 65), compaction.target_tokens) if compaction is not None else None
     )
 
     for r in range(n_rounds):
@@ -1998,9 +2128,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             followup_msg = {"role": "user", "content": followup}
             task_msgs = [*prefix_msgs, answer_placeholder, followup_msg]
             principal_segments = [
-                InputSegment(
-                    type="shared", message_count=prev_terminal_len, token_count=0, source_event_id=prev_terminal_id
-                ),
+                InputSegment(type="shared", message_count=prev_terminal_len, token_count=0, source_event_id=prev_terminal_id),
                 InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_terminal_id),
                 InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
             ]

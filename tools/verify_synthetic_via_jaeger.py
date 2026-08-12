@@ -29,6 +29,7 @@ Usage:
 
 Exit code 0 = all assertions passed; 1 = a verification failure; 2 = usage/connection error.
 """
+
 import argparse
 import json
 import sys
@@ -108,8 +109,13 @@ def fetch_synthetic_sessions(jaeger_url: str, lookback: str, limit: int) -> list
     return list(by_sid.values())
 
 
-def verify(sessions: list[dict], expect_sessions: int | None, expect_events: int | None,
-           min_events: int | None, min_peak_concurrency: int | None) -> list[str]:
+def verify(
+    sessions: list[dict],
+    expect_sessions: int | None,
+    expect_events: int | None,
+    min_events: int | None,
+    min_peak_concurrency: int | None,
+) -> list[str]:
     """Return a list of failure strings (empty = all good)."""
     failures: list[str] = []
     if expect_sessions is not None and len(sessions) != expect_sessions:
@@ -118,16 +124,20 @@ def verify(sessions: list[dict], expect_sessions: int | None, expect_events: int
     max_peak_seen = max((s["peak_concurrency"] for s in sessions), default=0)
     for s in sorted(sessions, key=lambda x: x["sid"]):
         if s["status"] != "OK" or s["error"]:
-            failures.append(f"{s['sid']}: session did not succeed (status={s['status']} error={s['error']}) "
-                            f"— a dangling tool_call_id or 400 shows up here")
+            failures.append(
+                f"{s['sid']}: session did not succeed (status={s['status']} error={s['error']}) "
+                f"— a dangling tool_call_id or 400 shows up here"
+            )
         # the runtime should have executed one chat call per event
         try:
             n_tag = int(s["num_events_tag"]) if s["num_events_tag"] is not None else None
         except (TypeError, ValueError):
             n_tag = None
         if n_tag is not None and s["chat_spans"] != n_tag:
-            failures.append(f"{s['sid']}: chat_spans={s['chat_spans']} != session.num_events={n_tag} "
-                            f"(runtime did not execute one call per event)")
+            failures.append(
+                f"{s['sid']}: chat_spans={s['chat_spans']} != session.num_events={n_tag} "
+                f"(runtime did not execute one call per event)"
+            )
         if expect_events is not None and n_tag != expect_events:
             failures.append(f"{s['sid']}: num_events={n_tag} != expected {expect_events}")
         if min_events is not None and (n_tag is None or n_tag < min_events):
@@ -137,8 +147,10 @@ def verify(sessions: list[dict], expect_sessions: int | None, expect_events: int
     # concurrent in-flight calls. This is per-run (not per-session) because with
     # fanout_probability<1 some sessions legitimately don't spawn and run sequentially.
     if min_peak_concurrency is not None and max_peak_seen < min_peak_concurrency:
-        failures.append(f"no session reached peak concurrent in-flight calls >= {min_peak_concurrency} "
-                        f"(max seen = {max_peak_seen}); sub-agent fan-out is not running in parallel")
+        failures.append(
+            f"no session reached peak concurrent in-flight calls >= {min_peak_concurrency} "
+            f"(max seen = {max_peak_seen}); sub-agent fan-out is not running in parallel"
+        )
     return failures
 
 
@@ -150,19 +162,24 @@ def main() -> int:
     ap.add_argument("--expect-sessions", type=int, default=None, help="assert exactly this many synthetic sessions")
     ap.add_argument("--expect-events", type=int, default=None, help="assert each session has exactly this many events")
     ap.add_argument("--min-events", type=int, default=None, help="assert each session has at least this many events")
-    ap.add_argument("--min-peak-concurrency", type=int, default=None,
-                    help="assert at least one session reached this many concurrent in-flight calls "
-                         "(evidence that sub-agent fan-out runs in parallel)")
+    ap.add_argument(
+        "--min-peak-concurrency",
+        type=int,
+        default=None,
+        help="assert at least one session reached this many concurrent in-flight calls "
+        "(evidence that sub-agent fan-out runs in parallel)",
+    )
     args = ap.parse_args()
 
     sessions = fetch_synthetic_sessions(args.jaeger_url, args.lookback, args.limit)
     print(f"synthetic sessions found in Jaeger: {len(sessions)}")
     for s in sorted(sessions, key=lambda x: x["sid"]):
-        print(f"  {s['sid']}: num_events={s['num_events_tag']} chat_spans={s['chat_spans']} "
-              f"peak_concurrency={s['peak_concurrency']} status={s['status']} error={s['error']}")
+        print(
+            f"  {s['sid']}: num_events={s['num_events_tag']} chat_spans={s['chat_spans']} "
+            f"peak_concurrency={s['peak_concurrency']} status={s['status']} error={s['error']}"
+        )
 
-    failures = verify(sessions, args.expect_sessions, args.expect_events, args.min_events,
-                      args.min_peak_concurrency)
+    failures = verify(sessions, args.expect_sessions, args.expect_events, args.min_events, args.min_peak_concurrency)
     if failures:
         print("\nVERIFICATION FAILED:", file=sys.stderr)
         for f in failures:

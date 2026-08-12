@@ -98,6 +98,24 @@ class SessionReplayLazyLoadData(LazyLoadInferenceAPIData):
 # short-circuited and behavior is identical to upstream main.
 
 
+# Envelope for an async sub-agent notification (`async_report` segments).
+#
+# A real async harness does not hand the orchestrator a bare string: the child's
+# report arrives wrapped in a `<task-notification>` block whose `<result>` holds
+# the report body. We reproduce the RESULT wrapper only.
+#
+# Applied at REPLAY time (not graph-build) because the body is the child's live
+# generated text. Adds a small fixed number of tokens to the notification turn's
+# input relative to the recorded placeholder.
+ASYNC_NOTIFICATION_OPEN = "<task-notification>\n<result>\n"
+ASYNC_NOTIFICATION_CLOSE = "\n</result>\n</task-notification>"
+
+
+def _wrap_async_notification(report_text: str) -> str:
+    """Wrap a child sub-agent's live report in the `<task-notification>` envelope."""
+    return f"{ASYNC_NOTIFICATION_OPEN}{report_text}{ASYNC_NOTIFICATION_CLOSE}"
+
+
 def _detect_bad_tool_calls(
     tool_calls: Optional[List[Dict[str, Any]]],
 ) -> List[Tuple[int, str, str]]:
@@ -515,7 +533,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
         needs_substitution = (not self.disable_output_substitution) and any(
-            seg.type == "output" or seg.type == "shared" or seg.type == "tool_output" for seg in self.input_segments
+            seg.type == "output" or seg.type == "shared" or seg.type == "async_report" for seg in self.input_segments
         )
         # Inject random string if flag is enabled OR session is a duplicate
         is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session_id)
@@ -704,22 +722,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 else:
                     logger.debug(f"Event {self.event_id}: output segment has no source_event_id, using recorded content")
                     result.extend(seg_msgs)
-            elif seg.type == "tool_output":
-                # Inject a child agent's live answer TEXT into a role:"tool" slot,
-                # preserving role + tool_call_id (§4.1a). Content-only replacement.
+            elif seg.type == "async_report":
+                # Inject a child agent's live report TEXT into a role:"user" slot,
+                # wrapped in the `<task-notification><result>` envelope a real async
+                # harness delivers (see _wrap_async_notification). Content-only
+                # replacement, preserving role.
                 if seg.message_count != 1:
                     logger.error(
-                        f"Event {self.event_id}: tool_output segment has message_count="
+                        f"Event {self.event_id}: async_report segment has message_count="
                         f"{seg.message_count} (expected 1). Using recorded message."
                     )
                     result.extend(seg_msgs)
                     cursor += seg.message_count
                     continue
                 recorded = seg_msgs[0]
-                if recorded.get("role") != "tool":
+                if recorded.get("role") != "user":
                     logger.error(
-                        f"Event {self.event_id}: tool_output segment target role="
-                        f"{recorded.get('role')!r} (expected 'tool'). Using recorded message."
+                        f"Event {self.event_id}: async_report segment target role="
+                        f"{recorded.get('role')!r} (expected 'user'). Using recorded message."
                     )
                     result.append(recorded)
                     cursor += 1
@@ -727,7 +747,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 actual_output = self.registry.get_output_by_event_id(seg.source_event_id) if seg.source_event_id else None
                 if actual_output is not None:
                     substituted = dict(recorded)
-                    substituted["content"] = actual_output
+                    substituted["content"] = _wrap_async_notification(actual_output)
                     result.append(substituted)
                 else:
                     # child output unavailable — fall back to recorded placeholder

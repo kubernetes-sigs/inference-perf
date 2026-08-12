@@ -63,9 +63,7 @@ def main() -> None:
 
     config = read_config(args.config)
     if config.data.type != DataGenType.SyntheticAgentic or config.data.synthetic_agentic is None:
-        raise SystemExit(
-            "Config must set data.type: synthetic_agentic with a data.synthetic_agentic block"
-        )
+        raise SystemExit("Config must set data.type: synthetic_agentic with a data.synthetic_agentic block")
     cfg = config.data.synthetic_agentic
 
     theme_name = args.theme if args.theme is not None else next(iter(cfg.theme_mix))

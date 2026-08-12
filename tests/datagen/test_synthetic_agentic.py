@@ -764,12 +764,13 @@ def test_dispatch_agent_is_in_tool_definitions():
         )
         assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in spawn event tool_definitions"
 
-    # the merge event emits dispatch_agent calls in its message history -> inv #2 applies there too.
-    merge_events = [ev for eid, ev in g.events.items() if eid.endswith(":merge")]
-    assert merge_events, "fan-out merge event materialized"
-    for ev in merge_events:
-        assert "dispatch_agent" in _event_tool_call_names(ev), "merge emits dispatch_agent calls"
-        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in merge tool_definitions"
+    # each notification event carries the dispatch_agent calls in its message
+    # history (the spawn's assistant reply) -> inv #2 applies there too.
+    notify_events = [ev for eid, ev in g.events.items() if ":notify" in eid]
+    assert notify_events, "fan-out notification events materialized"
+    for ev in notify_events:
+        assert "dispatch_agent" in _event_tool_call_names(ev), "notification carries the dispatch_agent calls"
+        assert "dispatch_agent" in _event_def_names(ev), "dispatch_agent advertised in notification tool_definitions"
 
 
 def test_dispatch_agent_present_even_with_empty_theme_catalog():
@@ -956,10 +957,15 @@ def test_theme_mix_accepts_both_shapes_equivalently():
     bare = _cfg(theme_mix={"generic": 0.25, "db2_latency_incident": 0.75})
     block = _cfg(theme_mix={"generic": {"weight": 0.25}, "db2_latency_incident": {"weight": 0.75}})
     mixed = _cfg(theme_mix={"generic": 0.25, "db2_latency_incident": {"weight": 0.75}})
-    assert bare.theme_weights() == block.theme_weights() == mixed.theme_weights() == {
-        "generic": 0.25,
-        "db2_latency_incident": 0.75,
-    }
+    assert (
+        bare.theme_weights()
+        == block.theme_weights()
+        == mixed.theme_weights()
+        == {
+            "generic": 0.25,
+            "db2_latency_incident": 0.75,
+        }
+    )
     # identical weighted draws across sessions (same seed -> same theme choices)
     from inference_perf.config.datagen.config import DataConfig, DataGenType
     from inference_perf.datagen.synthetic_agentic import SyntheticAgenticDataGenerator
@@ -1244,9 +1250,9 @@ def test_render_system_head_fits_truncates_and_is_deterministic():
     tiny = _render_system_head(tok, 8, is_root=False, rng=np.random.default_rng(0))
     assert "## Operational context" not in tiny, "truncated head has no filler block"
     assert tok.count_tokens(tiny) <= 8, "truncated head does not exceed the target"
-    assert any(
-        tiny.split()[0] == p.split()[0] for p in SUBAGENT_SYSTEM_PROMPTS
-    ), "truncated head keeps the real prompt's opening"
+    assert any(tiny.split()[0] == p.split()[0] for p in SUBAGENT_SYSTEM_PROMPTS), (
+        "truncated head keeps the real prompt's opening"
+    )
 
     # determinism: same rng seed -> identical head (pad path)
     a = _render_system_head(tok, 700, is_root=True, rng=np.random.default_rng(3))
@@ -1378,7 +1384,7 @@ def test_substitution_survives_all_shapes():
     # PLUS one trailing ROOT_ANSWER_DIRECTIVE message on the terminal turn -> 8.
     assert len(live_inputs[ordered[-1].event_id]) == 8, "terminal tool-loop input did not accumulate to 1+2*3+1=8"
 
-    # --- fan-out merge ---
+    # --- fan-out async notifications ---
     fcfg = _cfg(
         fanout_probability=1.0,
         max_depth=1,
@@ -1387,34 +1393,58 @@ def test_substitution_survives_all_shapes():
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
     fg = build_graph_for_session(fcfg, GENERIC_THEME, _WordTok(), session_index=0)
-    merges = [ev for eid, ev in fg.events.items() if eid.endswith(":merge")]
-    assert merges, "fan-out merge event exists"
-    for merge in merges:
+    notifies = [ev for eid, ev in fg.events.items() if ":notify" in eid]
+    assert notifies, "fan-out notification events exist"
+    for notif in notifies:
         prior_by_source = {}
-        for seg in merge.call.input_segments:
+        for seg in notif.call.input_segments:
             if seg.source_event_id is None:
                 continue
             src = seg.source_event_id
             if seg.type == "output":
-                # dispatch event -> live dispatch tool call
+                # spawn event -> live dispatch tool calls. The notification's stub
+                # tool results are matched against these by the id-rewrite post-pass,
+                # so supply exactly as many live calls as there are stub results.
+                n_stubs = sum(1 for m in notif.call.messages if m.get("role") == "tool")
                 out_msg = {
                     "role": "assistant",
                     "tool_calls": [
-                        {"id": f"live_{src}", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}
+                        {
+                            "id": f"live_{src}_{i}",
+                            "type": "function",
+                            "function": {"name": "dispatch_agent", "arguments": "{}"},
+                        }
+                        for i in range(n_stubs)
                     ],
                 }
                 prior_by_source[src] = ([], out_msg)
-            elif seg.type == "tool_output":
+            elif seg.type == "async_report":
                 out_msg = {"role": "assistant", "content": f"CHILD-ANSWER-{src}"}
                 prior_by_source[src] = ([], out_msg)
             elif seg.type == "shared":
-                # the pre-spawn transcript source: give it a small balanced input
-                prior_by_source[src] = ([{"role": "user", "content": "pre-spawn task"}], None)
-        result = _drive_substitution(merge, prior_by_source)  # must not raise
-        assert result, "merge substitution produced empty input"
-        # a child answer text was injected into a role:tool slot
+                # the prefix source (the spawn event, or the prior notification in the
+                # chain). It must supply EXACTLY seg.message_count messages, else the
+                # runtime's length-mismatch guard falls back to the recorded prefix.
+                prior_by_source[src] = (
+                    [{"role": "user", "content": f"prefix-{i}"} for i in range(seg.message_count)],
+                    None,
+                )
+        result = _drive_substitution(notif, prior_by_source)  # must not raise
+        assert result, "notification substitution produced empty input"
+        # the child's report text was injected into the user-role notification slot
         joined = " ".join(str(m.get("content", "")) for m in result)
-        assert "CHILD-ANSWER-" in joined, "child answer not injected into merge tool slot"
+        assert "CHILD-ANSWER-" in joined, "child report not injected into the notification slot"
+        # and it landed on a USER message, not a tool message, wrapped in the
+        # <task-notification><result> envelope a real async harness delivers
+        report_msgs = [m for m in result if "CHILD-ANSWER-" in str(m.get("content", ""))]
+        assert report_msgs, "no message carries the child report"
+        for m in report_msgs:
+            assert m["role"] == "user", "child report must arrive as a user-role notification"
+            content = str(m["content"])
+            assert content.startswith("<task-notification>"), "report must be wrapped in the notification envelope"
+            assert content.endswith("</task-notification>")
+            body = content.split("<result>\n", 1)[1].split("\n</result>", 1)[0]
+            assert body.startswith("CHILD-ANSWER-"), "the <result> body is the child's report"
 
 
 # --- Enrichment: tool descriptions, theme filler, intro doc ----------------
@@ -1646,9 +1676,7 @@ def test_no_bounded_value_exceeds_100_where_percent_signalled():
     pat = re.compile(r"(?:hit_ratio|_pct|_ratio)\s*[=|]?\s*([0-9]+(?:\.[0-9]+)?)")
     pct_suffix = re.compile(r"([0-9]+(?:\.[0-9]+)?)%")
     for theme in (GENERIC_THEME, db2):
-        templates = (
-            list(theme.result_templates.values()) + list(theme.intro_doc_templates) + list(theme.filler_templates)
-        )
+        templates = list(theme.result_templates.values()) + list(theme.intro_doc_templates) + list(theme.filler_templates)
         for ti, tpl in enumerate(templates):
             out = _render_theme_template(theme, tpl, session_seed(42, 0), (0, ti))
             for m in pat.finditer(out):
@@ -2195,9 +2223,7 @@ def test_forced_tool_call_forces_ignore_eos_false():
     # Caller passes ignore_eos=True (the load default); a FORCED tool call must
     # override it to False even when override_tool_call_max_tokens is False.
     forced = _mk(True, False)
-    payload = asyncio.run(
-        forced.to_request_body(effective_model_name="m", max_tokens=64, ignore_eos=True, streaming=False)
-    )
+    payload = asyncio.run(forced.to_request_body(effective_model_name="m", max_tokens=64, ignore_eos=True, streaming=False))
     assert payload["ignore_eos"] is False, "forced tool call must send ignore_eos=False"
 
     # A plain-text turn that STILL advertises tools (this _mk passes tool_defs)
@@ -2206,9 +2232,7 @@ def test_forced_tool_call_forces_ignore_eos_false():
     # template tokens. (A plain-text turn with NO tools keeps the caller
     # ignore_eos -- see test_plain_text_turn_without_tools_keeps_defaults.)
     plain = _mk(False, False)
-    p2 = asyncio.run(
-        plain.to_request_body(effective_model_name="m", max_tokens=64, ignore_eos=True, streaming=False)
-    )
+    p2 = asyncio.run(plain.to_request_body(effective_model_name="m", max_tokens=64, ignore_eos=True, streaming=False))
     assert p2["ignore_eos"] is False, "plain-text-with-tools turn must stop cleanly (ignore_eos=False)"
     assert p2["tool_choice"] == "none", "plain-text-with-tools turn must forbid a structured tool call"
 
@@ -2291,9 +2315,7 @@ def test_plain_text_turn_with_tools_forbids_tool_call_and_stops():
         expected_output_is_tool_call=False,  # plain-text answer turn
         expected_output_tool_names=[],
     )
-    payload = asyncio.run(
-        ev.to_request_body(effective_model_name="m", max_tokens=80, ignore_eos=True, streaming=False)
-    )
+    payload = asyncio.run(ev.to_request_body(effective_model_name="m", max_tokens=80, ignore_eos=True, streaming=False))
     assert payload["tool_choice"] == "none", "plain-text turn with tools must forbid a structured tool call"
     assert payload["ignore_eos"] is False, "plain-text turn with tools must stop cleanly (ignore_eos=False)"
 
@@ -2323,9 +2345,7 @@ def test_plain_text_turn_without_tools_keeps_defaults():
         expected_output_is_tool_call=False,
         expected_output_tool_names=[],
     )
-    payload = asyncio.run(
-        ev.to_request_body(effective_model_name="m", max_tokens=80, ignore_eos=True, streaming=False)
-    )
+    payload = asyncio.run(ev.to_request_body(effective_model_name="m", max_tokens=80, ignore_eos=True, streaming=False))
     assert payload.get("tool_choice") is None, "plain text turn without tools must not set tool_choice"
     assert payload["ignore_eos"] is True, "plain text turn without tools keeps caller ignore_eos"
 
@@ -2404,10 +2424,15 @@ def test_spawn_output_is_parallel_dispatch_calls_in_one_message():
         )
 
 
-def test_merge_reconstructs_single_assistant_with_matched_tool_results():
-    # The merge event mirrors the real [assistant(N tool_calls), tool xN] block:
-    # exactly ONE assistant message carrying N dispatch_agent calls, followed by N
-    # role:tool results whose tool_call_ids are exactly those N call ids (inv #3).
+def test_notifications_reconstruct_single_assistant_with_matched_stub_results():
+    # Every notification event mirrors the real [assistant(N tool_calls), tool xN]
+    # block: exactly ONE assistant message carrying N dispatch_agent calls, followed
+    # by N role:tool results whose tool_call_ids are exactly those N call ids
+    # (inv #3). Those results are now STATIC launch acks -- the child reports arrive
+    # separately as user-role notifications -- so each ack carries ASYNC_DISPATCH_STUB
+    # rather than a child's report.
+    from inference_perf.datagen.synthetic_agentic import ASYNC_DISPATCH_STUB
+
     K = 3
     cfg = _cfg(
         theme_mix={"generic": 1.0},
@@ -2419,18 +2444,22 @@ def test_merge_reconstructs_single_assistant_with_matched_tool_results():
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
-    merges = [ev for eid, ev in g.events.items() if eid.endswith(":merge")]
-    assert merges, "at least one merge event"
-    for ev in merges:
+    notifies = [ev for eid, ev in g.events.items() if ":notify" in eid]
+    assert len(notifies) == K, f"expected K={K} notification events, got {len(notifies)}"
+    for ev in notifies:
         msgs = ev.call.messages
         assistants_with_calls = [m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls")]
         # exactly ONE assistant carrying the N dispatch calls (a single block).
-        assert len(assistants_with_calls) == 1, "merge has one N-call assistant block"
+        assert len(assistants_with_calls) == 1, "notification has one N-call assistant block"
         calls = assistants_with_calls[0]["tool_calls"]
         assert len(calls) == K and all(c["function"]["name"] == DISPATCH_AGENT_NAME for c in calls)
         call_ids = [c["id"] for c in calls]
-        tool_ids = [m.get("tool_call_id") for m in msgs if m.get("role") == "tool"]
+        tool_results = [m for m in msgs if m.get("role") == "tool"]
+        tool_ids = [m.get("tool_call_id") for m in tool_results]
         assert tool_ids == call_ids, f"tool result ids {tool_ids} must match call ids {call_ids} (inv #3)"
+        # the results are content-free static acks, NOT child reports
+        for m in tool_results:
+            assert m["content"] == ASYNC_DISPATCH_STUB, "dispatch result must be the static launch ack"
 
 
 def test_fanout_graph_is_byte_identical_across_rebuilds():
@@ -2450,17 +2479,16 @@ def test_fanout_graph_is_byte_identical_across_rebuilds():
         assert list(g1.events.keys()) == list(g2.events.keys())
         for eid in g1.events:
             assert g1.events[eid].call.messages == g2.events[eid].call.messages
-            assert (
-                g1.events[eid].call.expected_output_tool_names == g2.events[eid].call.expected_output_tool_names
-            )
+            assert g1.events[eid].call.expected_output_tool_names == g2.events[eid].call.expected_output_tool_names
 
 
 def test_subagent_terminal_ends_with_report_directive():
     # Every SUB-AGENT terminal (a leaf child's answer turn AND a spawning sub-agent's
-    # merge) ends with the summarize-report nudge (recency -> a PROSE report, not
-    # tool-call text). The nudge is the LAST message and is a `user` message; cursor
-    # math stays exact. Non-terminal child tool-turns must NOT end with it. (The ROOT
-    # merge ends with the ANSWER directive, not this one -- covered separately.)
+    # LAST notification) ends with the summarize-report nudge (recency -> a PROSE
+    # report, not tool-call text). The nudge is the LAST message and is a `user`
+    # message; cursor math stays exact. Non-terminal child tool-turns and non-terminal
+    # notifications must NOT end with it. (The ROOT's last notification ends with the
+    # ANSWER directive, not this one -- covered separately.)
     from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE, ROOT_ANSWER_DIRECTIVE
 
     # depth 2 so there are BOTH leaf-child terminals AND sub-agent (non-root) merges.
@@ -2480,29 +2508,49 @@ def test_subagent_terminal_ends_with_report_directive():
         msgs = ev.call.messages
         return bool(msgs) and msgs[-1].get("role") == "user" and text in str(msgs[-1].get("content", ""))
 
+    # A notification event is a terminal ONLY if it is the LAST link in its spawn's
+    # chain; the earlier ones are ack turns and carry no directive. Identify the last
+    # link per agent prefix by the highest :notifyN index.
+    last_notify_ids = set()
+    notify_by_prefix: dict = {}
+    for eid in g.events:
+        if ":notify" not in eid:
+            continue
+        prefix, idx = eid.rsplit(":notify", 1)
+        notify_by_prefix.setdefault(prefix, []).append(int(idx))
+    for prefix, idxs in notify_by_prefix.items():
+        last_notify_ids.add(f"{prefix}:notify{max(idxs)}")
+
     saw_child_terminal = False
-    saw_subagent_merge = False
+    saw_subagent_last_notify = False
+    saw_nonterminal_notify = False
     for eid, ev in g.events.items():
         is_child = ":sub" in eid
-        is_terminal = not ev.call.expected_output_is_tool_call  # answer turn, not a tool-call turn
-        is_merge = eid.endswith(":merge")
+        is_notify = ":notify" in eid
+        # An answer turn, not a tool-call turn -- and, for notifications, only the
+        # LAST link in the chain actually terminates the agent.
+        is_terminal = not ev.call.expected_output_is_tool_call and (not is_notify or eid in last_notify_ids)
+        if is_notify and not is_terminal:
+            saw_nonterminal_notify = True
         if is_child and is_terminal:
             saw_child_terminal = True
-            if is_merge:
-                saw_subagent_merge = True
+            if is_notify:
+                saw_subagent_last_notify = True
             assert ends_with(ev, frag), f"sub-agent terminal {eid} must END with the report nudge"
             if ev.call.input_segments:  # cursor math stays exact after the appended message
                 segsum = sum(s.message_count for s in ev.call.input_segments)
                 assert segsum == len(ev.call.messages), f"{eid}: segment sum {segsum} != {len(ev.call.messages)}"
-        elif not is_child and is_merge:
-            # the ROOT merge ends with the ANSWER directive, not the report one.
-            assert ends_with(ev, ROOT_ANSWER_DIRECTIVE), f"root merge {eid} must end with the answer directive"
+        elif not is_child and is_terminal and is_notify:
+            # the ROOT's last notification ends with the ANSWER directive, not the report one.
+            assert ends_with(ev, ROOT_ANSWER_DIRECTIVE), f"root terminal {eid} must end with the answer directive"
             assert not ends_with(ev, frag)
         else:
-            # non-terminal child tool-turns must NOT end with the report nudge.
+            # non-terminal child tool-turns AND non-terminal (ack) notifications must
+            # NOT end with the report nudge.
             assert not ends_with(ev, frag), f"{eid} should NOT end with the sub-agent report nudge"
     assert saw_child_terminal, "expected >=1 sub-agent terminal turn"
-    assert saw_subagent_merge, "expected >=1 non-root (sub-agent) merge terminal"
+    assert saw_subagent_last_notify, "expected >=1 non-root (sub-agent) notification terminal"
+    assert saw_nonterminal_notify, "expected >=1 non-terminal (ack) notification"
 
 
 def test_root_terminal_ends_with_answer_directive():
@@ -2560,12 +2608,13 @@ def test_root_terminal_ends_with_answer_directive():
         assert g.events[eid].call.messages == g_again.events[eid].call.messages
 
 
-def test_nonroot_merge_ends_with_report_directive():
-    # In a recursive (depth-2) tree, a SPAWNING sub-agent's terminal is its MERGE
-    # event (it folds in grandchildren, then reports up to its parent). That merge
-    # must END with the report nudge (prose report at every non-leaf level); the
-    # ROOT merge must NOT (its output is the orchestrator's final answer). Cursor
-    # math must stay exact after the appended message.
+def test_nonroot_last_notification_ends_with_report_directive():
+    # In a recursive (depth-2) tree, a SPAWNING sub-agent's terminal is the LAST link
+    # of its notification chain (it folds in grandchildren, then reports up to its
+    # parent). That link must END with the report nudge (prose report at every
+    # non-leaf level); the ROOT's last notification must NOT (its output is the
+    # orchestrator's final answer). Earlier links in either chain are ack turns and
+    # carry NO directive. Cursor math must stay exact after the appended message.
     from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE
 
     cfg = _cfg(
@@ -2573,30 +2622,45 @@ def test_nonroot_merge_ends_with_report_directive():
         turns_per_session=Distribution(type="fixed", mean=1),
         fanout_probability=1.0,
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
-        max_depth=2,  # children spawn grandchildren -> children's terminal is a merge
+        max_depth=2,  # children spawn grandchildren -> children's terminal is a notification
         tool_loop_depth=Distribution(type="fixed", mean=1),
         max_events_per_session=512,
     )
     g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
     frag = SUBAGENT_REPORT_DIRECTIVE
-    saw_nonroot = saw_root = False
-    for eid, ev in g.events.items():
-        if not eid.endswith(":merge"):
+
+    # group notification ids per spawn so we know which link is last
+    notify_by_prefix: dict = {}
+    for eid in g.events:
+        if ":notify" not in eid:
             continue
-        msgs = ev.call.messages
-        ends = msgs[-1].get("role") == "user" and frag in str(msgs[-1].get("content", ""))
-        # cursor math exact
-        segsum = sum(s.message_count for s in ev.call.input_segments)
-        assert segsum == len(msgs), f"{eid}: merge segment sum {segsum} != {len(msgs)}"
-        # root merge: agent prefix is the bare round root (no ':sub' before ':dN:merge')
-        is_root_merge = ":sub" not in eid.rsplit(":d", 1)[0]
-        if is_root_merge:
-            saw_root = True
-            assert not ends, f"root merge {eid} should NOT end with the report nudge"
-        else:
-            saw_nonroot = True
-            assert ends, f"non-root (child) merge {eid} must END with the report nudge"
-    assert saw_nonroot and saw_root, "expected both a root merge and >=1 non-root merge"
+        prefix, idx = eid.rsplit(":notify", 1)
+        notify_by_prefix.setdefault(prefix, []).append(int(idx))
+
+    saw_nonroot = saw_root = saw_ack = False
+    for prefix, idxs in notify_by_prefix.items():
+        last_idx = max(idxs)
+        # root chain: agent prefix is the bare round root (no ':sub' before ':dN')
+        is_root_chain = ":sub" not in prefix.rsplit(":d", 1)[0]
+        for idx in idxs:
+            eid = f"{prefix}:notify{idx}"
+            ev = g.events[eid]
+            msgs = ev.call.messages
+            ends = msgs[-1].get("role") == "user" and frag in str(msgs[-1].get("content", ""))
+            # cursor math exact
+            segsum = sum(s.message_count for s in ev.call.input_segments)
+            assert segsum == len(msgs), f"{eid}: notification segment sum {segsum} != {len(msgs)}"
+            if idx != last_idx:
+                saw_ack = True
+                assert not ends, f"non-terminal notification {eid} should NOT end with the report nudge"
+            elif is_root_chain:
+                saw_root = True
+                assert not ends, f"root terminal {eid} should NOT end with the report nudge"
+            else:
+                saw_nonroot = True
+                assert ends, f"non-root (child) terminal {eid} must END with the report nudge"
+    assert saw_nonroot and saw_root, "expected both a root chain and >=1 non-root chain"
+    assert saw_ack, "expected >=1 non-terminal (ack) notification"
 
 
 def test_report_directive_deterministic():
@@ -2856,9 +2920,7 @@ def test_percentile_and_heap_render_no_placeholder_leak():
 def test_connective_lowercases_common_first_word():
     from inference_perf.datagen.synthetic_agentic import _join_connective_case
 
-    out = _join_connective_case(
-        "Following up, ", "Are other services in us-east-1 showing the same 5xx?", GENERIC_THEME
-    )
+    out = _join_connective_case("Following up, ", "Are other services in us-east-1 showing the same 5xx?", GENERIC_THEME)
     assert out.startswith("are other services"), f"common-word seam not fixed: {out!r}"
     # full join has no capital-after-lowercase-connective seam.
     joined = "Following up, " + out
@@ -2906,7 +2968,7 @@ def test_generated_followups_have_no_casing_seam():
                 pos = real.find(conn)
                 if pos < 0:
                     continue
-                after = real[pos + len(conn):]
+                after = real[pos + len(conn) :]
                 first_tok = after.split(maxsplit=1)[0] if after.split() else ""
                 if not first_tok or not first_tok[0].isupper():
                     continue  # already lowercased -> no seam
@@ -2914,9 +2976,7 @@ def test_generated_followups_have_no_casing_seam():
                 is_entity = first_tok in entity_pool or after.startswith(tuple(entity_pool))
                 is_acronym = first_tok.isupper()
                 has_digit = any(c.isdigit() for c in first_tok)
-                assert is_entity or is_acronym or has_digit, (
-                    f"idx{idx} {eid}: casing seam after {conn!r}: {after[:50]!r}"
-                )
+                assert is_entity or is_acronym or has_digit, f"idx{idx} {eid}: casing seam after {conn!r}: {after[:50]!r}"
 
 
 # --- Item-4 fix 3: region pinned across follow-ups --------------------------
@@ -3091,7 +3151,7 @@ def test_code_change_task_result_shapes_render_realistically():
 
     run_tests = _render_tool_result(t, "run_tests", seed, (1, 2, 3))
     assert ("Traceback" in run_tests) or ("AttributeError" in run_tests) or ("AssertionError" in run_tests), run_tests
-    assert ("passed" in run_tests and "failed" in run_tests), run_tests
+    assert "passed" in run_tests and "failed" in run_tests, run_tests
 
     git_diff = _render_tool_result(t, "git_diff", seed, (4, 5, 6))
     assert "@@" in git_diff, git_diff
@@ -3153,8 +3213,11 @@ def test_non_payload_string_arg_keeps_stub():
     import re
 
     t = load_theme("code_change_task")
-    cfg = _code_change_cfg(turns_per_session=Distribution(type="fixed", mean=1),
-                           tool_loop_depth=Distribution(type="fixed", mean=8), fanout_probability=0.0)
+    cfg = _code_change_cfg(
+        turns_per_session=Distribution(type="fixed", mean=1),
+        tool_loop_depth=Distribution(type="fixed", mean=8),
+        fanout_probability=0.0,
+    )
     g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
     saw = False
     for ev in g.events.values():
@@ -3173,9 +3236,12 @@ def test_tool_loop_varies_tools_across_turns():
     import re
 
     t = load_theme("code_change_task")
-    cfg = _code_change_cfg(turns_per_session=Distribution(type="fixed", mean=1),
-                           tool_loop_depth=Distribution(type="fixed", mean=6),
-                           tool_catalog_size_per_agent=Distribution(type="fixed", mean=10), fanout_probability=0.0)
+    cfg = _code_change_cfg(
+        turns_per_session=Distribution(type="fixed", mean=1),
+        tool_loop_depth=Distribution(type="fixed", mean=6),
+        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        fanout_probability=0.0,
+    )
     g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
     names = []
     for eid, ev in g.events.items():
@@ -3193,9 +3259,12 @@ def test_focus_entity_threads_across_the_loop():
     import json as _json
 
     t = load_theme("code_change_task")
-    cfg = _code_change_cfg(turns_per_session=Distribution(type="fixed", mean=1),
-                           tool_loop_depth=Distribution(type="fixed", mean=8),
-                           tool_catalog_size_per_agent=Distribution(type="fixed", mean=10), fanout_probability=0.0)
+    cfg = _code_change_cfg(
+        turns_per_session=Distribution(type="fixed", mean=1),
+        tool_loop_depth=Distribution(type="fixed", mean=8),
+        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        fanout_probability=0.0,
+    )
 
     def paths_in(idx):
         g = build_graph_for_session(cfg, t, _WordTok(), session_index=idx)
@@ -3219,9 +3288,12 @@ def test_focus_entity_threads_across_the_loop():
 
 def test_code_change_focus_and_payload_deterministic():
     t = load_theme("code_change_task")
-    cfg = _code_change_cfg(turns_per_session=Distribution(type="fixed", mean=1),
-                           tool_loop_depth=Distribution(type="fixed", mean=10),
-                           tool_catalog_size_per_agent=Distribution(type="fixed", mean=10), fanout_probability=0.0)
+    cfg = _code_change_cfg(
+        turns_per_session=Distribution(type="fixed", mean=1),
+        tool_loop_depth=Distribution(type="fixed", mean=10),
+        tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
+        fanout_probability=0.0,
+    )
     g1 = build_graph_for_session(cfg, t, _WordTok(), session_index=2)
     g2 = build_graph_for_session(cfg, t, _WordTok(), session_index=2)
     for eid in g1.events:
@@ -3290,7 +3362,9 @@ def test_all_themes_payloads_render_domain_shaped_no_leak():
     for theme, tool, arg in cases:
         assert tool in theme.tool_parameters, f"{theme.name}: missing {tool} schema"
         pool = theme_payload_words(theme, 3, (68,))
-        args = _render_tool_arguments(theme.tool_parameters[tool], theme, 3, (0, 0, 31, 0), pinned={}, word_pool=None, payload_pool=pool)
+        args = _render_tool_arguments(
+            theme.tool_parameters[tool], theme, 3, (0, 0, 31, 0), pinned={}, word_pool=None, payload_pool=pool
+        )
         body = args[arg]
         leaks = re.findall(r"\{[a-z_]+[0-9]*\}", body)  # unresolved theme placeholders
         assert not leaks, f"{theme.name}.{tool}: placeholder leak {leaks} in payload"
@@ -3520,3 +3594,279 @@ def test_compaction_deterministic():
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
         assert g1.events[eid].call.input_segments == g2.events[eid].call.input_segments
+
+
+# --- Async sub-agent notifications: the K-notification fan-out tail ---------
+#
+# A spawn no longer ends in ONE atomic merge carrying all K child reports as tool
+# results. It ends in K SEQUENTIAL notification events: each dispatch's tool result
+# is a static content-free launch ack, and each child's report arrives later as its
+# own user-role notification message (`async_report`). Only the LAST notification is
+# the agent terminal.
+
+
+def _notify_chains(g):
+    """Group notification event ids per spawn: {agent_prefix: [ids in chain order]}."""
+    by_prefix: dict = {}
+    for eid in g.events:
+        if ":notify" not in eid:
+            continue
+        prefix, idx = eid.rsplit(":notify", 1)
+        by_prefix.setdefault(prefix, []).append((int(idx), eid))
+    return {p: [eid for _, eid in sorted(pairs)] for p, pairs in by_prefix.items()}
+
+
+def _async_fanout_cfg(K=2, **over):
+    base = dict(
+        theme_mix={"generic": 1.0},
+        turns_per_session=Distribution(type="fixed", mean=1),
+        fanout_probability=1.0,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=K),
+        max_depth=1,
+        tool_loop_depth=Distribution(type="fixed", mean=0),
+        max_events_per_session=512,
+    )
+    base.update(over)
+    return _cfg(**base)
+
+
+def test_spawn_emits_k_sequential_notifications_each_gated_on_its_own_child():
+    # (a) K notification events per spawn, chained sequentially, each depending on
+    # exactly two things: the prior link in the chain (the spawn, for the first) and
+    # its OWN child's terminal. The per-child dependency is what makes the chain a
+    # real async wait: a notification cannot fire before that child has finished.
+    K = 3
+    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _WordTok(), session_index=0)
+
+    chains = _notify_chains(g)
+    assert chains, "notification chains materialized"
+    child_terminals = {eid for eid in g.events if ":sub" in eid}
+
+    for prefix, chain in chains.items():
+        assert len(chain) == K, f"{prefix}: expected K={K} notifications, got {len(chain)}"
+        spawn_id = f"{prefix}:spawn"
+        assert spawn_id in g.events, f"{prefix}: spawn event exists"
+
+        seen_children = []
+        for i, eid in enumerate(chain):
+            preds = g.events[eid].predecessor_event_ids
+            assert len(preds) == 2, f"{eid}: expected exactly 2 predecessors, got {preds}"
+            expected_prev = spawn_id if i == 0 else chain[i - 1]
+            assert preds[0] == expected_prev, f"{eid}: chain predecessor must be {expected_prev}, got {preds[0]}"
+            child = preds[1]
+            assert child in child_terminals, f"{eid}: second predecessor {child} is not a child terminal"
+            seen_children.append(child)
+            # every predecessor is declared a dependency
+            assert set(g.events[eid].predecessor_dependency_types) == set(preds)
+
+        # each notification is gated on a DISTINCT child -> all K children covered once
+        assert len(set(seen_children)) == K, f"{prefix}: notifications must cover K distinct children"
+
+
+def test_only_last_notification_is_the_terminal():
+    # (b) Only the LAST notification produces the answer/report; the earlier ones are
+    # short ack turns. The last link is also the event the agent chain hands upward,
+    # so for a root spawn it must be a graph terminal (nothing depends on it).
+    from inference_perf.datagen.synthetic_agentic import ROOT_ANSWER_DIRECTIVE
+
+    K = 3
+    # Pin output_tokens_per_turn well above _FB_ACK_TOKENS so "the terminal answer is
+    # sized larger than an ack" is a meaningful comparison rather than an artifact of
+    # whatever the default happens to be.
+    g = build_graph_for_session(
+        _async_fanout_cfg(K, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
+        GENERIC_THEME,
+        _WordTok(),
+        session_index=0,
+    )
+    chains = _notify_chains(g)
+
+    for prefix, chain in chains.items():
+        *acks, last = chain
+        assert len(acks) == K - 1
+
+        # the ack turns carry NO terminal directive and are strictly shorter outputs
+        for eid in acks:
+            ev = g.events[eid]
+            msgs = ev.call.messages
+            assert msgs[-1]["role"] == "user", f"{eid}: ack input ends in the notification (user) message"
+            assert ROOT_ANSWER_DIRECTIVE not in str(msgs[-1].get("content", "")), f"{eid}: ack must carry no directive"
+            assert ev.call.expected_output, f"{eid}: ack still produces text"
+
+        # the last link is the terminal: it appends the answer directive
+        last_msgs = g.events[last].call.messages
+        assert ROOT_ANSWER_DIRECTIVE in str(last_msgs[-1].get("content", "")), (
+            f"{last}: the LAST notification must carry the terminal answer directive"
+        )
+        # and its expected output is a full answer, not an ack
+        assert g.events[last].call.expected_output_tokens > g.events[acks[0]].call.expected_output_tokens, (
+            "terminal answer must be sized larger than a non-terminal ack"
+        )
+
+        # nothing in the graph depends on the root chain's last link (it is terminal)
+        if ":sub" not in prefix.rsplit(":d", 1)[0]:
+            dependents = [e for e in g.events.values() if last in e.predecessor_event_ids]
+            assert not dependents, f"{last}: root terminal must have no dependents, got {[d.event_id for d in dependents]}"
+
+
+def test_every_notification_has_zero_wait_ms():
+    # (c) Timing comes SOLELY from the child terminal's own live-measured LLM call
+    # (real TTFT + decode), captured via the DAG dependency -- never from a fabricated
+    # extra sleep. A non-zero wait here would double-count that latency.
+    g = build_graph_for_session(_async_fanout_cfg(3, max_depth=2), GENERIC_THEME, _WordTok(), session_index=0)
+    notifies = [ev for eid, ev in g.events.items() if ":notify" in eid]
+    assert notifies, "notification events materialized"
+    for ev in notifies:
+        assert ev.wait_ms == 0, f"{ev.event_id}: notification wait_ms must be 0, got {ev.wait_ms}"
+
+
+def test_notification_chain_rolls_back_atomically_when_over_budget():
+    # (d) The whole spawn is atomic: if the K children + K notifications do not fit
+    # the event budget, the spawn event AND any children already built are dropped, so
+    # NO partial chain (and no orphaned spawn advertising unconsumed dispatch calls)
+    # survives. Sweep budgets across the threshold and assert the graph is always
+    # self-consistent.
+    K = 3
+    for budget in range(1, 3 + K * 2 + 3):
+        cfg = _async_fanout_cfg(K, max_events_per_session=budget)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+        assert len(g.events) <= budget, f"budget {budget}: emitted {len(g.events)} events"
+
+        chains = _notify_chains(g)
+        spawn_ids = [eid for eid in g.events if eid.endswith(":spawn")]
+
+        # a spawn survives IFF its complete chain of K notifications survives
+        for spawn_id in spawn_ids:
+            prefix = spawn_id.rsplit(":spawn", 1)[0]
+            assert prefix in chains, f"budget {budget}: spawn {spawn_id} survived with no notification chain"
+            assert len(chains[prefix]) == K, (
+                f"budget {budget}: spawn {spawn_id} kept a PARTIAL chain of {len(chains[prefix])} (expected {K})"
+            )
+        # and no chain survives without its spawn
+        for prefix in chains:
+            assert f"{prefix}:spawn" in g.events, f"budget {budget}: chain under {prefix} survived without its spawn"
+
+        # every predecessor reference resolves (no dangling ids after a rollback)
+        for ev in g.events.values():
+            for p in ev.predecessor_event_ids:
+                assert p in g.events, f"budget {budget}: {ev.event_id} references missing predecessor {p}"
+
+
+def test_shared_segment_never_overclaims_its_source_message_count():
+    # A `shared` segment is replayed as get_messages_by_event_id(src)[:message_count].
+    # Claiming MORE messages than the source event actually has silently trips the
+    # runtime's length-mismatch guard and falls back to the recorded prefix, losing the
+    # live transcript. Cursor math (sum(message_count) == len(messages)) does NOT catch
+    # this, so assert it directly across a deep fan-out graph.
+    for idx in range(3):
+        g = build_graph_for_session(
+            _async_fanout_cfg(2, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
+            GENERIC_THEME,
+            _WordTok(),
+            session_index=idx,
+        )
+        for eid, ev in g.events.items():
+            for seg in ev.call.input_segments:
+                if seg.type != "shared":
+                    continue
+                src = seg.source_event_id
+                assert src in g.events, f"{eid}: shared segment sources missing event {src}"
+                have = len(g.events[src].call.messages)
+                assert seg.message_count <= have, (
+                    f"{eid}: shared segment claims {seg.message_count} messages from {src}, which has only {have}"
+                )
+
+
+def test_async_report_segments_reference_real_child_terminals():
+    # Every async_report segment must source an event that EXISTS and is also a
+    # declared predecessor (the runtime awaits predecessors before substituting, so a
+    # non-predecessor source would be read before it is recorded).
+    g = build_graph_for_session(
+        _async_fanout_cfg(3, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
+        GENERIC_THEME,
+        _WordTok(),
+        session_index=0,
+    )
+    seen = 0
+    for eid, ev in g.events.items():
+        preds = set(ev.predecessor_event_ids)
+        for seg in ev.call.input_segments:
+            if seg.type != "async_report":
+                continue
+            seen += 1
+            assert seg.message_count == 1, f"{eid}: async_report must cover exactly 1 message"
+            assert seg.source_event_id in g.events, f"{eid}: async_report sources missing event {seg.source_event_id}"
+            assert seg.source_event_id in preds, f"{eid}: async_report source {seg.source_event_id} is not a predecessor"
+    assert seen, "async_report segments materialized"
+
+
+def test_no_tool_output_segments_remain_anywhere():
+    # The `tool_output` segment type is GONE (replaced by async_report). Nothing in a
+    # generated graph may still emit it.
+    g = build_graph_for_session(
+        _async_fanout_cfg(2, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=2)),
+        GENERIC_THEME,
+        _WordTok(),
+        session_index=0,
+    )
+    for eid, ev in g.events.items():
+        for seg in ev.call.input_segments:
+            assert seg.type != "tool_output", f"{eid}: stale tool_output segment"
+
+
+def test_async_notification_chain_is_byte_identical_across_rebuilds():
+    # Determinism across the new multi-event tail: same (config, index) -> identical
+    # ids, order, messages, segments, and the independently-salted ack texts.
+    cfg = _cfg(
+        theme_mix={"generic": 1.0},
+        fanout_probability=1.0,
+        sub_agents_per_spawn=Distribution(type="uniform", min=2, max=3),
+        max_depth=2,
+        tool_loop_depth=Distribution(type="uniform", min=0, max=2),
+        max_events_per_session=512,
+    )
+    for idx in range(3):
+        g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        assert list(g1.events.keys()) == list(g2.events.keys())
+        for eid in g1.events:
+            assert g1.events[eid].call.messages == g2.events[eid].call.messages
+            assert g1.events[eid].call.input_segments == g2.events[eid].call.input_segments
+            assert g1.events[eid].call.expected_output == g2.events[eid].call.expected_output
+            assert g1.events[eid].predecessor_event_ids == g2.events[eid].predecessor_event_ids
+
+
+def test_ack_text_is_short_form_and_distinct_from_the_terminal_answer():
+    # Each ack is drawn through _ack_text with its OWN per-notification sub-seed
+    # (…, c, 10/11) and sized from _FB_ACK_TOKENS, NOT output_tokens_per_turn.
+    #
+    # Note on what is deliberately NOT asserted: `fit_filler` pads with CYCLED pool
+    # words and does not consult its `rng` for the filler body, so two acks of equal
+    # target length are expected to be the same string. That is how every filler in
+    # this module behaves (including _answer_text) -- so the meaningful invariant is
+    # that an ack is short-form and clearly distinct from the terminal ANSWER, not
+    # that the acks differ from each other.
+    from inference_perf.datagen.synthetic_agentic import _FB_ACK_TOKENS
+
+    ack_target = _FB_ACK_TOKENS.mean
+    g = build_graph_for_session(
+        _async_fanout_cfg(4, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
+        GENERIC_THEME,
+        _WordTok(),
+        session_index=0,
+    )
+    chains = _notify_chains(g)
+    assert chains, "notification chains materialized"
+    for prefix, chain in chains.items():
+        acks = [g.events[eid].call for eid in chain[:-1]]
+        assert len(acks) >= 2, "need >=2 acks to compare"
+        terminal = g.events[chain[-1]].call
+        for call in acks:
+            # sized from the ack distribution, not from output_tokens_per_turn
+            assert call.expected_output_tokens == ack_target, (
+                f"{prefix}: ack sized {call.expected_output_tokens}, expected _FB_ACK_TOKENS={ack_target}"
+            )
+            assert call.expected_output, "ack produces text"
+            assert call.expected_output != terminal.expected_output, "ack text must differ from the terminal answer"
+        # the terminal really is the long-form answer
+        assert terminal.expected_output_tokens == 256, "terminal sized from output_tokens_per_turn"
