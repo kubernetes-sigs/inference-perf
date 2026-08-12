@@ -1829,7 +1829,7 @@ def test_err_rate_and_err_pct_read_low():
 
 # --- Forced tool-call turns must carry a real max_tokens budget --------------
 #
-# Regression guard for the RITS 400 bug: forced tool-call events used to ship
+# Regression guard for the truncated-tool-call 400: forced tool-call events used to ship
 # with expected_output_tokens=0, so a real model truncated its tool call mid-JSON
 # and leaked chat-template control tokens into `arguments`, which 400s on replay.
 # Each forced tool-call event must be sized to tokens(json.dumps(its calls)) +
@@ -2173,7 +2173,7 @@ def test_fallback_tool_params_applies_for_theme_without_schemas():
     assert hits > 0, "no tool calls emitted for the fallback-schema theme"
 
 
-# --- ignore_eos must be False for forced tool-call turns (RITS 400 fix) -------
+# --- ignore_eos must be False for forced tool-call turns (400 on replay fix) --
 #
 # The load default is ignore_eos=True (to make plain-text turns generate exactly
 # N tokens). For a FORCED tool call that is wrong: with EOS ignored the model
