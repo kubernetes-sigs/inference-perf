@@ -134,7 +134,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
 | `--data.otel_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
-| `--data.otel_trace_replay.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely. |
+| `--data.otel_trace_replay.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely; use with care because a genuinely stuck predecessor will then never time out and successors will wait forever. |
 | `--data.otel_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.otel_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.otel_trace_replay.trace_directory` | str | Directory containing OTel JSON trace files |
@@ -158,7 +158,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.weka_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
 | `--data.weka_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
-| `--data.weka_trace_replay.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely. |
+| `--data.weka_trace_replay.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely; use with care because a genuinely stuck predecessor will then never time out and successors will wait forever. |
 | `--data.weka_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.weka_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.weka_trace_replay.trace_directory` | str | Directory containing Weka JSON trace files |

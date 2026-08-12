@@ -20,9 +20,10 @@ data:
     # Request settings
     default_max_tokens: 100000
 
-    # Wait indefinitely for predecessor events instead of failing deep chains
-    # whose cumulative ancestor latency exceeds a fixed timeout.
-    predecessor_wait_timeout_sec: 0
+    # predecessor_wait_timeout_sec (default: 3600). Increase it to make the sessions wait longer.
+    # Set to 0 to wait indefinitely for predecessor events instead of failing deep chains whose cumulative ancestor
+    # latency exceeds a fixed timeout. Use with care: a genuinely stuck predecessor
+    # will then never time out, and successors will wait forever.
 
     # Error handling
     include_errors: true

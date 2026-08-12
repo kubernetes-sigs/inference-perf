@@ -134,7 +134,11 @@ class SessionReplayConfig(StrictBaseModel):
     predecessor_wait_timeout_sec: float = Field(
         3600.0,
         ge=0,
-        description="Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely.",
+        description=(
+            "Seconds to wait for predecessor events to complete before failing. "
+            "0 waits indefinitely; use with care because a genuinely stuck predecessor "
+            "will then never time out and successors will wait forever."
+        ),
     )
 
     # Error handling
