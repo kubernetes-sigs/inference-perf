@@ -232,6 +232,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             self.user_sessions[conv_idx] = self._new_session(
                 user_session_id=expected_session_id,
                 context=bp.system_prompt,
+                system_prompt=bp.system_prompt,
             )
             logger.debug("Slot %d: refreshed system prompt and re-primed session %s", conv_idx, expected_session_id)
 
@@ -272,6 +273,19 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     # -- Internal ---------------------------------------------------------
 
     def _new_session(self, user_session_id: str, context: str, system_prompt: str = "") -> LocalUserSession:
+        # A session id must map to exactly one object. load_lazy_data() runs once
+        # per request at dispatch time, so it is called repeatedly for the same
+        # slot and convo_num and asks for an id that already exists. Requests
+        # resolve their session by id late (UserSessionCompletionAPIData.
+        # user_session), so replacing the object would leave a request reading
+        # context from the old one and writing its response to the new one: turns
+        # parked in get_context() are never woken (the stage then hangs forever),
+        # and a straggler's response lands in the wrong conversation's history.
+        # Reuse means the id keeps its conversation, and repeated calls for one
+        # data_index are idempotent.
+        existing = LocalUserSession._instances.get(user_session_id)
+        if existing is not None:
+            return existing
         session = LocalUserSession(
             user_session_id=user_session_id,
             context=context,
