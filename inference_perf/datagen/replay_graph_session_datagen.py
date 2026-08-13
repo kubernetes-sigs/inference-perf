@@ -28,6 +28,7 @@ import logging
 import re
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field, replace as dc_replace
 from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -990,7 +991,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             actual_tool_names = [tc["function"]["name"] for tc in (tool_calls or [])]
 
         if self.expected_output_tool_names is not None:
-            if actual_tool_names != self.expected_output_tool_names:
+            # Compare as multisets
+            if Counter(actual_tool_names) != Counter(self.expected_output_tool_names):
                 logger.debug(
                     f"Tool call name mismatch for event {self.event_id}: "
                     f"expected {self.expected_output_tool_names}, got {actual_tool_names}"
