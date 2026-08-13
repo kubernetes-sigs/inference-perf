@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -34,12 +35,12 @@ class InfinityInstructDataGenerator(DataGenerator):
             # depending on whether the dataset is a single file or a directory, we need to load it differently
             # TODO: add support for other file types
             if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.infinity_instruct_dataset = iter(
+                self.infinity_instruct_dataset = itertools.cycle(
                     load_dataset("json", data_files=config.path, streaming=True, split="train")
                 )
             elif os.path.isdir(config.path):
                 json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.infinity_instruct_dataset = iter(
+                self.infinity_instruct_dataset = itertools.cycle(
                     load_dataset("json", data_files=json_files, streaming=True, split="train")
                 )
             else:
@@ -48,8 +49,12 @@ class InfinityInstructDataGenerator(DataGenerator):
             raise ValueError("path is not provided in the config")
 
         self.conversations_key = "conversations"
-        # initialize data collection
-        next(self.infinity_instruct_dataset)
+        # initialize data collection — guard against empty datasets
+        try:
+            next(self.infinity_instruct_dataset)
+        except StopIteration:
+            logger.warning("InfinityInstruct dataset is empty; data generation will be a no-op")
+            self.infinity_instruct_dataset = None
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
