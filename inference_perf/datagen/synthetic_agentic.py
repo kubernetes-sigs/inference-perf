@@ -1269,6 +1269,20 @@ def build_graph_for_session(
     root_ids: List[str] = []
     budget = cfg.max_events_per_session
 
+    def _fits(n: int, reserved: int) -> bool:
+        """Can `n` more events be emitted without eating what an ancestor still owes?
+
+        `reserved` is the number of events ANCESTORS have committed to emitting but
+        have not emitted yet: while a spawner builds its K children, its own (K + 1)
+        tail events (the dispatch_ack + K notifications) are still unbuilt. Without
+        counting them, a child recurses greedily against the whole remaining budget,
+        strands its parent with `child_terminals != K`, and trips the atomic rollback
+        -- which discards the entire subtree and collapses the session to its
+        pre-spawn terminal. Nested spawners each add their own tail, so the
+        reservation accumulates down the recursion.
+        """
+        return len(events) + reserved + n <= budget
+
     # Theme-relevant filler word pool, built ONCE per session and reused by every
     # fit_filler call so padding reads like more of the theme's own pasted
     # content (logs/metrics/frames) rather than Shakespeare. None -> fit_filler
@@ -1408,6 +1422,7 @@ def build_graph_for_session(
         principal_wait: int,
         is_root: bool,
         agent_seed_path: Tuple[Any, ...],
+        reserved: int = 0,
         principal_segments: Optional[List[InputSegment]] = None,
         pinned: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
@@ -1430,8 +1445,12 @@ def build_graph_for_session(
         The FIRST call of every agent carries the byte-identical invariant
         system head (a per-event copy). Returns None if the agent's minimum cost
         (one terminal call) does not fit the remaining event budget.
+
+        `reserved` carries the events this agent's ANCESTORS have committed to but
+        not yet emitted (see `_fits`); it is threaded through every budget test here
+        and passed down to any sub-agents this agent spawns.
         """
-        if len(events) + _MIN_AGENT_COST > budget:
+        if not _fits(_MIN_AGENT_COST, reserved):
             return None
 
         # --- principal input event (agent's FIRST call: carries system head) ---
@@ -1640,7 +1659,7 @@ def build_graph_for_session(
             # if we truncate here, which is acceptable — it simply never gets a
             # follow-up; no dangling result is created because the result only
             # materializes in THIS event which we skip).
-            if len(events) + 1 > budget:
+            if not _fits(1, reserved):
                 break
             _, results, _ = _turn_calls_and_results(t)
             # The output-slot placeholder assistant carries the prior event's
@@ -1744,7 +1763,7 @@ def build_graph_for_session(
             # Only spawn if it all fits; else the agent stays a plain leaf whose current
             # `prev` event becomes terminal.
             min_spawn_cost = 1 + K * _MIN_AGENT_COST + (K + 1)
-            if K > 0 and len(events) + min_spawn_cost <= budget:
+            if K > 0 and _fits(min_spawn_cost, reserved):
                 # Child objectives are pinned to the PARENT's subject entity, so the
                 # whole fan-out is ONE coherent investigation (the orchestrator's
                 # incident) rather than each child probing an unrelated service. The
@@ -1835,12 +1854,17 @@ def build_graph_for_session(
                     expected_output_tokens=_tool_call_max_tokens(tokenizer, dispatch_calls),
                 )
                 child_terminals: List[str] = []
+                # Reserve this agent's own (K + 1) tail (dispatch_ack + K notifications)
+                # for the whole child loop, PLUS the minimum cost of every sibling still
+                # to be built. Children -- and, because `reserved` is threaded through
+                # `_build_agent`, their descendants -- test the budget against that total,
+                # so a greedy grandchild can no longer consume the events this agent
+                # still owes, and an early child cannot starve a later sibling. Both were
+                # ways to end the loop with `child_terminals != K`, which trips the atomic
+                # rollback below and collapses the whole session to its pre-spawn terminal.
                 for c in range(K):
-                    # Room for this child's minimum PLUS the still-pending orchestrator
-                    # turns. The ack turn and ALL K notifications are still unbuilt at
-                    # this point (they are emitted only after every child succeeds), so
-                    # the reservation is a flat K+1 here, not K-c.
-                    if len(events) + _MIN_AGENT_COST + (K + 1) > budget:
+                    child_reserved = reserved + (K + 1) + (K - c - 1) * _MIN_AGENT_COST
+                    if not _fits(_MIN_AGENT_COST, child_reserved):
                         break
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
                     child_task = [{"role": "user", "content": child_objs[c]}]
@@ -1853,13 +1877,14 @@ def build_graph_for_session(
                         0,
                         False,
                         (*agent_seed_path, 200 + c),
+                        reserved=child_reserved,
                         pinned=pinned,  # child's own turns stay on the parent's subject
                     )
                     if child_terminal is None:
                         break
                     child_terminals.append(child_terminal)
 
-                if len(child_terminals) == K and len(events) + (K + 1) <= budget:
+                if len(child_terminals) == K and _fits(K + 1, reserved):
                     # --- ASYNC fan-out tail. The orchestrator's flow is:
                     #
                     #   spawn          OUTPUT = dispatch_agent x K
@@ -2071,7 +2096,8 @@ def build_graph_for_session(
         # Stop starting new rounds once even the minimum agent (principal + answer)
         # won't fit the event budget; never truncate mid-round. Deeper fan-out is
         # budget-guarded inside _build_agent.
-        if len(events) + _MIN_AGENT_COST > budget:
+        # Top-level: no ancestor owes anything, so nothing is reserved yet.
+        if not _fits(_MIN_AGENT_COST, 0):
             break
 
         # Session-scoped subject pin, threaded into every round's objective, intro
@@ -2202,7 +2228,7 @@ def build_graph_for_session(
             principal_wait,
             True,
             (r,),
-            principal_segments,
+            principal_segments=principal_segments,
             pinned=pinned,
         )
         if terminal is None:

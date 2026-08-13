@@ -369,6 +369,83 @@ def test_event_budget_cost_is_k_plus_1_per_round() -> None:
     assert len(g6.events) == 6, f"expected 2 full rounds of (k+1)=3 events, got {len(g6.events)}"
 
 
+def _budget_cfg(cap: int) -> SyntheticAgenticConfig:
+    """A recursive fan-out whose untruncated cost far exceeds any cap under test.
+
+    K=3, max_depth=3, k=2 costs 172 events untruncated (leaf = k+1 = 3; a spawner =
+    k + K + 2 + K * child), so every cap below 172 genuinely binds.
+    """
+    return _cfg(
+        fanout_probability=1.0,
+        max_depth=3,
+        sub_agents_per_spawn=Distribution(type="fixed", mean=3),
+        tool_loop_depth=Distribution(type="fixed", mean=2),
+        max_events_per_session=cap,
+    )
+
+
+def test_binding_budget_does_not_collapse_session() -> None:
+    """A budget that binds must TRUNCATE the fan-out, never collapse the session.
+
+    Regression: a spawner reserved only `_MIN_AGENT_COST` (1) per child, so a
+    recursive child consumed the budget its parent still owed for the (K + 1)
+    dispatch_ack + notification tail. The parent then ended the child loop with
+    `child_terminals != K` and hit the atomic rollback, which deletes the ENTIRE
+    subtree -- cascading up until the root discarded everything and the session fell
+    back to its 2-event pre-spawn terminal. Caps of 10, 16, 30, 47 and 100 each
+    produced exactly 2 events out of a 172-event tree.
+    """
+    for cap in (10, 16, 30, 47, 100):
+        g = build_graph_for_session(_budget_cfg(cap), GENERIC_THEME, _word_tok(), 0)
+        n = len(g.events)
+        assert n <= cap, f"cap={cap}: emitted {n} events, over budget"
+        # The collapse signature is falling back to the pre-spawn terminal (2 events).
+        # Any cap this far above the minimum must fit real fan-out structure.
+        assert n > 2, f"cap={cap}: session collapsed to {n} events (rollback cascade)"
+        # Truncation should use most of the budget it was given, not a fraction.
+        assert n >= cap * 0.8, f"cap={cap}: only used {n} events of the budget"
+
+
+def test_budget_is_monotonic_in_cap() -> None:
+    """Raising the cap must never REDUCE the event count.
+
+    Regression: the rollback cascade made the budget->events curve discontinuous --
+    cap 15 produced 13 events but cap 16 produced 2, and cap 150 gave 119 while cap
+    171 gave 2. A cap is meant to be a ceiling, not a lottery: whether a session
+    collapsed depended on where the cascade happened to strand a spawn.
+    """
+    prev = 0
+    for cap in range(1, 60):
+        n = len(build_graph_for_session(_budget_cfg(cap), GENERIC_THEME, _word_tok(), 0).events)
+        assert n <= cap, f"cap={cap}: emitted {n} events, over budget"
+        assert n >= prev, f"cap={cap}: emitted {n} events, fewer than cap={cap - 1}'s {prev}"
+        prev = n
+
+
+def test_budget_truncated_graphs_keep_tool_call_invariants() -> None:
+    """Truncation must not strand a tool call without its result.
+
+    The atomic rollback existed to protect this invariant, so the fix has to hold it
+    at every cap -- including the ones that previously collapsed. Checks inv #3 (one
+    role:tool per tool_call) plus referential integrity of predecessors and segments.
+    """
+    for cap in (10, 13, 16, 25, 47, 100, 171):
+        g = build_graph_for_session(_budget_cfg(cap), GENERIC_THEME, _word_tok(), 0)
+        for eid, ev in g.events.items():
+            for pred in ev.predecessor_event_ids:
+                assert pred in g.events, f"cap={cap} {eid}: dangling predecessor {pred}"
+            for seg in ev.call.input_segments:
+                if seg.source_event_id is not None:
+                    assert seg.source_event_id in g.events, f"cap={cap} {eid}: segment sources missing event"
+            # every role:tool result answers a tool_call advertised earlier in the transcript
+            offered: set[str] = set()
+            for m in ev.call.messages:
+                for tc in m.get("tool_calls", []) or []:
+                    offered.add(tc["id"])
+                if m.get("role") == "tool":
+                    assert m.get("tool_call_id") in offered, f"cap={cap} {eid}: orphan tool result"
+
+
 # --- Generator class (lazy build + theme weighting) --------------------
 
 
