@@ -16,6 +16,8 @@
 from typing import Any, Dict, Optional
 
 from aiohttp import ClientResponse
+from openai.types import Completion
+
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -101,22 +103,27 @@ class CompletionAPIData(InferenceAPIData):
                 extra_info={"raw_response": parsed.raw_content},
             )
         else:
-            data = await response.json()
+            body = await response.json()
             # A 200 whose body is an error payload is that error, not a success.
-            if (error_payload := in_band_error(data)) is not None:
+            if (error_payload := in_band_error(body)) is not None:
                 raise InBandError(error_payload)
-            server_usage = data.get("usage")
-            choices = data.get("choices", [])
-            output_text = choices[0].get("text", "") if choices else ""
+            # Validate against the official OpenAI schema so malformed bodies
+            # fail loudly instead of silently reporting an empty response.
+            data = Completion.model_validate(body)
+            server_usage = data.usage.model_dump() if data.usage else None
+            output_text = data.choices[0].text if data.choices else ""
             # No content and no usage means the body is not a completion at all.
             if not output_text and server_usage is None:
                 raise EmptyResponseError()
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
-            if len(choices) == 0:
+            if len(data.choices) == 0:
                 return InferenceInfo(
                     request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                     lora_adapter=lora_adapter,
                 )
+            # Generated text is a continuation, not a sequence start: counting it
+            # with special tokens would add a BOS the server's completion_tokens
+            # never contains.
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
