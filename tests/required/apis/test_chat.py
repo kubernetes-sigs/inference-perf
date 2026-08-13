@@ -388,7 +388,7 @@ async def test_chat_completion_process_response_streaming_request_id() -> None:
     mock_resp.headers = {}
     mock_resp.content = MagicMock()
 
-    async def iter_any():
+    async def iter_any() -> AsyncGenerator[bytes, None]:
         yield b'data: {"id": "chatcmpl-stream-789", "choices": [{"delta": {"content": "world"}}]}\n\n'
         yield b"data: [DONE]\n\n"
 
@@ -581,3 +581,18 @@ async def test_chat_completion_process_response_integer_request_id() -> None:
 
     info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
     assert info.server_request_id == "998877"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_process_response_unary_empty_choices_preserves_request_id() -> None:
+    """Verifies that empty choices list in unary chat response still preserves server_request_id."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
+    mock_resp = MagicMock()
+    mock_resp.headers = {}
+    mock_resp.json = AsyncMock(return_value={"id": "chatcmpl-empty-choices-123", "choices": []})
+    tok = MagicMock()
+    tok.count_tokens = lambda s, **kw: len((s or "").split())
+
+    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
+    assert info.server_request_id == "chatcmpl-empty-choices-123"
+

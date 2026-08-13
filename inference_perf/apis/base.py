@@ -185,16 +185,28 @@ def extract_server_request_id(data: Any = None, response: Optional[Any] = None) 
     """Extract and stringify server request ID from response body dict or response headers."""
     if isinstance(data, dict):
         raw_id = data.get("id")
-        if raw_id is not None and isinstance(raw_id, (str, int)):
-            return str(raw_id)
+        if raw_id is not None and isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
+            val = str(raw_id).strip()
+            if val:
+                return val
         if isinstance(data.get("message"), dict):
             msg_id = data["message"].get("id")
-            if msg_id is not None and isinstance(msg_id, (str, int)):
-                return str(msg_id)
+            if msg_id is not None and isinstance(msg_id, (str, int)) and not isinstance(msg_id, bool):
+                val = str(msg_id).strip()
+                if val:
+                    return val
 
     if response is not None and hasattr(response, "headers") and hasattr(response.headers, "get"):
-        val = response.headers.get("x-request-id")
-        if isinstance(val, (str, int)):
-            return str(val)
+        headers = response.headers
+        val = headers.get("x-request-id")
+        if val is None and hasattr(headers, "items"):
+            for k, v in headers.items():
+                if isinstance(k, str) and k.lower() == "x-request-id":
+                    val = v
+                    break
+        if val is not None and isinstance(val, (str, int)) and not isinstance(val, bool):
+            val_str = str(val).strip()
+            if val_str:
+                return val_str
 
     return None

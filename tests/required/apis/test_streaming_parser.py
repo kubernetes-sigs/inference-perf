@@ -303,6 +303,16 @@ def test_extract_server_request_id_direct() -> None:
     # Direct ID integer converted to str
     assert extract_server_request_id({"id": 12345}) == "12345"
 
+    # Boolean ID rejection (bool is subclass of int in Python)
+    assert extract_server_request_id({"id": True}) is None
+    assert extract_server_request_id({"id": False}) is None
+    assert extract_server_request_id({"message": {"id": True}}) is None
+
+    # Empty and whitespace string ID rejection
+    assert extract_server_request_id({"id": ""}) is None
+    assert extract_server_request_id({"id": "   "}) is None
+    assert extract_server_request_id({"message": {"id": ""}}) is None
+
     # Nested message ID (Anthropic message_start)
     assert extract_server_request_id({"message": {"id": "msg-456"}}) == "msg-456"
     assert extract_server_request_id({"message": {"id": 7890}}) == "7890"
@@ -310,10 +320,19 @@ def test_extract_server_request_id_direct() -> None:
     # Invalid / non-dict message field ignored
     assert extract_server_request_id({"message": "non-dict string"}) is None
 
-    # Header fallback
+    # Header fallback (exact casing)
     mock_resp = Mock()
     mock_resp.headers = {"x-request-id": "hdr-999"}
     assert extract_server_request_id({}, response=mock_resp) == "hdr-999"
+
+    # Header fallback (case-insensitivity on dict headers)
+    mock_resp_mixed = Mock()
+    mock_resp_mixed.headers = {"X-Request-Id": "hdr-mixed-case-999"}
+    assert extract_server_request_id({}, response=mock_resp_mixed) == "hdr-mixed-case-999"
+
+    mock_resp_upper = Mock()
+    mock_resp_upper.headers = {"X-REQUEST-ID": "hdr-upper-case-999"}
+    assert extract_server_request_id({}, response=mock_resp_upper) == "hdr-upper-case-999"
 
     # None input handles safely
     assert extract_server_request_id(None, None) is None
