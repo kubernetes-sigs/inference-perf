@@ -182,7 +182,17 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
 
 
 def extract_server_request_id(data: Any = None, response: Optional[Any] = None) -> Optional[str]:
-    """Extract and stringify server request ID from response body dict or response headers."""
+    """Extracts server request ID from response body dict or HTTP headers.
+
+    Checks:
+    1. Body `id` field (OpenAI / standard completions).
+    2. Body `message.id` field (Anthropic `message_start` events).
+    3. Case-insensitive `x-request-id` response header fallback.
+
+    Guards:
+    - Stringifies non-empty str/int IDs; rejects booleans.
+    - Strips whitespace and ignores blank strings.
+    """
     if isinstance(data, dict):
         raw_id = data.get("id")
         if raw_id is not None and isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
