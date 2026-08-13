@@ -38,6 +38,7 @@ jobs:
           fi
       - name: Set up Python
         if: steps.changes.outputs.code == 'true'
+        id: setup-python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -46,6 +47,17 @@ jobs:
         uses: pdm-project/setup-pdm@c6081998a653693a457d93c70b8007d979bc6741 # v4
         with:
           python-version: ${{ matrix.python-version }}
+      # Same key as Unit Tests (same install set), so the two workflows share
+      # one cache. Keyed on the exact interpreter version because the venv
+      # symlinks into the runner's hostedtoolcache.
+      - name: Restore pdm venv
+        if: steps.changes.outputs.code == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py${{ steps.setup-python.outputs.python-version }}-dev-analysis-otel-${{ hashFiles('pdm.lock') }}
+      # Kept on cache hits: pdm sync verifies the restored venv against
+      # pdm.lock in seconds and repairs a partial restore.
       - name: Install dependencies
         if: steps.changes.outputs.code == 'true'
         run: |
