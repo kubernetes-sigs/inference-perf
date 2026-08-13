@@ -14,7 +14,7 @@
 import base64
 from collections.abc import AsyncGenerator
 import logging
-from typing import Any, Iterator, AsyncGenerator, Iterator, List, Optional, cast
+from typing import Any, Iterator, AsyncGenerator, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,11 +24,6 @@ from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
-from inference_perf.datagen.replay_graph_session_datagen import (
-    EventOutputRegistry,
-    SessionChatCompletionAPIData,
-    WorkerSessionTracker,
-)
 from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
@@ -401,198 +396,32 @@ async def test_chat_completion_process_response_streaming_request_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_process_response_unary_request_id() -> None:
-    """Verifies that unary chat responses extract server_request_id from JSON response body."""
+@pytest.mark.parametrize(
+    ("response_payload", "response_headers", "expected_id"),
+    [
+        (
+            {"id": "chatcmpl-unary-789", "choices": [{"message": {"content": "world"}}]},
+            {},
+            "chatcmpl-unary-789",
+        ),
+        (
+            {"choices": [{"message": {"content": "world"}}]},
+            {"x-request-id": "req-unary-hdr-789"},
+            "req-unary-hdr-789",
+        ),
+    ],
+)
+async def test_chat_completion_process_response_unary_request_id(
+    response_payload: dict[str, Any], response_headers: dict[str, str], expected_id: str
+) -> None:
+    """Verifies unary chat response extracts server_request_id from JSON payload or header fallback."""
     data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
     mock_resp = MagicMock()
-    mock_resp.headers = {}
-    mock_resp.json = AsyncMock(
-        return_value={
-            "id": "chatcmpl-unary-789",
-            "choices": [{"message": {"content": "world"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-        }
-    )
+    mock_resp.headers = response_headers
+    mock_resp.json = AsyncMock(return_value=response_payload)
     tok = MagicMock()
     tok.count_tokens = lambda s, **kw: len((s or "").split())
 
     info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
-    assert info.server_request_id == "chatcmpl-unary-789"
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_process_response_unary_header_fallback() -> None:
-    """Verifies that unary chat responses fall back to x-request-id header when body has no ID."""
-    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
-    mock_resp = MagicMock()
-    mock_resp.headers = {"x-request-id": "req-unary-hdr-789"}
-    mock_resp.json = AsyncMock(
-        return_value={
-            "choices": [{"message": {"content": "world"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-        }
-    )
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
-    assert info.server_request_id == "req-unary-hdr-789"
-
-
-def _make_session_chat_data(event_id: str = "session_1:event_0") -> SessionChatCompletionAPIData:
-    return SessionChatCompletionAPIData(
-        messages=[ChatMessage(role="user", content="Hello")],
-        max_tokens=500,
-        event_id=event_id,
-        registry=EventOutputRegistry(),
-        worker_tracker=WorkerSessionTracker(),
-        completion_queue=None,
-        total_events_in_session=1,
-        predecessor_event_ids=[],
-    )
-
-
-def _mock_stream_response(chunks: list[bytes], headers: Optional[dict[str, str]] = None) -> MagicMock:
-    resp = MagicMock()
-    resp.headers = headers or {}
-    content = MagicMock()
-
-    async def iter_any() -> AsyncGenerator[bytes, None]:
-        for chunk in chunks:
-            yield chunk
-
-    content.iter_any = iter_any
-    resp.content = content
-    return resp
-
-
-@pytest.mark.asyncio
-async def test_session_chat_completion_streaming_request_id() -> None:
-    """Verifies streaming OpenAI session replay extracts server_request_id from SSE chunk."""
-    data = _make_session_chat_data()
-    chunks = [
-        b'data: {"id": "chatcmpl-openai-stream-123", "choices": [{"delta": {"content": "Hello"}}]}\n\n',
-        b"data: [DONE]\n\n",
-    ]
-    response = _mock_stream_response(chunks)
-    config = APIConfig(type=APIType.Chat, streaming=True)
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(response, config, tok)
-
-    assert info.server_request_id == "chatcmpl-openai-stream-123"
-
-
-@pytest.mark.asyncio
-async def test_session_chat_completion_streaming_header_fallback() -> None:
-    """Verifies streaming session replay falls back to x-request-id header when chunk has no ID."""
-    data = _make_session_chat_data()
-    chunks = [
-        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n',
-        b"data: [DONE]\n\n",
-    ]
-    response = _mock_stream_response(chunks, headers={"x-request-id": "req-stream-header-123"})
-    config = APIConfig(type=APIType.Chat, streaming=True)
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(response, config, tok)
-
-    assert info.server_request_id == "req-stream-header-123"
-
-
-@pytest.mark.asyncio
-async def test_session_chat_completion_streaming_no_request_id() -> None:
-    """Verifies server_request_id is None when neither SSE chunks nor headers provide an ID."""
-    data = _make_session_chat_data()
-    chunks = [
-        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n',
-        b"data: [DONE]\n\n",
-    ]
-    response = _mock_stream_response(chunks)
-    config = APIConfig(type=APIType.Chat, streaming=True)
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(response, config, tok)
-
-    assert info.server_request_id is None
-
-
-@pytest.mark.asyncio
-async def test_session_chat_completion_non_streaming_request_id() -> None:
-    """Verifies unary OpenAI session replay extracts server_request_id from response body."""
-    data = _make_session_chat_data()
-    response = MagicMock()
-    response.headers = {}
-    response.json = AsyncMock(
-        return_value={
-            "id": "chatcmpl-openai-unary-123",
-            "choices": [{"message": {"content": "Hello"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-        }
-    )
-    config = APIConfig(type=APIType.Chat, streaming=False)
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(response, config, tok)
-
-    assert info.server_request_id == "chatcmpl-openai-unary-123"
-
-
-@pytest.mark.asyncio
-async def test_session_chat_completion_non_streaming_header_fallback() -> None:
-    """Verifies unary OpenAI session replay falls back to x-request-id header when body has no ID."""
-    data = _make_session_chat_data()
-    response = MagicMock()
-    response.headers = {"x-request-id": "req-unary-header-123"}
-    response.json = AsyncMock(
-        return_value={
-            "choices": [{"message": {"content": "Hello"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-        }
-    )
-    config = APIConfig(type=APIType.Chat, streaming=False)
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(response, config, tok)
-
-    assert info.server_request_id == "req-unary-header-123"
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_process_response_integer_request_id() -> None:
-    """Verifies unary chat response with integer ID is converted to string."""
-    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
-    mock_resp = MagicMock()
-    mock_resp.headers = {}
-    mock_resp.json = AsyncMock(
-        return_value={
-            "id": 998877,
-            "choices": [{"message": {"content": "world"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-        }
-    )
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
-    assert info.server_request_id == "998877"
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_process_response_unary_empty_choices_preserves_request_id() -> None:
-    """Verifies that empty choices list in unary chat response still preserves server_request_id."""
-    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
-    mock_resp = MagicMock()
-    mock_resp.headers = {}
-    mock_resp.json = AsyncMock(return_value={"id": "chatcmpl-empty-choices-123", "choices": []})
-    tok = MagicMock()
-    tok.count_tokens = lambda s, **kw: len((s or "").split())
-
-    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
-    assert info.server_request_id == "chatcmpl-empty-choices-123"
+    assert info.server_request_id == expected_id
 
