@@ -14,7 +14,7 @@
 import base64
 from collections.abc import AsyncGenerator
 import logging
-from typing import Any, Iterator, AsyncGenerator, Iterator, List, cast
+from typing import Any, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

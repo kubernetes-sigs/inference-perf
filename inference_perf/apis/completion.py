@@ -97,7 +97,8 @@ class CompletionAPIData(InferenceAPIData):
         else:
             data = await response.json()
             server_request_id = extract_server_request_id(data, response)
-            prompt_len = tokenizer.count_tokens(self.prompt)
+            server_usage = data.get("usage") if isinstance(data, dict) else None
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(

@@ -591,7 +591,8 @@ class ChatCompletionAPIData(InferenceAPIData):
 
         data = await response.json()
         server_request_id = extract_server_request_id(data, response)
-        prompt_len = self._count_prompt_tokens(tokenizer)
+        server_usage = data.get("usage") if isinstance(data, dict) else None
+        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         choices = data.get("choices", [])
         if len(choices) == 0:
             return InferenceInfo(
