@@ -1618,7 +1618,15 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         # (output segment) plus that call's results (unique segment). Its OWN
         # output is the next tool call (N < k-1) or, if it is the agent terminal
         # (last turn AND no spawn), the plain answer.
-        for t in range(k):
+        #
+        # A SPAWNING agent runs one fewer event here: the spawn event itself plays
+        # the role of the last ':tN' (it consumes the final tool results via its own
+        # output+unique segments -- see the fan-out block below). Without this, the
+        # last turn would be forced to emit a tool call for turn `k` that nothing
+        # ever answers, making a spawner run k+1 tool-emitting calls where a leaf
+        # with the same tool_loop_depth runs k.
+        n_turn_events = k - 1 if will_spawn else k
+        for t in range(n_turn_events):
             # Room for this event; if it won't fit, stop the loop early. The
             # prior event remains a valid terminal (its output stays a tool call
             # if we truncate here, which is acceptable — it simply never gets a
@@ -1704,7 +1712,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             prev_out_calls = next_out_calls
 
         # --- optional fan-out: ONE spawn event (parallel dispatch_agent calls) +
-        # the spawned children + K sequential notification events (the LAST is this
+        # the spawned children + post-dispatch ack + K sequential notification events (the LAST is this
         # agent's terminal) ---
         #
         # This mirrors how a real harness (e.g. Claude Code) spawns sub-agents ASYNC:
@@ -1723,10 +1731,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             K = sample_int(cfg.sub_agents_per_spawn, child_rng(seed, *agent_seed_path, 8), _FB_SUB_AGENTS)
             K = max(0, K)
             # Whole-spawn minimum cost: one spawn event + one minimal child per K +
-            # K notification events (one per child report; the LAST is this agent's
-            # terminal). Only spawn if it all fits; else the agent stays a plain leaf
-            # whose current `prev` event becomes terminal.
-            min_spawn_cost = 1 + K * _MIN_AGENT_COST + K
+            # (K + 1) orchestrator turns -- the immediate post-dispatch ack turn plus
+            # one notification per child report (the LAST is this agent's terminal).
+            # Only spawn if it all fits; else the agent stays a plain leaf whose current
+            # `prev` event becomes terminal.
+            min_spawn_cost = 1 + K * _MIN_AGENT_COST + (K + 1)
             if K > 0 and len(events) + min_spawn_cost <= budget:
                 # Child objectives are pinned to the PARENT's subject entity, so the
                 # whole fan-out is ONE coherent investigation (the orchestrator's
@@ -1767,11 +1776,31 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         f"time as each sub-agent completes."
                     ),
                 }
-                spawn_msgs = [*prev_msgs, spawn_ctx]
-                spawn_segs = [
-                    InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
-                    InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
-                ]
+                # When the tool loop ran, this event is ALSO the loop's last link: it
+                # consumes the final outstanding tool call's results (output segment =
+                # the prior event's tool-call reply, unique segment = those results),
+                # exactly like a ':tN' event, and only then asks for the delegation.
+                # That is what keeps a spawner's tool-emitting call count equal to
+                # tool_loop_depth and leaves no tool call unanswered.
+                # `prev_out_calls` is empty when there was no loop (k == 0, an empty
+                # catalog, or a budget-truncated loop) -- then the input continues from
+                # the parent's last input with a shared-only prepend, which introduces
+                # no unmatched prior tool_call, so nothing dangles either way.
+                if prev_out_calls:
+                    _, spawn_results, _ = _turn_calls_and_results(n_turn_events)
+                    spawn_output_placeholder = {"role": "assistant", "tool_calls": [dict(c) for c in prev_out_calls]}
+                    spawn_msgs = [*prev_msgs, spawn_output_placeholder, *spawn_results, spawn_ctx]
+                    spawn_segs = [
+                        InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                        InputSegment(type="output", message_count=1, token_count=0, source_event_id=prev_id),
+                        InputSegment(type="unique", message_count=len(spawn_results) + 1, token_count=0, source_event_id=None),
+                    ]
+                else:
+                    spawn_msgs = [*prev_msgs, spawn_ctx]
+                    spawn_segs = [
+                        InputSegment(type="shared", message_count=prev_input_len, token_count=0, source_event_id=prev_id),
+                        InputSegment(type="unique", message_count=1, token_count=0, source_event_id=None),
+                    ]
                 # Emit the spawn event, then build the K children from it. The spawn's
                 # K dispatch calls are matched at replay by the merge's K tool results,
                 # and the runtime rewrites those results' ids to the model's LIVE calls
@@ -1781,7 +1810,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 # fails to fit, roll the whole spawn back (drop the spawn event + any
                 # children already built) and fall back to the pre-spawn terminal.
                 # min_spawn_cost already reserved 1 (spawn) + K minimal children + K
-                # (notifications); a child can still exceed its minimum (own loop /
+                # (notifications) + dispatch ack; a child can still exceed its minimum (own loop /
                 # nested spawn), so the per-child re-check catches an over-budget child.
                 spawn_input_len = len(spawn_msgs)
                 events_before_spawn = list(events.keys())
@@ -1799,11 +1828,11 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                 )
                 child_terminals: List[str] = []
                 for c in range(K):
-                    # Room for this child's minimum PLUS the still-pending notification
-                    # chain. ALL K notifications are still unbuilt at this point (they
-                    # are emitted only after every child succeeds), so the reservation
-                    # is a flat K here, not K-c.
-                    if len(events) + _MIN_AGENT_COST + K > budget:
+                    # Room for this child's minimum PLUS the still-pending orchestrator
+                    # turns. The ack turn and ALL K notifications are still unbuilt at
+                    # this point (they are emitted only after every child succeeds), so
+                    # the reservation is a flat K+1 here, not K-c.
+                    if len(events) + _MIN_AGENT_COST + (K + 1) > budget:
                         break
                     child_prefix = f"{agent_prefix}:d{depth + 1}:sub{c}"
                     child_task = [{"role": "user", "content": child_objs[c]}]
@@ -1822,11 +1851,19 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         break
                     child_terminals.append(child_terminal)
 
-                if len(child_terminals) == K and len(events) + K <= budget:
-                    # --- ASYNC fan-out tail: the dispatch results are content-free
-                    # acknowledgments, and each child's actual report arrives LATER as
-                    # its own user-role notification -- one event per child, chained
-                    # SEQUENTIALLY.
+                if len(child_terminals) == K and len(events) + (K + 1) <= budget:
+                    # --- ASYNC fan-out tail. The orchestrator's flow is:
+                    #
+                    #   spawn          OUTPUT = dispatch_agent x K
+                    #   dispatch_ack   input ends in the K stub tool results, no report
+                    #                  yet -> "the agents are running" (fires IMMEDIATELY:
+                    #                  gated on the spawn alone, no child dependency)
+                    #   notify0        + child 0's report as a user notification -> ack
+                    #   ...
+                    #   notify{K-1}    + the last report -> the synthesis (TERMINAL)
+                    #
+                    # so a spawn costs K+1 orchestrator turns. With K=1 the flow
+                    # degenerates gracefully: dispatch_ack then a single terminal notify0.
                     #
                     # Base transcript every notification builds on: the SPAWN event's
                     # input (shared) + the spawn's assistant reply (the K dispatch
@@ -1846,14 +1883,40 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         )
                     base_segs.append(InputSegment(type="unique", message_count=K, token_count=0, source_event_id=None))
 
-                    # K sequential notification events. Each one's predecessors are the
-                    # PRIOR link in the chain and its OWN child's terminal, so it cannot
-                    # fire until that child has actually finished -- the child terminal's
-                    # live-measured call duration (real TTFT + decode) IS the timing
-                    # signal for "how long this child took". wait_ms is therefore 0: a
-                    # second, independently-sampled delay on top would double-count that
-                    # latency with no principled way to decompose the two.
-                    notify_prev_id = spawn_id
+                    # (1) The IMMEDIATE post-dispatch turn. Gated on the SPAWN ALONE --
+                    # deliberately NO child dependency -- so it fires as soon as the
+                    # dispatch calls come back.
+                    # It carries the full `base_segs` layout. Collapsing it into one
+                    # `shared` would (a) claim len(base_msgs) messages from the spawn
+                    # event, which only has spawn_input_len, tripping the runtime's
+                    # length-mismatch fallback, and (b) drop the `output` segment, so the
+                    # spawn's LIVE assistant tool-call reply would never be substituted
+                    # in -- leaving the stub results' tool_call_ids dangling.
+                    ack_id = f"{agent_prefix}:d{depth}:dispatch_ack"
+                    dispatch_ack_text, dispatch_ack_tokens = _ack_text(agent_seed_path, K)
+                    _emit(
+                        ack_id,
+                        base_msgs,
+                        [spawn_id],
+                        {spawn_id: "full_match"},
+                        list(base_segs),
+                        0,
+                        False,
+                        None,
+                        defs=fanout_tool_defs,
+                        expected_output=dispatch_ack_text,
+                        expected_output_tokens=dispatch_ack_tokens,
+                    )
+
+                    # (2) K notification events, one per child report, chained after the
+                    # ack turn. Each one's predecessors are the PRIOR link in the chain
+                    # and its OWN child's terminal, so it cannot fire until that child has
+                    # actually finished -- the child terminal's live-measured call duration
+                    # (real TTFT + decode) IS the timing signal for "how long this child
+                    # took". wait_ms is therefore 0: a second, independently-sampled delay
+                    # on top would double-count that latency with no principled way to
+                    # decompose the two.
+                    notify_prev_id = ack_id
                     notify_prev_msgs = base_msgs
                     notify_prev_len = len(base_msgs)
                     notify_ids: List[str] = []
@@ -1862,36 +1925,21 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
                         notif_id = f"{agent_prefix}:d{depth}:notify{c}"
                         # The notification itself: a user message whose CONTENT is
                         # replaced at replay by this child's live report text
-                        # (`async_report`, sourcing the child terminal).
+                        # (`async_report`, sourcing the child terminal). The prior link
+                        # (the ack turn, or the previous notification) supplies the whole
+                        # prefix and really does have notify_prev_len messages, so one
+                        # `shared` sourcing it is exact.
                         notif_msgs: List[Dict[str, Any]] = [
                             *notify_prev_msgs,
                             {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT"},
                         ]
-                        if c == 0:
-                            # FIRST notification: its prefix is the spawn's transcript
-                            # plus the dispatch reply plus the stub results, so it needs
-                            # the full `base_segs` layout. Collapsing it into one
-                            # `shared` would (a) claim len(base_msgs) messages from the
-                            # spawn event, which only has spawn_input_len, tripping the
-                            # runtime's length-mismatch fallback, and (b) drop the
-                            # `output` segment, so the spawn's LIVE assistant tool-call
-                            # reply would never be substituted in -- leaving the stub
-                            # results' tool_call_ids dangling.
-                            notif_segs: List[InputSegment] = list(base_segs)
-                        else:
-                            # Later links: the whole prior NOTIFICATION event is the
-                            # prefix, and it really does have notify_prev_len messages,
-                            # so one `shared` sourcing it is exact.
-                            notif_segs = [
-                                InputSegment(
-                                    type="shared",
-                                    message_count=notify_prev_len,
-                                    token_count=0,
-                                    source_event_id=notify_prev_id,
-                                )
-                            ]
-                        notif_segs = [
-                            *notif_segs,
+                        notif_segs: List[InputSegment] = [
+                            InputSegment(
+                                type="shared",
+                                message_count=notify_prev_len,
+                                token_count=0,
+                                source_event_id=notify_prev_id,
+                            ),
                             InputSegment(type="async_report", message_count=1, token_count=0, source_event_id=child_term),
                         ]
                         if is_last:
