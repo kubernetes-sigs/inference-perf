@@ -26,7 +26,7 @@ import json
 import logging
 import string
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -82,7 +82,7 @@ def sample_int(dist: Optional[Distribution], rng: np.random.Generator, fallback:
     return int(val)
 
 
-def _pick(rng: np.random.Generator, seq):
+def _pick(rng: np.random.Generator, seq: Sequence[Any]) -> Any:
     """Deterministically pick one element of `seq` using `rng` (one draw)."""
     return seq[int(rng.integers(0, len(seq)))]
 
@@ -117,7 +117,7 @@ FILLER_OPEN = (
 FILLER_CLOSE = "\n</context>"
 
 
-def _tool_call_max_tokens(tokenizer, calls: List[Dict[str, Any]]) -> int:
+def _tool_call_max_tokens(tokenizer: CustomTokenizer, calls: List[Dict[str, Any]]) -> int:
     """max_tokens for a FORCED tool-call turn = tokens(serialized calls) + margin.
 
     A forced tool-call event must give the replay model enough budget to emit the
@@ -132,7 +132,9 @@ def _tool_call_max_tokens(tokenizer, calls: List[Dict[str, Any]]) -> int:
     return int(tokenizer.count_tokens(json.dumps(calls))) + TOOL_CALL_MARGIN
 
 
-def _accumulated_wire_tokens(tokenizer, transcript_msgs: List[Dict[str, Any]], tool_defs: List[Dict[str, Any]]) -> int:
+def _accumulated_wire_tokens(
+    tokenizer: CustomTokenizer, transcript_msgs: List[Dict[str, Any]], tool_defs: List[Dict[str, Any]]
+) -> int:
     """Approximate the prefill a round's principal would send: accumulated message
     content + the advertised tool catalog.
 
@@ -183,7 +185,7 @@ def _corpus_words() -> List[str]:
 _FILLER_POOL_RENDER_COUNT = 24
 
 
-def _render_word_pool(theme, templates: List[str], seed: int, path: tuple) -> Optional[List[str]]:
+def _render_word_pool(theme: Theme, templates: List[str], seed: int, path: Tuple[int, ...]) -> Optional[List[str]]:
     """Render a list of theme snippet templates into a whitespace-split word pool.
 
     Renders `_FILLER_POOL_RENDER_COUNT` snippets (cycling `templates`), each seeded
@@ -200,7 +202,7 @@ def _render_word_pool(theme, templates: List[str], seed: int, path: tuple) -> Op
     return words or None
 
 
-def theme_filler_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
+def theme_filler_words(theme: Theme, seed: int, path: Tuple[int, ...]) -> Optional[List[str]]:
     """Build a DOMAIN-appropriate filler word pool from a theme's `filler_templates`
     (log lines / metric rows / stack frames), used to pad turns. Returns None when the
     theme carries none, signalling `fit_filler` to fall back to the shared Shakespeare
@@ -209,7 +211,7 @@ def theme_filler_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
     return _render_word_pool(theme, theme.filler_templates or [], seed, path)
 
 
-def theme_payload_words(theme, seed: int, path: tuple) -> Optional[List[str]]:
+def theme_payload_words(theme: Theme, seed: int, path: Tuple[int, ...]) -> Optional[List[str]]:
     """Build the word pool for LARGE tool-call PAYLOAD args (content/code/patch/...).
 
     Uses the theme's `payload_templates` (domain payload shape: code / SQL / a drafted
@@ -244,7 +246,7 @@ def _cycled_words(words: List[str], count: int, start: int = 0) -> List[str]:
     return [words[(start + i) % n] for i in range(max(0, count))]
 
 
-def _untruncated_len(tokenizer, text: str) -> int:
+def _untruncated_len(tokenizer: CustomTokenizer, text: str) -> int:
     """Token length of `text` WITHOUT the model_max_length truncation.
 
     CustomTokenizer.count_tokens truncates at model_max_length (a shared
@@ -263,7 +265,7 @@ def _untruncated_len(tokenizer, text: str) -> int:
 
 
 def fit_filler(
-    tokenizer,
+    tokenizer: CustomTokenizer,
     target_tokens: int,
     fixed_content: str,
     rng: Optional[np.random.Generator],
@@ -364,7 +366,7 @@ _SYSTEM_HEAD_FILLER_HEADER = "\n\n## Operational context\n"
 
 
 def _render_system_head(
-    tokenizer,
+    tokenizer: CustomTokenizer,
     target_tokens: int,
     is_root: bool,
     rng: np.random.Generator,
@@ -381,7 +383,7 @@ def _render_system_head(
     filler, no duplication. Deterministic given `rng`.
     """
     pool = ROOT_SYSTEM_PROMPTS if is_root else SUBAGENT_SYSTEM_PROMPTS
-    prompt = _pick(rng, pool)
+    prompt = str(_pick(rng, pool))
     prompt_tokens = tokenizer.count_tokens(prompt)
 
     if prompt_tokens >= target_tokens:
@@ -563,7 +565,7 @@ DISPATCH_AGENT_TOOL_DEF: Dict[str, Any] = {
 }
 
 
-def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
+def _tool_definitions(theme: Theme, n: int) -> List[Dict[str, Any]]:
     """Build `n` tool definitions, each with a TOP-LEVEL `name` key (required so a
     forced/emitted call name is always an advertised tool) and a human-readable
     description.
@@ -601,7 +603,7 @@ def _tool_definitions(theme, n: int) -> List[Dict[str, Any]]:
     return out
 
 
-def _entity_subs(theme, rng: np.random.Generator, pinned: Dict[str, str]) -> Dict[str, str]:
+def _entity_subs(theme: Theme, rng: np.random.Generator, pinned: Dict[str, str]) -> Dict[str, str]:
     """Template substitutions for a subject line: a leading `verb` draw, then one
     value per declared entity category. A pinned category uses its fixed value and
     skips the draw, so the text references the session's fixed subject.
@@ -613,7 +615,7 @@ def _entity_subs(theme, rng: np.random.Generator, pinned: Dict[str, str]) -> Dic
     return subs
 
 
-def _render_objective(theme, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
+def _render_objective(theme: Theme, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
     """Render a single principal objective string from the theme templates.
 
     `pinned` (optional) maps an entity category name -> a fixed value that
@@ -628,7 +630,7 @@ def _render_objective(theme, rng: np.random.Generator, pinned: Optional[Dict[str
         return f"{subs['verb']}: complete the task."
 
 
-def _render_followup(theme, objective: str, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
+def _render_followup(theme: Theme, objective: str, rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None) -> str:
     """Render a round-K (K>=1) follow-up principal turn from the theme.
 
     Uses the theme's followup_templates (optionally prefixed by a
@@ -657,7 +659,7 @@ def _render_followup(theme, objective: str, rng: np.random.Generator, pinned: Op
     return connective + objective
 
 
-def _join_connective_case(connective: str, rendered: str, theme) -> str:
+def _join_connective_case(connective: str, rendered: str, theme: Theme) -> str:
     """Fix the casing seam when a connective is prepended to a follow-up.
 
     A connective like "Following up, " ends mid-sentence (word + comma + space),
@@ -704,7 +706,7 @@ def _join_connective_case(connective: str, rendered: str, theme) -> str:
 
 
 def _render_compaction_summary(
-    theme, tool_defs: List[Dict[str, Any]], rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None
+    theme: Theme, tool_defs: List[Dict[str, Any]], rng: np.random.Generator, pinned: Optional[Dict[str, str]] = None
 ) -> str:
     """Render a semantic recap sentence for a context-compaction round.
 
@@ -864,16 +866,16 @@ def _seeded_time_value(rng: np.random.Generator) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
 
-def _seeded_entity_value(theme, rng: np.random.Generator) -> str:
+def _seeded_entity_value(theme: Theme, rng: np.random.Generator) -> str:
     pool: List[str] = []
     for vals in theme.entities.values():
         pool.extend(vals)
     if not pool:
         return f"entity-{int(rng.integers(0, 999))}"
-    return _pick(rng, pool)
+    return str(_pick(rng, pool))
 
 
-def _seeded_typed_entity_value(theme, category: str, rng: np.random.Generator) -> str:
+def _seeded_typed_entity_value(theme: Theme, category: str, rng: np.random.Generator) -> str:
     """Draw from ONE named entity category's pool (e.g. `plan`, `db_instance`).
 
     Lets templates use TYPED placeholders (`{plan}`, `{table}`) that stay in
@@ -884,7 +886,7 @@ def _seeded_typed_entity_value(theme, category: str, rng: np.random.Generator) -
     vals = theme.entities.get(category) or []
     if not vals:
         return _seeded_entity_value(theme, rng)
-    return _pick(rng, vals)
+    return str(_pick(rng, vals))
 
 
 # The primary-subject entity categories a round pins to keep its intro doc,
@@ -899,7 +901,7 @@ def _seeded_typed_entity_value(theme, category: str, rng: np.random.Generator) -
 _PRIMARY_ENTITY_CATEGORIES = ("service", "db_instance", "symptom", "region")
 
 
-def _pinned_primary_entities(theme, rng: np.random.Generator) -> Dict[str, str]:
+def _pinned_primary_entities(theme: Theme, rng: np.random.Generator) -> Dict[str, str]:
     """Draw ONE fixed value per primary-subject category the theme declares.
 
     Returned dict is passed to `_render_objective`, `_render_intro_doc`, and
@@ -916,7 +918,7 @@ def _pinned_primary_entities(theme, rng: np.random.Generator) -> Dict[str, str]:
     return out
 
 
-def _pinned_focus_entities(theme, rng: np.random.Generator) -> Dict[str, str]:
+def _pinned_focus_entities(theme: Theme, rng: np.random.Generator) -> Dict[str, str]:
     """Draw ONE fixed value per EVERY entity category the theme declares.
 
     This is the per-session "focus" of an agent's investigation: the ONE file /
@@ -1013,7 +1015,7 @@ def _sort_percentiles_by_suffix(values: Dict[str, str]) -> None:
     Deterministic: a pure function of the already-seeded values (no new rng).
     """
     # Group field names by their shared suffix; remember each field's rank.
-    groups: Dict[str, List[tuple]] = {}  # suffix -> [(rank_index, field), ...]
+    groups: Dict[str, List[Tuple[int, str]]] = {}  # suffix -> [(rank_index, field), ...]
     for field in values:
         low = field.lower()
         for ri, rank in enumerate(_PERCENTILE_RANKS):
@@ -1035,7 +1037,9 @@ def _sort_percentiles_by_suffix(values: Dict[str, str]) -> None:
             values[field] = _format_like(values[field], num)
 
 
-def _render_theme_template(theme, tpl: str, seed: int, path: tuple, pinned: Optional[Dict[str, str]] = None) -> str:
+def _render_theme_template(
+    theme: Theme, tpl: str, seed: int, path: Tuple[int, ...], pinned: Optional[Dict[str, str]] = None
+) -> str:
     """Fill EVERY `{placeholder}` in a theme template with a real, seeded value.
 
     Shared by tool-result rendering, filler-snippet rendering, and intro-doc
@@ -1130,7 +1134,9 @@ def _render_theme_template(theme, tpl: str, seed: int, path: tuple, pinned: Opti
         return tpl
 
 
-def _render_tool_result(theme, call_name: str, seed: int, path: tuple, pinned: Optional[Dict[str, str]] = None) -> str:
+def _render_tool_result(
+    theme: Theme, call_name: str, seed: int, path: Tuple[int, ...], pinned: Optional[Dict[str, str]] = None
+) -> str:
     """Render a tool-result content string from the theme's PER-TOOL template
     for `call_name` (falling back to 'default' only if the tool has none),
     filling EVERY placeholder the chosen template declares with a real,
@@ -1155,9 +1161,9 @@ def _render_tool_result(theme, call_name: str, seed: int, path: tuple, pinned: O
 
 def _render_tool_arguments(
     params_schema: Dict[str, Any],
-    theme,
+    theme: Theme,
     seed: int,
-    path: tuple,
+    path: Tuple[int, ...],
     pinned: Optional[Dict[str, str]] = None,
     word_pool: Optional[List[str]] = None,
     payload_pool: Optional[List[str]] = None,
@@ -1223,7 +1229,7 @@ def _render_tool_arguments(
     return args
 
 
-def _render_intro_doc(theme, seed: int, path: tuple, pinned: Optional[Dict[str, str]] = None) -> str:
+def _render_intro_doc(theme: Theme, seed: int, path: Tuple[int, ...], pinned: Optional[Dict[str, str]] = None) -> str:
     """Render ONE long, realistic intro document from the theme's templates.
 
     Picks a template deterministically (seeded off `path`), fills its
@@ -1243,7 +1249,9 @@ def _render_intro_doc(theme, seed: int, path: tuple, pinned: Optional[Dict[str, 
     return _render_theme_template(theme, tpl, seed, (*path, 1), pinned=pinned)
 
 
-def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> ReplayGraph:
+def build_graph_for_session(
+    cfg: SyntheticAgenticConfig, theme: Theme, tokenizer: CustomTokenizer, session_index: int
+) -> ReplayGraph:
     """Build a replay graph for one synthetic session.
 
     Emits N rounds (from `turns_per_session`); each round is an accumulating
@@ -1296,18 +1304,18 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     # worker ship different system prompts.
 
     def _emit(
-        event_id,
-        messages,
-        preds,
-        dep_types,
-        segs,
-        wait_ms,
-        is_tool_call,
-        tool_names,
-        defs=None,
-        expected_output="",
-        expected_output_tokens=0,
-    ):
+        event_id: str,
+        messages: List[Dict[str, Any]],
+        preds: List[str],
+        dep_types: Dict[str, str],
+        segs: List[InputSegment],
+        wait_ms: int,
+        is_tool_call: bool,
+        tool_names: Optional[List[str]],
+        defs: Optional[List[Dict[str, Any]]] = None,
+        expected_output: str = "",
+        expected_output_tokens: int = 0,
+    ) -> None:
         events[event_id] = GraphEvent(
             event_id=event_id,
             call=GraphCall(
@@ -1332,7 +1340,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
             t_end_ms=0,
         )
 
-    def _system_head(is_root: bool, agent_seed_path: tuple) -> Optional[Dict[str, Any]]:
+    def _system_head(is_root: bool, agent_seed_path: Tuple[Any, ...]) -> Optional[Dict[str, Any]]:
         # Build this agent's system head: a real, role-appropriate system prompt
         # (root orchestrator vs spawned worker) fitted to shared_system_prompt_len.
         # None when the head length is 0 (head-less baseline). The pick is seeded
@@ -1358,7 +1366,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
     # tool loop and its answer) as growing context.
     root_terminal_meta: Dict[str, Any] = {}
 
-    def _answer_text(agent_seed_path: tuple) -> tuple:
+    def _answer_text(agent_seed_path: Tuple[Any, ...]) -> Tuple[str, int]:
         """Render the agent's terminal answer text + its sampled token size.
 
         Draws the size from sub-seed (…, 4) and the filler from (…, 5), off the
@@ -1399,7 +1407,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         dep_types: Dict[str, str],
         principal_wait: int,
         is_root: bool,
-        agent_seed_path: tuple,
+        agent_seed_path: Tuple[Any, ...],
         principal_segments: Optional[List[InputSegment]] = None,
         pinned: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
@@ -1476,7 +1484,7 @@ def build_graph_for_session(cfg, theme, tokenizer, session_index: int) -> Replay
         will_spawn = spawn_roll < cfg.fanout_probability and depth < cfg.max_depth
 
         # Per-turn parallel-call helper: build the K calls + K results for turn t.
-        def _turn_calls_and_results(t: int) -> tuple:
+        def _turn_calls_and_results(t: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
             n_calls = sample_int(cfg.parallel_tool_calls_per_step, child_rng(seed, *agent_seed_path, t, 30), _FB_PARALLEL)
             n_calls = max(1, n_calls)
             calls: List[Dict[str, Any]] = []
@@ -2274,6 +2282,11 @@ class SyntheticAgenticDataGenerator(ReplayGraphSessionGeneratorBase):
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         theme = self._pick_theme(session_index)
+        # The graph builder sizes every turn against the tokenizer (input/output token
+        # targets, filler fitting), so it cannot run without one. The base class types
+        # `tokenizer` as Optional; fail loudly here rather than at the first count_tokens.
+        if self.tokenizer is None:
+            raise ValueError("synthetic_agentic requires a tokenizer to size its turns")
         graph = build_graph_for_session(self.synthetic_config, theme, self.tokenizer, session_index)
         if not graph.events:
             return None

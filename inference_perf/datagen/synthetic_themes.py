@@ -13,7 +13,7 @@
 # limitations under the License.
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel
 
 _ASSETS = Path(__file__).parent.parent / "assets" / "synthetic_themes"
@@ -303,7 +303,7 @@ class Theme(BaseModel):
     # ever parameterless -- a parameterless forced tool_choice makes some models
     # emit empty args and then fail to stop, leaking chat-template tokens into
     # `arguments` (observed on Qwen). Empty default so other themes still load.
-    tool_parameters: dict[str, dict] = {}
+    tool_parameters: dict[str, dict[str, Any]] = {}
     result_templates: dict[str, str]
     objective_template: str
     followup_templates: list[str] = []

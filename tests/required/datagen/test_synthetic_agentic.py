@@ -1,9 +1,9 @@
 import collections
 import re
-from typing import TYPE_CHECKING, Any, Dict, cast
+from typing import TYPE_CHECKING, Any, Dict, List, cast
 
 import pytest
-from inference_perf.datagen.replay_graph_types import GraphEvent, ReplayGraph
+from inference_perf.datagen.replay_graph_types import GraphEvent, ReplayGraph, InputSegment
 from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_THEME, DEFAULT_SYSTEM_PROMPT  # noqa: F401
 from inference_perf.datagen.synthetic_agentic import (
     session_seed,
@@ -24,6 +24,12 @@ from inference_perf.datagen.synthetic_agentic import (
 )
 from inference_perf.config.common import Distribution
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig, ContextCompactionConfig
+
+from inference_perf.datagen.replay_graph_session_datagen import (
+    EventOutputRegistry,
+    SessionChatCompletionAPIData,
+    WorkerSessionTracker,
+)
 
 if TYPE_CHECKING:
     from inference_perf.config import APIConfig
@@ -108,7 +114,7 @@ class _FakeTok:
 
 
 def test_fit_filler_negative_budget_returns_fixed_only_no_wrapper() -> None:
-    tok = _FakeTok()
+    tok = cast("CustomTokenizer", _FakeTok())
     fixed = "objective line here"  # 3 tokens
     out = fit_filler(tok, target_tokens=2, fixed_content=fixed, rng=None)  # target < fixed
     assert FILLER_OPEN not in out and FILLER_CLOSE not in out
@@ -219,7 +225,7 @@ def _cfg(**kw: Any) -> SyntheticAgenticConfig:
 
 
 def test_single_agent_graph_structure() -> None:
-    g = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_cfg(), GENERIC_THEME, _word_tok(), session_index=0)
     assert len(g.events) >= 1
     for ev in g.events.values():
         assert ev.call.messages, "every event has non-empty messages (inv #4)"
@@ -237,14 +243,14 @@ def test_single_agent_graph_structure() -> None:
 
 
 def test_determinism_same_index_same_graph() -> None:
-    g1 = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), 3)
-    g2 = build_graph_for_session(_cfg(), GENERIC_THEME, _WordTok(), 3)
+    g1 = build_graph_for_session(_cfg(), GENERIC_THEME, _word_tok(), 3)
+    g2 = build_graph_for_session(_cfg(), GENERIC_THEME, _word_tok(), 3)
     assert list(g1.events.keys()) == list(g2.events.keys())  # same ids, same insertion order
 
 
 def test_event_budget_caps_rounds() -> None:
     cfg = _cfg(turns_per_session=Distribution(type="fixed", mean=100), max_events_per_session=6)
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     assert len(g.events) <= 6
 
 
@@ -258,7 +264,7 @@ def test_fanout_produces_subagents_and_valid_merge() -> None:
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     # a sub-agent exists (depth >= 1): some event id contains ":sub"
     assert any(":sub" in eid for eid in g.events), "sub-agents spawned"
     # every dispatch_agent tool_call has a matching role:tool result (inv #3, no dangling)
@@ -277,7 +283,7 @@ def test_no_agent_beyond_max_depth() -> None:
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     # depth encoded in id as ":dN:"; assert none exceeds max_depth
     for eid in g.events:
         m = re.search(r":d(\d+):", eid)
@@ -302,7 +308,7 @@ def test_agent_first_call_carries_role_appropriate_system_head() -> None:
         # the full real prompt + filler, keeping its opening intact for the checks.
         shared_system_prompt_len=800,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
 
     def _system_msg(ev: GraphEvent) -> Any:
         for m in ev.call.messages:
@@ -349,7 +355,7 @@ def test_event_budget_cost_is_k_plus_1_per_round() -> None:
         max_events_per_session=9,
         tool_loop_depth=Distribution(type="fixed", mean=2),
     )
-    g9 = build_graph_for_session(cfg9, GENERIC_THEME, _WordTok(), 0)
+    g9 = build_graph_for_session(cfg9, GENERIC_THEME, _word_tok(), 0)
     assert len(g9.events) == 9, f"expected 3 rounds of (k+1)=3 events, got {len(g9.events)}"
 
     cfg6 = _cfg(
@@ -357,7 +363,7 @@ def test_event_budget_cost_is_k_plus_1_per_round() -> None:
         max_events_per_session=6,
         tool_loop_depth=Distribution(type="fixed", mean=2),
     )
-    g6 = build_graph_for_session(cfg6, GENERIC_THEME, _WordTok(), 0)
+    g6 = build_graph_for_session(cfg6, GENERIC_THEME, _word_tok(), 0)
     # exactly 2 full rounds (6 events); the 3rd round can't even start its
     # principal (6 + 1 > 6), so it never begins. Result: exactly 6 events.
     assert len(g6.events) == 6, f"expected 2 full rounds of (k+1)=3 events, got {len(g6.events)}"
@@ -420,7 +426,7 @@ def test_input_tokens_per_turn_is_honored() -> None:
     # Two graphs identical except input_tokens_per_turn; a larger target must
     # produce a larger (>=) principal user-turn token count. fit_filler is
     # best-candidate/approximate, so tolerate with >= not exact equality.
-    tok = _WordTok()
+    tok = _word_tok()
     small = build_graph_for_session(
         _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=20)), GENERIC_THEME, tok, session_index=0
     )
@@ -435,7 +441,7 @@ def test_input_tokens_per_turn_is_honored() -> None:
 
 
 def test_input_sizing_preserves_determinism_and_objective_text() -> None:
-    tok = _WordTok()
+    tok = _word_tok()
     cfg = _cfg(input_tokens_per_turn=Distribution(type="fixed", mean=300))
     g1 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
     g2 = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=2)
@@ -493,7 +499,7 @@ def test_parallel_tool_calls_emits_k_calls_and_k_results() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=1),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     turns = _find_tool_turn_events(g)
     assert turns, "at least one ordinary tool-turn event exists"
     ev = turns[0]
@@ -521,7 +527,7 @@ def test_parallel_default_is_single_call() -> None:
         fanout_probability=0.0,
     )
     assert cfg.parallel_tool_calls_per_step is None
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     turns = _find_tool_turn_events(g)
     assert turns, "at least one ordinary tool-turn event exists"
     for ev in turns:
@@ -546,7 +552,7 @@ def test_spawn_emits_sub_agents_per_spawn_dispatch_calls_not_parallel_knob() -> 
         sub_agents_per_spawn=Distribution(type="fixed", mean=2),
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
     assert spawn_events, "fan-out spawn events materialized"
     # Matched precisely: the async tail has a `:dispatch_ack` orchestrator turn (the immediate post-dispatch "agents
@@ -567,8 +573,8 @@ def test_parallel_tool_calls_preserves_determinism() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=2),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=1)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=1)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=1)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=1)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -585,7 +591,7 @@ def test_zero_tool_definitions_is_bare_baseline() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=2),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     assert g.events, "graph built"
     for ev in g.events.values():
         # every event advertises an EMPTY tool catalog
@@ -625,7 +631,7 @@ def test_interactive_rounds_carry_growing_context() -> None:
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     principals = _principal_events_by_round(g)
     assert set(principals) >= {0, 1, 2}, f"expected 3 rounds, got {sorted(principals)}"
 
@@ -671,7 +677,7 @@ def test_round_k_survives_runtime_substitution() -> None:
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     principals = _principal_events_by_round(g)
     target = principals[2]
     shared_seg = target.call.input_segments[0]
@@ -724,8 +730,8 @@ def test_interactive_rounds_preserve_determinism() -> None:
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=4)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=4)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=4)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=4)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -779,7 +785,7 @@ def test_dispatch_agent_is_in_tool_definitions() -> None:
         max_events_per_session=2048,
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
 
     spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
@@ -812,7 +818,7 @@ def test_dispatch_agent_present_even_with_empty_theme_catalog() -> None:
         max_events_per_session=2048,
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
 
     spawn_events = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
@@ -830,7 +836,7 @@ def test_no_dispatch_agent_when_no_fanout() -> None:
         fanout_probability=0.0,
         tool_loop_depth=Distribution(type="fixed", mean=2),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _assert_inv2_over_graph(g)
     for ev in g.events.values():
         assert "dispatch_agent" not in _event_def_names(ev), f"{ev.event_id} advertised dispatch_agent without fan-out"
@@ -845,7 +851,7 @@ def test_inv2_holds_across_fanout_graph() -> None:
         max_events_per_session=2048,
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     assert len(g.events) > 4, "fan-out actually materialized"
     _assert_inv2_over_graph(g)
 
@@ -885,7 +891,7 @@ def test_tool_result_uses_per_tool_template() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=3),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
     results = _find_ordinary_tool_result_msgs(g)
     assert results, "at least one ordinary tool-turn result exists"
     get_bp_stats_results = [content for name, content in results if name == "get_bp_stats"]
@@ -904,7 +910,7 @@ def test_tool_result_no_literal_placeholders() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=3),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
     results = _find_ordinary_tool_result_msgs(g)
     assert results, "at least one ordinary tool-turn result exists"
     import re
@@ -927,8 +933,8 @@ def test_tool_result_content_is_deterministic() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=3),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, theme, _WordTok(), session_index=7)
-    g2 = build_graph_for_session(cfg, theme, _WordTok(), session_index=7)
+    g1 = build_graph_for_session(cfg, theme, _word_tok(), session_index=7)
+    g2 = build_graph_for_session(cfg, theme, _word_tok(), session_index=7)
     r1 = _find_ordinary_tool_result_msgs(g1)
     r2 = _find_ordinary_tool_result_msgs(g2)
     assert r1 == r2, "tool-result contents are not deterministic for the same (config, index)"
@@ -946,7 +952,7 @@ def test_generated_fanout_session_has_no_dangling_tool_call_ids() -> None:
         max_events_per_session=2048,
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     assert len(g.events) > 4, "fan-out actually materialized"
     for ev in g.events.values():
         call_ids = {tc["id"] for m in ev.call.messages for tc in (m.get("tool_calls") or [])}
@@ -1196,7 +1202,7 @@ def test_no_lone_assistant_input() -> None:
     }
     for name, cfg in shapes.items():
         for idx in range(3):
-            g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+            g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
             assert g.events, f"{name}[{idx}] built no events"
             for ev in g.events.values():
                 assert not _is_lone_assistant(ev), f"{name}[{idx}] {ev.event_id}: lone-assistant input"
@@ -1215,7 +1221,7 @@ def test_bare_single_round_is_one_event() -> None:
         fanout_probability=0.0,
         shared_system_prompt_len=0,  # explicit head-less baseline (default is now 1000)
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     assert len(g.events) == 1, f"expected exactly 1 event, got {sorted(g.events)}"
     ev = next(iter(g.events.values()))
     roles = [m.get("role") for m in ev.call.messages]
@@ -1230,7 +1236,7 @@ def test_bare_single_round_is_one_event() -> None:
         fanout_probability=0.0,
         shared_system_prompt_len=16,
     )
-    gs = build_graph_for_session(cfg_sys, GENERIC_THEME, _WordTok(), session_index=0)
+    gs = build_graph_for_session(cfg_sys, GENERIC_THEME, _word_tok(), session_index=0)
     assert len(gs.events) == 1
     evs = next(iter(gs.events.values()))
     assert [m.get("role") for m in evs.call.messages] == ["system", "user"]
@@ -1246,7 +1252,7 @@ def test_shared_system_prompt_len_defaults_to_nonzero() -> None:
         output_tokens_per_turn=Distribution(type="fixed", mean=10),
     )
     assert cfg.shared_system_prompt_len == 1000
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     principal = g.events["synthN0:r0:principal"]
     assert principal.call.messages[0].get("role") == "system", "default config opens with a system head"
 
@@ -1260,7 +1266,7 @@ def test_render_system_head_fits_truncates_and_is_deterministic() -> None:
     from inference_perf.datagen.synthetic_agentic import _render_system_head
     from inference_perf.datagen.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
 
-    tok = _WordTok()
+    tok = _word_tok()
     # _WordTok counts words; the real prompts are ~430-540 words, so a target
     # ABOVE the longest exercises the pad path and one BELOW the shortest
     # exercises the truncate path.
@@ -1298,7 +1304,7 @@ def test_tool_loop_context_grows() -> None:
         fanout_probability=0.0,
         shared_system_prompt_len=0,  # isolate loop growth from the head (default is now 1000)
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     # k+1 = 4 events for one round.
     assert len(g.events) == 4, f"expected principal + 3 tool turns = 4 events, got {sorted(g.events)}"
     # Order by id suffix: principal, t0, t1, t2.
@@ -1377,7 +1383,7 @@ def test_substitution_survives_all_shapes() -> None:
         fanout_probability=0.0,
         shared_system_prompt_len=0,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     ordered = _ordered_agent_events(g, "synthN0:r0")
     # Walk the chain, simulating live outputs, feeding each event's rebuilt
     # input (its replay `messages`) forward into the registry for the next.
@@ -1419,7 +1425,7 @@ def test_substitution_survives_all_shapes() -> None:
         max_events_per_session=2048,
         tool_loop_depth=Distribution(type="fixed", mean=1),
     )
-    fg = build_graph_for_session(fcfg, GENERIC_THEME, _WordTok(), session_index=0)
+    fg = build_graph_for_session(fcfg, GENERIC_THEME, _word_tok(), session_index=0)
     notifies = [ev for eid, ev in fg.events.items() if ":notify" in eid]
     assert notifies, "fan-out notification events exist"
     for notif in notifies:
@@ -1548,7 +1554,7 @@ def test_theme_without_filler_returns_none() -> None:
 def test_fit_filler_uses_theme_word_pool() -> None:
     # With a theme word pool the padding words come FROM the pool, so a pool
     # token appears inside the <context> block and Shakespeare does not drive it.
-    tok = _WordTok()
+    tok = _word_tok()
     pool = ["DSNL027I", "bufferpool", "lock-wait", "class2_cpu"]
     out = fit_filler(tok, target_tokens=200, fixed_content="OBJECTIVE-MARKER", rng=None, word_pool=pool)
     assert FILLER_OPEN in out and FILLER_CLOSE in out
@@ -1568,8 +1574,8 @@ def test_intro_doc_rides_first_user_turn_and_is_deterministic() -> None:
         input_tokens_per_turn=Distribution(type="fixed", mean=400),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
-    g2 = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    g1 = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
+    g2 = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
     c1 = _principal_user_content(g1)
     c2 = _principal_user_content(g2)
     assert c1 == c2, "intro-doc-bearing first turn must be deterministic"
@@ -1601,7 +1607,7 @@ def test_only_round_zero_carries_intro_doc() -> None:
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
     principals = _principal_events_by_round(g)
 
     def _user_content(ev: GraphEvent) -> Any:
@@ -1751,7 +1757,7 @@ def test_intro_doc_primary_matches_objective(theme_name: str, primary_category: 
     symptoms = theme.entities["symptom"]
     # Sweep several sessions so we exercise different pinned draws.
     for idx in range(8):
-        g = build_graph_for_session(cfg, theme, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, theme, _word_tok(), session_index=idx)
         content = _round0_user_content(g)
         present = [s for s in primaries if s in content]
         # Exactly ONE primary string appears -> doc + task agree on it.
@@ -1770,8 +1776,8 @@ def test_pinned_entity_coherence_is_deterministic() -> None:
         input_tokens_per_turn=Distribution(type="fixed", mean=20),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=3)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=3)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
     assert _round0_user_content(g1) == _round0_user_content(g2)
 
 
@@ -1873,7 +1879,7 @@ def _forced_and_answer_events(g: ReplayGraph) -> Any:
 def test_tool_call_max_tokens_helper() -> None:
     import json as _json
 
-    tok = _WordTok()
+    tok = _word_tok()
     assert _tool_call_max_tokens(tok, []) == TOOL_CALL_MARGIN  # no calls -> margin floor
     calls = [{"id": "c0", "type": "function", "function": {"name": "get_status", "arguments": "{}"}}]
     expected = tok.count_tokens(_json.dumps(calls)) + TOOL_CALL_MARGIN
@@ -1901,7 +1907,7 @@ def test_forced_tool_events_are_sized_not_zero() -> None:
         ),
     }
     for name, cfg in shapes.items():
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
         forced, _ = _forced_and_answer_events(g)
         assert forced, f"{name}: expected at least one forced tool-call event"
         for ev in forced:
@@ -1916,7 +1922,7 @@ def test_forced_tool_events_sized_from_their_own_calls() -> None:
     # tool_calls and check the size matches.
     import json as _json
 
-    tok = _WordTok()
+    tok = _word_tok()
     cfg = _cfg(tool_loop_depth=Distribution(type="fixed", mean=3), fanout_probability=0.0)
     g = build_graph_for_session(cfg, GENERIC_THEME, tok, session_index=0)
     # The tool_calls an event OUTPUTS appear in the SUCCESSOR event's messages
@@ -1952,7 +1958,7 @@ def test_answer_events_keep_output_tokens_not_tool_budget() -> None:
         output_tokens_per_turn=Distribution(type="fixed", mean=40),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     _, answers = _forced_and_answer_events(g)
     assert answers, "expected a plain-answer terminal event"
     for ev in answers:
@@ -1967,8 +1973,8 @@ def test_forced_tool_sizing_is_deterministic() -> None:
         parallel_tool_calls_per_step=Distribution(type="fixed", mean=2),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=5)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=5)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=5)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=5)
     for eid in g1.events:
         assert g1.events[eid].call.expected_output_tokens == g2.events[eid].call.expected_output_tokens
 
@@ -2021,7 +2027,7 @@ def test_every_advertised_tool_def_has_nonempty_params_and_required() -> None:
     # def must have non-empty properties AND a non-empty required list.
     for theme in (GENERIC_THEME, load_theme("db2_latency_incident")):
         cfg = _cfg_all_tools(theme, theme_mix={theme.name: 1.0})
-        g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+        g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
         seen_names = set()
         for ev in g.events.values():
             for td in ev.call.tool_definitions or []:
@@ -2057,7 +2063,7 @@ def test_emitted_tool_call_args_conform_to_advertised_schema() -> None:
     # reference the call name to its def in the SAME event.
     for theme in (GENERIC_THEME, load_theme("db2_latency_incident")):
         cfg = _cfg_all_tools(theme, theme_mix={theme.name: 1.0})
-        g = build_graph_for_session(cfg, theme, _WordTok(), session_index=0)
+        g = build_graph_for_session(cfg, theme, _word_tok(), session_index=0)
         checked = 0
         for ev in g.events.values():
             defs = _defs_by_name(ev)
@@ -2107,7 +2113,7 @@ def test_multi_required_param_tool_emits_all_required_fields(
     # A multi-required-param tool, when called, emits ALL of its required fields.
     required = theme.tool_parameters[multi]["required"]
     assert len(required) >= min_required, f"test premise: {multi} is multi-required-param"
-    g = build_graph_for_session(cfg_builder(theme), theme, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg_builder(theme), theme, _word_tok(), session_index=0)
     hits = 0
     for ev in g.events.values():
         for call_name, args in _emitted_tool_calls(ev):
@@ -2122,8 +2128,8 @@ def test_emitted_args_are_deterministic() -> None:
     # Same (config, index) -> byte-identical emitted argument strings.
     for theme in (GENERIC_THEME, load_theme("db2_latency_incident")):
         cfg = _cfg_all_tools(theme, theme_mix={theme.name: 1.0})
-        g1 = build_graph_for_session(cfg, theme, _WordTok(), session_index=6)
-        g2 = build_graph_for_session(cfg, theme, _WordTok(), session_index=6)
+        g1 = build_graph_for_session(cfg, theme, _word_tok(), session_index=6)
+        g2 = build_graph_for_session(cfg, theme, _word_tok(), session_index=6)
 
         def _all_arg_strings(g: ReplayGraph) -> Any:
             out = []
@@ -2143,7 +2149,7 @@ def test_entity_named_param_threads_pinned_subject() -> None:
     services = set(GENERIC_THEME.entities["service"])
     cfg = _cfg_all_tools(GENERIC_THEME, theme_mix={"generic": 1.0})
     for idx in range(4):
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         for ev in g.events.values():
             for _, args in _emitted_tool_calls(ev):
                 if "service" in args:
@@ -2193,7 +2199,7 @@ def test_fallback_tool_params_applies_for_theme_without_schemas() -> None:
         fanout_probability=0.0,
         max_events_per_session=2048,
     )
-    g = build_graph_for_session(cfg, bare, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, bare, _word_tok(), session_index=0)
     hits = 0
     for ev in g.events.values():
         for _, args in _emitted_tool_calls(ev):
@@ -2287,7 +2293,7 @@ def test_tool_result_echoes_call_service() -> None:
     )
     checked = 0
     for idx in range(4):
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         for ev in g.events.values():
             # map tool_call_id -> the `service` the call passed
             call_service = {}
@@ -2401,7 +2407,7 @@ def test_fanout_children_pinned_to_parent_entity() -> None:
         return m.group(1) if m else None
 
     for idx in range(4):
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         # orchestrator objective (root principal, not a sub)
         orch = None
         for eid, ev in g.events.items():
@@ -2441,7 +2447,7 @@ def test_spawn_output_is_parallel_dispatch_calls_in_one_message() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=1),
         max_events_per_session=512,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     # The async tail's `:dispatch_ack` orchestrator turn is not one of those, so exclude it explicitly.
     assert not [eid for eid in g.events if ":disp" in eid and not eid.endswith(":dispatch_ack")]
     spawns = [ev for eid, ev in g.events.items() if eid.endswith(":spawn")]
@@ -2472,7 +2478,7 @@ def test_notifications_reconstruct_single_assistant_with_matched_stub_results() 
         tool_loop_depth=Distribution(type="fixed", mean=0),
         max_events_per_session=512,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     notifies = [ev for eid, ev in g.events.items() if ":notify" in eid]
     assert len(notifies) == K, f"expected K={K} notification events, got {len(notifies)}"
     for ev in notifies:
@@ -2503,8 +2509,8 @@ def test_fanout_graph_is_byte_identical_across_rebuilds() -> None:
         max_events_per_session=512,
     )
     for idx in range(3):
-        g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
-        g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
+        g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         assert list(g1.events.keys()) == list(g2.events.keys())
         for eid in g1.events:
             assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -2530,7 +2536,7 @@ def test_subagent_terminal_ends_with_report_directive() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=2),
         max_events_per_session=512,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     frag = SUBAGENT_REPORT_DIRECTIVE
 
     def ends_with(ev: GraphEvent, text: Any) -> Any:
@@ -2607,7 +2613,7 @@ def test_root_terminal_ends_with_answer_directive() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=3),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg_loop, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg_loop, GENERIC_THEME, _word_tok(), 0)
     for eid, ev in g.events.items():
         terminal = not ev.call.expected_output_is_tool_call
         assert ends_with_nudge(ev) == terminal, f"{eid}: nudge presence must match terminal={terminal}"
@@ -2622,7 +2628,7 @@ def test_root_terminal_ends_with_answer_directive() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=8),
         fanout_probability=0.0,
     )
-    g0 = build_graph_for_session(cfg_k0, GENERIC_THEME, _WordTok(), 0)
+    g0 = build_graph_for_session(cfg_k0, GENERIC_THEME, _word_tok(), 0)
     ev0 = next(iter(g0.events.values()))
     assert ends_with_nudge(ev0), "k=0 root terminal with a catalog must end with the answer nudge"
 
@@ -2632,12 +2638,12 @@ def test_root_terminal_ends_with_answer_directive() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=0),
         fanout_probability=0.0,
     )
-    gb = build_graph_for_session(cfg_bare, GENERIC_THEME, _WordTok(), 0)
+    gb = build_graph_for_session(cfg_bare, GENERIC_THEME, _word_tok(), 0)
     evb = next(iter(gb.events.values()))
     assert not ends_with_nudge(evb), "no-tools root terminal must NOT carry the answer nudge"
 
     # (d) deterministic
-    g_again = build_graph_for_session(cfg_loop, GENERIC_THEME, _WordTok(), 0)
+    g_again = build_graph_for_session(cfg_loop, GENERIC_THEME, _word_tok(), 0)
     for eid in g.events:
         assert g.events[eid].call.messages == g_again.events[eid].call.messages
 
@@ -2660,7 +2666,7 @@ def test_nonroot_last_notification_ends_with_report_directive() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=1),
         max_events_per_session=512,
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
     frag = SUBAGENT_REPORT_DIRECTIVE
 
     # group notification ids per spawn so we know which link is last
@@ -2707,8 +2713,8 @@ def test_report_directive_deterministic() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=3),
         max_events_per_session=512,
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=3)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=3)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=3)
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
 
@@ -2785,7 +2791,7 @@ def test_research_rag_session_builds_valid_and_deterministic() -> None:
         max_events_per_session=2048,
     )
     for idx in range(3):
-        g = build_graph_for_session(cfg, t, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, t, _word_tok(), session_index=idx)
         assert g.events
         for ev in g.events.values():
             for m in ev.call.messages:
@@ -2797,8 +2803,8 @@ def test_research_rag_session_builds_valid_and_deterministic() -> None:
                     c = m["content"]
                     assert "{" not in c and "}" not in c, f"research_rag result brace leak: {c!r}"
     # determinism per (config, index)
-    g1 = build_graph_for_session(cfg, t, _WordTok(), session_index=1)
-    g2 = build_graph_for_session(cfg, t, _WordTok(), session_index=1)
+    g1 = build_graph_for_session(cfg, t, _word_tok(), session_index=1)
+    g2 = build_graph_for_session(cfg, t, _word_tok(), session_index=1)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -2995,7 +3001,7 @@ def test_generated_followups_have_no_casing_seam() -> None:
     entity_pool = {v for vals in GENERIC_THEME.entities.values() for v in vals}
     connectives = tuple(c for c in GENERIC_THEME.followup_connectives if c.endswith(" "))
     for idx in range(8):
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         for eid, ev in g.events.items():
             if not re.match(r".*:r([1-9]\d*):principal$", eid):
                 continue
@@ -3033,7 +3039,7 @@ def test_region_is_pinned_across_a_multi_round_session() -> None:
 
     regions = GENERIC_THEME.entities["region"]
     for idx in range(10):
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         seen = set()
         for eid, ev in g.events.items():
             if not re.match(r".*:r\d+:principal$", eid):
@@ -3146,7 +3152,7 @@ def test_code_change_task_session_args_are_valid_json_and_results_have_no_leak()
 
     t = load_theme("code_change_task")
     cfg = _code_change_cfg()
-    g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
     assert g.events, "code_change_task builds a non-empty session"
     placeholder = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
     saw_call = saw_result = False
@@ -3169,8 +3175,8 @@ def test_code_change_task_session_args_are_valid_json_and_results_have_no_leak()
 def test_code_change_task_deterministic_per_config_and_index() -> None:
     t = load_theme("code_change_task")
     cfg = _code_change_cfg()
-    g1 = build_graph_for_session(cfg, t, _WordTok(), session_index=3)
-    g2 = build_graph_for_session(cfg, t, _WordTok(), session_index=3)
+    g1 = build_graph_for_session(cfg, t, _word_tok(), session_index=3)
+    g2 = build_graph_for_session(cfg, t, _word_tok(), session_index=3)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -3226,7 +3232,7 @@ def test_write_tool_payload_args_are_sized_code_filler() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
     seen_payload = 0
     for ev in g.events.values():
         for m in ev.call.messages:
@@ -3255,7 +3261,7 @@ def test_non_payload_string_arg_keeps_stub() -> None:
         tool_loop_depth=Distribution(type="fixed", mean=8),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
     saw = False
     for ev in g.events.values():
         for m in ev.call.messages:
@@ -3279,7 +3285,7 @@ def test_tool_loop_varies_tools_across_turns() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
         fanout_probability=0.0,
     )
-    g = build_graph_for_session(cfg, t, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, t, _word_tok(), session_index=0)
     names = []
     for eid, ev in g.events.items():
         if re.search(r":t\d+$", eid) or eid.endswith(":principal"):
@@ -3304,7 +3310,7 @@ def test_focus_entity_threads_across_the_loop() -> None:
     )
 
     def paths_in(idx: Any) -> Any:
-        g = build_graph_for_session(cfg, t, _WordTok(), session_index=idx)
+        g = build_graph_for_session(cfg, t, _word_tok(), session_index=idx)
         ps = set()
         for ev in g.events.values():
             for m in ev.call.messages:
@@ -3331,8 +3337,8 @@ def test_code_change_focus_and_payload_deterministic() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=10),
         fanout_probability=0.0,
     )
-    g1 = build_graph_for_session(cfg, t, _WordTok(), session_index=2)
-    g2 = build_graph_for_session(cfg, t, _WordTok(), session_index=2)
+    g1 = build_graph_for_session(cfg, t, _word_tok(), session_index=2)
+    g2 = build_graph_for_session(cfg, t, _word_tok(), session_index=2)
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
 
@@ -3481,8 +3487,8 @@ def test_compaction_off_by_default_is_byte_identical() -> None:
     # We assert by re-deriving with an explicitly-None block.
     plain = _compaction_cfg()
     withnone = _compaction_cfg(context_compaction=None)
-    g1 = build_graph_for_session(plain, GENERIC_THEME, _WordTok(), 0)
-    g2 = build_graph_for_session(withnone, GENERIC_THEME, _WordTok(), 0)
+    g1 = build_graph_for_session(plain, GENERIC_THEME, _word_tok(), 0)
+    g2 = build_graph_for_session(withnone, GENERIC_THEME, _word_tok(), 0)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -3499,7 +3505,7 @@ def test_compaction_trigger_high_never_compacts() -> None:
     # A trigger far above any achievable accumulation must behave exactly like
     # compaction-off: every r>=1 round still grows.
     cfg = _compaction_cfg(context_compaction=_cc(10_000_000, 12))
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     for eid, types in _principal_segments(g):
         if eid != "synthN0:r0:principal":
             assert types == ["shared", "output", "unique"], f"{eid} should GROW under a huge trigger"
@@ -3513,7 +3519,7 @@ def test_compaction_fires_mid_session() -> None:
         turns_per_session=Distribution(type="fixed", mean=8),
         context_compaction=_cc(655, 12),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     seg_map = dict(_principal_segments(g))
     # some mid-session round (r>=1) reset to fresh
     compacted = [eid for eid, types in seg_map.items() if eid != "synthN0:r0:principal" and types == []]
@@ -3539,7 +3545,7 @@ def test_compaction_summary_block_present_and_sized() -> None:
         turns_per_session=Distribution(type="fixed", mean=8),
         context_compaction=_cc(655, 12),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     seg_map = dict(_principal_segments(g))
     compacted = [eid for eid, t in seg_map.items() if eid != "synthN0:r0:principal" and t == []]
     assert compacted
@@ -3555,7 +3561,7 @@ def test_compaction_recap_names_real_subject_and_tools() -> None:
         turns_per_session=Distribution(type="fixed", mean=8),
         context_compaction=_cc(655, 40),
     )
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
     compacted = [eid for eid, t in _principal_segments(g) if eid != "synthN0:r0:principal" and t == []]
     assert compacted
     content = g.events[compacted[0]].call.messages[0]["content"]
@@ -3586,7 +3592,7 @@ def test_compaction_recap_falls_back_to_bare_marker_without_template() -> None:
         tool_catalog_size_per_agent=Distribution(type="fixed", mean=2),
         context_compaction=_cc(90, 12),
     )
-    g = build_graph_for_session(cfg, bare, _WordTok(), 0)
+    g = build_graph_for_session(cfg, bare, _word_tok(), 0)
     compacted = [eid for eid, t in _principal_segments(g) if eid != "synthN0:r0:principal" and t == []]
     assert compacted, "compaction fires regardless of whether the theme has a recap template"
     content = g.events[compacted[0]].call.messages[0]["content"]
@@ -3595,7 +3601,7 @@ def test_compaction_recap_falls_back_to_bare_marker_without_template() -> None:
 
 
 def test_accumulated_wire_tokens_includes_catalog() -> None:
-    tok = _WordTok()
+    tok = _word_tok()
     defs = _tool_definitions(GENERIC_THEME, 8)
     msgs = [{"role": "user", "content": "one two three four five"}]
     with_cat = _accumulated_wire_tokens(tok, msgs, defs)
@@ -3625,8 +3631,8 @@ def test_compaction_deterministic() -> None:
         turns_per_session=Distribution(type="fixed", mean=8),
         context_compaction=_cc(655, 12),
     )
-    g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 2)
-    g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), 2)
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 2)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 2)
     assert list(g1.events.keys()) == list(g2.events.keys())
     for eid in g1.events:
         assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -3672,7 +3678,7 @@ def test_spawn_emits_k_sequential_notifications_each_gated_on_its_own_child() ->
     # its OWN child's terminal. The per-child dependency is what makes the chain a
     # real async wait: a notification cannot fire before that child has finished.
     K = 3
-    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _word_tok(), session_index=0)
 
     chains = _notify_chains(g)
     assert chains, "notification chains materialized"
@@ -3724,7 +3730,7 @@ def test_only_last_notification_is_the_terminal() -> None:
     g = build_graph_for_session(
         _async_fanout_cfg(K, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
         GENERIC_THEME,
-        _WordTok(),
+        _word_tok(),
         session_index=0,
     )
     chains = _notify_chains(g)
@@ -3761,7 +3767,7 @@ def test_every_notification_has_zero_wait_ms() -> None:
     # (c) Timing comes SOLELY from the child terminal's own live-measured LLM call
     # (real TTFT + decode), captured via the DAG dependency -- never from a fabricated
     # extra sleep. A non-zero wait here would double-count that latency.
-    g = build_graph_for_session(_async_fanout_cfg(3, max_depth=2), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(3, max_depth=2), GENERIC_THEME, _word_tok(), session_index=0)
     notifies = [ev for eid, ev in g.events.items() if ":notify" in eid]
     assert notifies, "notification events materialized"
     for ev in notifies:
@@ -3777,7 +3783,7 @@ def test_notification_chain_rolls_back_atomically_when_over_budget() -> None:
     K = 3
     for budget in range(1, 3 + K * 2 + 3):
         cfg = _async_fanout_cfg(K, max_events_per_session=budget)
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
         assert len(g.events) <= budget, f"budget {budget}: emitted {len(g.events)} events"
 
         chains = _notify_chains(g)
@@ -3810,7 +3816,7 @@ def test_shared_segment_never_overclaims_its_source_message_count() -> None:
         g = build_graph_for_session(
             _async_fanout_cfg(2, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
             GENERIC_THEME,
-            _WordTok(),
+            _word_tok(),
             session_index=idx,
         )
         for eid, ev in g.events.items():
@@ -3832,7 +3838,7 @@ def test_async_report_segments_reference_real_child_terminals() -> None:
     g = build_graph_for_session(
         _async_fanout_cfg(3, max_depth=2, tool_loop_depth=Distribution(type="fixed", mean=1)),
         GENERIC_THEME,
-        _WordTok(),
+        _word_tok(),
         session_index=0,
     )
     seen = 0
@@ -3860,8 +3866,8 @@ def test_async_notification_chain_is_byte_identical_across_rebuilds() -> None:
         max_events_per_session=512,
     )
     for idx in range(3):
-        g1 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
-        g2 = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=idx)
+        g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
+        g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=idx)
         assert list(g1.events.keys()) == list(g2.events.keys())
         for eid in g1.events:
             assert g1.events[eid].call.messages == g2.events[eid].call.messages
@@ -3886,7 +3892,7 @@ def test_ack_text_is_short_form_and_distinct_from_the_terminal_answer() -> None:
     g = build_graph_for_session(
         _async_fanout_cfg(4, output_tokens_per_turn=Distribution(type="fixed", mean=256)),
         GENERIC_THEME,
-        _WordTok(),
+        _word_tok(),
         session_index=0,
     )
     chains = _notify_chains(g)
@@ -3922,7 +3928,7 @@ def test_orchestrator_flow_is_dispatch_ack_then_k_reports() -> None:
     from inference_perf.datagen.synthetic_agentic import ASYNC_DISPATCH_STUB
 
     K = 3
-    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _word_tok(), session_index=0)
 
     chains = _notify_chains(g)
     assert chains, "notification chains materialized"
@@ -3958,7 +3964,7 @@ def test_dispatch_ack_turn_is_the_short_prefill_shape() -> None:
     """The post-dispatch turn is the SHORT prefix a real harness produces: strictly
     fewer input messages than any notification turn, since no report has arrived."""
     K = 3
-    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _word_tok(), session_index=0)
     for prefix, chain in _notify_chains(g).items():
         ack_len = len(g.events[f"{prefix}:dispatch_ack"].call.messages)
         for eid in chain:
@@ -3972,7 +3978,7 @@ def test_k1_spawn_degenerates_to_ack_then_single_terminal() -> None:
     dispatch_ack -> notify0(TERMINAL). Guards the degenerate case."""
     from inference_perf.datagen.synthetic_agentic import ROOT_ANSWER_DIRECTIVE
 
-    g = build_graph_for_session(_async_fanout_cfg(1), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(1), GENERIC_THEME, _word_tok(), session_index=0)
     chains = _notify_chains(g)
     assert chains, "a K=1 spawn still produces a notification chain"
     for prefix, chain in chains.items():
@@ -4024,7 +4030,7 @@ def test_spawning_agent_runs_exactly_tool_loop_depth_tool_calls(k: int) -> None:
             fanout_probability=fanout,
             max_events_per_session=4096,
         )
-        g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+        g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
         per = _theme_tool_call_events_by_agent(g)
         assert per, f"k={k} fanout={fanout}: expected tool-emitting events"
         for agent, n in per.items():
@@ -4039,7 +4045,7 @@ def test_spawn_event_consumes_the_last_tool_result() -> None:
     """
     k = 3
     cfg = _async_fanout_cfg(2, tool_loop_depth=Distribution(type="fixed", mean=k), max_events_per_session=4096)
-    g = build_graph_for_session(cfg, GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), session_index=0)
 
     spawn_ids = [eid for eid in g.events if eid.endswith(":spawn")]
     assert spawn_ids, "a spawn event materialized"
@@ -4063,10 +4069,328 @@ def test_spawn_event_consumes_the_last_tool_result() -> None:
 def test_k0_spawn_keeps_the_shared_only_prefix() -> None:
     """The k=0 spawner has no outstanding tool call, so its spawn event keeps the
     shared-only prepend (no `output` segment to substitute). Guards the branch."""
-    g = build_graph_for_session(_async_fanout_cfg(2), GENERIC_THEME, _WordTok(), session_index=0)
+    g = build_graph_for_session(_async_fanout_cfg(2), GENERIC_THEME, _word_tok(), session_index=0)
     spawn_ids = [eid for eid in g.events if eid.endswith(":spawn")]
     assert spawn_ids
     for sid in spawn_ids:
         segs = g.events[sid].call.input_segments
         assert [s.type for s in segs] == ["shared", "unique"], f"{sid}: k=0 spawn stays shared-only"
         assert sum(s.message_count for s in segs) == len(g.events[sid].call.messages)
+
+
+# ---------------------------------------------------------------------------
+# async_report InputSegment tests
+# ---------------------------------------------------------------------------
+
+
+def _make_api_data(
+    event_id: str,
+    registry: EventOutputRegistry,
+    tracker: WorkerSessionTracker,
+    original_messages: List[Dict[str, Any]],
+    input_segments: List[InputSegment],
+    predecessor_event_ids: List[str],
+) -> SessionChatCompletionAPIData:
+    return SessionChatCompletionAPIData(
+        messages=[],
+        max_tokens=50,
+        event_id=event_id,
+        registry=registry,
+        worker_tracker=tracker,
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=predecessor_event_ids,
+        input_segments=input_segments,
+        original_messages=original_messages,
+    )
+
+
+def test_async_report_replaces_content_preserves_user_role() -> None:
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record(
+        "sessX:spawn",
+        "irrelevant",
+        messages=[],
+        output_message={
+            "role": "assistant",
+            "tool_calls": [{"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+    )
+    registry.record(
+        "sessX:child1",
+        "the child's live report text",
+        messages=[],
+        output_message={"role": "assistant", "content": "the child's live report text"},
+    )
+
+    original_messages: List[Dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_A", "content": "Async agent launched successfully."},
+        {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT"},
+    ]
+    ev = _make_api_data(
+        event_id="sessX:notify0",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessX:spawn"),
+            InputSegment(type="unique", message_count=1, token_count=5, source_event_id=None),
+            InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessX:child1"),
+        ],
+        predecessor_event_ids=["sessX:spawn", "sessX:child1"],
+    )
+
+    result = ev._build_messages_with_substitution()
+
+    notif = result[2]
+    assert notif["role"] == "user"
+    assert "tool_call_id" not in notif
+    assert notif["content"] == ("<task-notification>\n<result>\nthe child's live report text\n</result>\n</task-notification>")
+    body = notif["content"].split("<result>\n", 1)[1].split("\n</result>", 1)[0]
+    assert body == "the child's live report text"
+    assert "<tool-use-id>" not in notif["content"]
+
+    assert result[1]["role"] == "tool"
+    assert result[1]["content"] == "Async agent launched successfully."
+
+
+def test_async_report_guard_non_user_role_falls_back() -> None:
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record(
+        "sessX:child1",
+        "report",
+        messages=[],
+        output_message={"role": "assistant", "content": "report"},
+    )
+    original_messages = [{"role": "tool", "tool_call_id": "call_A", "content": "static ack"}]
+    ev = _make_api_data(
+        event_id="sessX:e",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessX:child1")],
+        predecessor_event_ids=["sessX:child1"],
+    )
+
+    result = ev._build_messages_with_substitution()
+
+    assert result[0]["role"] == "tool"
+    assert result[0]["content"] == "static ack"
+
+
+def test_async_report_unavailable_output_falls_back() -> None:
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    original_messages = [{"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT"}]
+    ev = _make_api_data(
+        event_id="sessX:e",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessX:missing")],
+        predecessor_event_ids=["sessX:missing"],
+    )
+
+    result = ev._build_messages_with_substitution()
+
+    assert result[0]["content"] == "PLACEHOLDER_ASYNC_REPORT"
+
+
+def test_output_and_shared_segments_unchanged_by_async_report_addition() -> None:
+    """A graph with NO async_report segment must substitute exactly as before."""
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record("sessY:e1", "live-out", messages=[], output_message={"role": "assistant", "content": "live-out"})
+    original_messages = [{"role": "assistant", "content": "PLACEHOLDER"}]
+    ev = _make_api_data(
+        event_id="sessY:e2",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessY:e1")],
+        predecessor_event_ids=["sessY:e1"],
+    )
+    result = ev._build_messages_with_substitution()
+    assert result[0]["role"] == "assistant"
+    assert result[0]["content"] == "live-out"
+
+
+def test_multiple_async_report_segments_do_not_double_advance_cursor() -> None:
+    """Regression: async_report success path must not double-advance the cursor."""
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record(
+        "sessZ:spawn",
+        "irrelevant",
+        messages=[],
+        output_message={
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+                {"id": "call_B", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+            ],
+        },
+    )
+    registry.record(
+        "sessZ:child1",
+        "child1 live report",
+        messages=[],
+        output_message={"role": "assistant", "content": "child1 live report"},
+    )
+    registry.record(
+        "sessZ:child2",
+        "child2 live report",
+        messages=[],
+        output_message={"role": "assistant", "content": "child2 live report"},
+    )
+
+    original_messages: List[Dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call_A", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+                {"id": "call_B", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_A", "content": "ack A"},
+        {"role": "tool", "tool_call_id": "call_B", "content": "ack B"},
+        {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT_1"},
+        {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT_2"},
+    ]
+
+    ev = _make_api_data(
+        event_id="sessZ:notify1",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessZ:spawn"),
+            InputSegment(type="unique", message_count=2, token_count=5, source_event_id=None),
+            InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessZ:child1"),
+            InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessZ:child2"),
+        ],
+        predecessor_event_ids=["sessZ:spawn", "sessZ:child1", "sessZ:child2"],
+    )
+
+    result = ev._build_messages_with_substitution()
+
+    assert len(result) == 5
+
+    def _body(msg: Any) -> str:
+        return str(msg["content"]).split("<result>\n", 1)[1].split("\n</result>", 1)[0]
+
+    assert result[3]["role"] == "user"
+    assert _body(result[3]) == "child1 live report"
+    assert result[4]["role"] == "user"
+    assert _body(result[4]) == "child2 live report"
+    for m in (result[3], result[4]):
+        assert m["content"].count("<task-notification>") == 1
+        assert m["content"].count("<result>") == 1
+
+
+def test_async_report_id_rewrite_still_applies_to_static_acks() -> None:
+    """The `output` segment's tool_call_id post-pass must still rewrite static ack results."""
+    registry = EventOutputRegistry()
+    tracker = WorkerSessionTracker()
+
+    registry.record(
+        "sessW:spawn",
+        "irrelevant",
+        messages=[],
+        output_message={
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "LIVE_1", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+                {"id": "LIVE_2", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+            ],
+        },
+    )
+    registry.record("sessW:child1", "r1", messages=[], output_message={"role": "assistant", "content": "r1"})
+
+    original_messages: List[Dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "recorded_1", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+                {"id": "recorded_2", "type": "function", "function": {"name": "dispatch_agent", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "recorded_1", "content": "ack"},
+        {"role": "tool", "tool_call_id": "recorded_2", "content": "ack"},
+        {"role": "user", "content": "PLACEHOLDER_ASYNC_REPORT"},
+    ]
+    ev = _make_api_data(
+        event_id="sessW:notify0",
+        registry=registry,
+        tracker=tracker,
+        original_messages=original_messages,
+        input_segments=[
+            InputSegment(type="output", message_count=1, token_count=5, source_event_id="sessW:spawn"),
+            InputSegment(type="unique", message_count=2, token_count=5, source_event_id=None),
+            InputSegment(type="async_report", message_count=1, token_count=5, source_event_id="sessW:child1"),
+        ],
+        predecessor_event_ids=["sessW:spawn", "sessW:child1"],
+    )
+
+    result = ev._build_messages_with_substitution()
+
+    call_ids = [tc["id"] for tc in result[0]["tool_calls"]]
+    assert call_ids == ["LIVE_1", "LIVE_2"], "live dispatch calls substituted in"
+    tool_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+    assert tool_ids == ["LIVE_1", "LIVE_2"], "static acks rewritten to the live call ids (no dangling)"
+
+
+def test_bad_tool_call_handling_inherited_by_session_replay_base() -> None:
+    from inference_perf.config.datagen.replay import SessionReplayConfig, BadToolCallHandling
+
+    cfg = SessionReplayConfig()
+    assert cfg.bad_tool_call_handling == BadToolCallHandling.NONE
+
+
+def test_notification_envelope_shape_and_omissions() -> None:
+    """The envelope wraps the report body and omits the fields we deliberately skip."""
+    from inference_perf.datagen.replay_graph_session_datagen import _wrap_async_notification
+
+    wrapped = _wrap_async_notification("REPORT BODY")
+    assert wrapped == "<task-notification>\n<result>\nREPORT BODY\n</result>\n</task-notification>"
+    assert wrapped.split("<result>\n", 1)[1].split("\n</result>", 1)[0] == "REPORT BODY"
+    for omitted in ("<tool-use-id>", "<task-id>", "<output-file>", "<status>", "<usage>"):
+        assert omitted not in wrapped, f"{omitted} must not be emitted"
+
+
+def test_notification_envelope_survives_multiline_and_markup_reports() -> None:
+    """A child report may be multi-line or mention tag-like text; the envelope must still delimit it."""
+    from inference_perf.datagen.replay_graph_session_datagen import _wrap_async_notification
+
+    body = "## Findings\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nMentions <result> in prose."
+    wrapped = _wrap_async_notification(body)
+    assert wrapped.startswith("<task-notification>\n<result>\n")
+    assert wrapped.endswith("\n</result>\n</task-notification>")
+    inner = wrapped[len("<task-notification>\n<result>\n") : -len("\n</result>\n</task-notification>")]
+    assert inner == body
+
+
+def test_dispatch_description_documents_the_envelope_and_ordering() -> None:
+    """The dispatch tool definition must document the envelope shape and completion-order delivery."""
+    from inference_perf.datagen.synthetic_agentic import (
+        DISPATCH_AGENT_DESCRIPTION,
+        DISPATCH_AGENT_TOOL_DEF,
+    )
+
+    desc = DISPATCH_AGENT_DESCRIPTION
+    assert "<task-notification>" in desc and "<result>" in desc, "envelope shape documented"
+    assert "completion order" in desc.lower(), "delivery ordering documented"
+    assert "one at a time" in desc.lower(), "per-report (non-batched) delivery documented"
+    assert DISPATCH_AGENT_TOOL_DEF["description"] == desc
+    assert DISPATCH_AGENT_TOOL_DEF["function"]["description"] == desc
