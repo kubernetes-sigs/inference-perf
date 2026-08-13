@@ -25,6 +25,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.base import extract_server_request_id
+
 
 class StreamInterruptedError(Exception):
     """Raised when an SSE stream fails partway through being read.
@@ -100,9 +102,7 @@ async def parse_sse_stream(
                         try:
                             data = json.loads(data_str)
                             if not server_request_id:
-                                server_request_id = data.get("id")
-                                if not server_request_id and isinstance(data.get("message"), dict):
-                                    server_request_id = data["message"].get("id")
+                                server_request_id = extract_server_request_id(data)
                             usage = data.get("usage")
                             if not isinstance(usage, dict):
                                 message_data = data.get("message")
@@ -125,11 +125,7 @@ async def parse_sse_stream(
         # what the server actually sent instead of an empty response body.
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
-    if not server_request_id and response and hasattr(response, "headers"):
-        headers = response.headers
-        if hasattr(headers, "get"):
-            val = headers.get("x-request-id")
-            if isinstance(val, str):
-                server_request_id = val
+    if not server_request_id:
+        server_request_id = extract_server_request_id(response=response)
 
     return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage, server_request_id

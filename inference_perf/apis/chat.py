@@ -23,7 +23,13 @@ import numpy as np
 from aiohttp import ClientResponse
 from pydantic import BaseModel, field_validator
 
-from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    extract_server_request_id,
+)
 from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
@@ -584,8 +590,8 @@ class ChatCompletionAPIData(InferenceAPIData):
             )
 
         data = await response.json()
-        server_usage = data.get("usage")
-        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+        server_request_id = extract_server_request_id(data, response)
+        prompt_len = self._count_prompt_tokens(tokenizer)
         choices = data.get("choices", [])
         if len(choices) == 0:
             return InferenceInfo(

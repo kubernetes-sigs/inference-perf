@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,14 +33,16 @@ def _mock_tokenizer() -> MagicMock:
     return tokenizer
 
 
-def _mock_response(payload: dict[str, Any]) -> MagicMock:
+def _mock_response(payload: dict[str, Any], headers: Optional[dict[str, str]] = None) -> MagicMock:
     response = MagicMock()
     response.json = AsyncMock(return_value=payload)
+    response.headers = headers or {}
     return response
 
 
-def _mock_stream_response(chunks: list[bytes]) -> MagicMock:
+def _mock_stream_response(chunks: list[bytes], headers: Optional[dict[str, str]] = None) -> MagicMock:
     response = MagicMock()
+    response.headers = headers or {}
     content = MagicMock()
     response.content = content
 
@@ -278,3 +280,207 @@ async def test_session_anthropic_messages_streaming_records_tool_use_for_replay(
         ],
     }
     assert tracker.is_event_completed("session_1", "event_1")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_streaming_request_id() -> None:
+    """Verifies that streaming Anthropic responses extract server_request_id from message_start SSE event."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_stream_response(
+        [
+            b'data: {"type": "message_start", "message": {"id": "msg_stream_anthropic_999", "usage": {"input_tokens": 3}}}\n\n',
+            b'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}\n\n',
+            b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello"}}\n\n',
+            b'data: {"type": "content_block_stop", "index": 0}\n\n',
+            b'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}}\n\n',
+            b'data: {"type": "message_stop"}\n\n',
+        ]
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages, streaming=True),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.server_request_id == "msg_stream_anthropic_999"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_unary_request_id() -> None:
+    """Verifies that unary Anthropic responses extract server_request_id from JSON response body."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_response(
+        {
+            "id": "msg_unary_anthropic_999",
+            "content": [{"type": "text", "text": "hello back"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 5},
+        }
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages, streaming=False),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.server_request_id == "msg_unary_anthropic_999"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_unary_header_fallback() -> None:
+    """Verifies that unary Anthropic responses fall back to x-request-id header when body has no ID."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_response(
+        {
+            "content": [{"type": "text", "text": "hello back"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 5},
+        },
+        headers={"x-request-id": "req-anthropic-unary-hdr-999"},
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages, streaming=False),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.server_request_id == "req-anthropic-unary-hdr-999"
+
+
+@pytest.mark.asyncio
+async def test_session_anthropic_messages_streaming_request_id() -> None:
+    """Verifies streaming Anthropic session replay extracts server_request_id from message_start SSE event."""
+    data = SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="Hello")],
+        max_tokens=500,
+        event_id="session_1:event_0",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=[],
+    )
+    chunks = [
+        b'data: {"type": "message_start", "message": {"id": "msg-anthropic-stream-123", "usage": {"input_tokens": 5}}}\n\n',
+        b'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}\n\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}\n\n',
+        b'data: {"type": "content_block_stop", "index": 0}\n\n',
+        b'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}\n\n',
+        b'data: {"type": "message_stop"}\n\n',
+    ]
+    response = _mock_stream_response(chunks)
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=True)
+
+    info = await data.process_response(response, config, _mock_tokenizer())
+
+    assert info.server_request_id == "msg-anthropic-stream-123"
+
+
+@pytest.mark.asyncio
+async def test_session_anthropic_messages_streaming_header_fallback() -> None:
+    """Verifies streaming Anthropic session replay falls back to x-request-id header when event has no ID."""
+    data = SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="Hello")],
+        max_tokens=500,
+        event_id="session_1:event_0",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=[],
+    )
+    chunks = [
+        b'data: {"type": "message_start", "message": {"usage": {"input_tokens": 5}}}\n\n',
+        b'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}\n\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}\n\n',
+        b'data: {"type": "content_block_stop", "index": 0}\n\n',
+        b'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}\n\n',
+        b'data: {"type": "message_stop"}\n\n',
+    ]
+    response = _mock_stream_response(chunks, headers={"x-request-id": "req-anthropic-stream-hdr-123"})
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=True)
+
+    info = await data.process_response(response, config, _mock_tokenizer())
+
+    assert info.server_request_id == "req-anthropic-stream-hdr-123"
+
+
+@pytest.mark.asyncio
+async def test_session_anthropic_messages_non_streaming_request_id() -> None:
+    """Verifies unary Anthropic session replay extracts server_request_id from response body."""
+    data = SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="Hello")],
+        max_tokens=500,
+        event_id="session_1:event_0",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=[],
+    )
+    response = _mock_response(
+        {
+            "id": "msg-anthropic-unary-123",
+            "content": [{"type": "text", "text": "Hello"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        }
+    )
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=False)
+
+    info = await data.process_response(response, config, _mock_tokenizer())
+
+    assert info.server_request_id == "msg-anthropic-unary-123"
+
+
+@pytest.mark.asyncio
+async def test_session_anthropic_messages_non_streaming_header_fallback() -> None:
+    """Verifies unary Anthropic session replay falls back to x-request-id header when body has no ID."""
+    data = SessionAnthropicMessagesAPIData(
+        messages=[ChatMessage(role="user", content="Hello")],
+        max_tokens=500,
+        event_id="session_1:event_0",
+        registry=EventOutputRegistry(),
+        worker_tracker=WorkerSessionTracker(),
+        completion_queue=None,
+        total_events_in_session=1,
+        predecessor_event_ids=[],
+    )
+    response = _mock_response(
+        {
+            "content": [{"type": "text", "text": "Hello"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        },
+        headers={"x-request-id": "req-anthropic-unary-hdr-123"},
+    )
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=False)
+
+    info = await data.process_response(response, config, _mock_tokenizer())
+
+    assert info.server_request_id == "req-anthropic-unary-hdr-123"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_messages_unary_integer_request_id() -> None:
+    """Verifies unary Anthropic responses with integer ID are converted to strings."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_response(
+        {
+            "id": 554433,
+            "content": [{"type": "text", "text": "hello back"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 5},
+        }
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages, streaming=False),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.server_request_id == "554433"

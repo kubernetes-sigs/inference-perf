@@ -19,7 +19,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, UnaryResponseMetrics
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 
 def _make_tokenizer() -> MagicMock:

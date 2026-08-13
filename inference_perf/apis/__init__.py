@@ -21,6 +21,7 @@ from .base import (
     ResponseMetrics,
     UnaryResponseMetrics,
     StreamedResponseMetrics,
+    extract_server_request_id,
 )
 from .chat import ChatCompletionAPIData, ChatMessage
 from .completion import CompletionAPIData
@@ -40,4 +41,5 @@ __all__ = [
     "AnthropicMessagesAPIData",
     "UnaryResponseMetrics",
     "StreamedResponseMetrics",
+    "extract_server_request_id",
 ]

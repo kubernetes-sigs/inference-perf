@@ -16,7 +16,13 @@
 from typing import Any, Dict, Optional
 
 from aiohttp import ClientResponse
-from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    extract_server_request_id,
+)
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
@@ -90,8 +96,8 @@ class CompletionAPIData(InferenceAPIData):
             )
         else:
             data = await response.json()
-            server_usage = data.get("usage")
-            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+            server_request_id = extract_server_request_id(data, response)
+            prompt_len = tokenizer.count_tokens(self.prompt)
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(

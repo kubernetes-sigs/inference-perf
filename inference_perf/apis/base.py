@@ -179,3 +179,22 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+
+def extract_server_request_id(data: Any = None, response: Optional[Any] = None) -> Optional[str]:
+    """Extract and stringify server request ID from response body dict or response headers."""
+    if isinstance(data, dict):
+        raw_id = data.get("id")
+        if raw_id is not None and isinstance(raw_id, (str, int)):
+            return str(raw_id)
+        if isinstance(data.get("message"), dict):
+            msg_id = data["message"].get("id")
+            if msg_id is not None and isinstance(msg_id, (str, int)):
+                return str(msg_id)
+
+    if response is not None and hasattr(response, "headers") and hasattr(response.headers, "get"):
+        val = response.headers.get("x-request-id")
+        if isinstance(val, (str, int)):
+            return str(val)
+
+    return None

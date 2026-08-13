@@ -14,8 +14,11 @@
 
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
-from inference_perf.apis.streaming_parser import parse_sse_stream, StreamInterruptedError
+
 import pytest
+
+from inference_perf.apis.base import extract_server_request_id
+from inference_perf.apis.streaming_parser import StreamInterruptedError, parse_sse_stream
 
 
 @pytest.mark.asyncio
@@ -202,3 +205,115 @@ async def test_parse_sse_stream_header_fallback() -> None:
         mock_response, lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
     )
     assert request_id == "req-hdr-12345"
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_integer_request_id() -> None:
+    """Verifies integer request IDs in SSE chunks are converted to strings."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"id": 123456, "choices": [{"delta": {"content": "Hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(
+        mock_response, lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
+    )
+    assert request_id == "123456"
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_anthropic_integer_request_id() -> None:
+    """Verifies integer Anthropic message IDs in SSE chunks are converted to strings."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"type": "message_start", "message": {"id": 654321, "usage": {"input_tokens": 5}}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(mock_response, lambda d: None)
+    assert request_id == "654321"
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_non_dict_message_field() -> None:
+    """Verifies non-dict message field (e.g. string message in error chunk) does not crash stream parser."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"message": "Rate limit exceeded"}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(mock_response, lambda d: None)
+    assert request_id is None
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_invalid_dict_request_id() -> None:
+    """Verifies nested dictionary ID values are ignored rather than passed as invalid types."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"id": {"nested": "obj"}, "choices": [{"delta": {"content": "Hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(
+        mock_response, lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
+    )
+    assert request_id is None
+
+
+def test_extract_server_request_id_direct() -> None:
+    """Verifies extract_server_request_id helper across string, integer, nested message, and header fallback."""
+    # Direct ID string
+    assert extract_server_request_id({"id": "chatcmpl-123"}) == "chatcmpl-123"
+
+    # Direct ID integer converted to str
+    assert extract_server_request_id({"id": 12345}) == "12345"
+
+    # Nested message ID (Anthropic message_start)
+    assert extract_server_request_id({"message": {"id": "msg-456"}}) == "msg-456"
+    assert extract_server_request_id({"message": {"id": 7890}}) == "7890"
+
+    # Invalid / non-dict message field ignored
+    assert extract_server_request_id({"message": "non-dict string"}) is None
+
+    # Header fallback
+    mock_resp = Mock()
+    mock_resp.headers = {"x-request-id": "hdr-999"}
+    assert extract_server_request_id({}, response=mock_resp) == "hdr-999"
+
+    # None input handles safely
+    assert extract_server_request_id(None, None) is None

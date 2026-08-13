@@ -18,7 +18,13 @@ from typing import Any
 
 from aiohttp import ClientResponse
 
-from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
+from inference_perf.apis.base import (
+    InferenceAPIData,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    extract_server_request_id,
+)
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType
@@ -338,11 +344,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             )
 
         data = await response.json()
-        server_request_id = data.get("id")
-        if not server_request_id and response and hasattr(response, "headers") and hasattr(response.headers, "get"):
-            val = response.headers.get("x-request-id")
-            if isinstance(val, str):
-                server_request_id = val
+        server_request_id = extract_server_request_id(data, response)
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
