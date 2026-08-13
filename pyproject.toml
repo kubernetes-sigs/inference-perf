@@ -25,6 +25,7 @@ dependencies = [
     "sympy>=1.13.0,<1.15",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "ijson>=3.4.0",
+    "openai>=1.0.0",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
