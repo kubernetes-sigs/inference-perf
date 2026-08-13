@@ -68,7 +68,7 @@ def test_partial_report_top_level_shape() -> None:
     now = time.time()
     metrics = [_metric(now + i * 0.1, now + i * 0.1 + 0.08) for i in range(5)]
 
-    partial = build_partial_report(metrics, tokenizer=None, run_uid="test-uid-abc")
+    partial = build_partial_report(metrics, tokenizer=None, run_uid="test-uid-abc", stage_start=now, stage_end=now + 1.0)
 
     assert set(partial.keys()) == {"version", "run", "results"}
     assert partial["version"] == VERSION
@@ -80,10 +80,9 @@ def test_partial_report_top_level_shape() -> None:
 
 def test_partial_report_run_time_is_iso8601() -> None:
     start = 1_700_000_000.0
-    end = start + 4.5
-    metrics = [_metric(start, end)]
+    metrics = [_metric(start, start + 4.0)]
 
-    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid")
+    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid", stage_start=start, stage_end=start + 4.5)
 
     run_time = partial["run"]["time"]
     assert run_time["start"].startswith("2023-")  # 1.7e9 → 2023
@@ -92,12 +91,42 @@ def test_partial_report_run_time_is_iso8601() -> None:
     assert run_time["duration"] == "PT4.500S"
 
 
+def test_partial_report_run_time_from_stage_wall_clock_not_request_clocks() -> None:
+    """Request lifecycle timestamps come from a monotonic clock whose origin
+    is arbitrary (roughly seconds since boot), so they must never be
+    interpreted as epoch: deriving run.time from them put every run in
+    January 1970. run.time comes from the stage's wall-clock window."""
+    metrics = [_metric(345_678.0, 345_682.5)]  # perf_counter-style values
+    stage_start = 1_770_000_000.0
+
+    partial = build_partial_report(
+        metrics, tokenizer=None, run_uid="uid", stage_start=stage_start, stage_end=stage_start + 60.0
+    )
+
+    run_time = partial["run"]["time"]
+    assert run_time["start"].startswith("2026-")  # 1.77e9 → 2026, not 1970
+    assert run_time["end"].startswith("2026-")
+    assert run_time["duration"] == "PT60.000S"
+
+
+def test_partial_report_omits_run_time_without_stage_window() -> None:
+    """When the stage's wall-clock window is unknown, run.time is omitted
+    (absence over fabrication) so a composer's own value survives the
+    merge; the request timestamps are no substitute, being monotonic."""
+    now = time.time()
+    metrics = [_metric(now, now + 0.1)]
+
+    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid")
+
+    assert "time" not in partial["run"]
+
+
 def test_partial_report_strips_nulls_recursively() -> None:
     """None-valued fields must be absent so yq-merge does not clobber with null."""
     now = time.time()
     metrics = [_metric(now, now + 0.1)]
 
-    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid")
+    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid", stage_start=now, stage_end=now + 0.2)
 
     def assert_no_none(obj: Any, path: str = "") -> None:
         if isinstance(obj, dict):
@@ -116,7 +145,7 @@ def test_partial_report_round_trips_via_yaml_safe() -> None:
     now = time.time()
     metrics = [_metric(now, now + 0.1)]
 
-    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid")
+    partial = build_partial_report(metrics, tokenizer=None, run_uid="uid", stage_start=now, stage_end=now + 0.2)
     rendered = yaml.safe_dump(partial, sort_keys=False, default_flow_style=False)
     reloaded = yaml.safe_load(rendered)
 
@@ -130,7 +159,7 @@ def test_partial_report_deep_merges_cleanly_with_other_producer() -> None:
     """
     now = time.time()
     metrics = [_metric(now, now + 0.5)]
-    ip_partial = build_partial_report(metrics, tokenizer=None, run_uid="ip-uid")
+    ip_partial = build_partial_report(metrics, tokenizer=None, run_uid="ip-uid", stage_start=now, stage_end=now + 0.6)
 
     other_partial: Dict[str, Any] = {
         "run": {

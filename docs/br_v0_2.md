@@ -54,6 +54,10 @@ require.
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 
+`run.time` is the stage's wall-clock window as recorded by the load
+generator (stage start to stage end, including drain), not the span from
+first request start to last request end.
+
 ## Composing with other producers
 
 The emitted partial is designed for clean deep-merge. `None`-valued fields

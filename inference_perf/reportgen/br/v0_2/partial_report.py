@@ -52,6 +52,8 @@ def build_partial_report(
     *,
     run_uid: str,
     use_server_output_tokens: bool = False,
+    stage_start: float | None = None,
+    stage_end: float | None = None,
 ) -> Dict[str, Any]:
     """Build the inference-perf partial of a BR0.2 report for one stage.
 
@@ -59,10 +61,16 @@ def build_partial_report(
     the other report files. ``None``-valued fields are stripped so the file
     yq-merges cleanly with partials from other producers.
 
+    ``stage_start``/``stage_end`` are the stage's wall-clock (epoch) window
+    from ``StageRuntimeInfo``. They are the only usable time source here: the
+    request lifecycle timestamps are monotonic-clock values with an arbitrary
+    origin, so deriving ``run.time`` from them lands in January 1970. When the
+    window is not supplied, ``run.time`` is omitted rather than fabricated.
+
     Pass the same ``use_server_output_tokens`` as the native lifecycle
     reports so both reports of the run agree on token counts.
     """
-    run = Run(uid=run_uid, time=_build_run_time(stage_metrics))
+    run = Run(uid=run_uid, time=_build_run_time(stage_start, stage_end))
     results = build_results(stage_metrics, tokenizer, use_server_output_tokens)
 
     return {
@@ -72,18 +80,16 @@ def build_partial_report(
     }
 
 
-def _build_run_time(stage_metrics: List[RequestLifecycleMetric]) -> RunTime | None:
-    """Derive stage start/end/duration from request lifecycle timestamps.
+def _build_run_time(stage_start: float | None, stage_end: float | None) -> RunTime | None:
+    """Build ``run.time`` from the stage's epoch start/end.
 
-    Returns ``None`` when no metrics are available, so the field is dropped
+    Returns ``None`` unless both bounds are known, so the field is dropped
     from the emitted partial rather than emitted as a null block.
     """
-    if not stage_metrics:
+    if stage_start is None or stage_end is None:
         return None
-    start_ts = min(m.start_time for m in stage_metrics)
-    end_ts = max(m.end_time for m in stage_metrics)
-    start = datetime.datetime.fromtimestamp(start_ts, tz=datetime.timezone.utc)
-    end = datetime.datetime.fromtimestamp(end_ts, tz=datetime.timezone.utc)
+    start = datetime.datetime.fromtimestamp(stage_start, tz=datetime.timezone.utc)
+    end = datetime.datetime.fromtimestamp(stage_end, tz=datetime.timezone.utc)
     return RunTime(
         start=start,
         end=end,

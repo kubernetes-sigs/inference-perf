@@ -902,11 +902,16 @@ class ReportGenerator:
                 if metric.stage_id is not None:
                     br_stage_buckets[metric.stage_id].append(metric)
             for br_stage_id, stage_metrics in br_stage_buckets.items():
+                # run.time needs the stage's wall-clock window: the request
+                # timestamps are monotonic and can't be mapped to epoch here.
+                stage_info = runtime_parameters.stages.get(br_stage_id)
                 partial = build_partial_report(
                     stage_metrics,
                     tokenizer,
                     run_uid=generate_run_uid(br_stage_id),
                     use_server_output_tokens=use_server_output_tokens,
+                    stage_start=stage_info.start_time if stage_info else None,
+                    stage_end=stage_info.end_time if stage_info else None,
                 )
                 lifecycle_reports.append(
                     ReportFile(

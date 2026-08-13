@@ -168,6 +168,77 @@ def test_build_results_ntpot_for_non_streaming_requests() -> None:
     assert aggregate.requests.output_length.mean == pytest.approx(10.0)
 
 
+def test_build_results_all_failed_stage_omits_throughput() -> None:
+    """A stage where every request failed has no measured throughput, so the
+    block must be absent (merge-by-absence), not fabricated zero rates: a
+    composer cannot tell "the server managed 0 tok/s" from "nothing
+    succeeded", and downstream averaging would fold the zeros in as real
+    measurements."""
+    now = time.time()
+    metrics = [_streaming_metric(now + i * 0.1) for i in range(5)]
+    for metric in metrics:
+        metric.error = ErrorResponseInfo(error_type="timeout", error_msg="boom")
+
+    results = build_results(metrics)
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.requests is not None
+    assert aggregate.requests.total == 5
+    assert aggregate.requests.failures == 5
+    assert aggregate.throughput is None
+
+
+def test_build_results_zero_output_success_counts_in_output_length() -> None:
+    """A successful request that produced zero output tokens (immediate EOS,
+    stop sequence) is a real measurement of output length; it must land in
+    the output_length distribution like it does in the native lifecycle
+    report, while staying out of the per-token latency metrics, which divide
+    by the count."""
+    now = time.time()
+    metrics = [
+        _unary_metric(now, now + 1.0, output_tokens=0),
+        _unary_metric(now, now + 2.0, output_tokens=10),
+    ]
+
+    results = build_results(metrics)
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.requests is not None and aggregate.latency is not None
+
+    output_length = aggregate.requests.output_length
+    assert output_length is not None
+    assert output_length.mean == pytest.approx(5.0)
+    assert output_length.min == pytest.approx(0.0)
+    assert output_length.max == pytest.approx(10.0)
+
+    # NTPOT is only measurable where tokens were produced; the zero-output
+    # request must be skipped, not folded in as a fabricated 0.0.
+    ntpot = aggregate.latency.normalized_time_per_output_token
+    assert ntpot is not None
+    assert ntpot.mean == pytest.approx(0.2, abs=1e-6)
+
+
+def test_build_results_missing_output_count_excluded_from_output_length() -> None:
+    """No response_metrics means the output count is unknown, which is
+    different from a measured zero: unknowns stay out of the distribution,
+    mirroring the native report's filter."""
+    now = time.time()
+    known = _unary_metric(now, now + 1.0, output_tokens=10)
+    unknown = _unary_metric(now, now + 1.0, output_tokens=0)
+    unknown.info.response_metrics = None
+
+    results = build_results([known, unknown])
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.requests is not None
+    assert aggregate.requests.total == 2
+
+    output_length = aggregate.requests.output_length
+    assert output_length is not None
+    assert output_length.mean == pytest.approx(10.0)
+    assert output_length.min == pytest.approx(10.0)
+
+
 def test_build_results_respects_use_server_output_tokens() -> None:
     """With use_server_output_tokens=True, token counts must come from the
     server's usage.completion_tokens so the BR partial agrees with the native

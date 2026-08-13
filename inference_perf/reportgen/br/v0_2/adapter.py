@@ -89,10 +89,13 @@ def _build_aggregate(
     failed = [m for m in metrics if m.error is not None]
 
     input_lengths = [float(m.info.input_tokens) for m in successful]
+    # Zero is a real output length (immediate EOS, stop sequence) and stays in
+    # the distribution, matching the native lifecycle report; only requests
+    # with no response metrics at all (count unknown) are excluded.
     output_lengths = [
-        float(tokens)
+        float(effective_output_tokens(m.info.response_metrics, use_server_output_tokens))
         for m in successful
-        if (tokens := effective_output_tokens(m.info.response_metrics, use_server_output_tokens)) > 0
+        if m.info.response_metrics is not None
     ]
 
     requests = AggregateRequests(
@@ -108,11 +111,13 @@ def _build_aggregate(
         time_to_first_token=_statistics([v for v in ttft if v is not None], Units.S),
         time_per_output_token=_statistics([v for v in tpot if v is not None], Units.S_PER_TOKEN),
         inter_token_latency=_statistics(itl, Units.S_PER_TOKEN),
-        normalized_time_per_output_token=_statistics(ntpot, Units.S_PER_TOKEN),
+        normalized_time_per_output_token=_statistics([v for v in ntpot if v is not None], Units.S_PER_TOKEN),
     )
 
+    # No successes means no measured throughput: emit absence, not zero rates,
+    # so a composer can tell an unmeasured window from a measured 0.
     total_time = _benchmark_window(metrics)
-    throughput = _build_throughput(successful, total_time, use_server_output_tokens) if total_time > 0 else None
+    throughput = _build_throughput(successful, total_time, use_server_output_tokens) if successful and total_time > 0 else None
 
     return AggregateRequestPerformance(requests=requests, latency=latency, throughput=throughput)
 
@@ -151,23 +156,22 @@ def _per_request_latencies(
     metrics: List[RequestLifecycleMetric],
     tokenizer: Optional["CustomTokenizer"],
     use_server_output_tokens: bool,
-) -> Tuple[List[float], List[Optional[float]], List[Optional[float]], List[float], List[float]]:
+) -> Tuple[List[float], List[Optional[float]], List[Optional[float]], List[float], List[Optional[float]]]:
     request_latency: List[float] = []
     ttft: List[Optional[float]] = []
     tpot: List[Optional[float]] = []
     itl: List[float] = []
-    ntpot: List[float] = []
+    ntpot: List[Optional[float]] = []
 
     for m in metrics:
         request_latency.append(m.end_time - m.start_time)
         token_times = _resolve_token_times(m, tokenizer)
         output_tokens = effective_output_tokens(m.info.response_metrics, use_server_output_tokens)
 
-        # NTPOT is computed for every successful request, streaming or not.
-        if output_tokens > 0:
-            ntpot.append((m.end_time - m.start_time) / output_tokens)
-        else:
-            ntpot.append(0.0)
+        # NTPOT is computed for every successful request, streaming or not,
+        # but is not measurable without output tokens; skip those requests
+        # rather than folding in a fabricated 0.0.
+        ntpot.append((m.end_time - m.start_time) / output_tokens if output_tokens > 0 else None)
 
         if len(token_times) > 1:
             ttft.append(token_times[0] - m.start_time)
