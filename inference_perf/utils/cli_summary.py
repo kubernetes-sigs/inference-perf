@@ -198,8 +198,9 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             norm_tpot_med = f"{median:0.1f}"
             norm_tpot_p90 = f"{p90:0.1f}"
 
-        # Token Length extraction
-        prompt_tokens = successes.get("prompt_tokens")
+        # Token Length extraction. "prompt_len" is the pre-unification name for
+        # "prompt_tokens"; keep reading it so older reports still render.
+        prompt_tokens = successes.get("prompt_tokens") or successes.get("prompt_len")
         prompt_mean = prompt_med = prompt_p90 = "-"
         if prompt_tokens:
             prompt_mean = f"{prompt_tokens.get('mean', 0.0):0.1f}"
