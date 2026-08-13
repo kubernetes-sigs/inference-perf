@@ -34,7 +34,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionChatCompletionAPIData,
     WorkerSessionTracker,
