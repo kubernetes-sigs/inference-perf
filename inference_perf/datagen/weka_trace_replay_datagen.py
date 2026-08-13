@@ -54,13 +54,17 @@ hashes recorded in the trace.
      replay which is what we are trying to emulate.
 """
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import math
+import multiprocessing
+import os
 from pathlib import Path
 import random
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Annotated
 from multiprocessing.managers import SyncManager
 
@@ -73,8 +77,10 @@ from inference_perf.datagen.replay_graph_session_datagen import (
     ReplayGraphSessionGeneratorBase,
 )
 from inference_perf.datagen.otel_trace_to_replay_graph import (
+    DEPENDENCY_TYPE,
     RawCall,
     build_graph,
+    message_content_text,
 )
 from inference_perf.datagen.replay_graph_types import ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -582,6 +588,201 @@ def _build_trace_idle_timing(
 
 
 # =============================================================================
+# Parallel Session Building
+# =============================================================================
+
+# Set in the parent process right before the build pool is created and cleared
+# after it is drained. Forked pool workers inherit it via copy-on-write, which
+# avoids pickling the generator (tokenizer, corpus) per task. Holds
+# (generator, traces).
+_build_ctx: Optional[Tuple["WekaTraceReplayDataGenerator", List[WekaTrace]]] = None
+
+
+def _pool_worker_init() -> None:
+    # The parent used the Rust tokenizer before forking, so its internal thread
+    # pool cannot be reused in children. Disable it explicitly to avoid the
+    # "process just got forked, after parallelism has already been used"
+    # warning from every worker.
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+def _first_assistant_match(
+    a_out: str,
+    asst_indices: List[int],
+    asst_texts: List[str],
+    first_exact: Dict[str, int],
+    asst_concat: str,
+    max_asst_len: int,
+) -> Optional[Tuple[int, bool]]:
+    """(message index, is_exact) of the first assistant message that equals or
+    contains a_out, mirroring the generic finder's first-match-in-message-order
+    rule; None when no message matches."""
+    if not asst_indices:
+        return None
+    if a_out == "":
+        # The empty string is contained in every assistant message.
+        return (asst_indices[0], asst_texts[0] == "")
+    if len(a_out) > max_asst_len:
+        return None  # no single message can equal or contain it
+    e_idx = first_exact.get(a_out)
+    if e_idx is None and a_out not in asst_concat:
+        return None  # contained in no message either
+    for k, m_idx in enumerate(asst_indices):
+        if m_idx == e_idx:
+            return (m_idx, True)
+        t = asst_texts[k]
+        if a_out in t:
+            return (m_idx, t == a_out)
+    return None  # concat hit was a cross-boundary false positive
+
+
+def _find_weka_predecessors(
+    calls: List[RawCall],
+) -> Tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[Tuple[str, str], List[int]]]:
+    """Fast, semantics-identical predecessor finder for Weka-synthesized calls.
+
+    Drop-in replacement for find_predecessors_by_text_matching. The generic
+    finder calls output_matches_message for every (candidate, call, message)
+    triple — hundreds of millions of Python-level calls on large traces, and
+    the dominant cost of data generation. Weka-reconstructed calls only ever
+    carry plain-text messages and outputs (never ComplexReplayMessage parts),
+    so the identical result can be computed per call with:
+
+    - a first-index map of assistant message texts for exact matches,
+    - one C-level substring scan over the concatenated assistant texts as an
+      exact reject filter for containment (concatenation cannot produce false
+      negatives; rare cross-boundary false positives fall through to a precise
+      per-message scan), and
+    - a per-call memo so duplicate candidate output texts are resolved once.
+
+    Match indices, dependency-dict insertion order, the exact-match
+    substitution cache, and temporal fallbacks are reproduced exactly;
+    equivalence is asserted against the generic finder in tests.
+    """
+    n = len(calls)
+    predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
+    output_matches_for_substitutions: Dict[Tuple[str, str], List[int]] = {}
+
+    def get_causal_ancestors(node_idx: int) -> set[int]:
+        # Identical to the closure in find_predecessors_by_text_matching.
+        ancestors: set[int] = set()
+        stack = [p for p, d in predecessor_indices[node_idx].items() if d != DEPENDENCY_TYPE.TEMPORAL]
+        while stack:
+            ancestor = stack.pop()
+            if ancestor not in ancestors:
+                ancestors.add(ancestor)
+                stack.extend(p for p, d in predecessor_indices[ancestor].items() if d != DEPENDENCY_TYPE.TEMPORAL)
+        return ancestors
+
+    out_texts: List[Optional[str]] = [(c.out_message.text or "") if c.out_message is not None else None for c in calls]
+
+    for i in range(1, n):
+        b = calls[i]
+
+        # Per-call index over assistant messages, in message order.
+        asst_indices: List[int] = []
+        asst_texts: List[str] = []
+        first_exact: Dict[str, int] = {}
+        for m_idx, msg in enumerate(b.messages):
+            if msg.role == "assistant":
+                t = message_content_text(msg)
+                asst_indices.append(m_idx)
+                asst_texts.append(t)
+                if t not in first_exact:
+                    first_exact[t] = m_idx
+        asst_concat = "".join(asst_texts)
+        max_asst_len = max(map(len, asst_texts), default=0)
+
+        # Memo per call: candidate output text value -> match result.
+        match_memo: Dict[str, Optional[Tuple[int, bool]]] = {}
+
+        curr_causal_preds: Dict[int, DEPENDENCY_TYPE] = {}
+        transitive_preds: set[int] = set()
+        b_has_messages = bool(b.messages)
+
+        for j in range(i - 1, -1, -1):
+            if j in transitive_preds:
+                continue
+            a_out = out_texts[j]
+            if a_out is None or not b_has_messages:
+                continue  # get_causal_dep returns None for these
+            if a_out in match_memo:
+                res = match_memo[a_out]
+            else:
+                res = _first_assistant_match(a_out, asst_indices, asst_texts, first_exact, asst_concat, max_asst_len)
+                match_memo[a_out] = res
+            if res is None:
+                continue
+            m_idx, is_exact = res
+            if is_exact:
+                output_matches_for_substitutions.setdefault((calls[j].call_id, b.call_id), []).append(m_idx)
+            curr_causal_preds[j] = DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
+            transitive_preds.update(get_causal_ancestors(j))
+
+        predecessor_indices[i].update(curr_causal_preds)
+
+        # Temporal fallback: closest earlier call that ended before b started.
+        predecessor_index = None
+        for j in range(i - 1, -1, -1):
+            if not (b.t_start_ms < calls[j].t_end_ms):
+                predecessor_index = j
+                break
+        if predecessor_index is not None and predecessor_index not in predecessor_indices[i]:
+            predecessor_indices[i][predecessor_index] = DEPENDENCY_TYPE.TEMPORAL
+
+    return predecessor_indices, output_matches_for_substitutions
+
+
+def _estimated_trace_cost(trace: WekaTrace) -> int:
+    """Rough relative cost of building one trace's session, used to order pool
+    submissions largest-first. build_graph's pairwise output/input matching is
+    quadratic in the number of calls, which dominates for large traces."""
+    n = 0
+    for req in trace.requests:
+        if isinstance(req, WekaSubagentEntry):
+            n += len(req.requests)
+        else:
+            n += 1
+    return n * n
+
+
+def _build_session_for_trace(trace_index: int) -> Tuple[int, Optional[ReplaySession], Optional[str]]:
+    """Build one trace's ReplaySession.
+
+    Returns (trace_index, session or None, error message or None). Errors are
+    returned as strings instead of raised so per-trace skip_invalid_files
+    semantics survive the process boundary. Runs inline in the serial path and
+    inside forked pool workers in the parallel path; reconstruction is
+    deterministic per trace (all randomness is content-keyed by
+    base_seed/trace_id/hash_id), so both paths produce identical sessions.
+    """
+    assert _build_ctx is not None, "_build_ctx must be set before building sessions"
+    generator, traces = _build_ctx
+    trace = traces[trace_index]
+    try:
+        raw_calls = generator._reconstruct_raw_calls(trace)
+        if not raw_calls:
+            return (trace_index, None, None)
+
+        graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}", predecessor_finder=_find_weka_predecessors)
+
+        # Make session ID unique per trace run
+        session_id = f"wekatrace{trace_index}_{trace.id}"
+        return (
+            trace_index,
+            ReplaySession(
+                session_id=session_id,
+                source_id=trace.id,
+                session_index=trace_index,
+                graph=graph,
+            ),
+            None,
+        )
+    except Exception as e:
+        return (trace_index, None, f"{type(e).__name__}: {e}")
+
+
+# =============================================================================
 # WekaTraceReplayDataGenerator Class
 # =============================================================================
 
@@ -636,9 +837,6 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
         self._tokenized_corpus = self.tokenizer.get_tokenizer().encode(base_prompt + corpus_text)
         self._corpus_size = len(self._tokenized_corpus)
-
-        self._hash_id_rng = HashIdRandomGenerator(self.base_seed)
-        self._cache: Dict[int, List[int]] = {}
 
         # Load all WekaTrace records
         traces = self._load_weka_traces()
@@ -714,40 +912,71 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         return list(unique_traces.values())
 
     def _build_sessions_from_traces(self, traces: List[WekaTrace]) -> List[ReplaySession]:
+        global _build_ctx
+        num_workers = self._resolve_datagen_workers(len(traces))
+
+        start = time.perf_counter()
+        _build_ctx = (self, traces)
+        try:
+            if num_workers > 1:
+                logger.info(f"Building replay sessions for {len(traces)} traces with {num_workers} processes")
+                # Submit the most expensive traces first so a giant trace does
+                # not become a straggler at the tail of the queue; per-trace
+                # cost is roughly quadratic in turn count. Results are
+                # re-sorted by trace index below, so the output is identical
+                # to the serial path.
+                order = sorted(range(len(traces)), key=lambda i: -_estimated_trace_cost(traces[i]))
+                fork_ctx = multiprocessing.get_context("fork")
+                with ProcessPoolExecutor(max_workers=num_workers, mp_context=fork_ctx, initializer=_pool_worker_init) as pool:
+                    results = list(pool.map(_build_session_for_trace, order))
+            else:
+                results = [_build_session_for_trace(i) for i in range(len(traces))]
+        finally:
+            _build_ctx = None
+
         sessions: List[ReplaySession] = []
-
-        for trace_index, trace in enumerate(traces):
-            try:
-                raw_calls = self._reconstruct_raw_calls(trace)
-                if not raw_calls:
-                    continue
-
-                graph = build_graph(raw_calls, source_file=f"weka_trace_{trace.id}")
-
-                # Make session ID unique per trace run
-                session_id = f"wekatrace{trace_index}_{trace.id}"
-                sessions.append(
-                    ReplaySession(
-                        session_id=session_id,
-                        source_id=trace.id,
-                        session_index=trace_index,
-                        graph=graph,
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Failed to process Weka trace {trace.id}: {e}")
+        for trace_index, session, error in sorted(results, key=lambda r: r[0]):
+            if error is not None:
+                logger.error(f"Failed to process Weka trace {traces[trace_index].id}: {error}")
                 if not self.weka_config.skip_invalid_files:
-                    raise
+                    raise RuntimeError(f"Failed to process Weka trace {traces[trace_index].id}: {error}")
+            elif session is not None:
+                sessions.append(session)
+
+        logger.info(f"Built {len(sessions)} replay sessions from {len(traces)} traces in {time.perf_counter() - start:.1f}s")
 
         # Shuffle sessions for stress testing
         random.seed(self.base_seed)
         random.shuffle(sessions)
         return sessions
 
+    def _resolve_datagen_workers(self, num_traces: int) -> int:
+        """Resolve the process count for parallel session building.
+
+        Defaults to the number of CPUs available to this process, capped at the
+        trace count. A fork start method is required because pool workers
+        inherit the generator (tokenizer, corpus, traces) by copy-on-write
+        rather than pickling; without fork we fall back to serial.
+        """
+        if self.weka_config.datagen_workers is not None:
+            n = self.weka_config.datagen_workers
+        else:
+            # sched_getaffinity respects container CPU limits but is Linux-only.
+            sched_getaffinity = getattr(os, "sched_getaffinity", None)
+            n = len(sched_getaffinity(0)) if sched_getaffinity is not None else (os.cpu_count() or 1)
+        n = max(1, min(n, num_traces))
+        if n > 1 and "fork" not in multiprocessing.get_all_start_methods():
+            logger.warning("'fork' start method unavailable on this platform; building replay sessions serially")
+            return 1
+        return n
+
     def _reconstruct_raw_calls(self, trace: WekaTrace) -> List[RawCall]:
-        # Reset local cache for deterministic scope
-        self._cache.clear()
-        self._hash_id_rng.set_trace_id(trace.id)
+        # Per-trace deterministic scratch state. Kept local (not on self) so
+        # this method is reentrant and safe to run concurrently for different
+        # traces in parallel worker processes.
+        cache: Dict[int, List[int]] = {}
+        hash_id_rng = HashIdRandomGenerator(self.base_seed)
+        hash_id_rng.set_trace_id(trace.id)
 
         # Build model mappings
         model_map = self._build_model_map(trace)
@@ -796,15 +1025,15 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         def decode_block_tokens(hash_ids: List[int]) -> List[int]:
             tokens: List[int] = []
             for h in hash_ids:
-                cached = self._cache.get(h)
+                cached = cache.get(h)
                 if cached is None:
-                    self._hash_id_rng.reseed_for_hash_id(h)
-                    start = self._hash_id_rng.randrange(self._corpus_size)
+                    hash_id_rng.reseed_for_hash_id(h)
+                    start = hash_id_rng.randrange(self._corpus_size)
                     end = start + trace_bs
                     cached = self._tokenized_corpus[start:end]
                     if end > self._corpus_size:
                         cached = cached + self._tokenized_corpus[: end - self._corpus_size]
-                    self._cache[h] = cached
+                    cache[h] = cached
                 tokens.extend(cached)
             return tokens
 
