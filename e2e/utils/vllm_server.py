@@ -149,7 +149,8 @@ class VLLMServerRunner(AsyncContextDecorator):
             # graph warmup; there is no pytest-timeout in this suite, so this
             # deadline is what stands between a hung boot and the CI job cap.
             await self.wait_until_ready(timeout_sec=self.startup_timeout_sec)
-        except Exception:
+        except BaseException:
+            # BaseException: a cancelled boot must reap the server too.
             await self.__aexit__(*sys.exc_info())
             raise
         return self
@@ -164,16 +165,13 @@ class VLLMServerRunner(AsyncContextDecorator):
     async def wait_until_ready(self, polling_sec: float = 1.0, timeout_sec: float = 600) -> None:
         """Waits until /health returns 200 (or the spawned process exits)."""
 
-        async def wait_http() -> bool:
+        async def wait_http() -> None:
             async with aiohttp.ClientSession() as http:
                 while True:
                     try:
                         async with http.get(f"{self._base_url}/health") as resp:
                             if resp.status == 200:
-                                return True
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        logger.error(f"vLLM server did not become ready after {timeout_sec}s!")
-                        raise
+                                return
                     except Exception as e:
                         logger.debug(f"http polling error: {e}, retrying...")
                     await asyncio.sleep(polling_sec)
@@ -188,11 +186,18 @@ class VLLMServerRunner(AsyncContextDecorator):
             return_when=asyncio.FIRST_COMPLETED,
             timeout=timeout_sec,
         )
-        [task.cancel() for task in pending]
-        if done:
-            [task.result() for task in done]
-        else:
-            [await task for task in pending]
+        for task in pending:
+            task.cancel()
+        # Let the cancellations land before the poller's ClientSession goes
+        # out of scope; the results here are cancellations, not outcomes.
+        await asyncio.gather(*pending, return_exceptions=True)
+        # The deadline must surface as an Exception: re-raising the pollers'
+        # CancelledError (a BaseException) would sail past callers'
+        # except-Exception cleanup.
+        if not done:
+            raise TimeoutError(f"vLLM server at {self._base_url} did not become ready after {timeout_sec}s")
+        for task in done:
+            task.result()
 
     async def fetch_metrics(self) -> str:
         """The server's current /metrics exposition text."""
