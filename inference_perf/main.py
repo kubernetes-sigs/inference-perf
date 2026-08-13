@@ -369,7 +369,7 @@ def main_cli() -> None:
                 config.api, config.data, tokenizer, mp_manager, config.load.base_seed, num_workers=config.load.num_workers
             )
         elif config.data.type == DataGenType.Bimodal:
-            datagen = BimodalDataGenerator(config.api, config.data, tokenizer)
+            datagen = BimodalDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
         else:
             datagen = MockDataGenerator(config.api, config.data, tokenizer)
     else:

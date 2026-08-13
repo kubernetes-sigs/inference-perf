@@ -222,17 +222,15 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
 | `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
 | `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
-| `--data.bimodal.mode_a_system_prompt_len` | int | Length of shared system prompt prefix (KV cache) for Mode A requests |
+| `--data.bimodal.mode_a_system_prompt_len` | int | Length of shared system prompt prefix (KV cache) for Mode A requests in tokens |
 | `--data.bimodal.mode_a_groups` | int | Number of KV cache groups for Mode A requests |
 | `--data.bimodal.mode_a_user_prompt_len` | string | Length or distribution of Mode A user prompt in tokens |
 | `--data.bimodal.mode_a_output_len` | string | Length or distribution of Mode A output generation in tokens |
-| `--data.bimodal.mode_b_system_prompt_len` | int | Length of shared system prompt prefix (KV cache) for Mode B requests |
+| `--data.bimodal.mode_b_system_prompt_len` | int | Length of shared system prompt prefix (KV cache) for Mode B requests in tokens |
 | `--data.bimodal.mode_b_groups` | int | Number of KV cache groups for Mode B requests |
 | `--data.bimodal.mode_b_user_prompt_len` | string | Length or distribution of Mode B user prompt in tokens |
 | `--data.bimodal.mode_b_output_len` | string | Length or distribution of Mode B output generation in tokens |
 | `--data.bimodal.mode_a_ratio` | float | Proportion of Mode A requests (0.0 to 1.0) |
-| `--data.bimodal.num_prompts_per_group` | int | Number of unique user prompt variations pre-generated per group |
-| `--data.bimodal.seed` | int | Random seed for reproducibility |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
 | `--load.stages` | JSON | Load stages to run in sequence. The stage fields depend on the load type. |
