@@ -40,6 +40,7 @@ from inference_perf.config.config import Config, deep_merge, read_config
 from inference_perf.config.datagen import (
     AnyResolution,
     AudioDatagenConfig,
+    BimodalConfig,
     ConversationReplayConfig,
     DataConfig,
     DataGenType,
@@ -90,6 +91,7 @@ __all__ = [
     "APIType",
     "AudioDatagenConfig",
     "CircuitBreakerConfig",
+    "BimodalConfig",
     "ConcurrentLoadStage",
     "Config",
     "ConversationReplayConfig",

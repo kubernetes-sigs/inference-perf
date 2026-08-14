@@ -25,6 +25,7 @@ from .replay import (
     WekaTraceReplayDataGenerator,
 )
 from .synthetic import (
+    BimodalDataGenerator,
     MockDataGenerator,
     MultimodalDataGenerator,
     RandomDataGenerator,
@@ -37,6 +38,7 @@ __all__ = [
     "DataGenerator",
     "SessionGenerator",
     "LazyLoadDataMixin",
+    "BimodalDataGenerator",
     "MockDataGenerator",
     "HFShareGPTDataGenerator",
     "SyntheticDataGenerator",

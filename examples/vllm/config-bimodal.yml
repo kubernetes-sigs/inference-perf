@@ -1,0 +1,39 @@
+load:
+  type: constant
+  interval: 15
+  stages:
+  - rate: 1
+    duration: 30
+  - rate: 2
+    duration: 30
+api:
+  type: completion
+server:
+  type: vllm
+  model_name: HuggingFaceTB/SmolLM2-135M-Instruct
+  base_url: http://0.0.0.0:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+data:
+  type: bimodal
+  bimodal:
+    mode_a_system_prompt_len: 100
+    mode_a_groups: 2
+    mode_a_user_prompt_len: 50
+    mode_a_output_len: 50
+    mode_b_system_prompt_len: 100
+    mode_b_groups: 2
+    mode_b_user_prompt_len: 1024
+    mode_b_output_len: 512
+    mode_a_ratio: 0.7
+metrics:
+  type: prometheus
+  prometheus:
+    url: http://localhost:9090
+    scrape_interval: 15
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
