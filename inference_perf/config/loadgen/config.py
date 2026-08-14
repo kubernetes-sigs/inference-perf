@@ -11,15 +11,37 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
+import os
 import time
 from enum import Enum
-from os import cpu_count
 from typing import List, Optional, Union
 
 from inference_perf.config.common import StrictBaseModel
 from pydantic import ConfigDict, Field, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
+
+
+# TODO: use os.process_cpu_count() once project requires python>=3.13 (https://docs.python.org/3/library/os.html#os.process_cpu_count)
+def _cgroup_aware_cpu_count() -> int:
+    """Return CPUs available to this process, respecting cgroup CPU quotas when present."""
+    # cgroup v2
+    try:
+        parts = open("/sys/fs/cgroup/cpu.max").read().split()
+        if parts[0] != "max":
+            return max(1, math.floor(float(parts[0]) / float(parts[1])))
+    except (OSError, ValueError, IndexError):
+        pass
+    # cgroup v1
+    try:
+        quota = float(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read())
+        period = float(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+        if quota > 0:
+            return max(1, math.floor(quota / period))
+    except (OSError, ValueError):
+        pass
+    return max(1, os.cpu_count() or 1)
 
 
 class LoadType(Enum):
@@ -171,8 +193,8 @@ class LoadConfig(StrictBaseModel):
         " Not valid for the 'concurrent' and 'trace_session_replay' load types.",
     )
     num_workers: int = Field(
-        default=max(1, cpu_count()),  # type: ignore
-        description="Number of worker processes sending requests. Defaults to the CPU count.",
+        default_factory=_cgroup_aware_cpu_count,
+        description="Number of worker processes sending requests. Defaults to the cgroup-aware CPU count.",
     )
     worker_max_concurrency: int = Field(default=100, description="Maximum concurrent in-flight requests per worker.")
     worker_max_tcp_connections: int = Field(default=2500, description="Maximum TCP connections per worker.")
