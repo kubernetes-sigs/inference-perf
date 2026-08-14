@@ -16,6 +16,7 @@ aliases:
   inference-perf-reviewers:
   - Bslabe123
   - alonh
+  - kaushikmitr
 
   wg-serving-leads:
   - ArangoGutierrez
