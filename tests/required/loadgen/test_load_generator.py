@@ -261,6 +261,28 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         await self.load_generator.drain(q.get_channel(0))
         self.assertTrue(q.get_channel(0).empty())
 
+    async def test_await_workers_ready_returns_once_workers_signal(self) -> None:
+        ready = mp.Value("i", self.load_generator.num_workers)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
+    async def test_await_workers_ready_gives_up_when_a_worker_exits(self) -> None:
+        # A worker that dies while starting up never signals readiness. The gate
+        # has to give up rather than block the run forever.
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=1)])
+
+        await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
+    async def test_await_workers_ready_gives_up_on_timeout(self) -> None:
+        # Workers still alive but silent: the gate expires and load starts anyway.
+        ready = mp.Value("i", 0)
+        self.load_generator.workers = typing.cast(Any, [MagicMock(exitcode=None), MagicMock(exitcode=None)])
+
+        with patch("inference_perf.loadgen.load_generator.WORKER_STARTUP_TIMEOUT_SEC", 0.1):
+            await asyncio.wait_for(self.load_generator._await_workers_ready(ready), timeout=5)
+
     def test_sigint_handler(self) -> None:
         import signal
 

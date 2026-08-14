@@ -389,6 +389,15 @@ def main_cli() -> None:
         pass
 
     end_time = time.time()
+
+    # Bringing workers up is process setup, not benchmark work. Under forkserver
+    # each worker is rebuilt in a fresh interpreter, so counting that startup
+    # stretches the window and deflates every rate derived from it. The load
+    # generator records when load actually began; prefer it when it is set (the
+    # multiprocessing path only, which is where the startup cost lives).
+    if loadgen.load_start_time is not None:
+        start_time = loadgen.load_start_time
+
     duration = end_time - start_time  # Calculate the duration of the test
 
     # Generate Reports after the tests
