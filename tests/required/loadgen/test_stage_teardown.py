@@ -207,6 +207,12 @@ def _line_count(path: str) -> int:
         return len(f.readlines())
 
 
+# How long the harness waits for a worker process to finish booting. Only a
+# guard against a wedged worker hanging the suite; a healthy forkserver
+# worker signals ready in well under a second.
+_WORKER_BOOT_TIMEOUT_SEC = 60.0
+
+
 class _Harness:
     def __init__(
         self,
@@ -235,6 +241,7 @@ class _Harness:
         self.cancel_signal = MP_CONTEXT.Event()
         self.force_stop_signal = MP_CONTEXT.Event()
         self.stage_boundary_seq = MP_CONTEXT.Value("i", 0)
+        self.workers_ready = MP_CONTEXT.Value("i", 0)
         self.loadgen._force_stop_signal = self.force_stop_signal
         self.loadgen._stage_boundary_seq = self.stage_boundary_seq
         self.request_phase.set()
@@ -256,9 +263,29 @@ class _Harness:
             stage_done_counter=MP_CONTEXT.Value("i", 0),
             stage_boundary_seq=self.stage_boundary_seq,
             teardown_grace_seconds=teardown_grace_seconds,
+            ready_counter=self.workers_ready,
         )
         worker.start()
+        self._await_worker_ready()
         self.loadgen.workers = [worker]
+
+    # Blocks until the worker process has finished booting and is about to start
+    # consuming the request queue. Input: none; reads self.workers_ready, which
+    # the worker increments once its payload is unpickled. Output: returns once
+    # the count reaches 1, or raises RuntimeError if the worker never gets there.
+    #
+    # Forkserver workers take real time to boot, unlike the forked workers these
+    # tests were first written against. Production keeps that startup off the
+    # stage clock (LoadGenerator._await_workers_ready); these tests must too,
+    # because their timing assertions begin when the stage does.
+    def _await_worker_ready(self) -> None:
+        deadline = time.monotonic() + _WORKER_BOOT_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            with self.workers_ready.get_lock():
+                if self.workers_ready.value >= 1:
+                    return
+            time.sleep(0.02)
+        raise RuntimeError(f"worker did not signal ready within {_WORKER_BOOT_TIMEOUT_SEC}s")
 
     async def run_stage(self, stage_id: int, timeout: float, rate: float = 2) -> float:
         start = time.perf_counter()
