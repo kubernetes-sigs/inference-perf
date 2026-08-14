@@ -19,7 +19,6 @@ from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution
-
 from inference_perf.config.datagen.bimodal import BimodalConfig
 from inference_perf.datagen.base import DataGenerator, LazyLoadDataMixin
 from inference_perf.datagen.datagen_utils import (
@@ -100,9 +99,7 @@ class BimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         prefixes: Dict[int, Tuple[Optional[str], List[int]]] = {}
         for group_id in range(num_groups):
-            text, ids = generate_random_exact_length_text(
-                self.rng, self.valid_token_ids, self.tokenizer, sys_len
-            )
+            text, ids = generate_random_exact_length_text(self.rng, self.valid_token_ids, self.tokenizer, sys_len)
             prefixes[group_id] = (text, ids)
         return prefixes
 
@@ -165,9 +162,7 @@ class BimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         num_groups = self.bimodal_config.mode_a_groups if is_mode_a else self.bimodal_config.mode_b_groups
         group_id = self._get_group_id(n, num_groups, salt)
 
-        prefix_text, prefix_ids = (
-            self.mode_a_prefixes[group_id] if is_mode_a else self.mode_b_prefixes[group_id]
-        )
+        prefix_text, prefix_ids = self.mode_a_prefixes[group_id] if is_mode_a else self.mode_b_prefixes[group_id]
         user_prompt_dist = self.mode_a_user_prompt_dist if is_mode_a else self.mode_b_user_prompt_dist
         output_dist = self.mode_a_output_dist if is_mode_a else self.mode_b_output_dist
 
@@ -183,7 +178,12 @@ class BimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
             suffix_ids = self._sample_suffix_ids(u_len, req_rng)
             full_text = hf_tokenizer.decode(prefix_ids + suffix_ids, skip_special_tokens=True)
             full_prompt = full_text if isinstance(full_text, str) else " ".join(full_text)
-            user_text = full_prompt[len(prefix_text) + 1 :] if len(full_prompt) > len(prefix_text) else ""
+            if len(full_prompt) > len(prefix_text):
+                user_text = full_prompt[len(prefix_text) :]
+                if user_text.startswith(" "):
+                    user_text = user_text[1:]
+            else:
+                user_text = ""
         else:
             user_text, _ = generate_random_exact_length_text(req_rng, self.valid_token_ids, self.tokenizer, u_len)
             full_prompt = user_text

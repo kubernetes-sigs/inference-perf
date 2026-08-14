@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Generators that fabricate requests from distributions rather than data:
-random/synthetic token streams, shared-prefix, multimodal, and mock."""
+random/synthetic token streams, shared-prefix, multimodal, bimodal, and mock."""
 
+from .bimodal_datagen import BimodalDataGenerator
 from .mock_datagen import MockDataGenerator
 from .multimodal_datagen import MultimodalDataGenerator
 from .random_datagen import RandomDataGenerator
@@ -21,6 +22,7 @@ from .shared_prefix_datagen import SharedPrefixDataGenerator
 from .synthetic_datagen import SyntheticDataGenerator
 
 __all__ = [
+    "BimodalDataGenerator",
     "MockDataGenerator",
     "MultimodalDataGenerator",
     "RandomDataGenerator",

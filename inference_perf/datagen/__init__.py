@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base import BaseGenerator, DataGenerator, SessionGenerator, LazyLoadDataMixin
-from .bimodal_datagen import BimodalDataGenerator
 from .dataset import (
     BillsumConversationsDataGenerator,
     CNNDailyMailDataGenerator,
@@ -26,6 +25,7 @@ from .replay import (
     WekaTraceReplayDataGenerator,
 )
 from .synthetic import (
+    BimodalDataGenerator,
     MockDataGenerator,
     MultimodalDataGenerator,
     RandomDataGenerator,

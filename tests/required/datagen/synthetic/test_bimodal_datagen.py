@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Union, List, Dict, Any
+from typing import Any, Dict, List, Optional, Union
 from unittest.mock import MagicMock
 import pytest
 
@@ -29,7 +29,7 @@ from inference_perf.config import (
     SharedPrefix,
 )
 from inference_perf.datagen.base import DataGenerator, LazyLoadDataMixin
-from inference_perf.datagen.bimodal_datagen import BimodalDataGenerator
+from inference_perf.datagen.synthetic.bimodal_datagen import BimodalDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
@@ -38,7 +38,9 @@ def _extract_text_content(content: Optional[Union[str, List[Dict[str, Any]]]]) -
         return ""
     if isinstance(content, str):
         return content
-    return "".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") in ["text", "input_text"])
+    return "".join(
+        part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") in ["text", "input_text"]
+    )
 
 
 def _make_mock_tokenizer(vocab_size: int = 1000) -> MagicMock:
@@ -189,9 +191,7 @@ class TestBimodalRequestMaterialization:
         gen = _make_generator(cfg, api_type=APIType.Chat, tokenizer=tokenizer, seed=42)
         req = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
         assert isinstance(req, ChatCompletionAPIData)
-        body = await req.to_request_body(
-            effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False
-        )
+        body = await req.to_request_body(effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False)
         messages = body["messages"]
         assert len(messages) == 1
         content_text = _extract_text_content(messages[0]["content"])
@@ -215,9 +215,7 @@ class TestBimodalRequestMaterialization:
         gen_chat = _make_generator(cfg_zero, api_type=APIType.Chat, tokenizer=tokenizer, seed=42)
         req_chat = gen_chat.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
         assert isinstance(req_chat, ChatCompletionAPIData)
-        body = await req_chat.to_request_body(
-            effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False
-        )
+        body = await req_chat.to_request_body(effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False)
         assert _extract_text_content(body["messages"][0]["content"]) == ""
 
         # Case 2: sys_len=10, u_len=0
@@ -229,11 +227,35 @@ class TestBimodalRequestMaterialization:
         gen_chat2 = _make_generator(cfg_sys_only, api_type=APIType.Chat, tokenizer=tokenizer, seed=42)
         req_chat2 = gen_chat2.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
         assert isinstance(req_chat2, ChatCompletionAPIData)
-        body2 = await req_chat2.to_request_body(
-            effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False
-        )
+        body2 = await req_chat2.to_request_body(effective_model_name="gpt2", max_tokens=10, ignore_eos=True, streaming=False)
         content_text2 = _extract_text_content(body2["messages"][0]["content"])
         assert tokenizer.count_tokens(content_text2) == 10
+
+    def test_distribution_inputs_materialization(self) -> None:
+        tokenizer = CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="gpt2"))
+        cfg = BimodalConfig(
+            mode_a_system_prompt_len=10,
+            mode_a_user_prompt_len=Distribution(min=10, max=20, mean=15, std_dev=2.0),
+            mode_a_output_len=Distribution(min=5, max=15, mean=10, std_dev=1.0),
+            mode_b_system_prompt_len=10,
+            mode_b_user_prompt_len=Distribution(min=50, max=100, mean=75, std_dev=5.0),
+            mode_b_output_len=Distribution(min=20, max=40, mean=30, std_dev=2.0),
+            mode_a_ratio=0.5,
+        )
+        gen = _make_generator(cfg, api_type=APIType.Completion, tokenizer=tokenizer, seed=42)
+        for i in range(20):
+            req = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+            assert isinstance(req, CompletionAPIData)
+            assert req.prompt is not None
+            is_a = gen._is_mode_a(i)
+            if is_a:
+                assert 5 <= req.max_tokens <= 15
+                prompt_tokens = tokenizer.count_tokens(req.prompt)
+                assert 20 <= prompt_tokens <= 30  # sys_len (10) + user_len (10..20)
+            else:
+                assert 20 <= req.max_tokens <= 40
+                prompt_tokens = tokenizer.count_tokens(req.prompt)
+                assert 60 <= prompt_tokens <= 110  # sys_len (10) + user_len (50..100)
 
 
 class TestBimodalValidation:
@@ -272,4 +294,3 @@ class TestBimodalValidation:
     def test_negative_int_length_raises(self) -> None:
         with pytest.raises(ValueError, match="cannot be negative"):
             BimodalConfig(mode_a_user_prompt_len=-5)
-
