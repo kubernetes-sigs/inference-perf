@@ -19,7 +19,7 @@ import sys
 import threading
 import pytest
 
-from utils.benchmark import run_benchmark_minimal
+from utils.benchmark import pythonpath_env, run_benchmark_minimal
 from test_prometheus import is_prometheus_available
 
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
@@ -140,7 +140,7 @@ async def test_legacy_metric_name(prometheus_server):
         result = await run_benchmark_minimal(
             _benchmark_config(prometheus_server.url, prometheus_server.sim_port),
             executable=[sys.executable, str(MAIN_PY_PATH)],
-            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
+            extra_env=pythonpath_env(PROJECT_ROOT),
         )
 
         assert result.success, f"Benchmark failed: {result.stdout}"
@@ -165,7 +165,7 @@ async def test_new_metric_name(prometheus_server):
         result = await run_benchmark_minimal(
             _benchmark_config(prometheus_server.url, prometheus_server.sim_port),
             executable=[sys.executable, str(MAIN_PY_PATH)],
-            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
+            extra_env=pythonpath_env(PROJECT_ROOT),
         )
 
         assert result.success, f"Benchmark failed: {result.stdout}"
