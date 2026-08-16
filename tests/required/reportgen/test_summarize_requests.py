@@ -550,8 +550,8 @@ def test_enrich_sessions_cache_denominator_uses_server_prompt_tokens() -> None:
     assert session.total_cacheable_input_tokens == 120  # server count drives the ratio
 
     summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
-    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(110 / 120)
-    assert summary["kv_cache_hit_rate"]["max"] <= 1.0
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(100.0 * 110 / 120)
+    assert summary["kv_cache_hit_per_session_percent"]["max"] <= 100.0
 
 
 def test_enrich_sessions_cache_matches_stage_level_prompt_token_usage() -> None:
@@ -573,25 +573,7 @@ def test_enrich_sessions_cache_matches_stage_level_prompt_token_usage() -> None:
     stage = summarize_prompt_token_usage(requests, DEFAULT_PERCENTILES)
     summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
-    assert summary["kv_cache_hit_rate_aggregate"] == pytest.approx(stage["cached"] / stage["total"])
-
-
-def test_enrich_sessions_cache_reads_anthropic_usage_shape() -> None:
-    """Anthropic's cache_read_input_tokens counts, and its input_tokens excludes it.
-
-    Regression: only the OpenAI/vLLM shape was read, so an Anthropic run reported
-    total_cached_tokens=0 -- indistinguishable from a genuine 0% hit rate.
-    """
-    requests = [_cached_request("s1", 100, {"input_tokens": 20, "output_tokens": 5, "cache_read_input_tokens": 80})]
-    session = _cache_session("s1")
-    ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
-
-    assert session.total_cached_tokens == 80
-    # Anthropic's input_tokens is the uncached remainder, so the prompt total is 20 + 80.
-    assert session.total_cacheable_input_tokens == 100
-
-    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
-    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(0.8)
+    assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * stage["cached"] / stage["total"])
 
 
 def test_enrich_sessions_cache_clamps_cached_above_prompt_tokens() -> None:
@@ -603,7 +585,7 @@ def test_enrich_sessions_cache_clamps_cached_above_prompt_tokens() -> None:
     assert session.total_cached_tokens == 100
 
     summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
-    assert summary["kv_cache_hit_rate"]["max"] == pytest.approx(1.0)
+    assert summary["kv_cache_hit_per_session_percent"]["max"] == pytest.approx(100.0)
 
 
 def test_summarize_sessions_reports_kv_cache_hit_rate() -> None:
@@ -623,7 +605,7 @@ def test_summarize_sessions_reports_kv_cache_hit_rate() -> None:
 
     assert summary["total_cached_tokens"]["mean"] == pytest.approx(32.0)
     # Only s1 contributes: 32/99. s2 (None) is skipped, not treated as 0.
-    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(32.0 / 99.0)
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(100.0 * 32.0 / 99.0)
     assert summary["sessions_with_cache_info"] == 1
 
 
@@ -635,8 +617,8 @@ def test_summarize_sessions_kv_cache_hit_rate_none_when_no_cache_info() -> None:
 
     summary = ReportGenerator.summarize_sessions(None, [s], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
-    assert summary["kv_cache_hit_rate"] is None
-    assert summary["kv_cache_hit_rate_aggregate"] is None
+    assert summary["kv_cache_hit_percent"] is None
+    assert summary["kv_cache_hit_per_session_percent"] is None
     assert summary["total_cached_tokens"] is None
     assert summary["sessions_with_cache_info"] == 0
 
@@ -655,8 +637,8 @@ def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
 
     summary = ReportGenerator.summarize_sessions(None, [small, large], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
-    assert summary["kv_cache_hit_rate"]["mean"] == pytest.approx(0.5)  # mean of ratios
-    assert summary["kv_cache_hit_rate_aggregate"] == pytest.approx(10 / 10010)  # token-weighted
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(50.0)  # mean of ratios
+    assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * 10 / 10010)  # token-weighted
 
 
 def test_use_server_output_tokens_falls_back_without_usage() -> None:

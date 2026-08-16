@@ -188,52 +188,29 @@ def extract_cached_prompt_tokens(server_usage: Optional[dict[str, Any]]) -> Opti
     cache information at all, so "the server never told us" stays distinguishable
     from a genuine 0% hit rate.
 
-    Two usage *layouts* reach this function, differing in whether the reported
-    input count already includes the cached tokens. The branch below keys on
-    field shape, not on provider identity — a gateway or proxy that re-emits
-    either layout is handled the same as the API it came from.
+    Supports the **nested** layout (OpenAI, vLLM) where ``prompt_tokens`` is the
+    whole prompt and ``prompt_tokens_details.cached_tokens`` is a subset of it.
 
-    - **Nested** (OpenAI, vLLM): ``prompt_tokens`` is the whole prompt and
-      ``prompt_tokens_details.cached_tokens`` is a subset of it, so the
-      denominator is read directly.
-    - **Sibling** (Anthropic Messages): the cached prefix is reported *beside*
-      the input count rather than within it, so the whole prompt has to be
-      reconstructed by summing them.
-
-    Returns ``None`` when the dict carries no cache field in either layout, so
-    "the server never reported" stays distinguishable from a genuine 0% rate.
+    Returns ``None`` when the dict carries no cache field, so "the server never
+    reported" stays distinguishable from a genuine 0% rate.
 
     Cached tokens are clamped to ``[0, prompt_tokens]``: a hit rate above 1.0 is
     never a real measurement, and reporting one would be worse than clamping.
-
-    NOTE: the sibling branch assumes ``input_tokens`` *excludes* the cache-read
-    prefix, and ignores ``cache_creation_input_tokens`` (a cache write is a miss,
-    so it belongs in neither the numerator nor — if it is already inside
-    ``input_tokens`` — added again to the denominator). Both points are
-    unverified against the live API; only the nested layout is covered by a
-    real-run golden shape.
     """
     if not server_usage:
         return None
 
-    # Nested layout first: when a normalizing proxy emits both, `prompt_tokens`
-    # is the authoritative whole-prompt total and needs no reconstruction.
     prompt_tokens_details = server_usage.get("prompt_tokens_details")
-    if prompt_tokens_details and "cached_tokens" in prompt_tokens_details:
+    if prompt_tokens_details and prompt_tokens_details.get("cached_tokens") is not None:
         cached = int(safe_float(prompt_tokens_details.get("cached_tokens")))
         prompt = int(safe_float(server_usage.get("prompt_tokens")))
-    elif "cache_read_input_tokens" in server_usage:
-        # Sibling layout: `input_tokens` is only the uncached remainder, so the
-        # comparable whole-prompt total is uncached + cache-read.
-        cached = int(safe_float(server_usage.get("cache_read_input_tokens")))
-        uncached = int(safe_float(server_usage.get("input_tokens")))
-        prompt = uncached + max(cached, 0)
     else:
-        # No cache field in either layout — `prompt_tokens_details` absent, or
-        # present-but-null on some vLLM builds (see #664).
         return None
 
-    return min(max(cached, 0), max(prompt, 0)), max(prompt, 0)
+    if prompt <= 0:
+        return None
+
+    return min(max(cached, 0), prompt), prompt
 
 
 def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
@@ -975,19 +952,14 @@ class ReportGenerator:
         # with the client-side total_input_tokens. Only sessions that reported
         # cache info with a positive prompt-token count contribute; the rest are
         # skipped so a missing/None field never becomes a misleading 0.0.
-        kv_cache_hit_rate = [
-            m.total_cached_tokens / m.total_cacheable_input_tokens
+        kv_cache_hit_per_session_percent = [
+            100.0 * m.total_cached_tokens / m.total_cacheable_input_tokens
             for m in metrics
             if m.total_cached_tokens is not None and m.total_cacheable_input_tokens
         ]
-        # Aggregate (token-weighted) hit rate over all reporting sessions. The
-        # percentile summary above is a mean *of ratios*, which weights a
-        # 10-token session the same as a 100k-token one; this is the figure that
-        # answers "what fraction of this run's prompt tokens were cached" and is
-        # the one comparable to the stage-level prompt_token_usage split.
         cached_total = sum(m.total_cached_tokens for m in metrics if m.total_cached_tokens is not None)
         prompt_total = sum(m.total_cacheable_input_tokens for m in metrics if m.total_cacheable_input_tokens is not None)
-        kv_cache_hit_rate_aggregate = (cached_total / prompt_total) if prompt_total else None
+        kv_cache_hit_percent = (100.0 * cached_total / prompt_total) if prompt_total else None
 
         return {
             "num_sessions": num_sessions,
@@ -1017,9 +989,11 @@ class ReportGenerator:
                 [float(m.total_cacheable_input_tokens) for m in metrics if m.total_cacheable_input_tokens is not None],
                 percentiles,
             ),
-            "sessions_with_cache_info": sum(1 for m in metrics if m.total_cached_tokens is not None),
-            "kv_cache_hit_rate": summarize(kv_cache_hit_rate, percentiles),
-            "kv_cache_hit_rate_aggregate": kv_cache_hit_rate_aggregate,
+            "sessions_with_cache_info": sum(
+                1 for m in metrics if m.total_cached_tokens is not None and m.total_cacheable_input_tokens
+            ),
+            "kv_cache_hit_percent": kv_cache_hit_percent,
+            "kv_cache_hit_per_session_percent": summarize(kv_cache_hit_per_session_percent, percentiles),
         }
 
     def _enrich_sessions(
@@ -1055,13 +1029,14 @@ class ReportGenerator:
                 if m.session_id not in error_by_session and m.error is not None:
                     error_by_session[m.session_id] = m.error
 
-                response_metrics = m.info.response_metrics
-                server_usage = response_metrics.server_usage if response_metrics else None
-                cache_usage = extract_cached_prompt_tokens(server_usage)
-                if cache_usage is not None:
-                    cached, prompt = cache_usage
-                    prev_cached, prev_prompt = cache_by_session.get(m.session_id, (0, 0))
-                    cache_by_session[m.session_id] = (prev_cached + cached, prev_prompt + prompt)
+                if m.error is None:
+                    response_metrics = m.info.response_metrics
+                    server_usage = response_metrics.server_usage if response_metrics else None
+                    cache_usage = extract_cached_prompt_tokens(server_usage)
+                    if cache_usage is not None:
+                        cached, prompt = cache_usage
+                        prev_cached, prev_prompt = cache_by_session.get(m.session_id, (0, 0))
+                        cache_by_session[m.session_id] = (prev_cached + cached, prev_prompt + prompt)
 
         for sm in session_metrics:
             inp, out = token_by_session.get(sm.session_id, (0, 0))
