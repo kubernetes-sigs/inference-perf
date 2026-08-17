@@ -76,6 +76,10 @@ from inference_perf.config.metrics import (
     MetricsClientConfig,
     MetricsClientType,
 )
+from inference_perf.config.observability import (
+    ObservabilityConfig,
+    RuntimeMetricsConfig,
+)
 from inference_perf.config.reportgen import (
     GoodputConfig,
     PerRequestFieldsConfig,
@@ -112,6 +116,7 @@ __all__ = [
     "MetricsSpec",
     "ModelServerClientConfig",
     "ModelServerType",
+    "ObservabilityConfig",
     "MultiLoRAConfig",
     "OTelTraceReplayConfig",
     "PerRequestFieldsConfig",
@@ -123,6 +128,7 @@ __all__ = [
     "ResolutionPreset",
     "ResponseFormat",
     "ResponseFormatType",
+    "RuntimeMetricsConfig",
     "SessionLifecycleReportConfig",
     "SessionReplayConfig",
     "SharedPrefix",

@@ -50,6 +50,19 @@ def always(config: Config) -> bool:
     return True
 
 
+def _no_requests_in_flight() -> int:
+    return 0
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """What ``on_run_start`` hooks may read: the static run config plus live
+    probes into the load generator that gauges can sample on every scrape."""
+
+    config: Config
+    in_flight_requests: Callable[[], int] = _no_requests_in_flight
+
+
 @dataclass(frozen=True)
 class MetricSpec(Generic[MetricT]):
     """Declares one exported metric and how it reacts to run lifecycle events.
@@ -59,7 +72,8 @@ class MetricSpec(Generic[MetricT]):
     the live ``metric_type`` instance, typed via ``MetricT``, so a spec whose
     hook expects a different metric type than it declares fails type checking.
     Anything a hook needs to know about a request must travel on the
-    ``RequestLifecycleMetric`` it is passed.
+    ``RequestLifecycleMetric`` it is passed; anything it needs about the run
+    travels on the :class:`RunContext`.
     """
 
     name: str
@@ -68,7 +82,9 @@ class MetricSpec(Generic[MetricT]):
     labelnames: Tuple[str, ...] = ()
     buckets: Optional[Tuple[float, ...]] = None  # histograms only
     enabled: Callable[[Config], bool] = always
-    on_run_start: Optional[Callable[[MetricT], None]] = None
+    on_run_start: Optional[Callable[[MetricT, RunContext], None]] = None
+    on_stage_start: Optional[Callable[[MetricT, int], None]] = None
+    on_stage_end: Optional[Callable[[MetricT, int], None]] = None
     on_request: Optional[Callable[[MetricT, RequestLifecycleMetric], None]] = None
 
     def __post_init__(self) -> None:
@@ -80,7 +96,8 @@ class MetricsHub:
     """Holds the metrics instantiated for one run and fans events out to them.
 
     Wire :meth:`observe_request` as an observer on the request metric
-    collector and call :meth:`on_run_start` when the benchmark run begins.
+    collector, hand the hub to the load generator as its stage observer, and
+    call :meth:`on_run_start` when the benchmark run begins.
     :attr:`registry` is what a ``PrometheusMetricsServer`` should serve.
 
     Hook exceptions are logged and swallowed, never propagated: these methods
@@ -88,19 +105,37 @@ class MetricsHub:
     not fail the run it is observing.
     """
 
-    def __init__(self, registry: CollectorRegistry, bindings: Sequence[Tuple[MetricSpec[Any], PrometheusMetric]]) -> None:
+    def __init__(
+        self,
+        registry: CollectorRegistry,
+        bindings: Sequence[Tuple[MetricSpec[Any], PrometheusMetric]],
+        config: Optional[Config] = None,
+    ) -> None:
         self.registry = registry
         self._bindings = tuple(bindings)
+        self._config = config
         self._failed_request_hooks: set[str] = set()
 
-    def on_run_start(self) -> None:
+    def on_run_start(self, context: Optional[RunContext] = None) -> None:
+        if context is None:
+            context = RunContext(config=self._config if self._config is not None else Config())
+        self._dispatch("on_run_start", context)
+
+    def on_stage_start(self, stage_id: int) -> None:
+        self._dispatch("on_stage_start", stage_id)
+
+    def on_stage_end(self, stage_id: int) -> None:
+        self._dispatch("on_stage_end", stage_id)
+
+    def _dispatch(self, event: str, *args: Any) -> None:
         for spec, prom_metric in self._bindings:
-            if spec.on_run_start is None:
+            hook = getattr(spec, event)
+            if hook is None:
                 continue
             try:
-                spec.on_run_start(prom_metric)
+                hook(prom_metric, *args)
             except Exception:
-                logger.exception("on_run_start hook for metric %r failed", spec.name)
+                logger.exception("%s hook for metric %r failed", event, spec.name)
 
     def observe_request(self, metric: RequestLifecycleMetric) -> None:
         for spec, prom_metric in self._bindings:
@@ -138,7 +173,7 @@ def build_metrics(config: Config, specs: Optional[Sequence[MetricSpec[Any]]] = N
     for spec in specs:
         if spec.enabled(config):
             bindings.append((spec, _instantiate(spec, registry)))
-    return MetricsHub(registry, bindings)
+    return MetricsHub(registry, bindings, config=config)
 
 
 def _instantiate(spec: MetricSpec[Any], registry: CollectorRegistry) -> PrometheusMetric:

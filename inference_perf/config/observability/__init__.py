@@ -11,10 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from inference_perf.config.observability.config import (
+    ObservabilityConfig,
+    RuntimeMetricsConfig,
+)
 
-"""Metric exposition surfaces (Prometheus, pushgateway, etc.) for inference-perf."""
-
-from .prometheus import PrometheusMetricsServer
-from .registry import MetricSpec, MetricsHub, PrometheusMetric, RunContext, build_metrics
-
-__all__ = ["MetricSpec", "MetricsHub", "PrometheusMetric", "PrometheusMetricsServer", "RunContext", "build_metrics"]
+__all__ = [
+    "ObservabilityConfig",
+    "RuntimeMetricsConfig",
+]
