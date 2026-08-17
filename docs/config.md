@@ -12,6 +12,7 @@
    - [Reporting](#reporting)
    - [Storage](#storage)
    - [Tokenizer](#tokenizer)
+   - [Observability](#observability)
 3. [Full Configuration Examples](#full-configuration-examples)
 4. [Advanced Use Cases](#advanced-use-cases)
    - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
@@ -367,6 +368,20 @@ tokenizer:
 ```
 
 `load_timeout: null` can only be set in a YAML config file; the `--tokenizer.load_timeout` CLI flag parses a float and rejects `null`. The deadline applies to each tokenizer construction independently; a run constructs a tokenizer in several stages (data generation, the model server client, report generation), so the worst-case total wait is a small multiple of `load_timeout`.
+
+### Observability
+
+Runtime metrics inference-perf exports about the benchmark run itself (stage state, request counts, in-flight requests, latency histograms), as opposed to the server-side metrics it collects under [Metrics Collection](#metrics-collection). The metric set is documented in [runtime_metrics.md](./runtime_metrics.md).
+
+```yaml
+observability:
+  metrics:
+    enabled: false      # Serve the metrics over HTTP /metrics for Prometheus to scrape
+    host: "0.0.0.0"     # Bind address of the endpoint
+    port: 9464          # Port of the endpoint; 0 picks an ephemeral port (logged at startup)
+```
+
+Metrics are always collected in-process; `enabled` only controls the HTTP endpoint. It is off by default so that side-by-side runs on one host do not contend for the port. If the port cannot be bound the run continues and logs an error; the reports are unaffected. For an in-cluster Job, enable it and point a `PodMonitor`/scrape config at the port; transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run.
 
 ## Full Configuration Examples
 

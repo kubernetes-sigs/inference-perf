@@ -22,7 +22,6 @@ from functools import partial
 import logging
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.circuit_breaker import feed_breakers
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +30,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics"""
 
     def __init__(self) -> None:
+        super().__init__()
         self.queue: "mp.JoinableQueue[Optional[RequestLifecycleMetric]]" = mp.JoinableQueue()
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
@@ -53,7 +53,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
                 break
 
             metrics.append(item)
-            feed_breakers(item)
+            self._notify_observers(item)
             self.queue.task_done()
 
         return metrics
