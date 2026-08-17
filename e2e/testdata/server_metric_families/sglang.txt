@@ -1,0 +1,180 @@
+# sglang metric families, as inference-perf expects to find them on /metrics.
+#
+# provenance: upstream-source
+# server: sglang
+# version: v0.5.17
+# source: https://github.com/sgl-project/sglang/tree/v0.5.17/python/sglang (metric registrations, chiefly srt/observability/metrics_collector.py)
+# captured: 2026-08-17
+#
+# Regenerate against a running server:
+#   python scripts/capture_server_metric_names.py --server sglang \
+#     --base-url http://127.0.0.1:<port>
+#
+# UNVERIFIED AGAINST A LIVE SERVER. SGLang needs an accelerator to start, and
+# inference-perf has no runner with one yet (#641), so this snapshot was derived
+# by reading the pinned upstream registration code instead of by scraping a
+# running server. Derivation rule, reproducible by hand: every Gauge, Counter,
+# Histogram, Summary and GaugeHistogram construction under python/sglang/ at tag
+# v0.5.17 whose name literal starts with "sglang:". GaugeHistogram wraps a
+# prometheus_client Gauge (python/sglang/srt/utils/gauge_histogram.py), so it is
+# recorded as a gauge. prometheus_client's plain-text exposition appends _total
+# to counter family names; every SGLang counter already ends in _total, so the
+# registered name and the exposed family name coincide here.
+#
+# Two consequences of source derivation, both of which make this file a strict
+# SUPERSET of any single live exposition:
+#   - families gated on optional features (disaggregation, hicache, LoRA, spec
+#     decoding, grammar) are listed even though a default server never
+#     registers them;
+#   - metrics-registration is lazy in places, so a freshly started server
+#     exposes fewer families than it can register.
+# Anything asserting family-for-family equality against a live server must
+# therefore wait for a live-scrape regeneration. Run the scheduled workflow
+# (.github/workflows/metric_name_drift.yml) once a runner exists, or run
+# scripts/capture_server_metric_names.py by hand against your own server, and
+# commit the result; provenance flips to live-scrape and the equality check
+# stops skipping.
+sglang:backup_bandwidth histogram
+sglang:backup_pgs histogram
+sglang:backuped_tokens_total counter
+sglang:cache_hit_rate gauge
+sglang:cached_tokens_total counter
+sglang:context_len gauge
+sglang:cuda_graph_passes_total counter
+sglang:decode_sum_seq_lens gauge
+sglang:dp_cooperation_forward_execution_seconds_total counter
+sglang:dp_cooperation_realtime_tokens_total counter
+sglang:e2e_request_latency_seconds histogram
+sglang:encoder_cache_entries gauge
+sglang:encoder_cache_evictions_total counter
+sglang:encoder_cache_hit_files_total counter
+sglang:encoder_cache_hit_tokens_total counter
+sglang:encoder_cache_size_mb gauge
+sglang:encoder_cache_total_files_total counter
+sglang:encoder_cache_total_tokens_total counter
+sglang:encoder_dp_pending_requests gauge
+sglang:encoder_mm_items_per_batch histogram
+sglang:encoder_mm_items_per_request histogram
+sglang:encoder_model_forward_seconds histogram
+sglang:encoder_preprocess_seconds histogram
+sglang:encoder_queue_wait_seconds histogram
+sglang:encoder_request_e2e_latency_seconds histogram
+sglang:encoder_requests_received_total counter
+sglang:encoder_requests_total counter
+sglang:encoder_transfer_seconds histogram
+sglang:eplb_balancedness summary
+sglang:eplb_gpu_physical_count histogram
+sglang:estimated_flops_per_gpu_total counter
+sglang:estimated_read_bytes_per_gpu_total counter
+sglang:estimated_write_bytes_per_gpu_total counter
+sglang:evicted_tokens_total counter
+sglang:eviction_duration_seconds histogram
+sglang:failed_session_recoveries_total counter
+sglang:forward_execution_seconds_total counter
+sglang:full_token_usage gauge
+sglang:func_latency_seconds histogram
+sglang:fwd_occupancy gauge
+sglang:gen_throughput gauge
+sglang:generation_tokens_histogram histogram
+sglang:generation_tokens_total counter
+sglang:get_loads_duration_seconds histogram
+sglang:grammar_compilation_time_seconds histogram
+sglang:grammar_ebnf_size histogram
+sglang:grammar_schema_count histogram
+sglang:grammar_tree_traversal_time_avg histogram
+sglang:grammar_tree_traversal_time_max histogram
+sglang:graph_memory_usage_gb gauge
+sglang:hicache_host_total_tokens gauge
+sglang:hicache_host_used_tokens gauge
+sglang:http_requests_active gauge
+sglang:http_requests_total counter
+sglang:http_responses_total counter
+sglang:inter_token_latency_seconds histogram
+sglang:is_cuda_graph gauge
+sglang:kv_available_tokens gauge
+sglang:kv_cache_memory_usage_gb gauge
+sglang:kv_evictable_tokens gauge
+sglang:kv_transfer_alloc_ms histogram
+sglang:kv_transfer_bootstrap_ms histogram
+sglang:kv_transfer_latency_ms histogram
+sglang:kv_transfer_speed_gb_s histogram
+sglang:kv_transfer_total_mb histogram
+sglang:kv_used_tokens gauge
+sglang:load_back_duration_seconds histogram
+sglang:load_back_tokens_total counter
+sglang:lora_pool_slots_total gauge
+sglang:lora_pool_slots_used gauge
+sglang:lora_pool_utilization gauge
+sglang:mamba_available_tokens gauge
+sglang:mamba_evictable_tokens gauge
+sglang:mamba_usage gauge
+sglang:mamba_used_tokens gauge
+sglang:max_running_requests_under_SLO gauge
+sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens_swa gauge
+sglang:new_token_ratio gauge
+sglang:num_aborted_requests_total counter
+sglang:num_bootstrap_failed_reqs_total counter
+sglang:num_decode_prealloc_queue_reqs gauge
+sglang:num_decode_transfer_queue_reqs gauge
+sglang:num_grammar_aborted_total counter
+sglang:num_grammar_cache_hit_total counter
+sglang:num_grammar_queue_reqs gauge
+sglang:num_grammar_timeout_total counter
+sglang:num_grammar_total counter
+sglang:num_pages gauge
+sglang:num_paused_reqs gauge
+sglang:num_prefill_bootstrap_queue_reqs gauge
+sglang:num_prefill_inflight_queue_reqs gauge
+sglang:num_prefill_retries_total counter
+sglang:num_queue_reqs gauge
+sglang:num_requests_total counter
+sglang:num_retracted_input_tokens_total counter
+sglang:num_retracted_output_tokens_total counter
+sglang:num_retracted_reqs gauge
+sglang:num_retracted_requests_total counter
+sglang:num_running_reqs gauge
+sglang:num_so_requests_total counter
+sglang:num_streaming_sessions gauge
+sglang:num_transfer_failed_reqs_total counter
+sglang:num_unique_running_routing_keys gauge
+sglang:num_used_tokens gauge
+sglang:page_size gauge
+sglang:pending_prealloc_token_usage gauge
+sglang:per_stage_req_latency_seconds histogram
+sglang:prefetch_bandwidth histogram
+sglang:prefetch_pgs histogram
+sglang:prefetched_tokens_total counter
+sglang:prefill_delayer_outcomes_total counter
+sglang:prefill_delayer_wait_forward_passes histogram
+sglang:prefill_delayer_wait_seconds histogram
+sglang:process_cpu_seconds_total counter
+sglang:prompt_tokens_histogram histogram
+sglang:prompt_tokens_total counter
+sglang:queue_time_seconds histogram
+sglang:realtime_tokens_total counter
+sglang:routing_key_all_req_count gauge
+sglang:routing_key_running_req_count gauge
+sglang:routing_keys_active gauge
+sglang:spec_accept_length gauge
+sglang:spec_accept_rate gauge
+sglang:spec_block_accept_length gauge
+sglang:spec_cap_length gauge
+sglang:spec_num_draft_tokens gauge
+sglang:spec_num_steps gauge
+sglang:spec_verify_calls_total counter
+sglang:startup_available_gpu_memory_gb gauge
+sglang:startup_cuda_graph_time_seconds gauge
+sglang:startup_latency_breakdown_seconds_max gauge
+sglang:startup_time_seconds gauge
+sglang:streaming_session_held_tokens gauge
+sglang:swa_available_tokens gauge
+sglang:swa_evictable_tokens gauge
+sglang:swa_token_usage gauge
+sglang:swa_used_tokens gauge
+sglang:time_to_first_token_seconds histogram
+sglang:token_usage gauge
+sglang:uncached_prompt_tokens_histogram histogram
+sglang:utilization gauge
+sglang:weight_load_duration_seconds gauge
+sglang:weight_memory_usage_gb gauge
