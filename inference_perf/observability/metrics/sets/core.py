@@ -25,10 +25,10 @@ from typing import Any
 from prometheus_client import Counter, Gauge
 
 from inference_perf.apis.base import RequestLifecycleMetric
-from inference_perf.observability.metrics.registry import MetricSpec
+from inference_perf.observability.metrics.registry import MetricSpec, RunContext
 
 
-def _mark_run_start(gauge: Gauge) -> None:
+def _mark_run_start(gauge: Gauge, context: RunContext) -> None:
     start = time.monotonic()
     gauge.set_function(lambda: time.monotonic() - start)
 

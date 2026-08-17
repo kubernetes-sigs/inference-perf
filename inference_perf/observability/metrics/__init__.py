@@ -15,6 +15,6 @@
 """Metric exposition surfaces (Prometheus, pushgateway, etc.) for inference-perf."""
 
 from .prometheus import PrometheusMetricsServer
-from .registry import MetricSpec, MetricsHub, PrometheusMetric, build_metrics
+from .registry import MetricSpec, MetricsHub, PrometheusMetric, RunContext, build_metrics
 
-__all__ = ["MetricSpec", "MetricsHub", "PrometheusMetric", "PrometheusMetricsServer", "build_metrics"]
+__all__ = ["MetricSpec", "MetricsHub", "PrometheusMetric", "PrometheusMetricsServer", "RunContext", "build_metrics"]

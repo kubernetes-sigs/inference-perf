@@ -20,7 +20,6 @@ from queue import Empty
 from typing import AsyncIterator, List, Optional, Union
 
 from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.circuit_breaker import feed_breakers
 from inference_perf.metrics.request_collector import RequestMetricCollector
 
 logger = logging.getLogger(__name__)
@@ -30,6 +29,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
     """Responsible for accumulating client request metrics."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.queue: "mp.JoinableQueue[Optional[Union[RequestLifecycleMetric, List[RequestLifecycleMetric]]]]" = (
             mp.JoinableQueue()
         )
@@ -84,7 +84,7 @@ class MultiprocessRequestMetricCollector(RequestMetricCollector):
             if batch:
                 metrics.extend(batch)
                 for item in batch:
-                    feed_breakers(item)
+                    self._notify_observers(item)
 
             if done:
                 break
