@@ -181,16 +181,17 @@ class VLLMServerRunner(AsyncContextDecorator):
             raise ConnectionRefusedError("server process exited before becoming ready")
 
         waiters = [wait_http()] + ([wait_proc()] if self._proc else [])
-        done, pending = await asyncio.wait(
-            [asyncio.create_task(x) for x in waiters],
-            return_when=asyncio.FIRST_COMPLETED,
-            timeout=timeout_sec,
-        )
-        for task in pending:
-            task.cancel()
-        # Let the cancellations land before the poller's ClientSession goes
-        # out of scope; the results here are cancellations, not outcomes.
-        await asyncio.gather(*pending, return_exceptions=True)
+        tasks = [asyncio.create_task(x) for x in waiters]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=timeout_sec)
+        finally:
+            # Reap the pollers however the wait ended (a result, the deadline,
+            # or this coroutine being cancelled) and let the cancellations
+            # land before the poller's ClientSession goes out of scope; the
+            # results gathered here are cancellations, not outcomes.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         # The deadline must surface as an Exception: re-raising the pollers'
         # CancelledError (a BaseException) would sail past callers'
         # except-Exception cleanup.
