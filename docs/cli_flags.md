@@ -283,3 +283,6 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--tokenizer.trust_remote_code` | boolean | Allow the tokenizer to execute code from its repository when loading. |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |
+| `--observability.metrics.enabled` | boolean | Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this only controls whether the HTTP endpoint is started. |
+| `--observability.metrics.host` | str | Address the runtime metrics endpoint binds to. |
+| `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. 0 picks an ephemeral port, logged at startup. |

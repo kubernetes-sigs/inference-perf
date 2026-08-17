@@ -53,7 +53,7 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
+from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union, Set, Dict
 from types import FrameType
 import time
 import multiprocessing as mp
@@ -79,6 +79,18 @@ import signal
 from inference_perf.observability.logging import get_console
 
 logger = logging.getLogger(__name__)
+
+
+class StageLifecycleObserver(Protocol):
+    """Receives stage transitions from the load generator.
+
+    Satisfied structurally by ``inference_perf.observability.metrics.MetricsHub``;
+    kept as a Protocol so the load generator does not import the metrics package.
+    """
+
+    def on_stage_start(self, stage_id: int) -> None: ...
+
+    def on_stage_end(self, stage_id: int) -> None: ...
 
 
 class RequestQueueData(NamedTuple):
@@ -296,8 +308,14 @@ class LoadGenerator:
         datagen: BaseGenerator,
         load_config: LoadConfig,
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
+        stage_observer: Optional[StageLifecycleObserver] = None,
     ) -> None:
         self.datagen = datagen
+        self.stage_observer = stage_observer
+        # Requests sent and not yet finished. Multiprocess runs read the shared
+        # counter the workers maintain; the in-process run() path counts locally.
+        self._active_requests_counter: Optional["Synchronized[int]"] = None
+        self._local_in_flight = 0
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
         self.stages = load_config.stages
@@ -343,6 +361,27 @@ class LoadGenerator:
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
         self.base_seed: int = load_config.base_seed
         self._session_cursor: int = 0
+
+    def in_flight_requests(self) -> int:
+        """Requests sent to the server and not yet finished, sampled live."""
+        if self._active_requests_counter is not None:
+            return int(self._active_requests_counter.value)
+        return self._local_in_flight
+
+    async def _track_in_flight(self, request: Awaitable[None]) -> None:
+        self._local_in_flight += 1
+        try:
+            await request
+        finally:
+            self._local_in_flight -= 1
+
+    def _stage_started(self, stage_id: int) -> None:
+        if self.stage_observer is not None:
+            self.stage_observer.on_stage_start(stage_id)
+
+    def _stage_ended(self, stage_id: int) -> None:
+        if self.stage_observer is not None:
+            self.stage_observer.on_stage_end(stage_id)
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -943,6 +982,7 @@ class LoadGenerator:
         )
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
+        self._active_requests_counter = active_requests_counter
         request_phase: SyncEvent = mp.Event()
         stop_signal: SyncEvent = mp.Event()
         cancel_signal: SyncEvent = mp.Event()
@@ -1028,6 +1068,7 @@ class LoadGenerator:
         ) as progress:
             overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
             for stage_id, stage in enumerate(self.stages):
+                self._stage_started(stage_id)
                 # Handle session-based trace replay
                 if self.load_type == LoadType.TRACE_SESSION_REPLAY and isinstance(stage, TraceSessionReplayLoadStage):
                     await self.run_session_stage(
@@ -1082,6 +1123,7 @@ class LoadGenerator:
                     )
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
+                self._stage_ended(stage_id)
 
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
@@ -1122,6 +1164,7 @@ class LoadGenerator:
                 end_time = start_time + stage.duration
                 stage_status = StageStatus.RUNNING
                 logger.info("Stage %d - run started", stage_id)
+                self._stage_started(stage_id)
 
                 num_requests = int(stage.rate * stage.duration)
                 stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
@@ -1153,7 +1196,9 @@ class LoadGenerator:
                                 break
                             if time_index > now:
                                 await sleep(time_index - time.perf_counter())
-                            tg.create_task(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                            tg.create_task(
+                                self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                            )
                             continue
                         else:
                             break
@@ -1174,6 +1219,7 @@ class LoadGenerator:
                     status=stage_status,
                     concurrency_level=None,
                 )
+                self._stage_ended(stage_id)
                 progress.update(overall_task, advance=1)
                 LocalUserSession.clear_instances()
                 if self.stageInterval and stage_id < len(self.stages) - 1:
