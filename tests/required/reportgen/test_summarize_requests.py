@@ -557,15 +557,14 @@ def test_enrich_sessions_cache_denominator_uses_server_prompt_tokens() -> None:
 def test_enrich_sessions_cache_matches_stage_level_prompt_token_usage() -> None:
     """Per-session hit rate agrees with the stage-level prompt_token_usage split.
 
-    Regression: the two lived in one report and disagreed (0.6621 vs 0.64 on this
-    data) because only one of them used the server-side denominator.
+    Post-#678, input_tokens is resolved to the server value at construction time,
+    so the fixture passes the server count as input_tokens (the single source of truth).
     """
-    client = [900, 1900, 2900, 3900, 4900]  # client under-counts each turn
     server = [1000, 2000, 3000, 4000, 5000]
     cached = [0, 900, 1900, 2900, 3900]
     requests = [
-        _cached_request("s1", c, {"prompt_tokens": s, "prompt_tokens_details": {"cached_tokens": k}})
-        for c, s, k in zip(client, server, cached, strict=True)
+        _cached_request("s1", s, {"prompt_tokens": s, "prompt_tokens_details": {"cached_tokens": k}})
+        for s, k in zip(server, cached, strict=True)
     ]
     session = _cache_session("s1")
     ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
