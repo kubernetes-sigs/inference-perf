@@ -1,6 +1,9 @@
-# Case a: send 8 requests per second, evenly spaced, for 5 seconds = 40
+# Case a: send 40 requests per second, evenly spaced, for 15 seconds = 600
 # requests. Every prompt is 128 tokens and every request asks for 64 output
 # tokens. The parity test replaces server.base_url and the tokenizer path.
+# 600 is the smallest count at which the randomly spaced vllm side can be held
+# to a useful rate tolerance (see expected.yaml), same as the load-shape
+# accuracy test in e2e/tests/test_load_shape_accuracy_sim.py.
 api:
   type: completion
   streaming: true
@@ -21,8 +24,8 @@ data:
 load:
   type: constant
   stages:
-    - rate: 8
-      duration: 5
+    - rate: 40
+      duration: 15
   num_workers: 8
 server:
   type: vllm
