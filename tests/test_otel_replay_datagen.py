@@ -46,6 +46,7 @@ from pydantic import ValidationError
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from inference_perf.apis.response_errors import InBandError
 from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventFailedError,
@@ -358,6 +359,22 @@ class TestSessionChatCompletionAPIData:
         # Returns SessionInferenceInfo
         assert isinstance(info, SessionInferenceInfo)
         assert info.output_text == "Paris is the capital of France."
+
+    # Unary 200 whose body is `{"error": {...}}`. Must raise InBandError carrying that
+    # body and register no output, rather than record a zero-token turn as a success.
+    @pytest.mark.asyncio
+    async def test_non_streaming_in_band_error_body_raises(self) -> None:
+        registry = EventOutputRegistry()
+        api_data = self._make_api_data("session_1:event_0", registry, WorkerSessionTracker())
+        body = {"error": {"message": "upstream unavailable", "type": "server_error", "code": 503}}
+        response = MagicMock()
+        response.json = AsyncMock(return_value=body)
+
+        with pytest.raises(InBandError) as exc_info:
+            await api_data.process_response(response, make_mock_api_config_streaming(streaming=False), make_mock_tokenizer())
+
+        assert json.loads(str(exc_info.value)) == body
+        assert registry.get_output_by_event_id("session_1:event_0") is None
 
     @pytest.mark.asyncio
     async def test_on_completion_records_in_tracker(self) -> None:

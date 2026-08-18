@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import base64
+import json
 import logging
 from typing import Any, AsyncGenerator, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError
 from inference_perf.config import APIType
 from inference_perf.payloads import (
     ImageRepresentation,
@@ -178,6 +180,117 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 17
+
+
+# Unary 200 whose body is `{"error": {...}}` (the #713 shape). Must raise
+# InBandError carrying that body as its message rather than return a zero-token
+# InferenceInfo through the empty-choices early return.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_in_band_error_body_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {"error": {"message": "upstream unavailable", "type": "server_error", "code": 503}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert json.loads(str(exc_info.value)) == body
+
+
+# Unary 200 whose body is `{}`: no choices, no usage. Must raise EmptyResponseError.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    response = MagicMock()
+    response.json = AsyncMock(return_value={})
+
+    with pytest.raises(EmptyResponseError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Streaming 200 whose frames are a role-only delta and [DONE]: no content, no
+# usage. Must raise EmptyResponseError with the raw stream attached.
+@pytest.mark.asyncio
+async def test_process_response_streaming_no_content_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\ndata: [DONE]\n\n'
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    with pytest.raises(EmptyResponseError) as exc_info:
+        await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert exc_info.value.raw_content == sse.decode()
+
+
+# Counts whitespace-separated words: "a b" is 2 tokens, "" is 0.
+def _word_tokenizer() -> MagicMock:
+    tok = MagicMock()
+    tok.count_tokens = lambda text, **kw: len(text.split())
+    return tok
+
+
+# Streaming: content "a b", no reasoning, no usage. A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_streaming_content_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"content": "a b"}}]}\n\ndata: [DONE]\n\n'
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+
+
+# Streaming: reasoning "a b", no content, no usage (max_tokens ran out mid-reasoning).
+# A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_streaming_reasoning_only_no_usage_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"reasoning": "a b"}}]}\n\ndata: [DONE]\n\n'
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+
+
+# Streaming: a role-only delta and a usage frame, no content, no reasoning. The
+# server says it generated nothing, which is a zero-token completion, not an error.
+@pytest.mark.asyncio
+async def test_process_response_streaming_usage_only_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = (
+        b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 0}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), _word_tokenizer()
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 0
+
+
+# Unary: content null, reasoning "a b", no usage, the shape vLLM returns when
+# max_tokens runs out mid-reasoning. A completion, output_tokens = 2.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_reasoning_only_null_content_is_a_completion() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {"choices": [{"message": {"role": "assistant", "content": None, "reasoning": "a b"}, "finish_reason": "length"}]}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    info = await data.process_response(response, _make_config(streaming=False), _word_tokenizer())
+
+    assert isinstance(info.response_metrics, UnaryResponseMetrics)
+    assert info.response_metrics.output_tokens == 2
 
 
 def _reset_multimodal_progress_state() -> None:
