@@ -1,112 +1,136 @@
 # Tool-parity cases
 
-Each subdirectory of `cases/` is one parity case: a workload described twice,
-once per tool, plus the invariants both descriptions must satisfy. The test
-(`test_offered_load_parity.py`) discovers every case directory automatically,
-so adding a case means adding files, not editing Python.
+## The problem this solves
 
-A case that holds proves the two configs describe the same workload. A case
-that fails names the knob that leaked: request count, prompt lengths,
-`max_tokens`, sampling flags, arrival rate, or concurrency.
+inference-perf and `vllm bench serve` do the same job: send a stream of
+requests at an LLM server and time the answers. When the two print different
+numbers for "the same" benchmark, the first question is whether they were
+actually asked to send the same traffic. In the past the answer has often been
+no. One tool's `range_ratio: 0` meant "random lengths" while the other's meant
+"fixed". One tool sends a warmup request the other does not. One spaces
+requests evenly, the other spaces them randomly. Each of those took days to
+find because nothing checked it. This directory is that check.
+
+Words used below:
+
+- **workload** or **offered load**: the traffic a tool sends. How many
+  requests, how long each prompt is, how many output tokens it asks for, how
+  fast it sends them, and how many it keeps in flight at once.
+- **case**: one workload written down twice, once per tool, plus the numbers
+  both versions must produce.
+- **absorber**: the fake server both tools are pointed at (next section).
 
 ## How it works
 
-Both tools are pointed at an **absorber** (`e2e/utils/absorber.py`): an
-OpenAI-compatible server whose only job is to record every request it
-receives, while streaming realistically paced responses so closed-loop tools
-behave as they would against a real server. The recorded requests are the
-oracle. Nothing is asserted about either tool's *reported metrics* here; what
-is compared is the load each tool actually *offered*. Historically that is
-where the discrepancies live (range-ratio semantics, warmup requests, arrival
-process, worker caps), not in the runners.
+Both tools are pointed at the **absorber** (`e2e/utils/absorber.py`). It does
+not run a model. It answers on the usual OpenAI-style URLs, writes down every
+request it receives (when it arrived, how many others were in progress, the
+full request body), and replies with filler text streamed at a fixed pace so
+the tools behave as they would against a real server.
 
-## Case layout
+After each tool runs, the absorber's list of recorded requests is the truth
+about what that tool sent. The test checks that list against the numbers in
+`expected.yaml`, then checks the two tools' lists against each other. A
+failure names the setting that leaked: request count, prompt lengths,
+`max_tokens`, the `stream` or `ignore_eos` flags, arrival rate, or
+concurrency.
+
+Only the *sent* traffic is compared. The latency and throughput numbers each
+tool prints are never looked at here. Those are the tools' output; this test
+is about their input.
+
+## What a case looks like
+
+Every subdirectory of `cases/` is one case. The test finds them by listing the
+directory, so adding a case means adding three files and no Python:
 
 ```
 cases/<name>/
-  inference-perf.yaml   # complete inference-perf config for the workload
-  vllm-bench.args       # `vllm bench serve` args, one per line, # comments ok
-  expected.yaml         # the invariants + absorber pacing + tolerances
+  inference-perf.yaml   # a normal inference-perf config for the workload
+  vllm-bench.args       # `vllm bench serve` flags, one per line, # comments ok
+  expected.yaml         # the numbers both tools must hit, plus tolerances
 ```
 
-The harness owns endpoint wiring and overwrites/appends it:
+The test fills in the parts that depend on where the absorber happens to be
+running; everything else in the two files is used exactly as written:
 
 - `inference-perf.yaml`: `server.base_url` and
-  `tokenizer.pretrained_model_name_or_path` are replaced (the bundled
-  gemma-3-270m tokenizer is used, so cases run offline).
-- `vllm-bench.args`: `--base-url`, `--model`, `--tokenizer`, `--save-result`,
-  `--result-filename` are appended. Everything workload-shaped stays in the
-  file, verbatim.
+  `tokenizer.pretrained_model_name_or_path` are replaced. The bundled
+  gemma-3-270m tokenizer is used, so cases run without network access.
+- `vllm-bench.args`: `--base-url`, `--model`, `--tokenizer`, `--save-result`
+  and `--result-filename` are added to the end.
 
-Adding a case needs no Python edit anywhere. The one non-obvious coupling is
-that `tests/required/config/test_yaml_configs.py` schema-validates every YAML
-under `e2e/`: `inference-perf.yaml` is validated there (which is what keeps
-these cases from rotting as the config schema moves), and
-`cases/*/expected.yaml` is excluded by a glob in that file's
-`NON_CONFIG_GLOBS`, so new case directories are covered without touching it.
+One thing to know: `tests/required/config/test_yaml_configs.py` schema-checks
+every YAML file under `e2e/`. That is good for `inference-perf.yaml` (a case
+breaks loudly if the config format changes) and wrong for `expected.yaml`
+(it is not an inference-perf config). `expected.yaml` files under `cases/` are
+skipped there by a wildcard, so new cases still need no Python edit.
 
 ## expected.yaml
 
 ```yaml
-absorber:                 # response pacing the absorber applies
-  ttft_ms: 40
-  itl_ms: 5
+absorber:                 # how fast the absorber replies
+  ttft_ms: 40             # wait before the first chunk
+  itl_ms: 5               # wait between later chunks
 workload:
-  num_requests: 40        # exact, per tool, after trimming leading extras
-  prompt_tokens: 128      # per request, re-encoded with the shared tokenizer
+  num_requests: 40        # exact, per tool, after dropping declared warmup requests
+  prompt_tokens: 128      # per request, measured by re-tokenizing the prompt text
   prompt_tokens_rel_tol: 0.15
   max_tokens: 64          # exact, every request
   stream: true            # exact
   ignore_eos: true        # exact
 load:
-  mode: rate              # "rate" | "concurrency"
-  rate: 8.0               # rate mode: realized mean arrival rate
+  mode: rate              # "rate" (open loop) or "concurrency" (closed loop)
+  rate: 8.0               # rate mode: average requests per second actually sent
   rate_rel_tol: 0.25
-  # concurrency: 8        # concurrency mode: exact max in-flight
+  # concurrency: 8        # concurrency mode: exact peak number in flight at once
 tools:
   vllm-bench:
-    leading_extra_requests: 1   # vllm bench sends one initial test request
+    leading_extra_requests: 1   # vllm bench sends one warmup request first
 ```
 
-`leading_extra_requests` documents per-tool warmup traffic: that many
-earliest-arriving requests are excluded before asserting. That a tool needs a
-nonzero value here is itself a parity finding worth keeping visible.
+`leading_extra_requests` says how many of a tool's earliest requests are
+warmup traffic to ignore before checking anything. If a tool needs a nonzero
+value here, that is itself a difference between the tools, and it stays
+written down in the case file on purpose.
 
-## Known, deliberate asymmetries
+## Differences that are expected and allowed for
 
-- **Arrival process**: at the same request rate, `vllm bench serve` draws
-  Poisson inter-arrivals while inference-perf's `constant` load is evenly
-  spaced. Cases assert the realized *mean* rate, never the shape.
-- **Prompt length recovery**: both tools target `prompt_tokens` under the same
-  tokenizer, but text generated from sampled token ids does not always
-  re-encode to the same count, hence `prompt_tokens_rel_tol` instead of
-  exactness.
-- **vllm flag semantics are version-dependent.** The args files target the
-  vllm pinned in `e2e/utils/vllm_bench.py` (`VLLM_PINNED_REF`), and every flag
-  in them was read off that tag's `vllm/benchmarks/serve.py` and
-  `vllm/benchmarks/datasets.py`. Notably `--random-range-ratio` changed meaning
-  across vllm versions: under the pinned CLI the sampled range is
-  `[len*(1-r), len*(1+r)]` with an inclusive upper bound, so `0` means fixed
-  lengths. This is the exact footgun that motivated #481. Re-read both files
-  when bumping the pin.
-- **Not everything is expressible on both sides.** The pinned vllm hardcodes
+- **Spacing between requests.** At the same rate, `vllm bench serve` picks
+  random gaps between requests (Poisson) while inference-perf's `constant`
+  load spaces them evenly. Cases check the average rate only, never the
+  spacing pattern.
+- **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
+  the same tokenizer, but text built from random token ids does not always
+  tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
+  exact match.
+- **vllm flags change meaning between versions.** The args files are written
+  for the vllm version pinned in `e2e/utils/vllm_bench.py` (`VLLM_PINNED_REF`),
+  and every flag was checked against that version's
+  `vllm/benchmarks/serve.py` and `vllm/benchmarks/datasets.py`. In particular
+  `--random-range-ratio 0` means "fixed lengths" at this pin, but it has meant
+  "anywhere from 0 to the full length" in other versions. That mix-up is what
+  motivated #481. Re-check both files when bumping the pin.
+- **Some things cannot be said on both sides.** The pinned vllm always sends
   `stream: true` on the completions endpoint, so a `stream: false` case cannot
-  be written for the vllm leg today. `--random-input-len` is also reduced by
-  the tokenizer's special-token count before sampling, so a BOS-prepending
-  tokenizer offers `len-1` prompt tokens, which is one of the reasons
-  `prompt_tokens_rel_tol` exists.
+  be written for the vllm leg today. vllm also subtracts the tokenizer's
+  special-token count from `--random-input-len` before sampling, so a tokenizer
+  that adds a BOS token ends up sending `len-1` prompt tokens. That is another
+  reason `prompt_tokens_rel_tol` exists.
 
 ## Running
-
-The vllm leg needs a runnable vllm: set `$VLLM_BENCH_BIN`, or opt into a heavy
-one-time provision with `$VLLM_BENCH_PROVISION=1` (see `e2e/utils/vllm_bench.py`).
-Without one, vllm-side tests skip and the inference-perf side still asserts
-against `expected.yaml`. The absorber itself needs no external binary.
-
-The vllm leg has never been executed: the args and `leading_extra_requests`
-were derived by reading the pinned source, not by running it. Treat a first
-vllm run as the thing that validates this file, not as a regression check.
 
 ```
 pdm run pytest e2e/tests/parity
 ```
+
+The inference-perf side always runs; the absorber needs nothing installed. The
+vllm side needs a runnable vllm: either set `$VLLM_BENCH_BIN` to one you
+already have, or set `$VLLM_BENCH_PROVISION=1` to let the test clone and
+install the pinned version once (large download, see
+`e2e/utils/vllm_bench.py`). Without either, the vllm-side tests skip.
+
+The vllm side has not been run yet. The args files and
+`leading_extra_requests` were worked out by reading the pinned vllm source, not
+by running it. Treat the first real vllm run as the thing that checks this
+directory, not as a regression check.

@@ -11,24 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Run `vllm bench serve` against a server, for tool-parity comparison.
+"""Find (or install) vllm and run `vllm bench serve`, for the tool-parity tests.
 
-Design intent (per request): vllm is NOT a dependency of inference-perf. We
-instead clone a *pinned* vllm at test time and invoke its bench CLI, and we
-warn (loudly, non-fatally) if the pin has drifted too far from upstream so the
-comparison does not silently rot against a stale tool.
+vllm is not a dependency of inference-perf and this file does not make it one.
+Instead the tests use whatever vllm the environment provides, or optionally
+clone and install one specific pinned version into a throwaway venv. A warning
+is logged (never an error) if that pin has not been reviewed in a long time, so
+the comparison does not quietly go stale against an old vllm.
 
-Resolution order for *how* to invoke vllm, fastest first:
-  1. $VLLM_BENCH_BIN: path to an already-installed `vllm` executable. Skips
-     all clone/install work. The fast path for local iteration.
-  2. A cached, isolated venv under the e2e cache dir with the pinned vllm clone
-     installed into it. Heavy one-time setup (vllm pulls torch); cached across
-     runs. This is the CI path.
+Where the vllm executable comes from, tried in this order:
+  1. $VLLM_BENCH_BIN: path to a `vllm` you already have. Nothing to install.
+     Use this for local work and in CI.
+  2. $VLLM_BENCH_PROVISION=1: clone the pinned vllm and pip-install it (which
+     pulls in torch, so it is a large download) into a venv under a cache
+     directory. Reused on later runs.
+  3. Neither set: raise VllmUnavailable, which the tests turn into a skip.
 
-Any failure to provision vllm results in a SkipReason, so the parity test
-degrades gracefully (skips) exactly like the llm-d-inference-sim tests do when
-the sim is absent. It never hard-fails the suite on a missing tool.
+A missing vllm therefore skips the vllm-side tests. It never fails the suite,
+the same way the llm-d-inference-sim tests skip when the sim is absent.
 """
 
 from __future__ import annotations
@@ -49,26 +49,29 @@ logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- pin
 #
-# Bump these together. VLLM_PIN_DATE is the date the pin was last reviewed and
-# drives the offline staleness warning (no network needed). The optional
-# upstream check (see warn_if_pin_stale) is best-effort on top of this.
+# Which vllm version the parity cases are written for. Bump these together.
+# VLLM_PIN_DATE is when someone last checked the pin; it drives the "this pin
+# is old" warning without any network access. warn_if_pin_stale can also
+# compare against GitHub's latest release, best-effort.
 #
-# The parity case files (cases/*/vllm-bench.args) were read off this exact tag,
-# whose tree is 6d8d0a24c02bfd84d46b3016b865a44f048ae84b. The flag semantics
-# they depend on live in vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py
-# and have changed across vllm versions, so re-read both when bumping.
+# The case files (cases/*/vllm-bench.args) were written by reading this exact
+# tag (tree 6d8d0a24c02bfd84d46b3016b865a44f048ae84b). What each flag means is
+# defined in vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py and has
+# changed between vllm versions, so re-read both files when bumping.
 VLLM_PINNED_REF = "v0.10.0"
-# Extra pip specs installed alongside the pinned vllm (space-separated; the CI
-# workflow greps this constant too). vllm leaves transformers unbounded above,
-# and transformers 5 removed PreTrainedTokenizerBase.all_special_tokens_extended,
-# which this vllm reads unconditionally in get_tokenizer() at bench startup
-# (vllm/transformers_utils/tokenizer.py). Review when bumping the pin.
+# Extra packages to pip-install next to the pinned vllm (space-separated; the
+# CI workflow reads this constant too). vllm does not cap its transformers
+# version, and transformers 5 removed a tokenizer attribute
+# (all_special_tokens_extended) that this vllm reads at bench startup, so
+# without this pin the run crashes before sending a request. Review when
+# bumping the vllm pin.
 VLLM_COMPAT_PINS = "transformers<5"
 VLLM_PIN_DATE = datetime.date(2026, 1, 15)
 VLLM_STALENESS_WARN_DAYS = 180
 VLLM_REPO_URL = "https://github.com/vllm-project/vllm.git"
 
-# Cache lives outside the repo tree by default; override for CI persistence.
+# Where the cloned vllm and its venv live. Outside the repo by default; set
+# VLLM_BENCH_CACHE_DIR to somewhere CI keeps between runs.
 _DEFAULT_CACHE = Path(os.environ.get("VLLM_BENCH_CACHE_DIR", Path(tempfile.gettempdir()) / "inference-perf-vllm-bench"))
 
 
@@ -82,16 +85,16 @@ class VllmBenchResult:
 
 
 class VllmUnavailable(Exception):
-    """Raised when vllm could not be provisioned; callers should pytest.skip."""
+    """No usable vllm was found or installed. The tests catch this and skip."""
 
 
 def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
-    """Emit a warning if the pinned vllm ref looks out of date.
+    """Log a warning if the pinned vllm looks old. Never raises.
 
-    Offline check: how long since the pin was reviewed. Optional online check:
-    compare the pinned tag against GitHub's latest release. Both are advisory: a
-    stale pin still runs, it just gets a loud log line so the comparison does
-    not quietly drift against an old vllm.
+    Always: warn if VLLM_PIN_DATE is more than VLLM_STALENESS_WARN_DAYS ago.
+    With check_upstream=True: also ask GitHub for vllm's latest release and warn
+    if the pin is behind it (skipped quietly on any network problem). A stale
+    pin still runs; the warning is just so nobody forgets it exists.
     """
     age_days = (datetime.date.today() - VLLM_PIN_DATE).days
     if age_days > VLLM_STALENESS_WARN_DAYS:
@@ -105,7 +108,7 @@ def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
 
     if not check_upstream:
         return
-    try:  # best-effort; never fail the test on a network hiccup
+    try:  # advisory only; a network problem here must not fail the test
         import urllib.request
 
         with urllib.request.urlopen("https://api.github.com/repos/vllm-project/vllm/releases/latest", timeout=5) as resp:
@@ -116,13 +119,13 @@ def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
         logger.debug("upstream vllm staleness check skipped: %s", e)
 
 
-# Env vars that redirect a Python process's module resolution. The e2e suite
-# typically runs inside this repo's dev environment (nix devshell + venv, which
-# exports PYTHONPATH entries for its own interpreter), while vllm runs under a
-# separate interpreter. PYTHONPATH outranks the child's site-packages, so
-# inheriting these makes vllm import packages built for the wrong CPython ABI
-# (e.g. the devshell's torch) and crash on startup. LD_LIBRARY_PATH is left
-# alone: CI's hosted Python needs its entry to find libpython.
+# Environment variables that tell a Python process where to look for packages.
+# These tests usually run inside this repo's dev environment (nix devshell plus
+# venv), which sets PYTHONPATH for its own Python. vllm runs under a different
+# Python, and PYTHONPATH wins over that Python's own installed packages, so if
+# vllm inherited it, it would import this repo's torch (built for a different
+# Python) and crash on startup. So these are stripped from vllm's environment.
+# LD_LIBRARY_PATH is kept: CI's Python needs it to find libpython.
 _HOST_PYTHON_ENV_VARS = frozenset(
     {
         "PYTHONPATH",
@@ -136,19 +139,18 @@ _HOST_PYTHON_ENV_VARS = frozenset(
 
 
 def _isolated_env() -> Dict[str, str]:
-    """os.environ minus the vars that leak the host Python's packages into vllm's."""
+    """A copy of os.environ with _HOST_PYTHON_ENV_VARS removed."""
     return {k: v for k, v in os.environ.items() if k not in _HOST_PYTHON_ENV_VARS}
 
 
-# The `vllm` CLI cannot run `bench serve` on a machine with no accelerator:
-# main() eagerly builds every subparser, and the `vllm serve` (server) one
-# instantiates a default DeviceConfig, whose platform inference raises
-# "Failed to infer device type" when no device is present, which is true of
-# CI runners and GPU-less workstations. The bench serve code itself is a pure
-# HTTP client that never touches a device, so run it directly instead. This
-# shim reproduces exactly what the CLI subcommand does
-# (vllm/entrypoints/cli/benchmark/serve.py: add_cli_args + main), minus the
-# unrelated broken subparsers.
+# Why we do not just run `vllm bench serve`: on a machine with no GPU (CI
+# runners, most laptops) the `vllm` command crashes at startup with "Failed to
+# infer device type". That happens while it sets up the argument parser for
+# every subcommand, including `vllm serve`, which needs a GPU. `bench serve`
+# itself is only an HTTP client and never touches a GPU. So this tiny script
+# imports just the bench serve code and calls it the same way the CLI would
+# (see vllm/entrypoints/cli/benchmark/serve.py: add_cli_args + main), skipping
+# the broken parts.
 _BENCH_SERVE_SHIM = (
     "import argparse\n"
     "try:\n"
@@ -163,12 +165,12 @@ _BENCH_SERVE_SHIM = (
 
 
 def _bench_serve_cmd(vllm_bin: str, args: List[str]) -> List[str]:
-    """Build the argv for `vllm bench serve <args>` semantics.
+    """The command line to run: equivalent to `vllm bench serve <args>`.
 
-    Prefer the shim above under the vllm install's own interpreter (the
-    `python` sibling of the `vllm` executable, present in any venv or
-    setup-python install). Fall back to the real CLI when no sibling python
-    exists, e.g. if $VLLM_BENCH_BIN points at a wrapper script.
+    Preferred: run _BENCH_SERVE_SHIM with the `python` that sits next to the
+    `vllm` executable (any venv or setup-python install has one). Fallback:
+    the real `vllm bench serve` when there is no such python, for example when
+    $VLLM_BENCH_BIN points at a wrapper script.
     """
     resolved = shutil.which(vllm_bin) or vllm_bin
     python = Path(resolved).parent / "python"
@@ -183,20 +185,20 @@ def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
 
 
 def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
-    """Return a path to a runnable `vllm` executable, or raise VllmUnavailable.
+    """Return the path of a runnable `vllm` executable, or raise VllmUnavailable.
 
-    Resolution:
-      1. $VLLM_BENCH_BIN -> use it directly (the path CI uses: a vllm installed
-         under a compatible interpreter). Fast, no build.
-      2. $VLLM_BENCH_PROVISION truthy -> opt in to the HEAVY path: clone the
-         pinned vllm and pip-install it (with torch) into a cached venv.
-      3. otherwise -> raise VllmUnavailable so the parity test skips cleanly.
+    Tried in order:
+      1. $VLLM_BENCH_BIN set -> use it as is (this is what CI does: it installs
+         vllm under a compatible Python and points here). Nothing to install.
+      2. $VLLM_BENCH_PROVISION set -> clone the pinned vllm and pip-install it
+         (with torch, so a multi-GB download) into a venv under cache_dir.
+         Reused if it already exists.
+      3. neither -> raise VllmUnavailable, so the tests skip.
 
-    The default is to skip, NOT to silently kick off a multi-GB build during a
-    normal `pdm run test:e2e`. The heavy path is also gated on interpreter
-    compatibility: vllm supports Python <=3.12, while this repo runs 3.14, so
-    the in-tree interpreter usually cannot build it, hence CI installs vllm
-    under a separate 3.12 and points $VLLM_BENCH_BIN at it.
+    The default is to skip rather than silently start a multi-GB install during
+    an ordinary `pdm run test:e2e`. Note vllm supports Python <=3.12 and this
+    repo runs 3.14, so option 2 usually also needs $VLLM_PYTHON pointed at a
+    3.12 interpreter; CI avoids that by using option 1.
     """
     override = os.environ.get("VLLM_BENCH_BIN")
     if override:
@@ -223,8 +225,8 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     if not shutil.which("git"):
         raise VllmUnavailable("git not available to clone vllm")
 
-    # vllm does not yet publish wheels for Python 3.14; let callers point at a
-    # compatible interpreter (e.g. python3.12) for the isolated venv.
+    # vllm does not build on Python 3.14 yet, so the venv is created with
+    # $VLLM_PYTHON (e.g. python3.12) when set.
     venv_python = os.environ.get("VLLM_PYTHON", "python")
 
     try:
@@ -235,8 +237,8 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
         logger.info("creating isolated venv for vllm at %s (python=%s)", venv_dir, venv_python)
         _run([venv_python, "-m", "venv", str(venv_dir)])
         pip = str(venv_dir / "bin" / "pip")
-        # CPU-only client bench: no GPU needed to drive an OpenAI-compatible
-        # server. This is still a large install (torch); it is cached above.
+        # No GPU needed: bench serve is only an HTTP client. Still a large
+        # install because vllm pulls in torch; the venv is kept for next time.
         _run([pip, "install", "--upgrade", "pip"])
         _run([pip, "install", str(clone_dir), *VLLM_COMPAT_PINS.split()])
     except subprocess.CalledProcessError as e:
@@ -255,10 +257,11 @@ async def run_vllm_bench(
     result_filename: str = "vllm_bench_result.json",
     timeout_sec: Optional[int] = 300,
 ) -> VllmBenchResult:
-    """Invoke `vllm bench serve <args>` and parse its --save-result JSON.
+    """Run `vllm bench serve <args>` and return its exit status, output, and --save-result JSON.
 
-    `args` should already contain `--save-result --result-filename <path>`
-    (the harness appends these). We read that file back here.
+    `args` must already contain `--save-result --result-filename <path>` (the
+    parity test adds them); that file is read back into result_json. Runs in a
+    fresh temp dir unless work_dir is given, and is killed after timeout_sec.
     """
     wd = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="vllm-bench-e2e-"))
     wd.mkdir(parents=True, exist_ok=True)
@@ -290,7 +293,7 @@ async def run_vllm_bench(
         except ProcessLookupError:
             pass
 
-    # --result-filename may be absolute (Scenario passes one); fall back to wd.
+    # result_filename may be absolute; if relative, it is inside the work dir.
     rf = Path(result_filename)
     result_path = rf if rf.is_absolute() else wd / rf
     result_json = None
