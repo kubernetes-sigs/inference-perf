@@ -374,6 +374,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    finish_reason=parsed.finish_reason,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
@@ -398,7 +399,9 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=output_len, server_usage=usage or None, finish_reason=data.get("stop_reason")
+            ),
             lora_adapter=lora_adapter,
             extra_info=extra_info,
         )

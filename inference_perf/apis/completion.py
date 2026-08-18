@@ -21,7 +21,7 @@ from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -96,6 +96,7 @@ class CompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.chunk_times,
                     server_usage=parsed.server_usage,
+                    finish_reason=parsed.finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": parsed.raw_content},
@@ -121,6 +122,8 @@ class CompletionAPIData(InferenceAPIData):
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+                ),
                 lora_adapter=lora_adapter,
             )

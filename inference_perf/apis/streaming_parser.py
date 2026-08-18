@@ -62,6 +62,10 @@ class ParsedSSEStream(NamedTuple):
     reasoning_chunks: List[str]
     # Timestamps for reasoning-only chunks.
     reasoning_chunk_times: List[float]
+    # The last non-null reason the server gave for ending generation (OpenAI
+    # `choices[0].finish_reason`, Anthropic `message_delta.delta.stop_reason`),
+    # verbatim. None if it never sent one.
+    finish_reason: Optional[str] = None
 
     @property
     def generated_chunk_times(self) -> List[float]:
@@ -71,6 +75,27 @@ class ParsedSSEStream(NamedTuple):
         so merging the two sorted lists gives one timestamp per chunk.
         """
         return list(heapq.merge(self.chunk_times, self.reasoning_chunk_times))
+
+
+def finish_reason_of(data: dict[str, Any]) -> Optional[str]:
+    """The server's stated reason for ending generation carried by one parsed
+    body or SSE frame, or None if this one carries none.
+
+    OpenAI-shaped payloads put it at ``choices[0].finish_reason`` (null on every
+    streamed chunk but the last content-bearing one); Anthropic puts
+    ``stop_reason`` on the unary body and inside the ``message_delta`` event's
+    ``delta``. The value is returned verbatim, so ``length`` and ``max_tokens``
+    are the two spellings of "the requested budget was delivered".
+    """
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if reason:
+            return str(reason)
+    for holder in (data, data.get("delta")):
+        if isinstance(holder, dict) and holder.get("stop_reason"):
+            return str(holder["stop_reason"])
+    return None
 
 
 class StreamInterruptedError(Exception):
@@ -114,6 +139,7 @@ class _SSEStreamParser:
         # once the stream ends. If the stream breaks after it, the error payload
         # is still the failure worth reporting, not the transport symptom.
         self.error_payload: Optional[str] = None
+        self.finish_reason: Optional[str] = None
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -137,6 +163,8 @@ class _SSEStreamParser:
                         self.server_usage = dict(usage)
                     else:
                         self.server_usage.update(usage)
+            if reason := finish_reason_of(data):
+                self.finish_reason = reason
             reasoning = self.extract_reasoning(data) if self.extract_reasoning is not None else None
             if reasoning:
                 self.reasoning_text_parts.append(reasoning)
@@ -241,6 +269,7 @@ class _SSEStreamParser:
             reasoning_text="".join(self.reasoning_text_parts),
             reasoning_chunks=self.reasoning_chunks,
             reasoning_chunk_times=self.reasoning_chunk_times,
+            finish_reason=self.finish_reason,
         )
 
 
