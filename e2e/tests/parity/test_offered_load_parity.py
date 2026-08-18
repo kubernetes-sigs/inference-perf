@@ -23,6 +23,14 @@ how many requests arrived, how many prompt tokens and ``max_tokens`` each had,
 the ``stream`` / ``ignore_eos`` flags, how fast they arrived, and how many were
 in flight at once. The numbers the tools themselves print are never read here.
 
+Rate and concurrency are worked out from the absorber's arrival/finish times by
+the same helpers the load-shape accuracy test uses (``e2e/utils/load_shape.py``,
+#633): the same sweep line for "how many in flight", and the same
+``rate_tolerance(n, arrival)`` for "how far off the configured rate is still
+fine". So there is one definition of each in the e2e tier, and the tolerance
+comes from the request count and the tool's spacing pattern, not from a number
+in a case file.
+
 Two kinds of test per case: each tool against ``expected.yaml`` (the vllm side
 skips when no vllm is installed, see ``e2e/utils/vllm_bench.py``), and the two
 tools directly against each other. Each tool is run once per case and the
@@ -40,6 +48,16 @@ import yaml
 
 from utils.absorber import AbsorbedRequest, AbsorberServer
 from utils.benchmark import run_benchmark_minimal
+from utils.load_shape import (
+    Segment,
+    assert_delivered_concurrency,
+    inflight_segments,
+    max_inflight,
+    mean_inflight,
+    observed_send_rate,
+    plateau_window,
+    rate_tolerance,
+)
 from utils.net import get_free_port
 from utils.testdata import extract_tarball
 from utils.vllm_bench import VllmUnavailable, ensure_vllm_bench_bin, run_vllm_bench, warn_if_pin_stale
@@ -66,7 +84,9 @@ def test_cases_are_committed() -> None:
 
 # Everything the checks below need to know about one tool's run, computed from
 # the absorber's recording after dropping the tool's declared warmup requests.
-# realized_rate is (n-1)/duration: 40 requests spread over 4.875s = 8.0/s.
+# `lifecycle` is the list of {start_time, end_time} pairs (arrival at the
+# absorber, reply finished) that e2e/utils/load_shape.py reads; the rate and
+# in-flight numbers below are its functions applied to that list, nothing else.
 @dataclass(frozen=True)
 class OfferedLoad:
     """What one tool actually sent, after dropping declared warmup requests."""
@@ -76,14 +96,30 @@ class OfferedLoad:
     max_tokens: List[Optional[int]]
     stream_flags: Set[bool]
     ignore_eos_flags: Set[bool]
-    max_in_flight: int
-    duration_s: float
+    lifecycle: List[Dict[str, float]]
 
+    # Average arrival rate: request count over the time from first to last
+    # arrival. 600 requests whose first and last arrivals are 15s apart = 40/s.
     @property
     def realized_rate(self) -> float:
-        if self.n < 2 or self.duration_s <= 0:
-            return 0.0
-        return (self.n - 1) / self.duration_s
+        return observed_send_rate(self.lifecycle)[1]
+
+    # In-flight count over time as a step function (load_shape's sweep line).
+    @property
+    def segments(self) -> List[Segment]:
+        return inflight_segments(self.lifecycle)
+
+    # Highest number of requests in flight at any moment.
+    @property
+    def peak_in_flight(self) -> int:
+        return max_inflight(self.segments)
+
+    # Time-weighted average in flight over the steady-state window for a
+    # configured concurrency of `level` (from the level-th arrival to the last
+    # arrival, so ramp-up and drain are excluded). At level=8 with the cap
+    # honoured, this sits just under 8.0.
+    def plateau_mean_in_flight(self, level: int) -> float:
+        return mean_inflight(self.segments, plateau_window(self.lifecycle, level))
 
 
 # Loads the bundled gemma-3-270m tokenizer once. Used to count prompt tokens
@@ -116,8 +152,8 @@ def _expected(case_dir: Path) -> Dict[str, Any]:
 
 # Turns the absorber's raw recording into an OfferedLoad. Sorts by arrival time,
 # drops the first `trim` requests (declared warmup traffic), then summarizes the
-# rest. 41 recorded requests with trim=1 gives n=40 and a duration measured from
-# the 2nd arrival to the 41st.
+# rest. 601 recorded requests with trim=1 gives n=600, with the rate measured
+# from the 2nd arrival to the 601st.
 def _profile(requests: List[AbsorbedRequest], trim: int) -> OfferedLoad:
     assert len(requests) > trim, f"tool sent {len(requests)} requests, all trimmed as leading extras ({trim})"
     kept = sorted(requests, key=lambda r: r.arrival_s)[trim:]
@@ -127,9 +163,29 @@ def _profile(requests: List[AbsorbedRequest], trim: int) -> OfferedLoad:
         max_tokens=[r.max_tokens for r in kept],
         stream_flags={r.stream for r in kept},
         ignore_eos_flags={r.ignore_eos for r in kept},
-        max_in_flight=max(r.in_flight_at_arrival for r in kept),
-        duration_s=kept[-1].arrival_s - kept[0].arrival_s,
+        lifecycle=[r.lifecycle_entry() for r in kept],
     )
+
+
+# The per-tool block of expected.yaml (tools.<tool>), or {} if there is none.
+def _tool_settings(expected: Dict[str, Any], tool: str) -> Dict[str, Any]:
+    settings = expected.get("tools", {}).get(tool, {})
+    assert isinstance(settings, dict)
+    return settings
+
+
+# How far a tool's measured rate may sit from the configured one, from
+# load_shape.rate_tolerance(n, arrival). `arrival` is the tool's spacing pattern
+# declared in expected.yaml under tools.<tool>.arrival ("constant" for evenly
+# spaced, "poisson" for random). At n=600: 5% for constant, about 16% for
+# poisson. Fails with a pointer to the case file if the pattern is missing.
+def _rate_tol(expected: Dict[str, Any], tool: str, n: int, case_dir: Path) -> float:
+    arrival = _tool_settings(expected, tool).get("arrival")
+    assert isinstance(arrival, str), (
+        f"{case_dir / 'expected.yaml'}: load.mode is rate, so tools.{tool}.arrival must say how {tool} "
+        f"spaces its requests (constant or poisson); the tolerance is derived from it"
+    )
+    return rate_tolerance(n, arrival)
 
 
 # Runs inference-perf with the case's inference-perf.yaml, pointed at the
@@ -195,7 +251,7 @@ async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
             assert vllm_bin is not None
             await _drive_vllm_bench(case_dir, absorber.base_url, vllm_bin)
 
-    trim = int(expected.get("tools", {}).get(tool, {}).get("leading_extra_requests", 0))
+    trim = int(_tool_settings(expected, tool).get("leading_extra_requests", 0))
     _PROFILES[key] = _profile(absorber.requests, trim)
     return _PROFILES[key]
 
@@ -213,12 +269,15 @@ def _assert_prompt_lens(lens: List[int], target: int, rel_tol: float, who: str) 
     )
 
 
-# One tool against expected.yaml. For case a_fixed_rate that means: exactly 40
+# One tool against expected.yaml. For case a_fixed_rate that means: exactly 600
 # requests (after dropping warmup), every max_tokens == 64, every request has
 # stream=true and ignore_eos=true, every prompt is 128 tokens +-15%, and the
-# average arrival rate is 8/s +-35%. For a concurrency case, the peak number in
-# flight must equal the configured concurrency exactly. Runs once per (case,
-# tool); the vllm side skips when no vllm is installed.
+# average arrival rate is 40/s within rate_tolerance(600, arrival): +-5% for
+# inference-perf (even spacing), +-16% for vllm bench (random spacing). For a
+# concurrency case, load_shape.assert_delivered_concurrency applies: never more
+# than the configured number in flight, and on average within half a slot of it
+# over the steady-state window. Runs once per (case, tool); the vllm side skips
+# when no vllm is installed.
 @pytest.mark.parametrize("tool", TOOLS)
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
 async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
@@ -239,17 +298,18 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
     _assert_prompt_lens(offered.prompt_token_lens, workload["prompt_tokens"], workload["prompt_tokens_rel_tol"], tool)
 
     if load["mode"] == "rate":
-        rate, tol = float(load["rate"]), float(load["rate_rel_tol"])
+        rate, tol = float(load["rate"]), _rate_tol(expected, tool, offered.n, case_dir)
         assert offered.realized_rate == pytest.approx(rate, rel=tol), (
             f"{tool} realized arrival rate {offered.realized_rate:.2f}/s vs configured {rate}/s "
-            f"(±{tol:.0%}); check what the rate setting means for this tool, and whether a worker cap is throttling it"
+            f"(±{tol:.0%} for {offered.n} requests); check what the rate setting means for this tool, "
+            f"and whether a worker cap is throttling it"
         )
     elif load["mode"] == "concurrency":
         level = int(load["concurrency"])
-        assert offered.max_in_flight == level, (
-            f"{tool} peak in-flight {offered.max_in_flight} != configured concurrency {level}; "
-            f"check the concurrency settings (concurrency_level vs --max-concurrency)"
-        )
+        try:
+            assert_delivered_concurrency(offered.lifecycle, level)
+        except AssertionError as e:
+            pytest.fail(f"{tool}: {e}; check the concurrency settings (concurrency_level vs --max-concurrency)")
     else:
         pytest.fail(f"unknown load.mode {load['mode']!r} in {case_dir / 'expected.yaml'}")
 
@@ -257,8 +317,11 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
 # The two tools directly against each other, same quantities as above but with
 # no reference numbers involved: same request count, same multiset of
 # max_tokens, same stream/ignore_eos flags, mean prompt length within
-# prompt_tokens_rel_tol, and (by load mode) average rate within rate_rel_tol or
-# identical peak in-flight. Skips when the vllm side is unavailable.
+# prompt_tokens_rel_tol, and by load mode either average rates within the
+# looser of the two tools' rate tolerances (the evenly spaced tool adds almost
+# no wobble of its own, so the randomly spaced tool's tolerance covers the
+# difference), or the same peak in flight and steady-state averages within half
+# a slot of each other. Skips when the vllm side is unavailable.
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
 async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
     expected = _expected(case_dir)
@@ -284,13 +347,19 @@ async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
     )
 
     if load["mode"] == "rate":
-        tol = float(load["rate_rel_tol"])
+        tol = max(_rate_tol(expected, "inference-perf", ip.n, case_dir), _rate_tol(expected, "vllm-bench", vb.n, case_dir))
         assert ip.realized_rate == pytest.approx(vb.realized_rate, rel=tol), (
             f"realized arrival rates differ: inference-perf {ip.realized_rate:.2f}/s "
-            f"vs vllm-bench {vb.realized_rate:.2f}/s (the average should agree even though the "
-            f"spacing between requests differs on purpose: even vs random)"
+            f"vs vllm-bench {vb.realized_rate:.2f}/s (±{tol:.0%}; the average should agree even though "
+            f"the spacing between requests differs on purpose: even vs random)"
         )
     elif load["mode"] == "concurrency":
-        assert ip.max_in_flight == vb.max_in_flight, (
-            f"peak in-flight differs: inference-perf {ip.max_in_flight} vs vllm-bench {vb.max_in_flight}"
+        level = int(load["concurrency"])
+        assert ip.peak_in_flight == vb.peak_in_flight, (
+            f"peak in-flight differs: inference-perf {ip.peak_in_flight} vs vllm-bench {vb.peak_in_flight}"
+        )
+        ip_mean, vb_mean = ip.plateau_mean_in_flight(level), vb.plateau_mean_in_flight(level)
+        assert abs(ip_mean - vb_mean) <= 0.5, (
+            f"steady-state in-flight differs: inference-perf {ip_mean:.3f} vs vllm-bench {vb_mean:.3f} "
+            f"(more than half a slot apart at configured concurrency {level})"
         )

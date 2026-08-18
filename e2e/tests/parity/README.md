@@ -24,9 +24,9 @@ Words used below:
 
 Both tools are pointed at the **absorber** (`e2e/utils/absorber.py`). It does
 not run a model. It answers on the usual OpenAI-style URLs, writes down every
-request it receives (when it arrived, how many others were in progress, the
-full request body), and replies with filler text streamed at a fixed pace so
-the tools behave as they would against a real server.
+request it receives (when it arrived, when its reply finished, the full
+request body), and replies with filler text streamed at a fixed pace so the
+tools behave as they would against a real server.
 
 After each tool runs, the absorber's list of recorded requests is the truth
 about what that tool sent. The test checks that list against the numbers in
@@ -34,6 +34,15 @@ about what that tool sent. The test checks that list against the numbers in
 failure names the setting that leaked: request count, prompt lengths,
 `max_tokens`, the `stream` or `ignore_eos` flags, arrival rate, or
 concurrency.
+
+Rate and concurrency are not computed here. The arrival/finish times go
+through `e2e/utils/load_shape.py`, the same helpers the load-shape accuracy
+test (`e2e/tests/test_load_shape_accuracy_sim.py`, #633) uses to check
+inference-perf against its own config: the same sweep line for "how many were
+in flight", and the same `rate_tolerance(n, arrival)` for "how far off the
+configured rate is still fine". One definition of each, shared. The only
+difference is where the timestamps come from: that test reads the client's
+own, this one reads the absorber's.
 
 Only the *sent* traffic is compared. The latency and throughput numbers each
 tool prints are never looked at here. Those are the tools' output; this test
@@ -73,7 +82,7 @@ absorber:                 # how fast the absorber replies
   ttft_ms: 40             # wait before the first chunk
   itl_ms: 5               # wait between later chunks
 workload:
-  num_requests: 40        # exact, per tool, after dropping declared warmup requests
+  num_requests: 600       # exact, per tool, after dropping declared warmup requests
   prompt_tokens: 128      # per request, measured by re-tokenizing the prompt text
   prompt_tokens_rel_tol: 0.15
   max_tokens: 64          # exact, every request
@@ -81,11 +90,14 @@ workload:
   ignore_eos: true        # exact
 load:
   mode: rate              # "rate" (open loop) or "concurrency" (closed loop)
-  rate: 8.0               # rate mode: average requests per second actually sent
-  rate_rel_tol: 0.25
-  # concurrency: 8        # concurrency mode: exact peak number in flight at once
+  rate: 40.0              # rate mode: average requests per second actually sent
+  # concurrency: 8        # concurrency mode: never above 8 in flight, and on
+                          # average within half a slot of 8 in steady state
 tools:
+  inference-perf:
+    arrival: constant     # rate mode: how this tool spaces requests (sets its tolerance)
   vllm-bench:
+    arrival: poisson
     leading_extra_requests: 1   # vllm bench sends one warmup request first
 ```
 
@@ -94,12 +106,22 @@ warmup traffic to ignore before checking anything. If a tool needs a nonzero
 value here, that is itself a difference between the tools, and it stays
 written down in the case file on purpose.
 
+`arrival` is required in rate mode and is either `constant` (evenly spaced)
+or `poisson` (random gaps). There is no rate tolerance number in the file:
+the allowed wobble is `rate_tolerance(num_requests, arrival)` from
+`load_shape.py`, which at 600 requests is 5% for `constant` and about 16% for
+`poisson` (four standard deviations of the random spacing). The way to
+tighten a case is to raise `num_requests`, never to edit a number.
+
 ## Differences that are expected and allowed for
 
 - **Spacing between requests.** At the same rate, `vllm bench serve` picks
   random gaps between requests (Poisson) while inference-perf's `constant`
   load spaces them evenly. Cases check the average rate only, never the
-  spacing pattern.
+  spacing pattern, and each tool gets the tolerance its own spacing earns
+  (`tools.<tool>.arrival`). When the two tools are compared directly, the
+  looser of the two tolerances applies, since the evenly spaced tool adds
+  almost no wobble of its own.
 - **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
   the same tokenizer, but text built from random token ids does not always
   tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
