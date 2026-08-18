@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from inference_perf.apis import EmbeddingsAPIData, RequestLifecycleMetric, UnaryResponseMetrics
+from inference_perf.apis.response_errors import InBandError
 from inference_perf.config import APIConfig, APIType, EmbeddingsConfig, EmbeddingsEncodingFormat
 from inference_perf.reportgen.base import compute_request_latency_metrics
 
@@ -122,6 +124,16 @@ async def test_embeddings_process_response_falls_back_without_server_usage() -> 
     assert info.request_metrics.text.input_tokens == 5
     assert info.response_metrics is not None
     assert info.response_metrics.server_usage is None
+
+
+# A 200 whose JSON body is {"error": {"message": "model is overloaded", ...}}
+# must raise InBandError carrying that body's JSON, not return a zero-token success.
+@pytest.mark.asyncio
+async def test_embeddings_process_response_raises_on_in_band_error() -> None:
+    body = {"error": {"message": "model is overloaded", "type": "server_error", "code": 503}}
+    with pytest.raises(InBandError) as raised:
+        await EmbeddingsAPIData(input="hello").process_response(_make_response(body), _CONFIG, _make_tokenizer())
+    assert json.loads(str(raised.value)) == body
 
 
 @pytest.mark.asyncio

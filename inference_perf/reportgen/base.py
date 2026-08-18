@@ -28,6 +28,7 @@ from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
+from inference_perf.apis.response_errors import InBandError
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -113,7 +114,8 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     (_HTTP_CODE_LABELS), then message-specific patterns (_HTTP_ERROR_LABELS),
     else "other".
     For non-HTTP errors, matches against _NON_HTTP_ERROR_LABELS, falling back to a
-    lowercased error_type.
+    lowercased error_type. An InBandError skips the patterns: its label is always
+    ``inbanderror``.
     """
     if error_type.startswith("HTTP Error "):
         try:
@@ -127,6 +129,10 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
             if pattern.search(error_msg):
                 return f"{code} - {label}"
         return f"{code} - other"
+    # An in-band error's message is the server's own text. A "connect" or "timeout"
+    # in it must not file the failure with the client's transport errors.
+    if error_type == InBandError.__name__:
+        return error_type.lower()
     for pattern, label in _NON_HTTP_ERROR_LABELS:
         if pattern.search(error_msg):
             return label
