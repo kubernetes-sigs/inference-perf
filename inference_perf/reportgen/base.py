@@ -705,9 +705,23 @@ def summarize_requests(
     inter_token_latencies: List[float] = []
 
     mismatched_requests = 0
+    # Why the server said it stopped, and how often it stopped short of what the
+    # request asked for (#655). Both are observations over the success bucket:
+    # without ignore_eos a short response is usually the model emitting EOS as
+    # intended, so a shortfall is worth seeing, not a failure. Under ignore_eos
+    # the client has already moved shortfalls to the failure bucket
+    # (TruncatedResponseError), so anything counted here got past that rule.
+    finish_reason_counts: dict[str, int] = defaultdict(int)
+    output_shortfalls = 0
     for m in all_successful:
         if correct_streamed_response_metrics(m, tokenizer):
             mismatched_requests += 1
+
+        if (response_metrics := m.info.response_metrics) is not None:
+            if response_metrics.finish_reason is not None:
+                finish_reason_counts[response_metrics.finish_reason] += 1
+            if isinstance(m.max_tokens, int) and response_metrics.delivered_output_tokens() < m.max_tokens:
+                output_shortfalls += 1
 
         latency = compute_request_latency_metrics(m, use_server_output_tokens)
         request_latency_values.append(latency["request_latency"])
@@ -827,6 +841,8 @@ def summarize_requests(
             "prompt": count_client_fallbacks(all_successful, SERVER_PROMPT_TOKEN_KEYS),
             "output": count_client_fallbacks(all_successful, SERVER_OUTPUT_TOKEN_KEYS),
         },
+        "finish_reasons": dict(sorted(finish_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "output_shortfalls": output_shortfalls,
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
@@ -871,6 +887,8 @@ def build_per_request_lifecycle_entry(
 
     if fields.response:
         entry["response"] = metric.response_data
+
+    entry["max_tokens"] = metric.max_tokens
 
     if fields.info:
         info = metric.info.model_dump() if metric.info else None

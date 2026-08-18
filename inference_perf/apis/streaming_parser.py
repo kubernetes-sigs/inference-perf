@@ -28,6 +28,27 @@ from aiohttp import ClientResponse
 from inference_perf.apis.response_errors import InBandError, in_band_error
 
 
+def finish_reason_of(data: dict[str, Any]) -> Optional[str]:
+    """The server's stated reason for ending generation carried by one parsed
+    body or SSE frame, or None if this one carries none.
+
+    OpenAI-shaped payloads put it at ``choices[0].finish_reason`` (null on every
+    streamed chunk but the last content-bearing one); Anthropic puts
+    ``stop_reason`` on the unary body and inside the ``message_delta`` event's
+    ``delta``. The value is returned verbatim, so ``length`` and ``max_tokens``
+    are the two spellings of "the requested budget was delivered".
+    """
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if reason:
+            return str(reason)
+    for holder in (data, data.get("delta")):
+        if isinstance(holder, dict) and holder.get("stop_reason"):
+            return str(holder["stop_reason"])
+    return None
+
+
 class StreamInterruptedError(Exception):
     """Raised when an SSE stream fails partway through being read.
 
@@ -46,7 +67,7 @@ class StreamInterruptedError(Exception):
 
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]], Optional[str]]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -62,7 +83,7 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
+        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage, finish_reason):
         - output_text: The concatenated text content from all chunks
         - chunk_times: Timestamps for content-bearing chunks only. Role-only
           deltas, usage-only chunks, [DONE] signals, and unparseable messages
@@ -74,6 +95,9 @@ async def parse_sse_stream(
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
+        - finish_reason: the last non-null reason the server gave for ending
+          generation (OpenAI `choices[0].finish_reason`, Anthropic
+          `message_delta.delta.stop_reason`), verbatim. None if it never sent one.
 
     Raises:
         InBandError: a frame carried a top-level ``error`` payload (a 200 whose
@@ -87,6 +111,7 @@ async def parse_sse_stream(
     raw_content = b""
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
+    finish_reason: Optional[str] = None
     # First in-band error payload seen. Reading continues past it so the raw
     # body is complete and the connection drains normally; the raise happens
     # once the stream ends. If the stream breaks after it, the error payload
@@ -118,6 +143,8 @@ async def parse_sse_stream(
                                     usage = message_data.get("usage")
                             if isinstance(usage, dict):
                                 server_usage = {**(server_usage or {}), **usage}
+                            if reason := finish_reason_of(data):
+                                finish_reason = reason
                             if content := extract_content(data):
                                 output_text += content
                                 chunk_times.append(message_time)
@@ -138,4 +165,11 @@ async def parse_sse_stream(
     if error_payload is not None:
         raise InBandError(error_payload, raw_content.decode("utf-8", errors="ignore"))
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
+    return (
+        output_text,
+        chunk_times,
+        raw_content.decode("utf-8", errors="ignore"),
+        response_chunks,
+        server_usage,
+        finish_reason,
+    )

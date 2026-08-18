@@ -296,3 +296,54 @@ async def test_process_response_streaming_no_content_with_usage_is_a_success() -
     assert info.request_metrics.text.input_tokens == 3
     assert info.response_metrics is not None
     assert info.response_metrics.server_usage == {"prompt_tokens": 3, "completion_tokens": 0}
+
+
+# Unary completion body with choices[0].finish_reason "length" and usage. The
+# returned response_metrics must carry finish_reason "length" and
+# delivered_output_tokens() must be the server's completion_tokens (16), not the
+# client count of the two-word text.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_records_finish_reason() -> None:
+    data = CompletionAPIData(prompt="hi", max_tokens=16)
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"text": "hello there", "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 16},
+        }
+    )
+
+    info = await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"
+    assert info.response_metrics.delivered_output_tokens() == 16
+
+
+# Streamed completion: two content frames, the last carrying finish_reason
+# "stop", then a usage frame with completion_tokens 2. response_metrics must
+# carry finish_reason "stop" and delivered_output_tokens() == 2. A stream whose
+# frames never set finish_reason (second call) leaves it None and
+# delivered_output_tokens() falls back to the client count of the text (1).
+@pytest.mark.asyncio
+async def test_process_response_streaming_records_finish_reason() -> None:
+    data = CompletionAPIData(prompt="hi", max_tokens=16)
+    sse = (
+        b'data: {"choices": [{"text": "hello", "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"text": " there", "finish_reason": "stop"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    info = await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "stop"
+    assert info.response_metrics.delivered_output_tokens() == 2
+
+    bare = cast(ClientResponse, _FakeStreamingResponse([b'data: {"choices": [{"text": "hello"}]}\n\ndata: [DONE]\n\n']))
+    info = await data.process_response(bare, _make_config(streaming=True), _make_tokenizer())
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason is None
+    assert info.response_metrics.delivered_output_tokens() == 1
