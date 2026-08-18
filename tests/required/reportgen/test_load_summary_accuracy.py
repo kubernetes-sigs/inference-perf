@@ -43,6 +43,9 @@ from test_lifecycle_report_shape import _mock_metric
 PERCENTILES: typing.List[float] = [50, 90, 99]
 
 
+# Builds one fake request record where only the three timestamps matter. Reuses the
+# shape test's builder so both files describe a request the same way; token and
+# modality fields get throwaway minimums that no assertion here reads.
 def _load_metric(*, scheduled_time: float, start_time: float, end_time: float) -> Mock:
     """A lifecycle metric whose load-side timing is the only interesting thing about it.
 
@@ -64,6 +67,9 @@ def _load_metric(*, scheduled_time: float, start_time: float, end_time: float) -
     )
 
 
+# Builds a list of fake requests from "sent at time X after waiting Y in the queue".
+# It back-computes scheduled_time = X - Y, so the expected schedule_delay of request i
+# is exactly delays[i] by construction, without ever calling the code under test.
 def _delayed(*, start_times: typing.Sequence[float], delays: typing.Sequence[float]) -> typing.List[Mock]:
     """Requests that were sent at `start_times` after waiting `delays` in the client queue.
 
@@ -78,11 +84,15 @@ def _delayed(*, start_times: typing.Sequence[float], delays: typing.Sequence[flo
     ]
 
 
+# Runs the real summarize_requests on the fakes with percentiles [50, 90, 99] and
+# returns just the load_summary dict, so each test skips that plumbing.
 def _load_summary(metrics: typing.List[Mock], **kwargs: typing.Any) -> typing.Dict[str, typing.Any]:
     summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=PERCENTILES, **kwargs)
     return typing.cast(typing.Dict[str, typing.Any], summary.model_dump()["load_summary"])
 
 
+# 3 requests, zero delay each. Every stat (mean/min/max/median/p90/p99) must be
+# exactly 0.0, not merely small.
 def test_schedule_delay_is_zero_when_every_request_left_on_time() -> None:
     """A load generator that never falls behind must report a flat zero delay.
 
@@ -95,6 +105,7 @@ def test_schedule_delay_is_zero_when_every_request_left_on_time() -> None:
     assert load["schedule_delay"] == {"mean": 0.0, "min": 0.0, "max": 0.0, "median": 0.0, "p90": 0.0, "p99": 0.0}
 
 
+# 4 requests each held 0.25s. Every stat must be 0.25.
 def test_schedule_delay_matches_a_uniform_injected_delay() -> None:
     """Every request held 0.25s: every reported statistic must be 0.25s."""
     load = _load_summary(
@@ -107,6 +118,9 @@ def test_schedule_delay_matches_a_uniform_injected_delay() -> None:
         assert load["schedule_delay"][key] == pytest.approx(0.25), key
 
 
+# 5 different delays (0.0 to 0.4) fed in scrambled order. Checks mean=0.2, min=0.0,
+# max=0.4, median=0.2, p90=0.36, p99=0.396 (interpolation worked by hand below), and
+# proves observation order does not matter.
 def test_schedule_delay_percentiles_match_mixed_injected_delays() -> None:
     """Five known delays, supplied out of order, checked against hand arithmetic.
 
@@ -137,6 +151,9 @@ def test_schedule_delay_percentiles_match_mixed_injected_delays() -> None:
     assert load["schedule_delay"]["p99"] == pytest.approx(0.396)
 
 
+# 2 successes (delays 0.0, 0.2) plus 1 failed request (delay 1.0). Mean must be 0.4
+# and max 1.0, i.e. the failure still counts. Dropping failures would give mean 0.1
+# and flatter the run exactly when it is least trustworthy.
 def test_schedule_delay_includes_failed_requests() -> None:
     """The load population is every dispatched request, not just the successful ones.
 
@@ -170,6 +187,9 @@ def test_schedule_delay_includes_failed_requests() -> None:
     assert load["schedule_delay"]["max"] == pytest.approx(1.0)
 
 
+# 5 requests at 0,1,2,3,4s. Pins send_duration=4.0 and achieved_rate=1.25 (5/4).
+# The true sustained rate is 1.0/s, so this documents the shipped n/(n-1)
+# overstatement rather than endorsing it.
 def test_achieved_rate_equals_count_over_send_duration() -> None:
     """Five requests sent over a 4.0s window report 5 / 4.0 = 1.25 per second.
 
@@ -191,6 +211,8 @@ def test_achieved_rate_equals_count_over_send_duration() -> None:
     assert load["achieved_rate"] == pytest.approx(1.25)
 
 
+# 4 requests sent 0.5s apart but each takes 10s to finish. Rate must be 4/1.5 based
+# on send times only; slow server responses must not drag it down.
 def test_achieved_rate_tracks_send_duration_not_completion_times() -> None:
     """Slow responses must not drag the achieved rate down.
 
@@ -209,6 +231,8 @@ def test_achieved_rate_tracks_send_duration_not_completion_times() -> None:
     assert load["requested_rate"] == 8.0
 
 
+# 1 request means a zero-width send window; the guard reports achieved_rate=0.0 and
+# send_duration=0.0. Also checks the delay (0.3) is still exact with one sample.
 def test_achieved_rate_is_zero_for_a_single_request() -> None:
     """One request gives a zero-width send window, and the shipped guard reports 0.0.
 
@@ -233,6 +257,8 @@ def test_achieved_rate_is_zero_for_a_single_request() -> None:
     }
 
 
+# 3 requests at the same instant (a burst). Same guard, reports 0.0 even though the
+# real rate is closer to infinite.
 def test_achieved_rate_is_zero_when_all_requests_share_a_send_time() -> None:
     """The other zero-width window: a burst dispatched at one instant.
 
@@ -249,6 +275,9 @@ def test_achieved_rate_is_zero_when_all_requests_share_a_send_time() -> None:
     assert load["achieved_rate"] == 0.0
 
 
+# No stage_rate passed (a concurrency-driven stage). achieved_rate, send_duration and
+# requested_rate must be absent entirely (KeyError for a careless consumer, not a fake
+# 0), while schedule_delay is still reported and correct.
 def test_load_summary_omits_rate_fields_without_a_stage_rate() -> None:
     """No requested rate means no rate block at all, not a rate reported as zero.
 
@@ -265,6 +294,8 @@ def test_load_summary_omits_rate_fields_without_a_stage_rate() -> None:
     assert "requested_rate" not in load
 
 
+# One request goes out 0.01s early. Min must be -0.01 (negative, not clamped to zero)
+# and mean 0.01.
 def test_schedule_delay_is_signed_when_a_request_leaves_early() -> None:
     """A send that beats its schedule reports a negative delay, and it is not clamped.
 
