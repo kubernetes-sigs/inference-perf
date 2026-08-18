@@ -166,6 +166,9 @@ async def run_scripted_request(
                 tokenizer_config=None,
                 max_tcp_connections=1,
                 additional_filters=[],
+                # The scripted stream stops short of max_tokens the way EOS would;
+                # under ignore_eos that shortfall is recorded as a truncation.
+                ignore_eos=False,
             )
         try:
             await client.process_request(

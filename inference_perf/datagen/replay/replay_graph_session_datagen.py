@@ -61,7 +61,7 @@ from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
 from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
@@ -1164,6 +1164,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    finish_reason=parsed.finish_reason,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
@@ -1214,7 +1215,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+                ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=output_message,
@@ -1363,6 +1366,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    finish_reason=parsed.finish_reason,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
@@ -1387,7 +1391,9 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     ),
                     image=replayed_images(self.messages),
                 ),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=usage or None, finish_reason=data.get("stop_reason")
+                ),
                 lora_adapter=lora_adapter,
                 extra_info={
                     "stop_reason": data.get("stop_reason"),

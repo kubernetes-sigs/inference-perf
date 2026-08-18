@@ -136,7 +136,9 @@ class FakeServerClient(openAIModelServerClient):
         self.uri = uri
         self.model_name = "fake-model"
         self.max_completion_tokens = 30
-        self.ignore_eos = True
+        # The fake stops where its script stops, which is EOS behaviour, not a
+        # truncation; under ignore_eos a short reply would be recorded as one.
+        self.ignore_eos = False
         self.metrics_collector = metrics_collector
         self.max_tcp_connections = 100
         self.additional_filters: List[str] = []
