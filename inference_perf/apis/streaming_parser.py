@@ -25,6 +25,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.response_errors import InBandError, in_band_error
+
 
 class StreamInterruptedError(Exception):
     """Raised when an SSE stream fails partway through being read.
@@ -72,6 +74,12 @@ async def parse_sse_stream(
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
+
+    Raises:
+        InBandError: a frame carried a top-level ``error`` payload (a 200 whose
+            failure is in the body). The rest of the stream is still read so
+            the exception's ``raw_content`` holds the whole body.
+        StreamInterruptedError: the stream broke before it ended.
     """
     output_text = ""
     chunk_times: List[float] = []
@@ -79,6 +87,11 @@ async def parse_sse_stream(
     raw_content = b""
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
+    # First in-band error payload seen. Reading continues past it so the raw
+    # body is complete and the connection drains normally; the raise happens
+    # once the stream ends. If the stream breaks after it, the error payload
+    # is still the failure worth reporting, not the transport symptom.
+    error_payload: Optional[str] = None
 
     try:
         async for chunk in response.content.iter_any():
@@ -96,6 +109,8 @@ async def parse_sse_stream(
                             break
                         try:
                             data = json.loads(data_str)
+                            if error_payload is None:
+                                error_payload = in_band_error(data)
                             usage = data.get("usage")
                             if not isinstance(usage, dict):
                                 message_data = data.get("message")
@@ -116,6 +131,11 @@ async def parse_sse_stream(
         # connection, or a proxy that 200s then sends an error page). Re-raise
         # with the bytes received so far attached so the caller can still record
         # what the server actually sent instead of an empty response body.
+        if error_payload is not None:
+            raise InBandError(error_payload, raw_content.decode("utf-8", errors="ignore")) from e
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
+
+    if error_payload is not None:
+        raise InBandError(error_payload, raw_content.decode("utf-8", errors="ignore"))
 
     return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
