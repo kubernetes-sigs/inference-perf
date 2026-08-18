@@ -29,6 +29,27 @@ from aiohttp import ClientResponse
 from inference_perf.apis.response_errors import InBandError, in_band_error
 
 
+def finish_reason_of(data: dict[str, Any]) -> Optional[str]:
+    """The server's stated reason for ending generation carried by one parsed
+    body or SSE frame, or None if this one carries none.
+
+    OpenAI-shaped payloads put it at ``choices[0].finish_reason`` (null on every
+    streamed chunk but the last content-bearing one); Anthropic puts
+    ``stop_reason`` on the unary body and inside the ``message_delta`` event's
+    ``delta``. The value is returned verbatim, so ``length`` and ``max_tokens``
+    are the two spellings of "the requested budget was delivered".
+    """
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        if reason:
+            return str(reason)
+    for holder in (data, data.get("delta")):
+        if isinstance(holder, dict) and holder.get("stop_reason"):
+            return str(holder["stop_reason"])
+    return None
+
+
 class StreamInterruptedError(Exception):
     """Raised when an SSE stream fails partway through being read.
 
@@ -62,6 +83,7 @@ class _SSEStreamParser:
         # once the stream ends. If the stream breaks after it, the error payload
         # is still the failure worth reporting, not the transport symptom.
         self.error_payload: Optional[str] = None
+        self.finish_reason: Optional[str] = None
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -85,6 +107,8 @@ class _SSEStreamParser:
                         self.server_usage = dict(usage)
                     else:
                         self.server_usage.update(usage)
+            if reason := finish_reason_of(data):
+                self.finish_reason = reason
             if content := self.extract_content(data):
                 self.output_text_parts.append(content)
                 self.chunk_times.append(message_time)
@@ -92,7 +116,9 @@ class _SSEStreamParser:
         except (json.JSONDecodeError, IndexError):
             pass
 
-    async def parse(self, response: ClientResponse) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+    async def parse(
+        self, response: ClientResponse
+    ) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]], Optional[str]]:
         buffer = self.buffer
         data_lines = self.data_lines
         raw_chunks_append = self.raw_content_chunks.append
@@ -174,12 +200,12 @@ class _SSEStreamParser:
         raw_content = b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore")
         if self.error_payload is not None:
             raise InBandError(self.error_payload, raw_content)
-        return output_text, self.chunk_times, raw_content, self.response_chunks, self.server_usage
+        return output_text, self.chunk_times, raw_content, self.response_chunks, self.server_usage, self.finish_reason
 
 
 async def parse_sse_stream(
     response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]], Optional[str]]:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -195,7 +221,7 @@ async def parse_sse_stream(
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
+        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage, finish_reason):
         - output_text: The concatenated text content from all chunks
         - chunk_times: Timestamps for content-bearing chunks only. Role-only
           deltas, usage-only chunks, [DONE] signals, and unparseable messages
@@ -207,6 +233,9 @@ async def parse_sse_stream(
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
+        - finish_reason: the last non-null reason the server gave for ending
+          generation (OpenAI `choices[0].finish_reason`, Anthropic
+          `message_delta.delta.stop_reason`), verbatim. None if it never sent one.
 
     Raises:
         InBandError: a frame carried a top-level ``error`` payload (a 200 whose
