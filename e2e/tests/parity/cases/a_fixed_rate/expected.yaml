@@ -11,21 +11,21 @@ workload:
 load:
   mode: rate
   rate: 8.0
-  # Sized for the Poisson arrival variance of the vllm leg. realized_rate is
-  # (n-1)/span over n=40 arrivals, and the span of 39 exponential gaps is
-  # Gamma(39, 1/8), so the estimator is inverse-gamma with CV 1/sqrt(37) =
-  # 16.4% and a mean of 8.21/s, about 2.6% above the configured 8/s.
-  # 0.35 therefore admits [5.2, 10.8], which is 2.2 sigma below the mean but
-  # only 1.9 sigma above it: roughly a 4% chance of a spurious failure per
-  # vllm run, not the ~3% a symmetric 2.2 sigma would give. The inference-perf
-  # leg is evenly spaced and lands well inside this either way. Tightening
-  # this means raising num_requests, since the CV falls as 1/sqrt(n-3).
+  # Why so loose: vllm spaces its requests randomly (Poisson), so the average
+  # rate measured over only 40 requests wobbles by about 16% (one standard
+  # deviation) from run to run, and averages slightly high (about 8.2/s, not
+  # 8.0). 0.35 accepts 5.2 to 10.8 requests/s, which is roughly two standard
+  # deviations, so about 1 vllm run in 25 will still fail by bad luck. To make
+  # this tighter, raise num_requests rather than lowering the number: the
+  # wobble shrinks with the square root of the request count. inference-perf
+  # spaces requests evenly and lands well inside either way.
+  # (Derivation: realized_rate = (n-1)/span; span of 39 exponential gaps is
+  # Gamma(39, 1/8); the estimator is inverse-gamma with CV 1/sqrt(37).)
   rate_rel_tol: 0.35
 tools:
   vllm-bench:
-    # Confirmed against the pinned vllm's vllm/benchmarks/serve.py: benchmark()
-    # awaits one "initial single prompt test run" against the same api_url
-    # before the measured run, unconditionally (no flag disables it at this
-    # pin), and then sends all --num-prompts requests including that same
-    # prompt again. So the absorber sees num_requests + 1.
+    # vllm bench always sends one test request before the real run (there is
+    # no flag to turn it off at the pinned version; see benchmark() in its
+    # vllm/benchmarks/serve.py), then sends all --num-prompts requests. So the
+    # absorber records num_requests + 1, and the first one is ignored.
     leading_extra_requests: 1
