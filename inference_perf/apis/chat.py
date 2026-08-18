@@ -36,7 +36,7 @@ from inference_perf.payloads import (
     SyntheticMp4VideoSpec,
 )
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
 from inference_perf.mediagen.synthesis import generate_jpeg_bytes, generate_mp4_bytes, generate_png_bytes, generate_wav_bytes
@@ -556,6 +556,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.generated_chunk_times,
                     server_usage=parsed.server_usage,
+                    finish_reason=parsed.finish_reason,
                     reasoning_chunks=parsed.reasoning_chunks,
                     reasoning_chunk_times=parsed.reasoning_chunk_times,
                     tool_chunks=parsed.tool_chunks,
@@ -591,6 +592,8 @@ class ChatCompletionAPIData(InferenceAPIData):
         output_len += sum(count_tool_tokens(tokenizer, message_tool_texts(choice.get("message"))) for choice in choices)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+            ),
             lora_adapter=lora_adapter,
         )
