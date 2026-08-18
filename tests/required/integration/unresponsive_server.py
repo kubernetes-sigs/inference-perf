@@ -34,6 +34,8 @@ from types import TracebackType
 from typing import List, Optional, Type
 
 
+# Returns a port number (e.g. 41234) that was free a moment ago and has nothing listening
+# on it, so a connect to 127.0.0.1:<port> is refused.
 def reserve_unbound_port(host: str = "127.0.0.1") -> int:
     """Return a TCP port that had nothing listening on it a moment ago.
 
@@ -53,6 +55,9 @@ def reserve_unbound_port(host: str = "127.0.0.1") -> int:
     return port
 
 
+# async-with fake: listens on an ephemeral 127.0.0.1 port, accepts every connection, reads
+# and discards whatever arrives, never writes a byte back. .connections counts accepts,
+# .base_url is http://127.0.0.1:<port>.
 class UnresponsiveServer:
     """Accepts TCP connections, reads whatever arrives, never writes a byte.
 
@@ -72,6 +77,7 @@ class UnresponsiveServer:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    # Per-connection handler: bumps .connections, then drains the socket until the peer closes.
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.connections += 1
         self._writers.append(writer)
@@ -84,11 +90,13 @@ class UnresponsiveServer:
         except (ConnectionResetError, asyncio.CancelledError):
             pass
 
+    # Starts listening on port 0 and records the port the OS assigned.
     async def __aenter__(self) -> "UnresponsiveServer":
         self._server = await asyncio.start_server(self._handle, self.host, 0)
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 
+    # Closes every accepted connection, then the listener.
     async def __aexit__(
         self,
         exc_type: Optional[Type[BaseException]],

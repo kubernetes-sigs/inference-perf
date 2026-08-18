@@ -114,6 +114,8 @@ EXPECTED_REPORTS = (
 )
 
 
+# Stands in for the HuggingFace tokenizer so building the client needs no Hub download.
+# count_tokens("a b c") -> 3; nothing in these tests actually calls it.
 class _StubTokenizer(CustomTokenizer):
     """Stands in for the HuggingFace-backed tokenizer the client builds in
     __init__, which would otherwise fetch from the Hub.
@@ -132,6 +134,8 @@ class _StubTokenizer(CustomTokenizer):
         return len(text.split()) if text else 0
 
 
+# A real vLLMModelServerClient at uri: non-streaming completion API, 2 TCP connections,
+# request_timeout=2.0s, with the stub tokenizer patched in for the constructor only.
 def _build_client(uri: str, collector: MultiprocessRequestMetricCollector) -> vLLMModelServerClient:
     api_config = APIConfig(type=APIType.Completion, streaming=False)
     with patch.object(openai_client_module, "CustomTokenizer", return_value=_StubTokenizer()):
@@ -147,6 +151,8 @@ def _build_client(uri: str, collector: MultiprocessRequestMetricCollector) -> vL
         )
 
 
+# The Config the ReportGenerator reads: one constant stage of 4 requests over 1s, 2 workers,
+# request_timeout=2.0s, all three request-lifecycle reports switched on.
 def _build_config() -> Config:
     """The config object the ReportGenerator reads. Its report section asks for
     all three request-lifecycle reports, which is what the run must still
@@ -172,6 +178,9 @@ def _build_config() -> Config:
     )
 
 
+# Joins each worker against a shared 15s budget and returns their exit codes: 0 = clean,
+# None = still running, negative = killed by a signal. Runs before LoadGenerator.stop() so a
+# wedged worker is reported rather than terminated away.
 def _await_worker_exits(load_gen: LoadGenerator) -> List[Optional[int]]:
     """Give every worker ``WORKER_EXIT_GRACE_SEC`` in total to exit by itself and
     report the exit codes.
@@ -186,6 +195,9 @@ def _await_worker_exits(load_gen: LoadGenerator) -> List[Optional[int]]:
     return [worker.exitcode for worker in load_gen.workers]
 
 
+# Runs one full stage (4 requests, 2 workers, 2s timeout) at uri under a 60s wait_for, then
+# generates the reports. Returns (elapsed seconds, the 4 recorded metrics,
+# {report name: contents}, worker exit codes).
 async def _run_against(uri: str) -> Tuple[float, List[RequestLifecycleMetric], Dict[str, Any], List[Optional[int]]]:
     """Drive one full stage at ``uri`` and return
 
@@ -222,6 +234,8 @@ async def _run_against(uri: str) -> Tuple[float, List[RequestLifecycleMetric], D
     return elapsed, collector.get_metrics(), reports, worker_exitcodes
 
 
+# Exactly 4 metrics, each with an error and no response_metrics. Returns the sorted distinct
+# error_type names, e.g. ["ClientConnectorError"].
 def _assert_every_request_failed(metrics: List[RequestLifecycleMetric]) -> List[str]:
     """Every request must carry an error, and none may look like a success.
     Returns the distinct error types seen."""
@@ -242,6 +256,8 @@ def _assert_every_request_failed(metrics: List[RequestLifecycleMetric]) -> List[
     return sorted(error_types)
 
 
+# summary, stage_0 and per_request reports all present; per_request has 4 entries, all with
+# an error; summary and stage_0 both say successes=0 and failures=4.
 def _assert_reports_are_complete(reports: Dict[str, Any]) -> None:
     """All three request-lifecycle reports exist, and both summaries agree that
     nothing succeeded and everything failed."""
@@ -260,6 +276,7 @@ def _assert_reports_are_complete(reports: Dict[str, Any]) -> None:
         )
 
 
+# Exactly 2 exit codes and every one is 0: no worker was still running or had to be signalled.
 def _assert_no_worker_wedged(worker_exitcodes: List[Optional[int]]) -> None:
     """Every worker exited on its own, cleanly.
 
@@ -273,6 +290,9 @@ def _assert_no_worker_wedged(worker_exitcodes: List[Optional[int]]) -> None:
     )
 
 
+# 4 requests at a port with no listener. The run ends in under 60s (a few seconds in
+# practice), all 4 fail with error_type ClientConnectorError only (never TimeoutError), the
+# three reports say 0 successes / 4 failures, and both workers exit 0.
 @pytest.mark.asyncio
 async def test_run_terminates_when_nothing_is_listening() -> None:
     """Case (a): the endpoint's port has no listener, so every connect is
@@ -290,6 +310,9 @@ async def test_run_terminates_when_nothing_is_listening() -> None:
     _assert_no_worker_wedged(worker_exitcodes)
 
 
+# No load, no server. A client built with request_timeout=2.0 must show
+# session.timeout.total == 2.0; one built with no request_timeout must show
+# aiohttp.client.DEFAULT_TIMEOUT (300s total).
 @pytest.mark.asyncio
 async def test_configured_request_timeout_reaches_the_aiohttp_session() -> None:
     """The wiring the unresponsive-server case rests on: ``request_timeout``
@@ -334,6 +357,9 @@ async def test_configured_request_timeout_reaches_the_aiohttp_session() -> None:
         await default_session.close()
 
 
+# 4 requests at a listener that accepts and never answers. The run ends in under 60s, all 4
+# fail with error_type TimeoutError only, the fake accepted between 1 and 4 connections (no
+# retries), the three reports say 0 successes / 4 failures, and both workers exit 0.
 @pytest.mark.asyncio
 async def test_run_terminates_when_the_server_never_responds() -> None:
     """Case (b): the endpoint accepts the connection and never answers. Only
