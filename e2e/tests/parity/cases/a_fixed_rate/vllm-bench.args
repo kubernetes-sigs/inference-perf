@@ -1,4 +1,4 @@
-# Case a, vllm side: 40 requests at an average of 8 per second with random
+# Case a, vllm side: 600 requests at an average of 40 per second with random
 # (Poisson) spacing, every prompt 128 tokens, every request asking for 64
 # output tokens. Same workload as inference-perf.yaml next to this file.
 #
@@ -15,7 +15,7 @@
 #   --random-input-len 128 does not quite give 128 tokens: vllm first subtracts
 #     the tokenizer's special tokens (1 for a BOS-adding tokenizer), so the
 #     prompt is 127. That is why expected.yaml has prompt_tokens_rel_tol.
-#   --request-rate 8 spaces requests randomly with an average of 8/s (the
+#   --request-rate 40 spaces requests randomly with an average of 40/s (the
 #     default --burstiness 1.0 is what makes it Poisson).
 #   --ignore-eos is the only way to set ignore_eos in the request body. stream
 #     is always true on this endpoint and cannot be changed from the CLI.
@@ -28,7 +28,7 @@ openai
 --dataset-name
 random
 --num-prompts
-40
+600
 --random-input-len
 128
 --random-output-len
@@ -36,5 +36,5 @@ random
 --random-range-ratio
 0
 --request-rate
-8
+40
 --ignore-eos

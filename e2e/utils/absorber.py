@@ -15,9 +15,11 @@
 
 Point any benchmark tool at the absorber and, when the run finishes, the list
 of recorded requests is exactly what that tool sent: how many, when each
-arrived, the prompt, ``max_tokens``, the ``stream`` / ``ignore_eos`` flags, and
-how many other requests were in progress at that moment. The tool-parity tests
-compare those recordings between tools. When two tools configured for "the
+arrived and when its reply finished, the prompt, ``max_tokens``, and the
+``stream`` / ``ignore_eos`` flags. The arrival/finish pairs feed the shared
+load-shape helpers in ``e2e/utils/load_shape.py``, which turn them into a
+request rate and an in-flight concurrency; the absorber itself only records.
+The tool-parity tests compare those recordings between tools. When two tools configured for "the
 same" workload differ, the difference shows up as a concrete request-level
 mismatch that names the setting responsible, rather than as a fuzzy gap in the
 latency numbers the tools print.
@@ -46,14 +48,27 @@ from aiohttp import web
 _FILLER_WORDS = ("alpha", "bravo", "carol", "delta", "echo", "fox", "golf", "hotel")
 
 
-@dataclass(frozen=True)
+@dataclass
 class AbsorbedRequest:
-    """One request exactly as the absorber received it, plus when and how busy the server was."""
+    """One request exactly as the absorber received it, plus when it arrived and when its reply finished.
+
+    The two timestamps are ``time.perf_counter()`` readings, so only differences
+    between them mean anything. Together they are the raw material for the
+    load-shape helpers in ``e2e/utils/load_shape.py`` (request rate, in-flight
+    concurrency); the absorber itself computes nothing from them.
+    """
 
     route: str  # "/v1/completions" or "/v1/chat/completions"
-    arrival_s: float  # time.perf_counter() when the request arrived; only differences between requests mean anything
-    in_flight_at_arrival: int  # how many requests were in progress at that moment, counting this one
+    arrival_s: float  # when the request arrived (before its body was read)
     body: Dict[str, Any]  # the request's JSON body, as sent
+    done_s: Optional[float] = None  # when the last byte of the reply was sent; None while the reply is still going
+
+    # The (start_time, end_time) pair in the shape e2e/utils/load_shape.py reads,
+    # so a list of these can go straight into its rate and concurrency helpers.
+    # Fails if the reply has not finished yet.
+    def lifecycle_entry(self) -> Dict[str, float]:
+        assert self.done_s is not None, "reply not finished; read requests only after the tool has exited"
+        return {"start_time": self.arrival_s, "end_time": self.done_s}
 
     @property
     def prompt_text(self) -> Optional[str]:
@@ -114,7 +129,6 @@ class AbsorberServer:
     requests: List[AbsorbedRequest] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self._in_flight = 0
         self._runner: Optional[web.AppRunner] = None
 
     @property
@@ -148,15 +162,10 @@ class AbsorberServer:
         # Empty but valid Prometheus output, so tools that scrape metrics do not error.
         return web.Response(text="", content_type="text/plain")
 
-    # Records one request: timestamps it, notes how many are in flight, appends
-    # it to self.requests.
-    def _absorb(self, route: str, body: Dict[str, Any]) -> AbsorbedRequest:
-        absorbed = AbsorbedRequest(
-            route=route,
-            arrival_s=time.perf_counter(),
-            in_flight_at_arrival=self._in_flight,
-            body=body,
-        )
+    # Records one request with the arrival time taken by the caller, and appends
+    # it to self.requests. done_s is filled in later, when the reply is finished.
+    def _absorb(self, route: str, body: Dict[str, Any], arrival_s: float) -> AbsorbedRequest:
+        absorbed = AbsorbedRequest(route=route, arrival_s=arrival_s, body=body)
         self.requests.append(absorbed)
         return absorbed
 
@@ -180,15 +189,17 @@ class AbsorberServer:
     async def _handle_chat(self, request: web.Request) -> web.StreamResponse:
         return await self._respond(request, "/v1/chat/completions")
 
-    # Shared handler for both endpoints. Records the request, then replies with
-    # max_tokens (or default_output_tokens) chunks: streamed with pacing if the
-    # request said stream=true, otherwise as one JSON body after an equivalent
-    # total wait. The in-flight counter covers the whole reply.
+    # Shared handler for both endpoints. Takes the arrival time first, records
+    # the request, then replies with max_tokens (or default_output_tokens)
+    # chunks: streamed with pacing if the request said stream=true, otherwise
+    # as one JSON body after an equivalent total wait. Stamps done_s once the
+    # reply is finished (for a streamed reply, after the final "[DONE]" is
+    # written; for a one-piece reply, just before aiohttp writes it).
     async def _respond(self, request: web.Request, route: str) -> web.StreamResponse:
-        self._in_flight += 1
+        arrival_s = time.perf_counter()
+        body = await request.json()
+        absorbed = self._absorb(route, body, arrival_s)
         try:
-            body = await request.json()
-            absorbed = self._absorb(route, body)
             n_out = absorbed.max_tokens or self.default_output_tokens
             chunks = self._chunk_texts(n_out)
             usage = {
@@ -201,7 +212,7 @@ class AbsorberServer:
             await asyncio.sleep(self.ttft_s + self.itl_s * max(0, len(chunks) - 1))
             return web.json_response(self._unary_body(route, chunks, usage))
         finally:
-            self._in_flight -= 1
+            absorbed.done_s = time.perf_counter()
 
     # The fixed id/object/created/model fields every reply carries.
     def _envelope(self, route: str) -> Dict[str, Any]:
