@@ -26,6 +26,8 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from aiohttp import ClientResponse
 
+from inference_perf.apis.response_errors import InBandError, in_band_error
+
 
 class StreamInterruptedError(Exception):
     """Raised when an SSE stream fails partway through being read.
@@ -55,6 +57,11 @@ class _SSEStreamParser:
         self.raw_content_chunks: List[bytes] = []
         self.response_chunks: List[str] = []
         self.server_usage: Optional[dict[str, Any]] = None
+        # First in-band error payload seen. Reading continues past it so the raw
+        # body is complete and the connection drains normally; the raise happens
+        # once the stream ends. If the stream breaks after it, the error payload
+        # is still the failure worth reporting, not the transport symptom.
+        self.error_payload: Optional[str] = None
         self.buffer = bytearray()
         self.data_lines: List[bytes] = []
         self.skip_lf = False
@@ -65,6 +72,8 @@ class _SSEStreamParser:
         try:
             data_str = data_bytes.decode("utf-8", errors="ignore")
             data = json.loads(data_str)
+            if self.error_payload is None:
+                self.error_payload = in_band_error(data)
             if b"usage" in data_bytes or b"message" in data_bytes:
                 usage = data.get("usage")
                 if not isinstance(usage, dict):
@@ -157,10 +166,14 @@ class _SSEStreamParser:
             # with the bytes received so far attached so the caller can still record
             # what the server actually sent instead of an empty response body.
             raw_str = b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore")
+            if self.error_payload is not None:
+                raise InBandError(self.error_payload, raw_str) from e
             raise StreamInterruptedError(e, raw_str) from e
 
         output_text = "".join(self.output_text_parts)
         raw_content = b"".join(self.raw_content_chunks).decode("utf-8", errors="ignore")
+        if self.error_payload is not None:
+            raise InBandError(self.error_payload, raw_content)
         return output_text, self.chunk_times, raw_content, self.response_chunks, self.server_usage
 
 
@@ -194,5 +207,11 @@ async def parse_sse_stream(
           (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
           `message.usage`/`message_delta.usage`). None if the server didn't
           emit usage.
+
+    Raises:
+        InBandError: a frame carried a top-level ``error`` payload (a 200 whose
+            failure is in the body). The rest of the stream is still read so
+            the exception's ``raw_content`` holds the whole body.
+        StreamInterruptedError: the stream broke before it ended.
     """
     return await _SSEStreamParser(extract_content).parse(response)
