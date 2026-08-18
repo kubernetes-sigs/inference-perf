@@ -48,7 +48,7 @@ import asyncio
 import logging
 import re
 import statistics
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import pytest
@@ -81,7 +81,11 @@ STAGE_INTERVAL = 30
 STAGE_OVERHEAD_SEC = 6
 
 # Extra slack before the restart, on top of "stage 1 must be over by now".
-RESTART_MARGIN_SEC = 8
+# The restart has to land inside the interval after stage 1: too early and the
+# revived sim catches the tail of stage 1, too late and stage 2 starts against
+# a dead port. Stage 1 overhead is the only uncertain term, so the margin sits
+# on the early side of the interval's midpoint rather than at its edge.
+RESTART_MARGIN_SEC = 13
 
 # Measured from the moment the kill completes. Stage 1 begins one interval
 # after stage 0 ends and takes duration + overhead, so waiting that out plus
@@ -94,17 +98,25 @@ RESTART_AFTER_KILL_SEC = STAGE_INTERVAL + STAGE_DURATION + STAGE_OVERHEAD_SEC + 
 # recomputed from the per-request records.
 RELATIVE_TOLERANCE = 1e-6
 
-# Regex matching the sim's cumulative successful-request counter. Mirrors the
-# parsing used in test_prometheus.py and test_sim_killed_midrun.py.
-_SIM_SUCCESS_RE = re.compile(r"vllm:request_success(?:_total)?\{.*?\} (\d+)")
+# Regex matching one series of the sim's cumulative successful-request
+# counter. Same metric as test_prometheus.py and test_sim_killed_midrun.py, but
+# summed over every label set below: the sim labels the counter by
+# finish_reason, so reading only the first series would plateau short of the
+# target whenever a stage mixes finish reasons.
+_SIM_SUCCESS_RE = re.compile(r"^vllm:request_success(?:_total)?\{.*?\} (\d+)", re.MULTILINE)
 
 
-async def _sim_success_count(session: aiohttp.ClientSession, url: str) -> int:
-    """Reads the sim's cumulative successful-request count, or 0 if unavailable."""
+async def _sim_success_count(session: aiohttp.ClientSession, url: str) -> Optional[int]:
+    """Reads the sim's cumulative successful-request count, summed over all
+    finish_reason series. Returns None when the counter is absent: the sim
+    only creates the series on the first successful request, so absence is
+    normal until stage 0 starts completing and is only suspicious if it lasts."""
     async with session.get(url) as resp:
         text = await resp.text()
-    match = _SIM_SUCCESS_RE.search(text)
-    return int(match.group(1)) if match else 0
+    counts = _SIM_SUCCESS_RE.findall(text)
+    if not counts:
+        return None
+    return sum(int(count) for count in counts)
 
 
 async def _wait_for_sim_success_count(
@@ -123,17 +135,29 @@ async def _wait_for_sim_success_count(
     url = f"http://{host}:{port}/metrics"
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout_sec
+    last_seen: Optional[int] = None
     async with aiohttp.ClientSession() as session:
         while True:
             try:
                 count = await _sim_success_count(session, url)
             except Exception as e:
                 logger.debug(f"polling sim metrics failed: {e}, retrying...")
-                count = 0
-            if count >= target:
-                return count
+                count = None
+            if count is not None:
+                last_seen = count
+                if count >= target:
+                    return count
             if loop.time() > deadline:
-                raise TimeoutError(f"sim did not reach {target} successes within {timeout_sec}s (last={count})")
+                # Two different failures share this timeout: the sim served
+                # the counter but it never reached target, or the counter never
+                # appeared at all, which points at a renamed metric (or a sim
+                # that never answered) rather than at the load.
+                if last_seen is not None:
+                    raise TimeoutError(f"sim did not reach {target} successes within {timeout_sec}s (last={last_seen})")
+                raise TimeoutError(
+                    f"vllm:request_success(_total) never appeared in {url} within {timeout_sec}s: "
+                    "either no request completed or the sim renamed the counter"
+                )
             await asyncio.sleep(poll_sec)
 
 
