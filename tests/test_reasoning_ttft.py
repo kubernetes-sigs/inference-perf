@@ -533,7 +533,8 @@ def test_parse_anthropic_thinking_reads_only_thinking_blocks() -> None:
 
 # Chat stream: reasoning "a b", a chunk with choices but no delta, a chunk with
 # no choices key, then content "c". The odd chunks are skipped: output_tokens = 3
-# streamed. Non-streamed, a choice with no message gives output_tokens = 0.
+# streamed. Non-streamed, a choice with no message gives output_tokens = 0. The
+# body carries usage, without which it is an EmptyResponseError (#713).
 @pytest.mark.asyncio
 async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     """Servers send finish and keep-alive chunks with no delta, or no choices
@@ -553,7 +554,7 @@ async def test_chat_skips_chunks_without_choices_or_delta() -> None:
     assert isinstance(streamed.response_metrics, StreamedResponseMetrics)
     assert streamed.response_metrics.output_tokens == 3
 
-    body = {"choices": [{"index": 0, "finish_reason": "length"}]}
+    body = {"choices": [{"index": 0, "finish_reason": "length"}], "usage": {"completion_tokens": 0}}
     unary = await data.process_response(
         cast(ClientResponse, FakeStreamingResponse(json_body=body)),
         APIConfig(type=APIType.Chat, streaming=False),
