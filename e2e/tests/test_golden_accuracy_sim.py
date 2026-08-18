@@ -155,7 +155,13 @@ async def test_golden_accuracy(tokenizer_key: str, api_type: str, streaming: boo
                     "type": "vllm",
                     "model_name": "golden-model",
                     "base_url": f"http://{sim.host}:{sim.port}",
-                    "ignore_eos": True,
+                    # The golden sim serves each case's n_tokens regardless of the
+                    # request's max_tokens (the mock datagen sends the client
+                    # default, 30). Under ignore_eos the 16- and 24-token cases
+                    # would rightly be classed as truncated (#655); this fixture
+                    # measures tokenization fidelity, not length compliance, so it
+                    # does not claim ignore_eos.
+                    "ignore_eos": False,
                 },
                 "tokenizer": {"pretrained_model_name_or_path": tokenizer_path},
                 "report": {

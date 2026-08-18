@@ -5,6 +5,7 @@ import pytest
 from inference_perf.reportgen.base import summarize_requests, summarize_prompt_token_usage, ReportGenerator
 from inference_perf.apis.base import (
     RequestLifecycleMetric,
+    ErrorResponseInfo,
     InferenceInfo,
     StreamedResponseMetrics,
     UnaryResponseMetrics,
@@ -703,3 +704,75 @@ def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
     assert prompt_tokens["total"] == pytest.approx(10.0)
     assert prompt_tokens["cached"] == pytest.approx(0.0)
     assert prompt_tokens["uncached"] == pytest.approx(10.0)
+
+
+# Builds one successful request that asked for `max_tokens`, whose server usage
+# says `completion_tokens` were delivered (client count deliberately different,
+# 999, so a wrong source shows), with the given finish_reason.
+def _finished_request(
+    max_tokens: int | None, completion_tokens: int | None, finish_reason: str | None
+) -> RequestLifecycleMetric:
+    server_usage = {"completion_tokens": completion_tokens} if completion_tokens is not None else None
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=UnaryResponseMetrics(output_tokens=999, server_usage=server_usage, finish_reason=finish_reason),
+    )
+    return RequestLifecycleMetric(
+        scheduled_time=0.0,
+        start_time=0.0,
+        end_time=1.0,
+        request_data="r",
+        info=info,
+        error=None,
+        max_tokens=max_tokens,
+    )
+
+
+# Four successes: two stopped at "length" delivering the full 16, one stopped at
+# "stop" with 4 of 16, one whose server reported no reason and 16 of 16. Pins
+# finish_reasons == {"length": 2, "stop": 1} (unreported ones are not a bucket)
+# and output_shortfalls == 1 (only the 4-of-16 request), sorted by count.
+def test_summarize_requests_reports_finish_reasons_and_output_shortfalls() -> None:
+    metrics = [
+        _finished_request(16, 16, "length"),
+        _finished_request(16, 4, "stop"),
+        _finished_request(16, 16, "length"),
+        _finished_request(16, 16, None),
+    ]
+
+    successes = summarize_requests(metrics, [50]).successes
+
+    assert successes["finish_reasons"] == {"length": 2, "stop": 1}
+    assert list(successes["finish_reasons"]) == ["length", "stop"]
+    assert successes["output_shortfalls"] == 1
+
+
+# A request with no max_tokens recorded (None) and one whose server sent no usage
+# so the client count (3 here) stands in: the first cannot be judged and is not a
+# shortfall, the second is (3 < 8). output_shortfalls == 1.
+def test_output_shortfalls_needs_max_tokens_and_falls_back_to_client_count() -> None:
+    no_budget = _finished_request(None, 2, "stop")
+    no_usage = _finished_request(8, None, "stop")
+    assert no_usage.info.response_metrics is not None
+    no_usage.info.response_metrics.output_tokens = 3
+
+    successes = summarize_requests([no_budget, no_usage], [50]).successes
+
+    assert successes["output_shortfalls"] == 1
+    assert successes["finish_reasons"] == {"stop": 2}
+
+
+# A request that was already moved to the failure bucket (error set) does not
+# feed either field: one truncated failure plus one full-length success gives
+# finish_reasons == {"length": 1} and output_shortfalls == 0.
+def test_finish_reasons_and_shortfalls_only_count_successes() -> None:
+    truncated = _finished_request(16, 4, "stop")
+    truncated.error = ErrorResponseInfo(error_type="TruncatedResponseError", error_msg="delivered 4 of 16")
+
+    result = summarize_requests([truncated, _finished_request(16, 16, "length")], [50])
+
+    assert result.successes["finish_reasons"] == {"length": 1}
+    assert result.successes["output_shortfalls"] == 0
+    assert result.failures["by_label"] == {
+        "truncatedresponseerror": {"count": 1, "messages": [{"message": "delivered 4 of 16"}]}
+    }

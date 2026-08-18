@@ -275,7 +275,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--server.type` | Enum (vllm, sglang, tgi, mock) | Type of model server being benchmarked. |
 | `--server.model_name` | str | Model name sent in each request. Auto-detected from the server if unset. |
 | `--server.base_url` | str | Base URL of the model server, e.g. 'http://localhost:8000'. |
-| `--server.ignore_eos` | boolean | Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. |
+| `--server.ignore_eos` | boolean | Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. A completion that then delivers fewer output tokens than its max_tokens is recorded as a failure (TruncatedResponseError). Set false for servers that ignore this field. |
 | `--server.api_key` | str | API key sent as a bearer token with each request. |
 | `--server.cert_path` | str | Path to a client TLS certificate file. |
 | `--server.key_path` | str | Path to the private key for the client TLS certificate. |

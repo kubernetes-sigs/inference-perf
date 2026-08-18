@@ -23,7 +23,7 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
-from inference_perf.apis.response_errors import InvalidResponseError
+from inference_perf.apis.response_errors import InvalidResponseError, TruncatedResponseError
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
@@ -188,6 +188,21 @@ class openAIModelServerClient(ModelServerClient):
             return []
 
 
+def _truncation_error(info: InferenceInfo, max_tokens: Optional[int]) -> Optional[ErrorResponseInfo]:
+    """The failure to record when a completion delivered fewer output tokens than
+    ``max_tokens`` asked for, or None when it delivered the budget or the pair
+    is not comparable (no ``max_tokens`` on the request, or a response the API
+    layer produced no metrics for, such as a body with no ``choices``)."""
+    metrics = info.response_metrics
+    if metrics is None or max_tokens is None:
+        return None
+    delivered = metrics.delivered_output_tokens()
+    if delivered >= max_tokens:
+        return None
+    exc = TruncatedResponseError(delivered, max_tokens, metrics.finish_reason)
+    return ErrorResponseInfo(error_msg=str(exc), error_type=type(exc).__name__)
+
+
 def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, str]) -> None:
     for k, v in source.items():
         k_lower = k.lower()
@@ -261,9 +276,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
                     tpot = total_decode_time / num_decode_tokens if num_decode_tokens > 0 else 0
                     otel_response_info["time_per_output_token"] = tpot
 
-            # Add finish reason from extra_info if available
-            if "finish_reason" in info.extra_info:
-                otel_response_info["finish_reason"] = info.extra_info["finish_reason"]
+            if inner and inner.finish_reason is not None:
+                otel_response_info["finish_reason"] = inner.finish_reason
 
             # Extract input and output following GenAI semantic conventions
             try:
@@ -402,6 +416,16 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 headers[session_token_header] = session_token
 
         request_data = json.dumps(payload)
+        # What the request asked for, kept on the metric so requested-versus-
+        # delivered output length is computable at report time (#655). Every API
+        # family here spells it max_tokens. Whether the body actually told the
+        # server to ignore EOS is read from the body too, not the client setting:
+        # Anthropic bodies never carry the field, and the trace replay turns it
+        # off per request for tool calls, so those must not be held to it.
+        requested_max_tokens = payload.get("max_tokens")
+        if not isinstance(requested_max_tokens, int) or isinstance(requested_max_tokens, bool):
+            requested_max_tokens = None
+        asked_to_ignore_eos = payload.get("ignore_eos") is True
 
         # Determine operation name based on API type
         if self.client.api_config.type == APIType.Chat:
@@ -543,6 +567,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
             end_time = time.perf_counter()
 
+            # Under ignore_eos the server was told to generate the full
+            # max_tokens, so a completion that delivered fewer is a truncation
+            # (#655), not a short answer: reclassify it as failed. The parsed
+            # metrics and body stay on the record as the evidence.
+            if info is not None and error is None and asked_to_ignore_eos:
+                error = _truncation_error(info, requested_max_tokens)
+
             # Record OTEL metrics
             self._record_otel_metrics(
                 span=span,
@@ -576,6 +607,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
             response_data=response_content,
             info=info,
             error=error,
+            max_tokens=requested_max_tokens,
             start_time=start,
             end_time=end_time,
             scheduled_time=scheduled_time,
