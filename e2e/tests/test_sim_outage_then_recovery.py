@@ -106,6 +106,9 @@ RELATIVE_TOLERANCE = 1e-6
 _SIM_SUCCESS_RE = re.compile(r"^vllm:request_success(?:_total)?\{.*?\} (\d+)", re.MULTILINE)
 
 
+# One GET of the sim's /metrics. Returns the sum of every vllm:request_success(_total)
+# series (e.g. finish_reason="stop" 9 + finish_reason="length" 6 -> 15), or None if the
+# counter is not on the page yet.
 async def _sim_success_count(session: aiohttp.ClientSession, url: str) -> Optional[int]:
     """Reads the sim's cumulative successful-request count, summed over all
     finish_reason series. Returns None when the counter is absent: the sim
@@ -119,6 +122,9 @@ async def _sim_success_count(session: aiohttp.ClientSession, url: str) -> Option
     return sum(int(count) for count in counts)
 
 
+# Polls that sum every 0.2s until it reaches target (15 here, one full stage) and returns
+# it. Gives up after 120s with one of two messages: counter seen but short of target, or
+# counter never seen at all (no request completed, or the sim renamed the metric).
 async def _wait_for_sim_success_count(
     host: str,
     port: int,
@@ -161,10 +167,13 @@ async def _wait_for_sim_success_count(
             await asyncio.sleep(poll_sec)
 
 
+# end_time - start_time of one per-request record, in seconds.
 def _entry_latency(entry: Dict[str, Any]) -> float:
     return float(entry["end_time"]) - float(entry["start_time"])
 
 
+# Output tokens for one record: server_usage.completion_tokens if present, otherwise the
+# client-side output_tokens, otherwise 0. A failed request has no response_metrics, so 0.
 def _entry_output_tokens(entry: Dict[str, Any]) -> float:
     """Output tokens the report would attribute to this request: the
     server-reported completion_tokens when present, the client count otherwise.
@@ -176,15 +185,19 @@ def _entry_output_tokens(entry: Dict[str, Any]) -> float:
     return float(metrics.get("output_tokens") or 0)
 
 
+# Prompt tokens for one record from request_metrics.text.input_tokens, otherwise 0.
 def _entry_input_tokens(entry: Dict[str, Any]) -> float:
     request_metrics = ((entry.get("info") or {}).get("request_metrics") or {}).get("text") or {}
     return float(request_metrics.get("input_tokens") or 0)
 
 
+# actual must equal expected to within 1e-6 relative; `what` names the aggregate in the message.
 def _assert_close(actual: float, expected: float, what: str) -> None:
     assert actual == pytest.approx(expected, rel=RELATIVE_TOLERANCE), f"{what}: report says {actual}, recomputed {expected}"
 
 
+# The opposite: polluted must NOT equal clean to within 1e-6. Fails when the failed requests
+# would not have moved the number, because then the successes-only check proves nothing.
 def _assert_differs(polluted: float, clean: float, what: str) -> None:
     """The teeth of the successes-only check: if including the failed requests
     made no difference, the check proves nothing about which set was used."""
@@ -193,6 +206,10 @@ def _assert_differs(polluted: float, clean: float, what: str) -> None:
     )
 
 
+# Splits the 45 per-request records into 30 successes and 15 failures, checks no failure
+# carries response_metrics, then checks the summary's mean/max latency and total/mean output
+# and prompt tokens equal the same numbers recomputed from the 30 successes, and that
+# recomputing over all 45 gives different numbers.
 def _assert_aggregates_use_successes_only(summary: Dict[str, Any], per_request: List[Dict[str, Any]]) -> None:
     successes = [entry for entry in per_request if not entry.get("error")]
     failures = [entry for entry in per_request if entry.get("error")]
@@ -242,6 +259,10 @@ def _assert_aggregates_use_successes_only(summary: Dict[str, Any], per_request: 
     )
 
 
+# Three 15-request stages (5/s x 3s) 30s apart. The sim is killed once its /metrics shows
+# stage 0's 15 successes and restarted 52s later, before stage 2. Expects stage reports of
+# 0/15/0 failures and 15/0/15 successes, a 30-success/15-failure summary, 45 per-request
+# records, and summary aggregates that match the 30 successes only.
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
 async def test_run_recovers_after_a_midrun_sim_outage():
