@@ -1,5 +1,6 @@
-# Open loop: constant 8 QPS for 5s = 40 requests, fixed 128-in / 64-out.
-# server.base_url and tokenizer path are overwritten by the parity harness.
+# Case a: send 8 requests per second, evenly spaced, for 5 seconds = 40
+# requests. Every prompt is 128 tokens and every request asks for 64 output
+# tokens. The parity test replaces server.base_url and the tokenizer path.
 api:
   type: completion
   streaming: true

@@ -11,23 +11,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""OpenAI-compatible absorber: records the load a client offers it.
+"""A fake OpenAI-compatible server that records every request sent to it.
 
-The absorber is the oracle for the tool-parity tests: any benchmark tool is
-pointed at it, and afterwards the recorded requests ARE the workload that tool
-actually offered: request count, arrival times, prompt payloads, sampling
-flags, and how many requests were in flight at once. Divergence between two
-tools configured for "the same" workload shows up here as a diff over
-recorded requests, naming the knob that leaked, instead of as a noisy delta
-between the tools' reported metrics.
+Point any benchmark tool at the absorber and, when the run finishes, the list
+of recorded requests is exactly what that tool sent: how many, when each
+arrived, the prompt, ``max_tokens``, the ``stream`` / ``ignore_eos`` flags, and
+how many other requests were in progress at that moment. The tool-parity tests
+compare those recordings between tools. When two tools configured for "the
+same" workload differ, the difference shows up as a concrete request-level
+mismatch that names the setting responsible, rather than as a fuzzy gap in the
+latency numbers the tools print.
 
-It is deliberately NOT dumb: closed-loop clients issue their next request when
-the previous one finishes, so response pacing shapes the arrival process being
-measured. Responses therefore stream ``max_tokens`` chunks paced by a
-configured TTFT and inter-chunk interval. It is also NOT a token oracle: chunk
-text is arbitrary filler and the usage numbers it returns are naive counts.
-Token-accounting fidelity belongs to the golden sim (golden_sim.py) and the
-live vLLM tier, never to parity cases.
+Two things to know about the responses it sends back:
+
+- They are paced on purpose. Closed-loop tools (a fixed number of requests in
+  flight) send their next request only when the previous one finishes, so how
+  quickly the server answers changes the traffic pattern being measured. The
+  absorber therefore streams ``max_tokens`` chunks with a configurable wait
+  before the first chunk (TTFT) and between chunks (ITL).
+- They are not real tokens. Chunk text is filler words and the ``usage``
+  counts are rough. Anything about token accounting is tested elsewhere
+  (golden_sim.py and the live vLLM tier), never here.
 """
 
 import asyncio
@@ -44,16 +48,16 @@ _FILLER_WORDS = ("alpha", "bravo", "carol", "delta", "echo", "fox", "golf", "hot
 
 @dataclass(frozen=True)
 class AbsorbedRequest:
-    """One request exactly as the absorber received it."""
+    """One request exactly as the absorber received it, plus when and how busy the server was."""
 
     route: str  # "/v1/completions" or "/v1/chat/completions"
-    arrival_s: float  # perf_counter() at handler entry
-    in_flight_at_arrival: int  # concurrent requests the moment this one arrived, including it
-    body: Dict[str, Any]  # raw parsed JSON body
+    arrival_s: float  # time.perf_counter() when the request arrived; only differences between requests mean anything
+    in_flight_at_arrival: int  # how many requests were in progress at that moment, counting this one
+    body: Dict[str, Any]  # the request's JSON body, as sent
 
     @property
     def prompt_text(self) -> Optional[str]:
-        """The prompt as text, or None when it cannot be interpreted as text."""
+        """The prompt as one string (chat messages joined by newlines), or None if it is not text."""
         if self.route == "/v1/chat/completions":
             parts = []
             for message in self.body.get("messages", []):
@@ -70,7 +74,7 @@ class AbsorbedRequest:
 
     @property
     def prompt_token_ids(self) -> Optional[List[int]]:
-        """Pre-tokenized prompt ids, when the client sent ids instead of text."""
+        """The prompt as a list of token ids, when the tool sent ids instead of text; else None."""
         prompt = self.body.get("prompt")
         if isinstance(prompt, list) and prompt and all(isinstance(p, int) for p in prompt):
             return prompt
@@ -92,12 +96,13 @@ class AbsorbedRequest:
 
 @dataclass
 class AbsorberServer:
-    """Serves /v1/completions and /v1/chat/completions, recording every request.
+    """The fake server. Use as ``async with AbsorberServer(...) as s:``; afterwards ``s.requests`` is the recording.
 
-    ``ttft_s`` delays the first streamed chunk (or the whole unary response)
-    and ``itl_s`` paces subsequent chunks, so closed-loop clients see realistic
-    request durations. ``default_output_tokens`` bounds responses when a client
-    omits ``max_tokens``.
+    Answers on /v1/completions and /v1/chat/completions (plus /v1/models,
+    /health and /metrics so tools that probe those do not error). ``ttft_s`` is
+    the wait before the first chunk (or before a non-streaming reply) and
+    ``itl_s`` the wait between chunks. ``default_output_tokens`` is how many
+    chunks to send when the request has no ``max_tokens``.
     """
 
     port: int
@@ -140,9 +145,11 @@ class AbsorberServer:
         return web.Response(text="")
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
-        # An empty but valid exposition, so clients that scrape do not error.
+        # Empty but valid Prometheus output, so tools that scrape metrics do not error.
         return web.Response(text="", content_type="text/plain")
 
+    # Records one request: timestamps it, notes how many are in flight, appends
+    # it to self.requests.
     def _absorb(self, route: str, body: Dict[str, Any]) -> AbsorbedRequest:
         absorbed = AbsorbedRequest(
             route=route,
@@ -153,6 +160,8 @@ class AbsorberServer:
         self.requests.append(absorbed)
         return absorbed
 
+    # Rough prompt token count for the usage field: list length for token ids,
+    # word count for text. Not accurate, and nothing here relies on it being.
     def _naive_prompt_tokens(self, absorbed: AbsorbedRequest) -> int:
         ids = absorbed.prompt_token_ids
         if ids is not None:
@@ -160,6 +169,7 @@ class AbsorberServer:
         text = absorbed.prompt_text or ""
         return len(text.split())
 
+    # n filler chunks: " alpha", " bravo", ... cycling through _FILLER_WORDS.
     def _chunk_texts(self, n: int) -> List[str]:
         words = itertools.cycle(_FILLER_WORDS)
         return [f" {next(words)}" for _ in range(n)]
@@ -170,6 +180,10 @@ class AbsorberServer:
     async def _handle_chat(self, request: web.Request) -> web.StreamResponse:
         return await self._respond(request, "/v1/chat/completions")
 
+    # Shared handler for both endpoints. Records the request, then replies with
+    # max_tokens (or default_output_tokens) chunks: streamed with pacing if the
+    # request said stream=true, otherwise as one JSON body after an equivalent
+    # total wait. The in-flight counter covers the whole reply.
     async def _respond(self, request: web.Request, route: str) -> web.StreamResponse:
         self._in_flight += 1
         try:
@@ -189,10 +203,12 @@ class AbsorberServer:
         finally:
             self._in_flight -= 1
 
+    # The fixed id/object/created/model fields every reply carries.
     def _envelope(self, route: str) -> Dict[str, Any]:
         kind = "text_completion" if route == "/v1/completions" else "chat.completion"
         return {"id": "absorber-0", "object": kind, "created": int(time.time()), "model": self.model}
 
+    # One complete non-streaming reply with all chunks joined into one text.
     def _unary_body(self, route: str, chunks: List[str], usage: Dict[str, int]) -> Dict[str, Any]:
         text = "".join(chunks)
         if route == "/v1/completions":
@@ -201,6 +217,9 @@ class AbsorberServer:
             choice = {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "length"}
         return {**self._envelope(route), "choices": [choice], "usage": usage}
 
+    # Server-sent-events reply: wait ttft_s, send the first chunk, then wait
+    # itl_s before each later chunk. Sends a final usage chunk only if the
+    # request asked for it (stream_options.include_usage), then "data: [DONE]".
     async def _stream(
         self,
         request: web.Request,
