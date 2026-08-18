@@ -35,7 +35,7 @@ from inference_perf.payloads import (
     SyntheticMp4VideoSpec,
 )
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
 from inference_perf.mediagen.synthesis import generate_jpeg_bytes, generate_mp4_bytes, generate_png_bytes, generate_wav_bytes
@@ -562,7 +562,7 @@ class ChatCompletionAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, finish_reason = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
             # A stream that carried neither content nor usage is not a completion
@@ -582,6 +582,7 @@ class ChatCompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},
@@ -606,6 +607,8 @@ class ChatCompletionAPIData(InferenceAPIData):
         output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+            ),
             lora_adapter=lora_adapter,
         )

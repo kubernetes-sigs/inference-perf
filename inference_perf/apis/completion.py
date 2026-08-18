@@ -21,7 +21,7 @@ from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
 from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -76,7 +76,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, finish_reason = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
             # A stream that carried neither content nor usage is not a completion
@@ -98,6 +98,7 @@ class CompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},
@@ -123,6 +124,8 @@ class CompletionAPIData(InferenceAPIData):
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+                ),
                 lora_adapter=lora_adapter,
             )

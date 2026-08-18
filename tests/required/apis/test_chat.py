@@ -415,3 +415,35 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+# Unary chat body whose choice finished with "tool_calls" and streamed chat whose
+# last delta frame carries finish_reason "length": each must land verbatim on
+# response_metrics.finish_reason ("tool_calls" and "length" respectively).
+@pytest.mark.asyncio
+async def test_process_response_records_finish_reason_unary_and_streaming() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "calling"}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "tool_calls"
+
+    sse = (
+        b'data: {"choices": [{"delta": {"content": "hello"}, "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), tokenizer
+    )
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"

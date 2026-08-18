@@ -21,6 +21,13 @@ all. Both used to be recorded as zero-token successes (#713). The exceptions her
 are raised by ``process_response`` on such bodies so the client records the
 request as failed, with the body preserved, the same way it does for a stream
 that breaks partway (``StreamInterruptedError``).
+
+A completion can also be well-formed and still not be what was asked for: under
+``ignore_eos`` the server is told to generate the full ``max_tokens``, so a
+cleanly closed response that delivers fewer is a truncation, not a short answer
+(#655). ``TruncatedResponseError`` is that case; the client records it after
+``process_response`` returns, since only the client holds the request body and
+so knows both its ``max_tokens`` and whether it carried ``ignore_eos: true``.
 """
 
 import json
@@ -76,3 +83,32 @@ def in_band_error(data: Any) -> Optional[str]:
     if isinstance(data, dict) and data.get("error"):
         return json.dumps(data)
     return None
+
+
+class TruncatedResponseError(InvalidResponseError):
+    """A completion that delivered fewer output tokens than ``max_tokens`` asked
+    for while ``ignore_eos`` was set.
+
+    ``ignore_eos`` is documented as "keep generating past the end-of-sequence
+    token so outputs hit the requested length", so under it a shortfall has no
+    legitimate cause: the server stopped early (``finish_reason`` other than
+    ``length``) or capped the request below what was asked (``length`` with
+    fewer tokens, e.g. a ``max_model_len`` cap). Either way the run did not
+    exercise the configured output length, and counting the request as a success
+    would silently depress the output-length distribution the way #564 did.
+
+    Detection uses the server's own ``usage.completion_tokens`` when it reported
+    one and the client-side count otherwise (``ResponseMetrics.delivered_output_tokens``).
+    Without ``ignore_eos`` a short response is often the model emitting EOS as
+    intended, so the same shortfall is reported as an observation
+    (``successes.output_shortfalls``) rather than a failure.
+    """
+
+    def __init__(self, delivered: int, requested: int, finish_reason: Optional[str]) -> None:
+        super().__init__(
+            f"delivered {delivered} of {requested} requested output tokens with ignore_eos set"
+            f" (finish_reason={finish_reason if finish_reason is not None else 'unreported'})"
+        )
+        self.delivered = delivered
+        self.requested = requested
+        self.finish_reason = finish_reason
