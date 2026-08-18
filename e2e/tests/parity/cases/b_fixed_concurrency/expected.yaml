@@ -10,6 +10,13 @@ workload:
   ignore_eos: true
 load:
   mode: concurrency
+  # Checked with assert_delivered_concurrency in e2e/utils/load_shape.py: never
+  # more than 8 in flight at the absorber, and on average within half a slot of
+  # 8 over the steady-state window (from the 8th arrival to the last one).
+  # Measured for inference-perf that average is about 7.88: the absorber sees
+  # the gap between one reply finishing and the next request arriving, which
+  # the client's own timestamps do not. Half a slot leaves about 4x headroom
+  # over that and still fails a whole missing slot (7 in flight).
   concurrency: 8
 tools:
   vllm-bench:
