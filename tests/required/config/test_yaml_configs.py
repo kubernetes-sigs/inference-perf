@@ -65,10 +65,10 @@ NON_CONFIG_FILES = {
     "examples/tgi/docker-compose.yml": "docker-compose service definition",
     "examples/tgi/prometheus.yml": "Prometheus scrape config",
 }
-# Same idea as NON_CONFIG_FILES, for families of files whose membership grows by convention
-# rather than by edit. A drop-in test case directory must not require a Python change here
-# every time one is added, but the sibling inference-perf config in the same directory still
-# has to be schema-validated, so the exclusion has to be per-file rather than per-directory.
+# Like NON_CONFIG_FILES, but with wildcards, for groups of files that keep growing (e.g. one
+# per test case directory). Adding a new case directory must not need an edit here. It is a
+# per-file pattern rather than a whole-directory one because the inference-perf.yaml sitting
+# next to each expected.yaml still needs to be schema-checked.
 NON_CONFIG_GLOBS = {
     "e2e/tests/parity/cases/*/expected.yaml": "tool-parity case invariants, not inference-perf configs",
 }
@@ -83,6 +83,8 @@ def _tracked_yaml_files() -> List[str]:
     return sorted(p for p in out.split("\n") if p)
 
 
+# True if path matches any NON_CONFIG_GLOBS pattern, e.g.
+# "e2e/tests/parity/cases/a_fixed_rate/expected.yaml".
 def _matches_non_config_glob(path: str) -> bool:
     return any(fnmatch(path, pattern) for pattern in NON_CONFIG_GLOBS)
 

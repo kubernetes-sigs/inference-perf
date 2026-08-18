@@ -11,20 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Offered-load parity between inference-perf and `vllm bench serve`.
+"""Do inference-perf and `vllm bench serve` send the same traffic when configured for the same workload?
 
-Every subdirectory of ``cases/`` describes one workload twice (an
-inference-perf config and a vllm bench arg file) plus the invariants both
-must satisfy (``expected.yaml``); see the README next to this file for the
-drop-in contract. Each tool is run against the absorber
-(``e2e/utils/absorber.py``), and the absorber's record of what actually
-arrived is the oracle: request counts, per-request prompt token lengths and
-``max_tokens``, sampling flags, realized arrival rate, and peak concurrency.
+Each subdirectory of ``cases/`` holds one workload written down twice (an
+inference-perf config and a vllm bench args file) plus ``expected.yaml``, the
+numbers both must hit. See the README next to this file.
 
-Two tests per case: each tool against ``expected.yaml`` (the vllm side skips
-when no vllm is available, see ``e2e/utils/vllm_bench.py``), and the two
-tools against each other. Tool runs are cached per case, so a case costs one
-run per tool regardless of how many tests read it.
+Each tool is pointed at the absorber (``e2e/utils/absorber.py``), a fake server
+that records every request it receives. That recording is what gets checked:
+how many requests arrived, how many prompt tokens and ``max_tokens`` each had,
+the ``stream`` / ``ignore_eos`` flags, how fast they arrived, and how many were
+in flight at once. The numbers the tools themselves print are never read here.
+
+Two kinds of test per case: each tool against ``expected.yaml`` (the vllm side
+skips when no vllm is installed, see ``e2e/utils/vllm_bench.py``), and the two
+tools directly against each other. Each tool is run once per case and the
+result is cached, so the number of tests reading it does not matter.
 """
 
 import statistics
@@ -49,20 +51,25 @@ PARITY_DIR = Path(__file__).resolve().parent
 CASE_DIRS = sorted(p for p in (PARITY_DIR / "cases").iterdir() if p.is_dir())
 TOOLS = ("inference-perf", "vllm-bench")
 
-# One xdist worker for the whole module: profiles are cached in-process, and
-# absorber timing assertions should not compete with sibling tests for CPU.
+# Run this whole file on one pytest-xdist worker. The per-tool results are cached
+# in this process, and the timing checks below should not share a CPU with
+# unrelated tests running at the same time.
 pytestmark = pytest.mark.xdist_group(name="tool-parity")
 
 
+# Guard: at least one case directory exists. If cases/ were empty, every
+# parametrized test below would silently produce zero tests, and this file
+# would pass while checking nothing.
 def test_cases_are_committed() -> None:
-    # An empty cases/ directory would silently deselect every test below, and
-    # a gate that silently skips gates nothing.
     assert CASE_DIRS, f"no parity cases committed under {PARITY_DIR / 'cases'}"
 
 
+# Everything the checks below need to know about one tool's run, computed from
+# the absorber's recording after dropping the tool's declared warmup requests.
+# realized_rate is (n-1)/duration: 40 requests spread over 4.875s = 8.0/s.
 @dataclass(frozen=True)
 class OfferedLoad:
-    """What one tool actually offered the absorber, after trimming declared warmup."""
+    """What one tool actually sent, after dropping declared warmup requests."""
 
     n: int
     prompt_token_lens: List[int]
@@ -79,6 +86,8 @@ class OfferedLoad:
         return (self.n - 1) / self.duration_s
 
 
+# Loads the bundled gemma-3-270m tokenizer once. Used to count prompt tokens
+# the same way for both tools.
 @lru_cache(maxsize=1)
 def _tokenizer() -> Any:
     from transformers import AutoTokenizer
@@ -86,6 +95,9 @@ def _tokenizer() -> Any:
     return AutoTokenizer.from_pretrained(str(extract_tarball(TOKENIZER_TARBALL)))
 
 
+# Prompt length of one recorded request, in tokens. If the tool sent token ids
+# directly, that is just the list length; if it sent text, re-tokenize it
+# (without adding BOS/EOS). Fails if the prompt is neither.
 def _prompt_tokens(request: AbsorbedRequest) -> int:
     ids = request.prompt_token_ids
     if ids is not None:
@@ -95,12 +107,17 @@ def _prompt_tokens(request: AbsorbedRequest) -> int:
     return len(_tokenizer().encode(text, add_special_tokens=False))
 
 
+# Reads cases/<name>/expected.yaml into a dict.
 def _expected(case_dir: Path) -> Dict[str, Any]:
     loaded = yaml.safe_load((case_dir / "expected.yaml").read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
     return loaded
 
 
+# Turns the absorber's raw recording into an OfferedLoad. Sorts by arrival time,
+# drops the first `trim` requests (declared warmup traffic), then summarizes the
+# rest. 41 recorded requests with trim=1 gives n=40 and a duration measured from
+# the 2nd arrival to the 41st.
 def _profile(requests: List[AbsorbedRequest], trim: int) -> OfferedLoad:
     assert len(requests) > trim, f"tool sent {len(requests)} requests, all trimmed as leading extras ({trim})"
     kept = sorted(requests, key=lambda r: r.arrival_s)[trim:]
@@ -115,16 +132,23 @@ def _profile(requests: List[AbsorbedRequest], trim: int) -> OfferedLoad:
     )
 
 
+# Runs inference-perf with the case's inference-perf.yaml, pointed at the
+# absorber. Only server.base_url and the tokenizer path are replaced (see
+# README); every other setting is used as written. Fails if the run itself
+# fails.
 async def _drive_inference_perf(case_dir: Path, base_url: str) -> None:
     config = yaml.safe_load((case_dir / "inference-perf.yaml").read_text(encoding="utf-8"))
     assert isinstance(config, dict)
-    # The harness owns endpoint wiring (see README); everything else is verbatim.
     config["server"]["base_url"] = base_url
     config["tokenizer"] = {"pretrained_model_name_or_path": str(extract_tarball(TOKENIZER_TARBALL))}
     result = await run_benchmark_minimal(config)
     assert result.success, f"inference-perf run failed (rc={result.return_code}):\n{result.stdout[-4000:]}"
 
 
+# Runs `vllm bench serve` with the case's vllm-bench.args, pointed at the
+# absorber. Blank lines and # comments in the args file are skipped; the
+# harness adds --base-url/--model/--tokenizer/--save-result/--result-filename
+# at the end. Fails if the run itself fails.
 async def _drive_vllm_bench(case_dir: Path, base_url: str, vllm_bin: str) -> None:
     lines = (case_dir / "vllm-bench.args").read_text(encoding="utf-8").splitlines()
     args = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
@@ -135,9 +159,15 @@ async def _drive_vllm_bench(case_dir: Path, base_url: str, vllm_bin: str) -> Non
     assert result.success, f"vllm bench run failed (rc={result.return_code}):\n{result.stdout[-4000:]}"
 
 
+# Cache of (case name, tool) -> OfferedLoad, so each tool runs once per case.
 _PROFILES: Dict[Tuple[str, str], OfferedLoad] = {}
 
 
+# The one place a tool actually gets run. Starts a fresh absorber on a free port
+# with the pacing from expected.yaml (default 40ms first chunk, 5ms between
+# chunks), runs the tool against it, then summarizes the recording with the
+# tool's leading_extra_requests dropped. Skips (not fails) the vllm side when
+# no vllm is available. Cached, so a second call for the same case+tool is free.
 async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     key = (case_dir.name, tool)
     if key in _PROFILES:
@@ -170,16 +200,25 @@ async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     return _PROFILES[key]
 
 
+# Every prompt length must be within target*rel_tol of target (at least +-1).
+# target=128, rel_tol=0.15 accepts 109..147 tokens. The message lists how many
+# were outside and the min/mean/max, and points at the length settings.
 def _assert_prompt_lens(lens: List[int], target: int, rel_tol: float, who: str) -> None:
     bound = max(1, int(target * rel_tol))
     off = [n for n in lens if abs(n - target) > bound]
     assert not off, (
         f"{who}: {len(off)}/{len(lens)} prompts outside {target}±{bound} tokens "
         f"(min={min(lens)}, mean={statistics.mean(lens):.1f}, max={max(lens)}); "
-        f"check the length knobs (input_distribution vs --random-input-len/--random-range-ratio)"
+        f"check the prompt-length settings (input_distribution vs --random-input-len/--random-range-ratio)"
     )
 
 
+# One tool against expected.yaml. For case a_fixed_rate that means: exactly 40
+# requests (after dropping warmup), every max_tokens == 64, every request has
+# stream=true and ignore_eos=true, every prompt is 128 tokens +-15%, and the
+# average arrival rate is 8/s +-35%. For a concurrency case, the peak number in
+# flight must equal the configured concurrency exactly. Runs once per (case,
+# tool); the vllm side skips when no vllm is installed.
 @pytest.mark.parametrize("tool", TOOLS)
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
 async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
@@ -189,11 +228,11 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
 
     assert offered.n == workload["num_requests"], (
         f"{tool} offered {offered.n} requests, expected {workload['num_requests']} "
-        f"(warmup traffic is declared via tools.{tool}.leading_extra_requests)"
+        f"(if the extra ones are warmup traffic, declare them in tools.{tool}.leading_extra_requests)"
     )
     assert set(offered.max_tokens) == {workload["max_tokens"]}, (
         f"{tool} max_tokens values {sorted(set(offered.max_tokens), key=str)} != {workload['max_tokens']} "
-        f"(check the output-length knobs, and --random-range-ratio semantics for vllm)"
+        f"(check the output-length settings; for vllm, check what --random-range-ratio means at this pin)"
     )
     assert offered.stream_flags == {workload["stream"]}, f"{tool} stream flags {offered.stream_flags}"
     assert offered.ignore_eos_flags == {workload["ignore_eos"]}, f"{tool} ignore_eos flags {offered.ignore_eos_flags}"
@@ -203,18 +242,23 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
         rate, tol = float(load["rate"]), float(load["rate_rel_tol"])
         assert offered.realized_rate == pytest.approx(rate, rel=tol), (
             f"{tool} realized arrival rate {offered.realized_rate:.2f}/s vs configured {rate}/s "
-            f"(±{tol:.0%}); check rate semantics and worker caps"
+            f"(±{tol:.0%}); check what the rate setting means for this tool, and whether a worker cap is throttling it"
         )
     elif load["mode"] == "concurrency":
         level = int(load["concurrency"])
         assert offered.max_in_flight == level, (
             f"{tool} peak in-flight {offered.max_in_flight} != configured concurrency {level}; "
-            f"check closed-loop semantics (concurrency_level vs --max-concurrency)"
+            f"check the concurrency settings (concurrency_level vs --max-concurrency)"
         )
     else:
         pytest.fail(f"unknown load.mode {load['mode']!r} in {case_dir / 'expected.yaml'}")
 
 
+# The two tools directly against each other, same quantities as above but with
+# no reference numbers involved: same request count, same multiset of
+# max_tokens, same stream/ignore_eos flags, mean prompt length within
+# prompt_tokens_rel_tol, and (by load mode) average rate within rate_rel_tol or
+# identical peak in-flight. Skips when the vllm side is unavailable.
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
 async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
     expected = _expected(case_dir)
@@ -236,15 +280,15 @@ async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
     rel_tol = float(workload["prompt_tokens_rel_tol"])
     assert ip_mean == pytest.approx(vb_mean, rel=rel_tol), (
         f"mean prompt tokens differ: inference-perf {ip_mean:.1f} vs vllm-bench {vb_mean:.1f} "
-        f"(the two configs describe different workloads; check the length knobs)"
+        f"(the two configs describe different workloads; check the prompt-length settings)"
     )
 
     if load["mode"] == "rate":
         tol = float(load["rate_rel_tol"])
         assert ip.realized_rate == pytest.approx(vb.realized_rate, rel=tol), (
             f"realized arrival rates differ: inference-perf {ip.realized_rate:.2f}/s "
-            f"vs vllm-bench {vb.realized_rate:.2f}/s (mean rate should agree even though "
-            f"arrival shape legitimately differs: constant vs Poisson)"
+            f"vs vllm-bench {vb.realized_rate:.2f}/s (the average should agree even though the "
+            f"spacing between requests differs on purpose: even vs random)"
         )
     elif load["mode"] == "concurrency":
         assert ip.max_in_flight == vb.max_in_flight, (
