@@ -20,6 +20,7 @@
       {
         systems = [
           "x86_64-linux"
+          "aarch64-linux" # the e2e-tests CI job runs on GitHub's ARM runners
         ];
         flake = {
           lib = {

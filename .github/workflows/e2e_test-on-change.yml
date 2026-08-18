@@ -12,7 +12,15 @@ on:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest
+    # ARM, not x86: the live-oracle step below starts a real vLLM CPU server,
+    # and the ubuntu-latest x86 pool hands out several CPU models, some of
+    # which cannot run it (AMD EPYC 9xxx VMs with AVX-512 masked by the
+    # hypervisor: vLLM's sampler is a Triton kernel that triton-cpu compiles
+    # for the host CPU name, znver4, so the worker traps on invalid opcode).
+    # That made the job red on a runner draw, not on a code change. GitHub's
+    # ARM pool is one CPU, so the same job on it is deterministic; there is
+    # no way to pin a CPU model within the x86 pool.
+    runs-on: ubuntu-24.04-arm
     env:
       VLLM_MODEL: facebook/opt-125m
     steps:
@@ -83,7 +91,7 @@ jobs:
           failed=""
           for v in $VLLM_VERSIONS; do
             if e2e/vllm_cpu_server.sh start "$v"; then
-              # A red release must name what it resolved to; latest-x86_64
+              # A red release must name what it resolved to; latest
               # points at a different release over time.
               {
                 echo "### $v resolved to"

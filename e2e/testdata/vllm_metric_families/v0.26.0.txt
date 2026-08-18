@@ -1,4 +1,4 @@
-# vllm:* metric families exposed by vllm-openai-cpu:v0.26.0-x86_64 under the
+# vllm:* metric families exposed by vllm-openai-cpu:v0.26.0 under the
 # e2e launch config (e2e/vllm_cpu_server.sh), captured after one warmup
 # request. Regenerate against a freshly started server of this release:
 #   e2e/vllm_cpu_server.sh start <release-tag>
