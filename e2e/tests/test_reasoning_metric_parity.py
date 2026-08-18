@@ -215,7 +215,16 @@ async def _run_inference_perf(server: FakeOpenAIServer, tokenizer_path: str) -> 
             "data": {"type": "mock"},
             "load": {"type": "constant", "stages": [{"rate": RATE, "duration": DURATION}], "num_workers": 1},
             "api": {"type": "chat", "streaming": True},
-            "server": {"type": "vllm", "model_name": MODEL_NAME, "base_url": server.base_url, "ignore_eos": True},
+            "server": {
+                "type": "vllm",
+                "model_name": MODEL_NAME,
+                "base_url": server.base_url,
+                # The fake server streams the same script whatever max_tokens is
+                # (the mock datagen sends the client default, 30). Under ignore_eos
+                # every request would rightly be classed as truncated (#655). This
+                # test checks timing, not length compliance.
+                "ignore_eos": False,
+            },
             "tokenizer": {"pretrained_model_name_or_path": tokenizer_path},
             "report": {"request_lifecycle": {"summary": True, "per_stage": True, "per_request": True}},
         },

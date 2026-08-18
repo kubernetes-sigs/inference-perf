@@ -618,3 +618,35 @@ async def test_process_response_non_streaming_accepts_engine_specific_fields(
     assert isinstance(info.response_metrics, UnaryResponseMetrics)
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": None}
+
+
+# Unary chat body whose choice finished with "tool_calls" and streamed chat whose
+# last delta frame carries finish_reason "length": each must land verbatim on
+# response_metrics.finish_reason ("tool_calls" and "length" respectively).
+@pytest.mark.asyncio
+async def test_process_response_records_finish_reason_unary_and_streaming() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "calling"}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "tool_calls"
+
+    sse = (
+        b'data: {"choices": [{"delta": {"content": "hello"}, "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), tokenizer
+    )
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"
