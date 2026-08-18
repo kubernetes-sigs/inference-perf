@@ -13,6 +13,6 @@ load:
   concurrency: 8
 tools:
   vllm-bench:
-    # See a_fixed_rate/expected.yaml: the pinned vllm always issues one initial
-    # single-prompt test request before the measured run.
+    # vllm bench always sends one test request before the real run; it is
+    # ignored. See a_fixed_rate/expected.yaml.
     leading_extra_requests: 1

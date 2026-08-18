@@ -1,5 +1,6 @@
-# Closed loop: exactly 8 in flight until 48 requests complete, 128-in / 64-out.
-# server.base_url and tokenizer path are overwritten by the parity harness.
+# Case b: keep exactly 8 requests in flight at all times until 48 have
+# finished. Every prompt is 128 tokens and every request asks for 64 output
+# tokens. The parity test replaces server.base_url and the tokenizer path.
 api:
   type: completion
   streaming: true
