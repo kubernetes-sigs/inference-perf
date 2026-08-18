@@ -26,20 +26,15 @@ body preserved. No model server needed.
 """
 
 import json
-from typing import Any, Dict, List
-from unittest.mock import MagicMock
+from typing import Any, Dict
 
 import pytest
 
 from fake_truncating_server import TruncatingSSEServer
-from openai_client_harness import run_request_against
+from openai_client_harness import generate_reports, run_request_against
 
-from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.client.modelserver.metrics import BaseMetrics
-from inference_perf.client.server_metrics.base import PerfRuntimeParameters, StageRuntimeInfo, StageStatus
-from inference_perf.config import APIConfig, APIType, ReportConfig, RequestLifecycleMetricsReportConfig
-from inference_perf.reportgen.base import ReportGenerator
+from inference_perf.config import APIConfig, APIType
 
 # The OpenAI error object as vLLM and SGLang emit it mid-stream and as a proxy
 # might return it whole. `code` inside the payload says 503; the transport says 200.
@@ -47,33 +42,6 @@ ERROR_PAYLOAD: Dict[str, Any] = {
     "error": {"message": "The model is overloaded, retry later", "type": "server_error", "code": 503}
 }
 ERROR_FRAME = json.dumps(ERROR_PAYLOAD)
-
-
-# Runs the summary and per-request reports over one metric and returns
-# (summary contents, per-request entries), so each test skips that plumbing.
-async def generate_reports(metric: RequestLifecycleMetric) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    config = MagicMock()
-    config.tokenizer = None
-    config.model_dump = MagicMock(return_value={})
-    generator = ReportGenerator(
-        metrics_client=None,
-        metrics_collector=MagicMock(get_metrics=MagicMock(return_value=[metric])),
-        config=config,
-    )
-    runtime_parameters = PerfRuntimeParameters(
-        start_time=0.0,
-        duration=1.0,
-        model_server_metrics=BaseMetrics(),
-        stages={0: StageRuntimeInfo(stage_id=0, rate=1.0, start_time=0.0, end_time=1.0, status=StageStatus.COMPLETED)},
-    )
-    report_config = ReportConfig(request_lifecycle=RequestLifecycleMetricsReportConfig(summary=True, per_request=True))
-
-    reports = await generator.generate_reports(report_config, runtime_parameters)
-
-    summary = [r for r in reports if r.name == "summary_lifecycle_metrics"]
-    per_request = [r for r in reports if r.name == "per_request_lifecycle_metrics"]
-    assert len(summary) == 1 and len(per_request) == 1
-    return summary[0].contents, per_request[0].contents
 
 
 # Streaming completion (default) and streaming chat against a complete 200 whose
@@ -162,7 +130,7 @@ async def test_in_band_error_lands_in_the_failure_bucket_of_the_report() -> None
         metric = await run_request_against(server.base_url)
         sent_body = server.sent_body
 
-    summary, entries = await generate_reports(metric)
+    summary, entries = await generate_reports([metric])
 
     assert summary["successes"]["count"] == 0
     assert summary["failures"]["count"] == 1

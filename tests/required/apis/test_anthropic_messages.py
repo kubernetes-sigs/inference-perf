@@ -148,6 +148,9 @@ async def test_anthropic_messages_process_response_reports_client_count_with_ser
     # the server's output_tokens stays in server_usage for provenance (#885).
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
+    assert info.response_metrics.finish_reason == "end_turn"
+    # Delivered is the server's exact count, not the client's text-only count.
+    assert info.response_metrics.delivered_output_tokens() == 5
     assert info.extra_info["stop_reason"] == "end_turn"
 
 
@@ -193,6 +196,9 @@ async def test_anthropic_messages_streaming_preserves_usage_across_events() -> N
     # Client count ("hello back" -> 2), not the server's output_tokens=5 (#885).
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
+    # The message_delta event's stop_reason is the Anthropic spelling of finish_reason.
+    assert info.response_metrics.finish_reason == "end_turn"
+    assert info.response_metrics.delivered_output_tokens() == 5
     assert info.extra_info["output_text"] == "hello back"
     assert info.extra_info["output_message"] == {"role": "assistant", "content": "hello back"}
 
