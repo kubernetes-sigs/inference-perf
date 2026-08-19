@@ -32,6 +32,7 @@ from inference_perf.config.loadgen import (
     TraceSessionReplayLoadStage,
 )
 from inference_perf.config.metrics import MetricsClientConfig
+from inference_perf.config.observability import ObservabilityConfig
 from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
 
@@ -57,6 +58,10 @@ class Config(StrictBaseModel):
     )
     circuit_breakers: Optional[List[CircuitBreakerConfig]] = Field(
         default=None, description="Circuit breakers that stop the run when observed metrics cross configured thresholds."
+    )
+    observability: ObservabilityConfig = Field(
+        default=ObservabilityConfig(),
+        description="Runtime observability of the benchmark run itself: the metrics inference-perf exports.",
     )
 
     @model_validator(mode="after")

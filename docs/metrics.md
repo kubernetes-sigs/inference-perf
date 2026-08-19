@@ -2,6 +2,8 @@
 
 This document outlines the key metrics used for evaluating performance, their definition and how they are calculated.
 
+For the Prometheus metrics inference-perf exports about its own runtime (as opposed to the benchmark result metrics defined here), see [runtime_metrics.md](../inference_perf/observability/metrics/runtime_metrics.md).
+
 ## Throughput
 
 | Metric | Formula | Unit | Used For
