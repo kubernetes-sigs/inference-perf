@@ -1,0 +1,36 @@
+# DEMO 01 — Bare non-agentic baseline (the simplest shape).
+# One agent, one turn, NO tools advertised at all: [system head, user question] -> [assistant answer].
+# (Every agent call carries the fixed shared system head; shared_system_prompt_len defaults to 1000.
+#  Set it to 0 for a truly head-less [user] -> [assistant] baseline.)
+# WHAT TO LOOK FOR: 1 event/session (the answer is the call's OUTPUT, not a separate event);
+# requests carry NO tools; plain chat completion.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 5
+    seed: 1
+    theme_mix: {generic: {weight: 1.0}}
+    turns_per_session: {type: fixed, mean: 1}     # single autonomous turn
+    fanout_probability: 0.0                          # no sub-agents
+    tool_loop_depth: {type: fixed, mean: 0}      # answer directly
+    tool_catalog_size_per_agent: {type: fixed, mean: 0}  # NO tools advertised (bare baseline)
+    input_tokens_per_turn:  {type: fixed, mean: 200}
+    output_tokens_per_turn: {type: fixed, mean: 80}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-01-bare"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

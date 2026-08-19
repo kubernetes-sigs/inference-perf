@@ -164,7 +164,7 @@ where = ["."]
 include = ["inference_perf*", "deploy*"]
 
 [tool.setuptools.package-data]
-inference_perf = ["assets/*.txt"]
+inference_perf = ["assets/*.txt", "assets/synthetic_themes/*.json"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

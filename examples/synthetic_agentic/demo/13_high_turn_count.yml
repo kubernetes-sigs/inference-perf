@@ -1,0 +1,43 @@
+# DEMO 13 — High turn count (turns_per_session fixed at 32, > 30).
+# Motivated by real-world usage data: Baumann et al., "SWE-chat: Coding Agent Interactions From
+# Real Users in the Wild" (arXiv:2604.20779), Figure 4(a) shows turns-per-session is heavily
+# right-skewed with a distinct 30+ bucket that alone accounts for ~5-6% of sessions. This demo
+# pins every session AT that tail value (fixed, not sampled) so the long-conversation shape is
+# reproducible and unmissable: context accumulates across 32 human turns, each with its own
+# tool-loop, growing the transcript every round. keep num_sessions small -- this is 32 rounds of
+# growing context, so wall-clock and prompt-token cost per session are both real.
+# WHAT TO LOOK FOR: 64 events/session (32 rounds x 2 calls/round: principal + 1 tool turn);
+# input message count grows by 2 every round; prompt tokens climb steadily across all 32 rounds
+# (no compaction here, so growth is unbounded within the run -- pair with context_compaction to
+# cap it, see demo 05's discussion in docs/synthetic_agentic.md).
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 2
+    seed: 13
+    theme_mix: {code_change_task: {weight: 1.0}}
+    turns_per_session: {type: fixed, mean: 32}     # > 30: the paper's long-conversation tail
+    fanout_probability: 0.0
+    tool_loop_depth: {type: fixed, mean: 1}
+    tool_catalog_size_per_agent: {type: fixed, mean: 8}
+    max_events_per_session: 128                    # 32 turns x 2 calls/turn, plus headroom
+    input_tokens_per_turn:  {type: fixed, mean: 200}
+    output_tokens_per_turn: {type: fixed, mean: 60}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 2
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-13-highturns"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

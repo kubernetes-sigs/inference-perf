@@ -1,0 +1,40 @@
+# DEMO 16 — Budget cap / session truncation (max_events_per_session).
+# A fully recursive fan-out (fanout_probability=1.0, max_depth=3, 3 sub-agents per spawn) would
+# produce up to 146 events, but max_events_per_session=50
+# cuts each session short once the 50th event is reached.  Sessions are therefore "leaf-truncated":
+# the generator stops adding new events and emits the remaining work as leaf answer calls.
+# WHAT TO LOOK FOR: every session has exactly 47 events; the deep sub-agent branches never
+# appear; no errors — budget exhaustion is a clean, expected stop condition, not a failure.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 4
+    seed: 17
+    theme_mix: {generic: {weight: 1.0}}
+    turns_per_session: {type: fixed, mean: 1}
+    fanout_probability: 1.0
+    sub_agents_per_spawn: {type: fixed, mean: 3}
+    max_depth: 3
+    tool_loop_depth: {type: fixed, mean: 2}
+    tool_catalog_size_per_agent: {type: fixed, mean: 5}
+    max_events_per_session: 50          # forces truncation-to-leaf
+    input_tokens_per_turn:  {type: fixed, mean: 80}
+    output_tokens_per_turn: {type: fixed, mean: 30}
+    tool_call_latency_sec:  {type: fixed, mean: 0}
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 4
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-16-budget-cap"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

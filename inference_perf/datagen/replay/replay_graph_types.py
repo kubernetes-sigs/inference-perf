@@ -52,13 +52,19 @@ class InputSegment:
         "output"  — a single assistant message whose content is a predecessor's output
                     (injected result; at replay time, substitute with actual generated text)
         "unique"  — messages unique to this call (no predecessor shares them)
+        "async_report" — a single role:"user" message whose CONTENT (only) is replaced
+                         by a predecessor event's live output TEXT. Used for async
+                         sub-agent fan-out: each child's report arrives as its own
+                         `<task-notification>` user message, decoupled from the
+                         dispatch tool_call_id (the dispatch's own tool result is a
+                         static content-free ack, so it needs no substitution).
 
     message_count: how many messages this segment covers
     token_count: estimated or recorded token count for this segment
-    source_event_id: which predecessor event this segment comes from (shared/output only)
+    source_event_id: which predecessor event this segment comes from (shared/output/async_report only)
     """
 
-    type: Literal["shared", "output", "unique"]
+    type: Literal["shared", "output", "unique", "async_report"]
     message_count: int
     token_count: int
     source_event_id: Optional[str] = None
