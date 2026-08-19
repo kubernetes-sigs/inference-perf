@@ -1,0 +1,23 @@
+{
+  "global": {
+    "warnings": [
+      {
+        "check": "cross_report.stage_rates",
+        "severity": "warning",
+        "message": "stage requested rates are not monotonically increasing: stage 1 requested_rate 1 < stage 0 requested_rate 2",
+        "report": null
+      }
+    ],
+    "errors": []
+  },
+  "reports": {
+    "stage_0_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    },
+    "stage_1_lifecycle_metrics.json": {
+      "warnings": [],
+      "errors": []
+    }
+  }
+}

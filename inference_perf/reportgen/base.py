@@ -888,6 +888,39 @@ class ReportGenerator:
             except Exception:
                 logger.exception("Prometheus metrics report generation failed; continuing without it")
 
+        if request_metrics:
+            # Always emit the inference-perf slice of a BR0.2 report per stage,
+            # alongside the native inference-perf reports. Downstream composers
+            # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
+            # own partials on top to produce a full BR0.2 document.
+            # Imported here rather than at module top: the br.v0_2 adapter
+            # imports effective_output_tokens from this module.
+            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_run_uid
+
+            br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
+            for metric in request_metrics:
+                if metric.stage_id is not None:
+                    br_stage_buckets[metric.stage_id].append(metric)
+            for br_stage_id, stage_metrics in br_stage_buckets.items():
+                # run.time needs the stage's wall-clock window: the request
+                # timestamps are monotonic and can't be mapped to epoch here.
+                stage_info = runtime_parameters.stages.get(br_stage_id)
+                partial = build_partial_report(
+                    stage_metrics,
+                    tokenizer,
+                    run_uid=generate_run_uid(br_stage_id),
+                    use_server_output_tokens=use_server_output_tokens,
+                    stage_start=stage_info.start_time if stage_info else None,
+                    stage_end=stage_info.end_time if stage_info else None,
+                )
+                lifecycle_reports.append(
+                    ReportFile(
+                        name=f"inference-perf.partial.stage_{br_stage_id}",
+                        file_type="yaml",
+                        contents=partial,
+                    )
+                )
+
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
             session_metrics = self.session_metrics_collector.get_metrics()
@@ -902,6 +935,19 @@ class ReportGenerator:
             lifecycle_reports.extend(session_reports)
 
         lifecycle_reports.append(self.generate_config_report())
+
+        # Validate the assembled report set and emit the findings as their own
+        # validation.json report. Validation never takes down report emission
+        # and never fails the run: errors mean the report set is internally
+        # inconsistent (a bug in inference-perf), and they surface in the logs
+        # and in validation.json for test tiers to assert on.
+        try:
+            from inference_perf.reportgen.validation import validate_reports
+
+            lifecycle_reports.append(validate_reports(lifecycle_reports))
+        except Exception:
+            logger.exception("Report validation failed; continuing without validation report")
+
         return lifecycle_reports
 
     def summarize_sessions(

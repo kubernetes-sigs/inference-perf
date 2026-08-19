@@ -92,6 +92,9 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 
 "test" = "pytest tests"
 "test:picked" = "pytest --picked"
+# Rewrites the validation-corpus goldens with current validator output; review
+# the git diff afterwards. See tests/reportgen/validation/corpus/README.md.
+"update:goldens" = "pytest tests/reportgen/validation/test_corpus.py --update-goldens -s -q"
 "test:e2e" = "pytest e2e tests/optional -n auto --dist loadgroup {args}"
 # The live-oracle slice: every e2e test that needs a real vLLM server
 # (start one with e2e/vllm_cpu_server.sh). Selection is by naming
@@ -180,6 +183,17 @@ module = [
     "PIL.*",
 ]
 ignore_missing_imports = true
+
+# Vendored from llm-d/llm-d-benchmark — upstream owns the types and we resync
+# files unmodified, so we don't run --strict against them.
+[[tool.mypy.overrides]]
+module = [
+    "inference_perf.reportgen.br.v0_2.base",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2_1",
+    "inference_perf.reportgen.br.v0_2.schema_v0_2_components",
+]
+ignore_errors = true
 
 [tool.coverage.run]
 source = ["inference_perf"]
