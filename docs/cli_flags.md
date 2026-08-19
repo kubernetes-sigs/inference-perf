@@ -233,7 +233,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--load.sweep.num_stages` | int | Number of load stages to generate. |
 | `--load.sweep.stage_duration` | int | Duration of each generated stage in seconds. |
 | `--load.sweep.saturation_percentile` | float | Percentile of observed request rates taken as the saturation point. |
-| `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the CPU count. |
+| `--load.num_workers` | int | Number of worker processes sending requests. Defaults to the cgroup-aware CPU count. |
 | `--load.worker_max_concurrency` | int | Maximum concurrent in-flight requests per worker. |
 | `--load.worker_max_tcp_connections` | int | Maximum TCP connections per worker. |
 | `--load.trace.file` | str | Path to the trace file to replay. |
