@@ -562,7 +562,12 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+                response,
+                extract_content=lambda data: (
+                    data.get("choices", [{}])[0].get("delta", {}).get("content")
+                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+                ),
             )
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it

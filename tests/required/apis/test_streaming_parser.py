@@ -136,3 +136,78 @@ async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
     # The bytes received before the break are retained, not discarded.
     assert "Hello" in err.raw_content
     assert "world" in err.raw_content
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_tokens() -> None:
+    """Reasoning models emit delta.reasoning (or delta.reasoning_content) before
+    delta.content. The extract_content function used by ChatCompletionAPIData must
+    count both reasoning and content tokens so output metrics are accurate."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"role": "assistant", "content": ""}}]}\n\n',
+        b'data: {"choices": [{"delta": {"reasoning": "Let me"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"reasoning": " think"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "The answer is 4."}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return (
+            data.get("choices", [{}])[0].get("delta", {}).get("content")
+            or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+            or data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+        )
+
+    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+        mock_response, extract_content
+    )
+
+    assert output_text == "Let me thinkThe answer is 4."
+    assert len(chunk_times) == 3
+    assert len(response_chunks) == 3
+    assert len(chunk_times) == len(response_chunks)
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_content_field() -> None:
+    """Some models (e.g. DeepSeek-R1) use delta.reasoning_content instead of
+    delta.reasoning. The extraction must handle both field names."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"reasoning_content": "Step 1: "}}]}\n\n',
+        b'data: {"choices": [{"delta": {"reasoning_content": "analyze"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "Result."}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return (
+            data.get("choices", [{}])[0].get("delta", {}).get("content")
+            or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+            or data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+        )
+
+    output_text, chunk_times, _, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+
+    assert output_text == "Step 1: analyzeResult."
+    assert len(chunk_times) == 3
+    assert len(response_chunks) == 3
