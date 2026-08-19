@@ -26,6 +26,7 @@ from inference_perf.config import (
     LoadConfig,
     LoadType,
     MultiLoRAConfig,
+    ProbeConfig,
     StandardLoadStage,
     StageGenType,
     SweepConfig,
@@ -171,3 +172,22 @@ def test_multilora_traffic_split_summing_to_one_is_ok() -> None:
     )
     assert cfg.lora_traffic_split is not None
     assert len(cfg.lora_traffic_split) == 2
+
+
+# --- ProbeConfig ---------------------------------------------------------
+
+
+def test_probe_config_defaults_valid() -> None:
+    cfg = LoadConfig(sweep=SweepConfig(type=StageGenType.GEOM, probe=ProbeConfig()))
+    assert cfg.sweep is not None and cfg.sweep.probe is not None
+    assert cfg.sweep.probe.start_concurrency == 1
+
+
+def test_probe_config_cap_below_start_is_error() -> None:
+    with pytest.raises(ValidationError, match="max_concurrency"):
+        ProbeConfig(start_concurrency=8, max_concurrency=4)
+
+
+def test_probe_requires_workers() -> None:
+    with pytest.raises(ValidationError, match="sweep.probe requires num_workers > 0"):
+        LoadConfig(num_workers=0, sweep=SweepConfig(type=StageGenType.GEOM, probe=ProbeConfig()))

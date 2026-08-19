@@ -376,7 +376,7 @@ def main_cli() -> None:
     # Define LoadGenerator with session metrics collector
     if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus and config.report.prometheus.per_stage:
         config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
-    loadgen = LoadGenerator(datagen, config.load, session_metrics_collector)
+    loadgen = LoadGenerator(datagen, config.load, session_metrics_collector, request_metric_collector=collector)
 
     # Wire session metrics collector into reportgen if it exists
     if session_metrics_collector:

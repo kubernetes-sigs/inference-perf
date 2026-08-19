@@ -141,6 +141,39 @@ class StageGenType(Enum):
     LINEAR = "linear"
 
 
+class ProbeConfig(StrictBaseModel):
+    """Closed-loop concurrency probe used to find the saturation rate.
+
+    The probe holds in-flight concurrency fixed per rung, grows it geometrically
+    until throughput gains flatten, and estimates the saturation rate from the
+    rung curve. See inference_perf/loadgen/probe/ for the estimation details.
+    """
+
+    rung_duration: float = Field(default=30.0, gt=0, description="Measurement window per concurrency rung in seconds.")
+    settle_duration: float = Field(
+        default=5.0, ge=0, description="Seconds each rung runs before its measurement window opens."
+    )
+    start_concurrency: int = Field(default=1, ge=1, description="Concurrency of the first rung, also the unloaded baseline.")
+    growth_factor: float = Field(default=2.0, gt=1.0, description="Multiplier applied to concurrency between rungs.")
+    max_concurrency: int = Field(default=1024, ge=1, description="Concurrency ceiling for the ladder.")
+    gain_threshold: float = Field(
+        default=0.05,
+        gt=0,
+        description="Stop when the relative throughput gain between the top two rungs is confidently below this fraction.",
+    )
+    knee_fraction: float = Field(
+        default=0.9, gt=0, lt=1, description="Fraction of the saturation rate that defines the knee concurrency."
+    )
+
+    @model_validator(mode="after")
+    def validate_probe_config(self) -> "ProbeConfig":
+        if self.max_concurrency < self.start_concurrency:
+            raise ValueError(
+                f"max_concurrency ({self.max_concurrency}) must be >= start_concurrency ({self.start_concurrency})"
+            )
+        return self
+
+
 class SweepConfig(StrictBaseModel):
     type: StageGenType = Field(description="How stage rates are spaced up to the saturation rate: 'geometric' or 'linear'.")
     num_requests: int = Field(
@@ -151,6 +184,11 @@ class SweepConfig(StrictBaseModel):
     stage_duration: int = Field(default=180, description="Duration of each generated stage in seconds.")
     saturation_percentile: float = Field(
         default=95, description="Percentile of observed request rates taken as the saturation point."
+    )
+    probe: Optional[ProbeConfig] = Field(
+        default=None,
+        description="Find the saturation rate with a closed-loop concurrency probe instead of the burst estimator."
+        " Requires num_workers > 0.",
     )
 
 
@@ -194,6 +232,10 @@ class LoadConfig(StrictBaseModel):
         # Validate that sweep is not used with concurrent or trace session replay load types
         if self.type in (LoadType.CONCURRENT, LoadType.TRACE_SESSION_REPLAY) and self.sweep is not None:
             raise ValueError(f"Cannot have sweep config with {self.type.value.upper()} load type")
+
+        # The closed-loop probe drives worker concurrency, which only exists in the multiprocess path
+        if self.sweep is not None and self.sweep.probe is not None and self.num_workers < 1:
+            raise ValueError("sweep.probe requires num_workers > 0")
 
         # Validate stage types match load type
         if self.type == LoadType.CONCURRENT:
