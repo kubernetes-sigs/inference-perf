@@ -1,5 +1,10 @@
 # Tests
 
+For a contributor guide to the end-to-end tier (which suite a new test belongs
+in, how to run each one, the harness pattern), see
+[docs/e2e_tests.md](../docs/e2e_tests.md). This file documents the layout of
+`tests/` and the live-tier harness.
+
 ```
 tests/
 ├── required/    # Run in CI on every PR. Self-contained, no external deps.

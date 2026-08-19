@@ -99,6 +99,7 @@ Explore detailed documentation for specific topics:
 | **Weka Trace Replay** | Data/load type for replaying raw Weka agent traces via graph-based session execution. | [weka_trace_replay.md](./docs/weka_trace_replay.md) |
 | **Conversation Replay** | Data/load type for benchmarking concurrent multi-turn agentic conversations with configurable distributions. | [conversation_replay.md](./docs/conversation_replay.md) |
 | **Analysis** | Visualizations and plots for performance metrics. | [analysis.md](./docs/analysis.md) |
+| **E2E Tests** | Contributor guide to the end-to-end test tier: running and extending it. | [e2e_tests.md](./docs/e2e_tests.md) |
 
 ---
 
