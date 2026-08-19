@@ -88,3 +88,57 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 - **`successes`**: Metrics for successful requests.
 - **`failures`**: Metrics for failed requests, including the per-label error breakdown.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
+
+## Session Reports
+
+Session replay runs (for example OTel trace replay) additionally produce session
+lifecycle reports, where a session is a graph of dependent requests. Alongside
+`num_sessions_succeeded` and `num_sessions_failed`, the summary carries a
+`failures` section with the same shape as the request-level one:
+
+```json
+{
+  "num_sessions": 100,
+  "num_sessions_succeeded": 94,
+  "num_sessions_failed": 6,
+  "failures": {
+    "count": 6,
+    "by_label": {
+      "predecessor_failed": {
+        "count": 4,
+        "messages": [
+          {
+            "message": "predecessor failed",
+            "session_ids": ["trace1715_066de3655406", "trace2210_1f9b0c4d7e21"]
+          }
+        ]
+      },
+      "recorded_fallback_malformed": {
+        "count": 2,
+        "messages": [
+          {
+            "message": "recorded fallback for evt_7 is also malformed",
+            "session_ids": ["trace42_9f000393d262"]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Unlike request failures, which are bucketed by parsing server error text, session
+failures are bucketed on a stable cause code emitted by the replay runtime. The
+prose in `messages` may embed per-event ids, so the code is what keeps a cause
+from splitting into one bucket per failure.
+
+| Cause code | Meaning |
+| --- | --- |
+| `predecessor_failed` | An event this one awaited failed, so the request was skipped. |
+| `predecessor_wait_failed` | Waiting on a predecessor event timed out. |
+| `session_already_failed` | The session was already failed when this event was reached. |
+| `recorded_fallback_malformed` | `bad_tool_call_handling=use_recorded` fired, but the recorded fallback message was also malformed. |
+| `substitution_tool_call_expected` | The recorded trace expected a tool call at this slot but the live model returned plain text. |
+| `request_failed` | The request to the model server raised; `message` carries the exception type and text. |
+| `unknown` | The session failed without a more specific cause being recorded. |
+| `unreported` | The session was counted as failed but carried no error at all. Should not occur; treat as a bug. |

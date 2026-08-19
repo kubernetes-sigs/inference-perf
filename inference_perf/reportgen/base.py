@@ -15,7 +15,7 @@ import logging
 import json
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 if TYPE_CHECKING:
@@ -121,7 +121,23 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     return error_type.lower().strip()
 
 
-def build_error_counts(metrics_errors: list[tuple[str, str, Optional[str]]], max_error_messages: int) -> dict[str, Any]:
+def use_error_type_as_label(error_type: str, error_msg: str) -> str:
+    """Label function for errors whose ``error_type`` is already a stable code.
+
+    Session replay failures are raised by our own code and arrive pre-classified,
+    so the pattern matching in ``make_concise_label`` is the wrong instrument:
+    those regexes exist to wring structure out of server error text we do not
+    control, and applying them here would collapse distinct causes (any cause
+    whose prose happens to contain "timeout" would land in the same bucket).
+    """
+    return error_type
+
+
+def build_error_counts(
+    metrics_errors: list[tuple[str, str, Optional[str]]],
+    max_error_messages: int,
+    label_fn: Callable[[str, str], str] = make_concise_label,
+) -> dict[str, Any]:
     """Build a {<label>: {count, messages}} dict from (error_type, error_msg, id) triples.
 
     ``count`` reflects the true total number of errors for each label.
@@ -136,7 +152,7 @@ def build_error_counts(metrics_errors: list[tuple[str, str, Optional[str]]], max
     label_messages: dict[str, dict[str, list[str]]] = defaultdict(dict)
     for error_type, error_msg, entity_id in metrics_errors:
         parsed_msg = parse_error_message(error_msg)
-        label = make_concise_label(error_type, parsed_msg)
+        label = label_fn(error_type, parsed_msg)
         label_counts[label] += 1
         merged = label_messages[label]
         if parsed_msg in merged:
@@ -945,6 +961,24 @@ class ReportGenerator:
             if total_span > 0:
                 sessions_per_second = num_sessions / total_span
 
+        # Bucketed on the stable cause code carried as error_type, mirroring the
+        # request-side shape from #601. Sessions counted as failed but carrying
+        # no error are surfaced under an explicit label rather than dropped, so
+        # the by_label counts always reconcile with `num_sessions_failed`.
+        failed_sessions = [m for m in metrics if m.success is False]
+        session_failures = build_error_counts(
+            [
+                (
+                    m.error.error_type if m.error is not None else "unreported",
+                    m.error.error_msg if m.error is not None else "session failed with no error recorded",
+                    m.session_id,
+                )
+                for m in failed_sessions
+            ],
+            max_error_messages,
+            label_fn=use_error_type_as_label,
+        )
+
         # Per-session KV/prefix cache hit rate = cached / total server-reported
         # prompt tokens. Both sides come from the same server usage dicts (see
         # extract_cached_prompt_tokens) rather than pairing the server numerator
@@ -964,6 +998,10 @@ class ReportGenerator:
             "num_sessions": num_sessions,
             "num_sessions_succeeded": num_succeeded,
             "num_sessions_failed": num_failed,
+            "failures": {
+                "count": num_failed,
+                "by_label": session_failures,
+            },
             "total_events": total_events,
             "total_events_completed": total_events_completed,
             "total_events_cancelled": total_events_cancelled,
@@ -1045,7 +1083,10 @@ class ReportGenerator:
             sm.total_cached_tokens = cache_usage[0] if cache_usage else None
             sm.total_cacheable_input_tokens = cache_usage[1] if cache_usage else None
             request_error = error_by_session.get(sm.session_id)
-            if request_error is not None:
+            # The session's own replay error is the more specific diagnosis and
+            # takes precedence; a request-level error only fills the gap when
+            # the session recorded no cause of its own.
+            if request_error is not None and sm.error is None:
                 sm.error = request_error
             sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
 

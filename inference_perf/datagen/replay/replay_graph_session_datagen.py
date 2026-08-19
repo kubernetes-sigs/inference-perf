@@ -30,6 +30,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field, replace as dc_replace
+from enum import Enum
 from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -121,6 +122,27 @@ def _detect_bad_tool_calls(
 # --- end bad_tool_call_handling --------------------------------------------
 
 
+class SessionFailureCause(str, Enum):
+    """Stable cause code for a session replay failure.
+
+    Carried as ``error_type`` on ``SessionLifecycleMetric.error`` and used as the
+    bucket key for the session-level ``failures.by_label`` report. The prose that
+    accompanies a failure goes in ``error_msg`` and is free to embed per-event
+    ids; bucketing on this code rather than on that prose is what keeps a cause
+    like RECORDED_FALLBACK_MALFORMED from producing one singleton bucket per
+    failure. These values are report surface: renaming one changes user-visible
+    output.
+    """
+
+    SESSION_ALREADY_FAILED = "session_already_failed"
+    PREDECESSOR_FAILED = "predecessor_failed"
+    PREDECESSOR_WAIT_FAILED = "predecessor_wait_failed"
+    RECORDED_FALLBACK_MALFORMED = "recorded_fallback_malformed"
+    SUBSTITUTION_TOOL_CALL_EXPECTED = "substitution_tool_call_expected"
+    REQUEST_FAILED = "request_failed"
+    UNKNOWN = "unknown"
+
+
 class EventFailedError(Exception):
     """Raised by EventOutputRegistry.require_async when the awaited event failed."""
 
@@ -156,6 +178,12 @@ class WorkerSessionTracker:
     def __init__(self) -> None:
         self._event_completions: Dict[str, Dict[str, float]] = {}
         self._failed_sessions: Set[str] = set()
+        # Per-session (cause_code, prose) for the FIRST failure observed. Later
+        # failures in the same session are consequences of that root cause
+        # (a failed event cascades to every successor), so first-write-wins is
+        # what keeps the reported cause pointing at the thing that actually
+        # broke rather than at the cascade.
+        self._session_failures: Dict[str, Tuple[str, str]] = {}
         # Per-session set of predecessor event_ids whose live tool_call
         # response was detected malformed at substitution time and replaced
         # with the recorded assistant message. Empty when
@@ -185,6 +213,7 @@ class WorkerSessionTracker:
         """Drop all per-worker tracking for a session (called after eviction)."""
         self._event_completions.pop(session_id, None)
         self._failed_sessions.discard(session_id)
+        self._session_failures.pop(session_id, None)
         self._drained_events.pop(session_id, None)
         self._recorded_substitution_event_ids.pop(session_id, None)
 
@@ -199,11 +228,22 @@ class WorkerSessionTracker:
     def get_event_completion_time(self, session_id: str, event_id: str) -> Optional[float]:
         return self._event_completions.get(session_id, {}).get(event_id)
 
-    def mark_session_failed(self, session_id: str) -> None:
+    def mark_session_failed(
+        self,
+        session_id: str,
+        cause: Optional[SessionFailureCause] = None,
+        reason: Optional[str] = None,
+    ) -> None:
         self._failed_sessions.add(session_id)
+        if cause is not None and session_id not in self._session_failures:
+            self._session_failures[session_id] = (cause.value, reason or cause.value)
 
     def is_session_failed(self, session_id: str) -> bool:
         return session_id in self._failed_sessions
+
+    def get_session_failure(self, session_id: str) -> Optional[Tuple[str, str]]:
+        """Return (cause_code, prose) for a failed session, or None if unrecorded."""
+        return self._session_failures.get(session_id)
 
     def get_session_event_count(self, session_id: str) -> int:
         return len(self._event_completions.get(session_id, {}))
@@ -354,8 +394,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     disable_output_substitution: bool = False
     # Set by _build_messages_with_substitution when it calls record_failure
     # early (e.g. recorded fallback also malformed). Lets the caller pass the
-    # right reason string to _fail_and_notify instead of a generic fallback.
+    # right cause code and reason string to _fail_and_notify instead of a
+    # generic fallback.
     _substitution_failure_reason: Optional[str] = None
+    _substitution_failure_cause: Optional[SessionFailureCause] = None
 
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
@@ -399,7 +441,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     def _extract_session_id(self) -> str:
         return self.event_id.split(":")[0] if ":" in self.event_id else self.event_id
 
-    def _fail_and_notify(self, session_id: str, reason: str) -> None:
+    def _fail_and_notify(self, session_id: str, cause: SessionFailureCause, reason: str) -> None:
         """Mark this event and session as failed, notify the completion queue.
 
         Called from wait_for_predecessors_and_substitute when we decide to skip
@@ -410,7 +452,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         """
         self.skip_request = True
         was_already_failed = self.worker_tracker.is_session_failed(session_id)
-        self.worker_tracker.mark_session_failed(session_id)
+        self.worker_tracker.mark_session_failed(session_id, cause, reason)
         self.registry.record_failure(self.event_id)
         logger.info(f"Event {self.event_id} skipping — {reason}")
 
@@ -422,6 +464,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 "session_id": session_id,
                 "completion_time": completion_time,
                 "failed": True,
+                "failure_cause": cause.value,
                 "failure_reason": reason,
                 "cancelled_events": cancelled,
                 "event_completion_times": self.worker_tracker.get_session_completion_times(session_id),
@@ -466,7 +509,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         session_id = self._extract_session_id()
 
         if self.worker_tracker.is_session_failed(session_id):
-            self._fail_and_notify(session_id, "session already failed (pre-wait check)")
+            self._fail_and_notify(
+                session_id, SessionFailureCause.SESSION_ALREADY_FAILED, "session already failed (pre-wait check)"
+            )
             return
 
         if self.predecessor_event_ids:
@@ -479,10 +524,14 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     ]
                 )
             except EventFailedError:
-                self._fail_and_notify(session_id, "predecessor failed")
+                self._fail_and_notify(session_id, SessionFailureCause.PREDECESSOR_FAILED, "predecessor failed")
                 return
             except (TimeoutError, asyncio.TimeoutError) as e:
-                self._fail_and_notify(session_id, f"predecessor wait failed: {type(e).__name__}")
+                self._fail_and_notify(
+                    session_id,
+                    SessionFailureCause.PREDECESSOR_WAIT_FAILED,
+                    f"predecessor wait failed: {type(e).__name__}",
+                )
                 return
             logger.debug(f"Event {self.event_id} all predecessors done")
 
@@ -513,7 +562,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             # live model returned plain text). Detect that and skip the request.
             if self.registry.is_event_failed(self.event_id):
                 reason = self._substitution_failure_reason or "Unknown"
-                self._fail_and_notify(session_id, reason)
+                cause = self._substitution_failure_cause or SessionFailureCause.UNKNOWN
+                self._fail_and_notify(session_id, cause, reason)
                 return
             self.messages = [
                 ChatMessage(
@@ -610,6 +660,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                 self._substitution_failure_reason = (
                                     f"recorded fallback for {seg.source_event_id} is also malformed"
                                 )
+                                self._substitution_failure_cause = SessionFailureCause.RECORDED_FALLBACK_MALFORMED
                                 self.registry.record_failure(self.event_id)
                                 return result  # partial; caller checks is_event_failed
                             # Tag the predecessor event_id for telemetry. Set
@@ -664,6 +715,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                                 self._substitution_failure_reason = (
                                     "substitution failed (tool call expected but plain text returned)"
                                 )
+                                self._substitution_failure_cause = SessionFailureCause.SUBSTITUTION_TOOL_CALL_EXPECTED
                                 self.registry.record_failure(self.event_id)
                                 return result  # partial result; caller should check skip_request
                             for msg in seg_msgs:
@@ -818,12 +870,21 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         if completed_count == self.total_events_in_session:
             logger.debug(f"Session {session_id} completed all {self.total_events_in_session} events in worker")
 
-            completion_data = {
+            session_failed = self.worker_tracker.is_session_failed(session_id)
+            completion_data: Dict[str, Any] = {
                 "session_id": session_id,
                 "completion_time": completion_time,
-                "failed": self.worker_tracker.is_session_failed(session_id),
+                "failed": session_failed,
                 "event_completion_times": self.worker_tracker.get_session_completion_times(session_id),
             }
+            # A session can reach this all-events-completed path already marked
+            # failed by an earlier event. Carry the recorded cause so the main
+            # process is not left with `failed: True` and no reason.
+            if session_failed:
+                recorded_failure = self.worker_tracker.get_session_failure(session_id)
+                cause, reason = recorded_failure or (SessionFailureCause.UNKNOWN.value, "session marked failed by worker")
+                completion_data["failure_cause"] = cause
+                completion_data["failure_reason"] = reason
             # Telemetry: only emit recorded-substitution keys when at least
             # one substitution fired in this session, so upstream-default runs
             # (handling=none, or handling set but no malformed tool_calls
@@ -1012,7 +1073,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         session_id = self._extract_session_id()
         was_already_failed = self.worker_tracker.is_session_failed(session_id)
-        self.worker_tracker.mark_session_failed(session_id)
+        failure_reason = f"{type(exception).__name__}: {exception}"
+        self.worker_tracker.mark_session_failed(session_id, SessionFailureCause.REQUEST_FAILED, failure_reason)
         self.registry.record_failure(self.event_id)
 
         if not was_already_failed and self.completion_queue is not None:
@@ -1023,6 +1085,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 "session_id": session_id,
                 "completion_time": completion_time,
                 "failed": True,
+                "failure_cause": SessionFailureCause.REQUEST_FAILED.value,
+                "failure_reason": failure_reason,
                 "cancelled_events": cancelled,
                 "event_completion_times": self.worker_tracker.get_session_completion_times(session_id),
             }
@@ -1183,6 +1247,7 @@ class ReplaySessionState:
     is_complete: bool = False
     failed: bool = False
     failure_reason: Optional[str] = None
+    failure_cause: Optional[str] = None
     cancelled_events: int = 0
     # Populated from completion_data when the worker finishes the
     # session. None means the worker did not push the keys (i.e.
@@ -1566,9 +1631,18 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         num_events_completed = len(state.completed_events)
         num_events_cancelled = state.cancelled_events if state.failed else 0
 
+        # `state.failed` alone must produce an error, not just `failure_reason`.
+        # The report's success predicate is derived from `error is None`, so a
+        # session the worker marked failed but for which no reason was recorded
+        # would otherwise be counted as SUCCEEDED whenever all its events
+        # completed. Every producer now carries a cause, making the fallback
+        # below a safety net rather than a routine path.
         error = None
-        if state.failure_reason:
-            error = ErrorResponseInfo(error_type="SessionReplayError", error_msg=state.failure_reason)
+        if state.failed or state.failure_reason:
+            error = ErrorResponseInfo(
+                error_type=state.failure_cause or SessionFailureCause.UNKNOWN.value,
+                error_msg=state.failure_reason or "session marked failed without a recorded reason",
+            )
 
         return SessionLifecycleMetric(
             session_id=session_id,
@@ -1614,8 +1688,17 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                             completed_state.event_completion_times[event_id] = completion_time
 
                     completed_state.is_complete = True
-                    completed_state.failed = completion_data.get("failed", False)
-                    completed_state.failure_reason = completion_data.get("failure_reason")
+                    # Failure is sticky in both directions. A session that any
+                    # worker payload reported as failed stays failed, and the
+                    # first recorded reason wins: a later payload for an
+                    # already-failed session (e.g. the all-events-completed
+                    # push arriving after a skip-failure push) must not blank
+                    # out a real cause by overwriting it with None.
+                    completed_state.failed = completed_state.failed or completion_data.get("failed", False)
+                    incoming_reason = completion_data.get("failure_reason")
+                    if incoming_reason is not None and completed_state.failure_reason is None:
+                        completed_state.failure_reason = incoming_reason
+                        completed_state.failure_cause = completion_data.get("failure_cause")
                     completed_state.cancelled_events = completion_data.get("cancelled_events", 0)
                     # Bad tool-call handling telemetry. The two keys are
                     # gated worker-side behind `len(...) > 0`, so their
