@@ -30,7 +30,29 @@
 #   e2e/vllm_cpu_server.sh stop
 #
 # Environment overrides: VLLM_MODEL, VLLM_PORT, VLLM_HF_CACHE (host-side
-# model cache), VLLM_CPU_KVCACHE_SPACE, VLLM_CONTAINER_ENGINE.
+# model cache), VLLM_CPU_KVCACHE_SPACE, VLLM_CONTAINER_ENGINE,
+# VLLM_CONTAINER_NAME (default vllm-cpu; set it to run two servers side by
+# side), VLLM_CHAT_TEMPLATE (host path; the default is the text-only template
+# opt-125m needs; set it to the empty string to serve with the model's own
+# template, which every multimodal model requires), VLLM_MAX_MODEL_LEN
+# (default 2048), VLLM_EXTRA_ARGS (extra `vllm serve` flags, word-split),
+# VLLM_HEALTH_TIMEOUT_SEC (how long to wait for /health, default 300),
+# VLLM_CPU_OMP_THREADS_BIND (passed to vLLM, default auto).
+#
+# The multimodal slice (e2e/tests/test_vllm_cpu_multimodal.py) starts the
+# same image with a vision-language or audio model. Those models profile one
+# encoder item of the maximum feature size before they serve, so they need a
+# health budget the text-only oracle does not:
+#
+#   VLLM_MODEL=OpenGVLab/InternVL3-1B-hf VLLM_CHAT_TEMPLATE= \
+#     VLLM_MAX_MODEL_LEN=4096 VLLM_HEALTH_TIMEOUT_SEC=600 \
+#     e2e/vllm_cpu_server.sh start latest
+#
+# On an x86 host that profiling pass runs on one core, because vLLM's `auto`
+# thread binding takes one logical CPU per physical core and reserves one for
+# the framework: measured 118s pinned that way against 44s across four cores.
+# CI does not hit this (ARM binding uses every logical CPU), so it is a local
+# repro knob: VLLM_CPU_OMP_THREADS_BIND=nobind drops the pinning entirely.
 
 set -euo pipefail
 
@@ -47,11 +69,21 @@ detect_engine() {
   echo docker # let the run below surface the real connection error
 }
 ENGINE="${VLLM_CONTAINER_ENGINE:-$(detect_engine)}"
-NAME=vllm-cpu
+NAME="${VLLM_CONTAINER_NAME:-vllm-cpu}"
 PORT="${VLLM_PORT:-8000}"
 MODEL="${VLLM_MODEL:-facebook/opt-125m}"
 HF_CACHE="${VLLM_HF_CACHE:-$HOME/.cache/huggingface}"
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-2048}"
+# Seconds to wait for /health. The text-only model serves in about two
+# minutes on a CI runner; multimodal startup profiling needs longer, so the
+# multimodal workflow raises this rather than every caller paying for the
+# slowest model.
+HEALTH_TIMEOUT_SEC="${VLLM_HEALTH_TIMEOUT_SEC:-300}"
+OMP_THREADS_BIND="${VLLM_CPU_OMP_THREADS_BIND:-auto}"
+# ${VAR-default} (no colon) so an explicitly empty VLLM_CHAT_TEMPLATE means
+# "no --chat-template flag", not "the default".
+CHAT_TEMPLATE="${VLLM_CHAT_TEMPLATE-$E2E_DIR/testdata/simple_chat_template.jinja}"
 
 start() {
   local tag="$1"
@@ -65,6 +97,17 @@ start() {
     # not ours to do. Docker paths stay byte-identical to what CI proved.
     engine_opts+=(--security-opt label=disable)
   fi
+
+  # A chat template on the host is mounted into the container under a fixed
+  # path; no template means the model's own is used.
+  local template_opts=()
+  local serve_template_opts=()
+  if [ -n "$CHAT_TEMPLATE" ]; then
+    template_opts+=(-v "$CHAT_TEMPLATE:/chat_template.jinja")
+    serve_template_opts+=(--chat-template /chat_template.jinja)
+  fi
+  # shellcheck disable=SC2206  # word-splitting VLLM_EXTRA_ARGS is the contract
+  local extra_args=(${VLLM_EXTRA_ARGS:-})
 
   # shm-size/seccomp/SYS_NICE are the invocation vLLM's CPU docs prescribe:
   # the engine's IPC lives in /dev/shm (the 64MB default kills the worker
@@ -80,16 +123,18 @@ start() {
     "${engine_opts[@]+"${engine_opts[@]}"}" \
     -p "$PORT:8000" \
     -v "$HF_CACHE:/root/.cache/huggingface" \
-    -v "$E2E_DIR/testdata/simple_chat_template.jinja:/simple_chat_template.jinja" \
+    "${template_opts[@]+"${template_opts[@]}"}" \
     -e VLLM_CPU_KVCACHE_SPACE="${VLLM_CPU_KVCACHE_SPACE:-2}" \
+    -e VLLM_CPU_OMP_THREADS_BIND="$OMP_THREADS_BIND" \
     "$image" \
     "$MODEL" \
-    --max-model-len 2048 \
-    --chat-template /simple_chat_template.jinja \
+    --max-model-len "$MAX_MODEL_LEN" \
+    "${serve_template_opts[@]+"${serve_template_opts[@]}"}" \
     --override-generation-config '{"temperature": 0}' \
-    --enforce-eager
+    --enforce-eager \
+    "${extra_args[@]+"${extra_args[@]}"}"
 
-  for _ in $(seq 1 60); do
+  for _ in $(seq 1 $((HEALTH_TIMEOUT_SEC / 5))); do
     if curl -sf "http://127.0.0.1:$PORT/health" > /dev/null; then
       echo "vLLM ($tag) ready: E2E_VLLM_BASE_URL=http://127.0.0.1:$PORT E2E_VLLM_VERSION=$tag"
       return 0
@@ -101,7 +146,7 @@ start() {
   done
 
   # The container is left in place so the caller can still run logs/stop.
-  echo "vLLM CPU server ($tag) failed to become healthy" >&2
+  echo "vLLM CPU server ($tag) failed to become healthy within ${HEALTH_TIMEOUT_SEC}s" >&2
   "$ENGINE" logs "$NAME" 2>&1 | tail -100 >&2 || true
   return 1
 }

@@ -1,0 +1,21 @@
+# The vLLM releases the multimodal acceptance slice
+# (e2e/tests/test_vllm_cpu_multimodal.py) runs against: tags of
+# docker.io/vllm/vllm-openai-cpu, one per line; comments and blank lines are
+# ignored. Use the multi-arch tags (v0.27.1, latest), not the -x86_64 or
+# -arm64 forms: they resolve to the same per-arch images, so one table serves
+# CI (ARM runners) and local repro on any host. The multimodal-e2e job in
+# the E2E Test on change workflow starts a vision-language server and a
+# speech server of every listed release (via e2e/vllm_cpu_server.sh) and runs
+# the slice against each, merge-blocking.
+#
+# Separate from e2e/vllm_releases.txt on purpose: that table pins the
+# token-accounting oracle and each pin carries a metric-families golden. This
+# slice has no goldens, and its floor is higher: v0.26.0's CPU backend pins
+# host memory when batching more than one multimodal item and kills the
+# engine (multi-image requests, or two image requests scheduled together),
+# so 0.26.x can never appear here. Add a release when it matters to a
+# deployment we care about; latest floats so upstream regressions in
+# multimodal ingest surface before, not at, the next pin bump.
+
+v0.27.1
+latest

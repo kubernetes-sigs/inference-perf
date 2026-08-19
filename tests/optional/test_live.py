@@ -14,10 +14,15 @@
 """Live end-to-end tests across every suite under tests/optional/<suite>/cases.
 
 Each case directory holds a vllm.yaml plus a config.yml. Cases are discovered by
-glob, so the harness is not multimodal-specific and adding a live suite is pure
+glob, so the harness is not tied to any suite and adding a live suite is pure
 data: drop <suite>/cases/<case>/{vllm.yaml,config.yml} and it runs, with no
 Python change. Everything else (nodeSelector inference, live-node cluster
 matching, the slot semaphore, namespace lifecycle, report extraction) is shared.
+
+Today the tier holds one case, text/chat: the smoke for the Kubernetes deploy
+path (deploy/manifests.yaml, the published image, ConfigMap and Job). The
+multimodal payload cases it used to carry run in CI against real vLLM CPU
+servers instead (e2e/tests/test_vllm_cpu_multimodal.py).
 
 The cluster_for_case fixture (see conftest.py) infers each case's nodeSelector
 from its manifest, skips when no supplied --kubeconfigs cluster has a matching
