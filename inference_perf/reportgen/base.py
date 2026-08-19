@@ -554,6 +554,21 @@ def summarize_requests(
             # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
             # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
+            # The server's completion_tokens counts reasoning tokens too, so the
+            # client-side accounting must include them or every reasoning-model
+            # request would flag as mismatched. They stay out of
+            # output_token_times: reasoning anchors TTFT only (#559).
+            for chunk_str in m.info.response_metrics.reasoning_chunks:
+                try:
+                    data = json.loads(chunk_str)
+                    if choices := data.get("choices"):
+                        delta = choices[0].get("delta", {})
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            accumulated_tokens += tokenizer.count_tokens(reasoning, add_special_tokens=False)
+                except json.JSONDecodeError:
+                    continue
+
             if expected_output_tokens is not None and accumulated_tokens != expected_output_tokens:
                 mismatched_requests += 1
 
@@ -564,13 +579,33 @@ def summarize_requests(
         else:
             ntpot_values.append(0.0)
 
-        # Check if streamable: Must have more than 1 output token timestamp
+        # Check if streamable: must have more than 1 timestamped generation
+        # event across both channels.
         response_metrics = m.info.response_metrics
-        if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
-            # TTFT: First Token Time - Start Time
-            ttft = response_metrics.output_token_times[0] - m.start_time
-            ttft_values.append(ttft)
+        if isinstance(response_metrics, StreamedResponseMetrics):
+            first_token_candidates = [
+                times[0] for times in (response_metrics.output_token_times, response_metrics.reasoning_chunk_times) if times
+            ]
+            ttft_streamable = len(response_metrics.output_token_times) + len(response_metrics.reasoning_chunk_times) > 1
+        else:
+            first_token_candidates = []
+            ttft_streamable = False
 
+        if ttft_streamable and first_token_candidates:
+            # TTFT: First Token Time - Start Time, where the first token is the
+            # first generated token of ANY channel (#559): reasoning models
+            # stream reasoning deltas before (and, when the output budget is
+            # exhausted, instead of) content, and the server generates from the
+            # first reasoning token (vllm:time_to_first_token counts it).
+            # Anchoring to content would inflate TTFT by the whole
+            # reasoning-decode phase, or yield null when no content ever
+            # arrives. TPOT and ITL stay content-based below: reasoning is
+            # "thinking", not user-facing output.
+            ttft_values.append(min(first_token_candidates) - m.start_time)
+        else:
+            ttft_values.append(None)
+
+        if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
             # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
             duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
             tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
@@ -591,8 +626,7 @@ def summarize_requests(
             else:
                 itl_values.append(None)
         else:
-            # Not streamable, so TTFT and TPOT are undefined
-            ttft_values.append(None)
+            # No streamed content, so TPOT and ITL are undefined
             tpot_values.append(None)
             itl_values.append(None)
 
