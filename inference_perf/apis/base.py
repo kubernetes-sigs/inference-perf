@@ -36,6 +36,12 @@ class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
     output_token_times: List[float] = []
+    # Reasoning-channel chunks (delta.reasoning_content / delta.reasoning) are
+    # tracked separately from content: they anchor TTFT, since the server
+    # starts generating at the first reasoning token, but stay out of
+    # output-length, TPOT, and ITL, which remain content-based. See #559.
+    reasoning_chunks: List[str] = []
+    reasoning_chunk_times: List[float] = []
 
 
 class InferenceInfo(BaseModel):

@@ -21,9 +21,42 @@ LLM APIs, reducing code duplication across different API types.
 
 import json
 import time
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, NamedTuple, Optional
 
 from aiohttp import ClientResponse
+
+
+class ParsedSSEStream(NamedTuple):
+    """Result of ``parse_sse_stream``, split by generation channel.
+
+    Content and reasoning are tracked separately so downstream metrics can
+    anchor TTFT to the first generated token of either channel while keeping
+    output-length, TPOT, and ITL content-based (#559): reasoning is "thinking",
+    not user-facing output, but the server starts generating at the first
+    reasoning token.
+    """
+
+    # Concatenated delta.content text.
+    output_text: str
+    # Timestamps for content-bearing chunks only. Role-only deltas, usage-only
+    # chunks, [DONE] signals, and unparseable messages are excluded so they
+    # don't corrupt downstream TPOT/TTFT/ITL.
+    chunk_times: List[float]
+    # The raw string content of the entire stream.
+    raw_content: str
+    # Raw JSON strings of content-bearing chunks, 1:1 with chunk_times.
+    response_chunks: List[str]
+    # Merged `usage` fields from chunks that carried one (e.g. OpenAI trailing
+    # `{"choices":[],"usage":{...}}` or Anthropic `message.usage` /
+    # `message_delta.usage`). None if the server didn't emit usage.
+    server_usage: Optional[dict[str, Any]]
+    # Concatenated reasoning-channel text, when extract_reasoning is given.
+    reasoning_text: str
+    # Raw JSON strings of reasoning-bearing chunks, 1:1 with
+    # reasoning_chunk_times.
+    reasoning_chunks: List[str]
+    # Timestamps for reasoning-bearing chunks only.
+    reasoning_chunk_times: List[float]
 
 
 class StreamInterruptedError(Exception):
@@ -43,8 +76,10 @@ class StreamInterruptedError(Exception):
 
 
 async def parse_sse_stream(
-    response: ClientResponse, extract_content: Callable[[dict[str, Any]], Optional[str]]
-) -> Tuple[str, List[float], str, List[str], Optional[dict[str, Any]]]:
+    response: ClientResponse,
+    extract_content: Callable[[dict[str, Any]], Optional[str]],
+    extract_reasoning: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+) -> ParsedSSEStream:
     """
     Parse Server-Sent Events (SSE) stream and extract content.
 
@@ -58,20 +93,15 @@ async def parse_sse_stream(
         extract_content: Function to extract text content from parsed JSON data.
                         Should return the text content or None if not found.
                         Example: lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+        extract_reasoning: Optional function to extract reasoning-channel text
+                        (e.g. delta.reasoning_content) from parsed JSON data.
+                        Chunks bearing reasoning but no content are recorded in
+                        the reasoning_* fields of the result, not in
+                        chunk_times/response_chunks, so content-based metrics
+                        are unaffected.
 
     Returns:
-        Tuple of (output_text, chunk_times, raw_content, response_chunks, server_usage):
-        - output_text: The concatenated text content from all chunks
-        - chunk_times: Timestamps for content-bearing chunks only. Role-only
-          deltas, usage-only chunks, [DONE] signals, and unparseable messages
-          are excluded so they don't corrupt downstream TPOT/TTFT/ITL.
-        - raw_content: The raw string content of the stream
-        - response_chunks: Raw JSON strings of content-bearing chunks, 1:1 with
-          chunk_times.
-        - server_usage: Merged `usage` fields from chunks that carried one
-          (e.g. OpenAI trailing `{"choices":[],"usage":{...}}` or Anthropic
-          `message.usage`/`message_delta.usage`). None if the server didn't
-          emit usage.
+        A ParsedSSEStream; see its field comments.
     """
     output_text = ""
     chunk_times: List[float] = []
@@ -79,6 +109,9 @@ async def parse_sse_stream(
     raw_content = b""
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
+    reasoning_text = ""
+    reasoning_chunks: List[str] = []
+    reasoning_chunk_times: List[float] = []
 
     try:
         async for chunk in response.content.iter_any():
@@ -107,6 +140,10 @@ async def parse_sse_stream(
                                 output_text += content
                                 chunk_times.append(message_time)
                                 response_chunks.append(data_str.decode("utf-8", errors="ignore"))
+                            elif extract_reasoning is not None and (reasoning := extract_reasoning(data)):
+                                reasoning_text += reasoning
+                                reasoning_chunk_times.append(message_time)
+                                reasoning_chunks.append(data_str.decode("utf-8", errors="ignore"))
                         except (json.JSONDecodeError, IndexError):
                             continue
                 if done:
@@ -118,4 +155,13 @@ async def parse_sse_stream(
         # what the server actually sent instead of an empty response body.
         raise StreamInterruptedError(e, raw_content.decode("utf-8", errors="ignore")) from e
 
-    return output_text, chunk_times, raw_content.decode("utf-8", errors="ignore"), response_chunks, server_usage
+    return ParsedSSEStream(
+        output_text=output_text,
+        chunk_times=chunk_times,
+        raw_content=raw_content.decode("utf-8", errors="ignore"),
+        response_chunks=response_chunks,
+        server_usage=server_usage,
+        reasoning_text=reasoning_text,
+        reasoning_chunks=reasoning_chunks,
+        reasoning_chunk_times=reasoning_chunk_times,
+    )

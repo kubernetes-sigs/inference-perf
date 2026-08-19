@@ -890,9 +890,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=_extract_streaming_content
+            parsed = await parse_sse_stream(
+                response,
+                extract_content=_extract_streaming_content,
+                # Reasoning text itself is accumulated above (which also covers
+                # chunks carrying both channels); this extractor is what gets
+                # reasoning-only chunks timestamped so TTFT can see them (#559).
+                extract_reasoning=lambda data: (
+                    data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+                ),
             )
+            text_content, chunk_times, response_chunks, server_usage = (
+                parsed.output_text,
+                parsed.chunk_times,
+                parsed.response_chunks,
+                parsed.server_usage,
+            )
+            raw_content = parsed.raw_content
 
             # Combine reasoning_content with text_content in output_text (used for token count)
             reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
@@ -930,6 +945,8 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
