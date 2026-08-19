@@ -3,7 +3,7 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, List, cast
 
 import pytest
-from inference_perf.datagen.replay_graph_types import GraphEvent, ReplayGraph, InputSegment
+from inference_perf.datagen.replay.replay_graph_types import GraphEvent, ReplayGraph, InputSegment
 from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_THEME, DEFAULT_SYSTEM_PROMPT  # noqa: F401
 from inference_perf.datagen.synthetic_agentic import (
     session_seed,
@@ -25,7 +25,7 @@ from inference_perf.datagen.synthetic_agentic import (
 from inference_perf.config.common import Distribution
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig, ContextCompactionConfig
 
-from inference_perf.datagen.replay_graph_session_datagen import (
+from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
     SessionChatCompletionAPIData,
     WorkerSessionTracker,
@@ -742,7 +742,7 @@ def test_round_k_survives_runtime_substitution() -> None:
     # Build a 3-round session, then run the round-2 principal event through the
     # ACTUAL runtime substitution (_build_messages_with_substitution) with a
     # registry populated for its predecessors — mirroring the tool_output tests.
-    from inference_perf.datagen.replay_graph_session_datagen import (
+    from inference_perf.datagen.replay.replay_graph_session_datagen import (
         EventOutputRegistry,
         SessionChatCompletionAPIData,
         WorkerSessionTracker,
@@ -1403,7 +1403,7 @@ def _drive_substitution(target_ev: GraphEvent, prior_by_source: Any) -> Any:
     prior_by_source maps a source_event_id -> (input_messages, output_message)
     to populate the registry for the target's predecessors. Returns the
     reconstructed message list (raises if substitution mis-slices)."""
-    from inference_perf.datagen.replay_graph_session_datagen import (
+    from inference_perf.datagen.replay.replay_graph_session_datagen import (
         EventOutputRegistry,
         SessionChatCompletionAPIData,
         WorkerSessionTracker,
@@ -2297,7 +2297,7 @@ def test_fallback_tool_params_applies_for_theme_without_schemas() -> None:
 
 def test_forced_tool_call_forces_ignore_eos_false() -> None:
     import asyncio
-    from inference_perf.datagen.replay_graph_session_datagen import (
+    from inference_perf.datagen.replay.replay_graph_session_datagen import (
         EventOutputRegistry,
         SessionChatCompletionAPIData,
         WorkerSessionTracker,
@@ -2396,7 +2396,7 @@ def test_plain_text_turn_with_tools_forbids_tool_call_and_stops() -> None:
     # tool_choice="none" (no structured tool call -> nothing to dangle into the
     # next round) and ignore_eos=False (stop cleanly, no <|im_end|> spill).
     import asyncio
-    from inference_perf.datagen.replay_graph_session_datagen import (
+    from inference_perf.datagen.replay.replay_graph_session_datagen import (
         EventOutputRegistry,
         SessionChatCompletionAPIData,
         WorkerSessionTracker,
@@ -2436,7 +2436,7 @@ def test_plain_text_turn_without_tools_keeps_defaults() -> None:
     # A plain-text turn with NO tool catalog is untouched: no tool_choice, keeps
     # the caller's ignore_eos (so ordinary text turns still generate to length).
     import asyncio
-    from inference_perf.datagen.replay_graph_session_datagen import (
+    from inference_perf.datagen.replay.replay_graph_session_datagen import (
         EventOutputRegistry,
         SessionChatCompletionAPIData,
         WorkerSessionTracker,
@@ -4437,7 +4437,7 @@ def test_bad_tool_call_handling_inherited_by_session_replay_base() -> None:
 
 def test_notification_envelope_shape_and_omissions() -> None:
     """The envelope wraps the report body and omits the fields we deliberately skip."""
-    from inference_perf.datagen.replay_graph_session_datagen import _wrap_async_notification
+    from inference_perf.datagen.replay.replay_graph_session_datagen import _wrap_async_notification
 
     wrapped = _wrap_async_notification("REPORT BODY")
     assert wrapped == "<task-notification>\n<result>\nREPORT BODY\n</result>\n</task-notification>"
@@ -4448,7 +4448,7 @@ def test_notification_envelope_shape_and_omissions() -> None:
 
 def test_notification_envelope_survives_multiline_and_markup_reports() -> None:
     """A child report may be multi-line or mention tag-like text; the envelope must still delimit it."""
-    from inference_perf.datagen.replay_graph_session_datagen import _wrap_async_notification
+    from inference_perf.datagen.replay.replay_graph_session_datagen import _wrap_async_notification
 
     body = "## Findings\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nMentions <result> in prose."
     wrapped = _wrap_async_notification(body)

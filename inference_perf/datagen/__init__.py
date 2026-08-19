@@ -31,7 +31,6 @@ from .synthetic import (
     SharedPrefixDataGenerator,
     SyntheticDataGenerator,
 )
-from .synthetic_agent_sessions import SyntheticAgentSessionsDataGenerator
 from .synthetic_agentic import SyntheticAgenticDataGenerator
 
 __all__ = [
@@ -48,7 +47,6 @@ __all__ = [
     "InfinityInstructDataGenerator",
     "BillsumConversationsDataGenerator",
     "OTelTraceReplayDataGenerator",
-    "SyntheticAgentSessionsDataGenerator",
     "SyntheticAgenticDataGenerator",
     "WekaTraceReplayDataGenerator",
     "ConversationReplayDataGenerator",

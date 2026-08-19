@@ -218,6 +218,12 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.conversation_replay.tool_call_latency_sec.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.conversation_replay.tool_call_latency_sec.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.max_model_len` | int | Maximum model context length in tokens |
+| `--data.visionarena.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
+| `--data.visionarena.hf_split` | str | HuggingFace split to stream. |
+| `--data.visionarena.hf_data_files` | str | Optional ``data_files`` glob forwarded to ``load_dataset``. |
+| `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
+| `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
+| `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
 | `--data.synthetic_agentic.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.synthetic_agentic.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.synthetic_agentic.model_mapping` | JSON | Map recorded model names to target models |
@@ -326,12 +332,6 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.synthetic_agentic.context_compaction.target_tokens.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.synthetic_agentic.context_compaction.target_tokens.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.visionarena.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
-| `--data.visionarena.hf_split` | str | HuggingFace split to stream. |
-| `--data.visionarena.hf_data_files` | str | Optional ``data_files`` glob forwarded to ``load_dataset``. |
-| `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
-| `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
-| `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
 | `--data.use_chat_template` | boolean | Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it on the completions path, reproducing the request shape of harnesses that benchmark with chat templating enabled. The input length distribution targets the fully templated prompt, so the server-side prefill token count still matches the configured length. Only supported by the 'random' type; setting it with any other type is a config error. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |

@@ -32,7 +32,7 @@ from pathlib import Path
 
 from inference_perf.config.config import read_config
 from inference_perf.config.datagen.config import DataGenType
-from inference_perf.datagen.otel_trace_to_replay_graph import graph_to_dict, print_graph, visualize_graph
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import graph_to_dict, print_graph, visualize_graph
 from inference_perf.datagen.synthetic_agentic import build_graph_for_session
 from inference_perf.datagen.synthetic_themes import GENERIC_THEME, load_theme
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
