@@ -16,7 +16,13 @@
 from typing import Any, Dict, Optional
 
 from aiohttp import ClientResponse
-from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    extract_server_request_id,
+)
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
@@ -75,7 +81,7 @@ class CompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("text")
             )
 
@@ -86,6 +92,7 @@ class CompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
@@ -99,11 +106,13 @@ class CompletionAPIData(InferenceAPIData):
             )
         else:
             data = await response.json()
+            server_request_id = extract_server_request_id(data, response)
             server_usage = data.get("usage")
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
             if len(choices) == 0:
                 return InferenceInfo(
+                    server_request_id=server_request_id,
                     request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                     lora_adapter=lora_adapter,
                 )
@@ -111,6 +120,7 @@ class CompletionAPIData(InferenceAPIData):
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,

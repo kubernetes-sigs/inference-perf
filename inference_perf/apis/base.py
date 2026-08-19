@@ -39,6 +39,7 @@ class StreamedResponseMetrics(ResponseMetrics):
 
 
 class InferenceInfo(BaseModel):
+    server_request_id: Optional[str] = None
     request_metrics: RequestMetrics
     response_metrics: Optional[SerializeAsAny[ResponseMetrics]] = None
     extra_info: dict[str, Any] = {}
@@ -192,3 +193,44 @@ class LazyLoadInferenceAPIData(InferenceAPIData):
         lora_adapter: Optional[str] = None,
     ) -> Optional[InferenceInfo]:
         raise NotImplementedError("LazyLoadInferenceAPIData doesn't support this operation")
+
+
+def extract_server_request_id(data: Any = None, response: Optional[Any] = None) -> Optional[str]:
+    """Extracts server request ID from response body dict or HTTP headers.
+
+    Checks:
+    1. Body `id` field (OpenAI / standard completions).
+    2. Body `message.id` field (Anthropic `message_start` events).
+    3. Case-insensitive `x-request-id` response header fallback.
+
+    Guards:
+    - Stringifies non-empty str/int IDs; rejects booleans.
+    - Strips whitespace and ignores blank strings.
+    """
+    if isinstance(data, dict):
+        raw_id = data.get("id")
+        if raw_id is not None and isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool):
+            val = str(raw_id).strip()
+            if val:
+                return val
+        if isinstance(data.get("message"), dict):
+            msg_id = data["message"].get("id")
+            if msg_id is not None and isinstance(msg_id, (str, int)) and not isinstance(msg_id, bool):
+                val = str(msg_id).strip()
+                if val:
+                    return val
+
+    if response is not None and hasattr(response, "headers") and hasattr(response.headers, "get"):
+        headers = response.headers
+        val = headers.get("x-request-id")
+        if val is None and hasattr(headers, "items"):
+            for k, v in headers.items():
+                if isinstance(k, str) and k.lower() == "x-request-id":
+                    val = v
+                    break
+        if val is not None and isinstance(val, (str, int)) and not isinstance(val, bool):
+            val_str = str(val).strip()
+            if val_str:
+                return val_str
+
+    return None

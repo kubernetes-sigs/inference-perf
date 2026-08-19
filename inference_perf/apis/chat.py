@@ -23,7 +23,13 @@ import numpy as np
 from aiohttp import ClientResponse
 from pydantic import BaseModel, field_validator
 
-from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics, StreamedResponseMetrics
+from inference_perf.apis import (
+    InferenceAPIData,
+    InferenceInfo,
+    StreamedResponseMetrics,
+    UnaryResponseMetrics,
+    extract_server_request_id,
+)
 from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
@@ -561,7 +567,7 @@ class ChatCompletionAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
@@ -570,6 +576,7 @@ class ChatCompletionAPIData(InferenceAPIData):
             # never contains.
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
@@ -583,17 +590,20 @@ class ChatCompletionAPIData(InferenceAPIData):
             )
 
         data = await response.json()
+        server_request_id = extract_server_request_id(data, response)
         server_usage = data.get("usage")
         prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         choices = data.get("choices", [])
         if len(choices) == 0:
             return InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=self._build_request_metrics(prompt_len, 0),
                 lora_adapter=lora_adapter,
             )
         output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
         output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
         return InferenceInfo(
+            server_request_id=server_request_id,
             request_metrics=self._build_request_metrics(prompt_len, output_len),
             response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
             lora_adapter=lora_adapter,

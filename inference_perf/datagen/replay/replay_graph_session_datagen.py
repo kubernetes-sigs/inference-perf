@@ -44,6 +44,7 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
     StreamedResponseMetrics,
     UnaryResponseMetrics,
+    extract_server_request_id,
 )
 from inference_perf.apis.anthropic_messages import (
     build_anthropic_request_body,
@@ -890,7 +891,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            text_content, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
                 response, extract_content=_extract_streaming_content
             )
 
@@ -923,6 +924,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps([tool_call_chunks[i] for i in sorted(tool_call_chunks)], ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
@@ -941,6 +943,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             data = await response.json()
             server_usage = data.get("usage")
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+            server_request_id = extract_server_request_id(data, response)
             choices = data.get("choices", [])
             output_message: Optional[Dict[str, Any]] = None
             tool_calls = None
@@ -974,6 +977,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps(tool_calls, ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,
@@ -1105,11 +1109,13 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
+                server_request_id,
             ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
             base_info = InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(
                     text=Text(
                         input_tokens=int(input_tokens)
@@ -1129,12 +1135,14 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             )
         else:
             data = await response.json()
+            server_request_id = extract_server_request_id(data, response)
             usage = data.get("usage") or {}
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_tokens = usage.get("output_tokens")
             output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
             base_info = InferenceInfo(
+                server_request_id=server_request_id,
                 request_metrics=RequestMetrics(
                     text=Text(
                         input_tokens=int(input_tokens)
@@ -1152,6 +1160,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             )
 
         info = SessionInferenceInfo(
+            server_request_id=base_info.server_request_id,
             request_metrics=base_info.request_metrics,
             response_metrics=base_info.response_metrics,
             lora_adapter=lora_adapter,

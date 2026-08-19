@@ -16,11 +16,12 @@ from abc import abstractmethod
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, MultiLoRAConfig
 from inference_perf.apis import (
+    ErrorResponseInfo,
     InferenceAPIData,
     InferenceInfo,
     RequestLifecycleMetric,
-    ErrorResponseInfo,
     StreamedResponseMetrics,
+    extract_server_request_id,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
 from inference_perf.apis.streaming_parser import StreamInterruptedError
@@ -558,7 +559,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
             )
 
         if not info:
-            info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
+            info = InferenceInfo(
+                server_request_id=extract_server_request_id(response=response),
+                request_metrics=RequestMetrics(text=Text(input_tokens=0)),
+            )
+        elif not info.server_request_id and response:
+            info.server_request_id = extract_server_request_id(response=response)
         if data.labels:
             info.labels = data.labels
 
