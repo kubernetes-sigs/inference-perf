@@ -22,8 +22,6 @@ hangs the run — asyncio.wait_for turns that hang into a test failure.
 """
 
 import asyncio
-import multiprocessing as mp
-import sys
 import unittest
 from typing import Any
 
@@ -42,14 +40,6 @@ from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-
-# Match the start method used in production (main.py) so the tokenizer and
-# datagen objects are inherited rather than pickled into worker processes.
-if sys.platform == "darwin":
-    try:
-        mp.set_start_method("fork", force=True)
-    except RuntimeError:
-        pass
 
 
 class _DummyHFTokenizer:
