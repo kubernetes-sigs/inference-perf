@@ -81,29 +81,33 @@ build-backend = "setuptools.build_meta"
 distribution = true
 
 [tool.pdm.scripts]
-format = "ruff format"
-lint = "ruff check"
-type-check = "mypy --strict ./inference_perf ./tests"
-"check:cli-flags" = "python scripts/sync_cli_flags_doc.py --check"
-"update:cli-flags" = "python scripts/sync_cli_flags_doc.py"
-check = {composite = ["format", "lint"]}
-validate = {composite = ["format", "lint", "type-check", "check:cli-flags"]}
-setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push"}
+# Every script must set `help` so `pdm run --list` doubles as the dev-command
+# reference; tests/test_pdm_scripts.py enforces this.
+format = {cmd = "ruff format", help = "Format code with ruff"}
+lint = {cmd = "ruff check", help = "Lint code with ruff"}
+type-check = {cmd = "mypy --strict ./inference_perf ./tests", help = "Strict mypy over inference_perf and tests"}
+"check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
+"update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
+check = {composite = ["format", "lint"], help = "Fast check: format + lint"}
+validate = {composite = ["format", "lint", "type-check", "check:cli-flags"], help = "Full check: format, lint, type-check, cli-flags doc sync"}
+setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push", help = "Install dependencies and git hooks"}
 
-"test" = "pytest tests"
-"test:picked" = "pytest --picked"
-"test:e2e" = "pytest e2e tests/optional -n auto --dist loadgroup {args}"
+"test" = {cmd = "pytest tests", help = "Run unit tests"}
+"test:picked" = {cmd = "pytest --picked", help = "Run tests in files changed since the last commit"}
+"test:e2e" = {cmd = "pytest e2e tests/optional -n auto --dist loadgroup {args}", help = "Run e2e and optional tests"}
 # The live-oracle slice: every e2e test that needs a real vLLM server
 # (start one with e2e/vllm_cpu_server.sh). Selection is by naming
 # convention, so a new e2e/tests/test_vllm_*.py joins the slice with no
 # edits here or in CI. Serial on purpose: the modules share one server.
-"test:e2e:live" = {shell = "pytest e2e/tests/test_vllm_*.py {args}"}
-"test:e2e:docker" = "pdm run docker:e2e-test:run"
+"test:e2e:live" = {shell = "pytest e2e/tests/test_vllm_*.py {args}", help = "Run the e2e live-oracle slice against a running vLLM server"}
+"test:e2e:docker" = {cmd = "pdm run docker:e2e-test:run", help = "Run e2e tests inside Docker"}
 
-"check:cov" = "python scripts/check_coverage_regression.py"
+"check:cov" = {cmd = "python scripts/check_coverage_regression.py", help = "Check unit-test coverage for regressions"}
 
 "docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
+"docker:e2e-test:build".help = "Build the e2e-test Docker image"
 "docker:e2e-test:run".shell = "rm result && pdm run docker:e2e-test:build --iidfile result && docker run --rm -it $(< result)"
+"docker:e2e-test:run".help = "Build and run the e2e-test Docker image"
 
 [tool.ruff]
 # The GitHub editor is 127 chars wide

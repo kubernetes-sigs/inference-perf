@@ -15,11 +15,12 @@ To contribute to this project, please adhere to the following procedure:
 - **Create an issue** detailing the proposed changes. Upon confirmation of assignment, you may proceed to submit a Pull Request.
 - **Initial Setup**: Run `pdm run setup` to install dependencies and set up pre-commit hooks.
 - Implement the required code modifications and perform **manual verification** by executing a benchmark run.
-- **Include comprehensive unit tests** to validate the changes. You can use `pdm test:picked` to run tests only on modified files.
+- **Include comprehensive unit tests** to validate the changes. You can use `pdm run test:picked` to run tests only on modified files.
 - Execute **validation** before pushing:
-  - `pdm check`: Fast check (formatting and linting).
-  - `pdm run validate`: Full check (formatting, linting, and strict type checking).
-- Conduct **full test execution and code coverage analysis** using `pdm test` and `pdm check:cov`.
+  - `pdm run check`: Fast check (formatting and linting).
+  - `pdm run validate`: Full check (formatting, linting, strict type checking, and CLI-flags doc sync).
+- Conduct **full test execution and code coverage analysis** using `pdm run test` and `pdm run check:cov`.
+- All development commands are defined as pdm scripts; run `pdm run --list` to see the full list with descriptions.
 - **Branch Up-to-Date Requirement**: Your branch must be based on the latest `origin/main` before you can push. A pre-push hook enforces this by running `git fetch origin main` automatically. If it fails, you will need to rebase or merge `origin/main`.
 - **Submit the Pull Request** utilizing the provided template.
 
