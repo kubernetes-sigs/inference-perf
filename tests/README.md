@@ -3,10 +3,9 @@
 ```
 tests/
 ├── required/    # Run in CI on every PR. Self-contained, no external deps.
-├── optional/    # Live end-to-end tier: real model servers on a real cluster.
+├── optional/    # Cluster-backed tier: a real model server on a real cluster.
 │   ├── harness/      # Shared, backend-agnostic plumbing (not a suite).
-│   ├── multimodal/   # Suite: multimodal cases against a Qwen3-VL deployment.
-│   └── text/         # Suite: a text-only worked example (how to add a suite).
+│   └── text/         # Suite: one text-only case, the Kubernetes deploy-path smoke.
 └── *.py         # Top-level tests run alongside required/ in CI.
 ```
 
@@ -19,15 +18,25 @@ exercising the harness requirement-inference and node-matching logic with no
 cluster (the harness package itself lives under `optional/`, as live-tier
 infrastructure).
 
-## `optional/` (the live tier)
+## `optional/` (the cluster-backed tier)
 
-These are end-to-end tests that drive real model servers (vLLM today) on a
-GPU-backed Kubernetes cluster. They live outside the gating CI suite because
-**CI doesn't have access to the hardware they need**: accelerator nodes, model
-weights, HuggingFace tokens, the whole stack. They're not blocking; they're a
-hand-run validation step before merging changes that touch wire format,
-multimodal payloads, or anything else where "passes unit tests" doesn't imply
-"actually works against a real server."
+These are end-to-end tests that drive a real model server (vLLM today) on a
+GPU-backed Kubernetes cluster through the project's own deploy path:
+`deploy/manifests.yaml`, the published image, a ConfigMap and a Job. They live
+outside the gating CI suite because **CI doesn't have access to the hardware
+they need**: accelerator nodes, model weights, HuggingFace tokens, the whole
+stack. They're not blocking; they're a hand-run validation step for changes
+that touch the deploy path itself.
+
+The tier is deliberately down to one token case (`text/chat`). It used to
+carry the multimodal payload cases too, but what those check (does a real
+vLLM accept the image, video, audio and shared-prefix payloads we build) does
+not depend on model size or speed, so they now run in CI against small
+models on real vLLM CPU servers: `e2e/tests/test_vllm_cpu_multimodal.py`,
+cases under `e2e/configs/vllm_cpu_multimodal/`, started by the
+`multimodal-e2e` job of the `E2E Test on change` workflow on every change,
+merge-blocking. Only the Kubernetes deploy path itself still needs a
+cluster, and that is what the remaining case exercises.
 
 They are marked `@pytest.mark.live` and **auto-skipped unless you pass
 `--kubeconfigs`**, so a plain `pytest tests` / `pdm run test` stays green
@@ -100,11 +109,10 @@ different run shape (a different server, a different verification, or no
 
 Current suites:
 
-- `optional/multimodal/` — multimodal benchmarking against a Qwen3-VL
-  deployment; cases under `cases/*/`.
-- `optional/text/` — a minimal text-only suite (a differently named Deployment,
-  discovered from the manifest) that exists to demonstrate the pattern above.
+- `optional/text/` — one text-only chat case against a Qwen3-0.6B deployment,
+  the deploy-path smoke described above. It doubles as the worked example of
+  the pattern (a Deployment name discovered from the manifest, no Python).
 
-Both run via `optional/test_live.py`; there is no per-suite test module.
+It runs via `optional/test_live.py`; there is no per-suite test module.
 
 Per-case reports are written to `cases/<case>/output/`.

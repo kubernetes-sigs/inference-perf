@@ -128,3 +128,152 @@ jobs:
             test_e2e.out
             test_vllm_e2e-*.out
             vllm_server-*.log
+
+  # The multimodal half of the same cpu-vllm oracle: does a real server
+  # accept the payloads the multimodal datagens build? One vision-language
+  # server and one speech server per release in
+  # e2e/vllm_multimodal_releases.txt, running
+  # e2e/tests/test_vllm_cpu_multimodal.py against each.
+  #
+  # A separate job rather than more steps in e2e-tests, because the two
+  # halves need different models, context lengths, chat templates, and
+  # release pins, and because two jobs finish in the wall clock of the
+  # slower one. Runner minutes are free on a public repo; merge latency is
+  # not. It is in this workflow, and not one of its own, so that it gates:
+  # the merge gate keys on workflow name, and an oracle that runs after the
+  # merge catches a rejected payload the morning after it lands.
+  multimodal-e2e:
+    # ARM for the reason the job above gives, with a second symptom. On the
+    # AVX-512 masked EPYC draws vLLM's CPU backend also cannot build its
+    # oneDNN matmul primitives and falls back to plain torch, which the
+    # text-only oracle survives and this slice does not: measured on one
+    # x86 run, the single draw without the fallback finished `init engine`
+    # in 49s and passed, while the three with it took 623s, died in encoder
+    # profiling, or never finished it inside 900s.
+    runs-on: ubuntu-24.04-arm
+    # Roughly twice the measured 25 min (4m36s of setup, then per release a
+    # vision-language pass of about 7 min and a speech pass of about 3), so a
+    # server that hangs rather than fails stops holding the gate.
+    timeout-minutes: 60
+    env:
+      # Which models play which oracle is decided in the test module
+      # (VLM_MODEL / AUDIO_MODEL); these must match it, since this job
+      # starts the containers and the tests only connect to them.
+      VLM_MODEL: OpenGVLab/InternVL3-1B-hf
+      AUDIO_MODEL: ibm-granite/granite-4.0-1b-speech
+      # Media on a CPU VLM needs more context than the 2048 the text-only
+      # oracle serves with; 4096 is both models' max_position_embeddings.
+      # Matches MAX_MODEL_LEN in the test module.
+      VLLM_MAX_MODEL_LEN: "4096"
+      # Every multimodal model needs its own chat template (the text-only
+      # template would drop the media placeholders).
+      VLLM_CHAT_TEMPLATE: ""
+      # These models profile one encoder item of the maximum feature size
+      # before they serve (a video for the VLM, an audio clip for the speech
+      # model), which the text-only oracle has no equivalent of. Measured
+      # startups here are 93-132s against the 300s default, so this is not
+      # for the profiling pass itself: it is headroom for a slow Hugging
+      # Face, which serves 6.5GB of weights across the two models and took
+      # 15-31s per model on the runs measured so far.
+      VLLM_HEALTH_TIMEOUT_SEC: "600"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Same contract as the job above: the release table lives with the
+      # tests, and an empty table fails here rather than passing a
+      # zero-iteration loop below. A separate table because this slice's
+      # floor is higher (see the file's header) and its pins carry no
+      # metric-families goldens. VLLM_HF_CACHE points the four servers at one
+      # directory so the second release reuses the first one's download.
+      - name: Load vLLM version table
+        run: |
+          versions="$(grep -vE '^[[:space:]]*(#|$)' e2e/vllm_multimodal_releases.txt | xargs)"
+          [ -n "$versions" ]
+          echo "VLLM_VERSIONS=$versions" >> "$GITHUB_ENV"
+          echo "VLLM_HF_CACHE=$HOME/hf-cache" >> "$GITHUB_ENV"
+
+      # No weights cache here, unlike the job above. Both releases share one
+      # download inside the job, which the green run measured at 14s for the
+      # VLM and 29s for the speech model, 43s of a 25 minute job. Caching it
+      # would put a ~6GB entry into a 10GB repo-wide budget and evict the nix
+      # and venv caches (#670, #720) that stand to save the 4m36s of `pdm
+      # sync` below, which is the part of this job actually worth caching.
+      - name: Prefetch vLLM images
+        run: |
+          for v in $VLLM_VERSIONS; do
+            docker pull "docker.io/vllm/vllm-openai-cpu:$v" > /dev/null 2>&1 &
+          done
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@4eae8bea4afaa8f8ea8aa638ab9a7fead2f3d21e # v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          nix develop -c pdm sync -d
+
+      # For every release: start the vision-language server, run the image
+      # and video cases, stop it; start the speech server, run the audio
+      # case, stop it. A pass that skips anything fails, because a case that
+      # skips against the server meant to serve it means the server is not
+      # what this job thinks it is (wrong model, or the modality table in
+      # e2e/utils/vllm_server.py drifted), and a gate whose oracle silently
+      # skips gates nothing. Every release runs even after one fails.
+      - name: Run multimodal e2e tests per vLLM version
+        run: |
+          set -uo pipefail
+          failed=""
+
+          # run_pass <version> <model> <modalities> <pytest -k expression>
+          run_pass() {
+            local v="$1" model="$2" modalities="$3" select="$4"
+            local tag="${model##*/}-$v"
+            local out="test_multimodal_e2e-$tag.out"
+            if VLLM_MODEL="$model" e2e/vllm_cpu_server.sh start "$v"; then
+              {
+                echo "### $model on $v resolved to"
+                echo '```'
+                curl -sf http://127.0.0.1:8000/version || true
+                echo
+                docker inspect --format '{{index .RepoDigests 0}}' \
+                  "docker.io/vllm/vllm-openai-cpu:$v" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+
+              if E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
+                nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
+                |& tee "$out"; then
+                if grep -qE '[0-9]+ skipped' "$out"; then
+                  echo "::error::$tag: pass selected '$select' but skipped cases (see $out)"
+                  failed="$failed $tag"
+                fi
+              else
+                failed="$failed $tag"
+              fi
+            else
+              failed="$failed $tag"
+            fi
+            e2e/vllm_cpu_server.sh logs > "vllm_server-$tag.log" 2>&1 || true
+            e2e/vllm_cpu_server.sh stop > /dev/null 2>&1 || true
+          }
+
+          for v in $VLLM_VERSIONS; do
+            run_pass "$v" "$VLM_MODEL" "image,video" "not audio"
+            run_pass "$v" "$AUDIO_MODEL" "audio" "audio"
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::multimodal slice failed for:$failed"
+            exit 1
+          fi
+
+      - name: Upload e2e outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test_e2e_multimodal
+          path: |
+            test_multimodal_e2e-*.out
+            vllm_server-*.log

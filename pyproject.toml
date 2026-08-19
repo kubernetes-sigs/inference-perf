@@ -98,6 +98,11 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 # convention, so a new e2e/tests/test_vllm_*.py joins the slice with no
 # edits here or in CI. Serial on purpose: the modules share one server.
 "test:e2e:live" = {shell = "pytest e2e/tests/test_vllm_*.py {args}"}
+# The multimodal acceptance slice: real vLLM CPU servers with a
+# vision-language and a speech model (see e2e/vllm_multimodal_releases.txt
+# and the module docstring for how to start them). Also part of the live
+# slice above, where it runs the text-only case and skips the rest.
+"test:e2e:multimodal" = {shell = "pytest e2e/tests/test_vllm_cpu_multimodal.py {args}"}
 "test:e2e:docker" = "pdm run docker:e2e-test:run"
 
 "check:cov" = "python scripts/check_coverage_regression.py"

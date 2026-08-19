@@ -1,0 +1,39 @@
+# vLLM CPU multimodal acceptance case (e2e/tests/test_vllm_cpu_multimodal.py).
+# Ported from the GPU-only tests/optional tier: same payload shape, sized for
+# a 4-vCPU CI runner (tiny media, a handful of requests). The test overrides
+# server.base_url, server.model_name and tokenizer with whatever the running
+# server serves; the values below make the file runnable by hand against
+# `VLLM_MODEL=OpenGVLab/InternVL3-1B-hf VLLM_CHAT_TEMPLATE= e2e/vllm_cpu_server.sh start latest`.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: OpenGVLab/InternVL3-1B-hf
+  base_url: http://127.0.0.1:8000
+tokenizer:
+  pretrained_model_name_or_path: OpenGVLab/InternVL3-1B-hf
+data:
+  type: synthetic
+  input_distribution: { type: fixed, min: 32, max: 32, mean: 32 }
+  output_distribution: { type: fixed, min: 8, max: 8, mean: 8 }
+  multimodal:
+    # Several images per request: exercises multi-item batching in the
+    # server, the path vLLM 0.26.0 CPU crashed on (fixed in 0.27).
+    image:
+      count: { type: uniform, min: 2, max: 4 }
+      insertion_point: 0.0
+      resolutions:
+        - resolution: { width: 64, height: 64 }
+          weight: 1.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 4
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

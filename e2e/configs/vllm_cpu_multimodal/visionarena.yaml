@@ -1,0 +1,36 @@
+# vLLM CPU multimodal acceptance case (e2e/tests/test_vllm_cpu_multimodal.py).
+# Ported from the GPU-only tests/optional tier: same payload shape, sized for
+# a 4-vCPU CI runner (tiny media, a handful of requests). The test overrides
+# server.base_url, server.model_name and tokenizer with whatever the running
+# server serves; the values below make the file runnable by hand against
+# `VLLM_MODEL=OpenGVLab/InternVL3-1B-hf VLLM_CHAT_TEMPLATE= e2e/vllm_cpu_server.sh start latest`.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: OpenGVLab/InternVL3-1B-hf
+  base_url: http://127.0.0.1:8000
+tokenizer:
+  pretrained_model_name_or_path: OpenGVLab/InternVL3-1B-hf
+# Real-dataset images: streams rows of the public lmarena-ai/VisionArena-Chat
+# dataset (no HF token needed), so the server decodes real JPEG/PNG bytes of
+# arbitrary size instead of synthetic 64x64 PNGs. Kept to two requests: real
+# images at native resolution are the slowest thing a CPU VLM does.
+data:
+  type: visionarena
+  visionarena:
+    num_rows: 8
+    max_images_per_request: 1
+    insertion_point: 0.0
+load:
+  type: constant
+  stages:
+    - rate: 0.5
+      duration: 4
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

@@ -1,0 +1,39 @@
+# vLLM CPU multimodal acceptance case (e2e/tests/test_vllm_cpu_multimodal.py).
+# Ported from the GPU-only tests/optional tier: same payload shape, sized for
+# a 4-vCPU CI runner (tiny media, a handful of requests). The test overrides
+# server.base_url, server.model_name and tokenizer with whatever the running
+# server serves; the values below make the file runnable by hand against
+# `VLLM_MODEL=OpenGVLab/InternVL3-1B-hf VLLM_CHAT_TEMPLATE= e2e/vllm_cpu_server.sh start latest`.
+api:
+  type: chat
+  streaming: true
+server:
+  type: vllm
+  model_name: OpenGVLab/InternVL3-1B-hf
+  base_url: http://127.0.0.1:8000
+tokenizer:
+  pretrained_model_name_or_path: OpenGVLab/InternVL3-1B-hf
+data:
+  type: synthetic
+  input_distribution: { type: fixed, min: 32, max: 32, mean: 32 }
+  output_distribution: { type: fixed, min: 8, max: 8, mean: 8 }
+  multimodal:
+    # Default representation: one encoded MP4 per video_url block, so the
+    # server must decode real video bytes.
+    video:
+      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      insertion_point: 1.0
+      profiles:
+        - profile: { resolution: { width: 64, height: 64 }, frames: 4 }
+          weight: 1.0
+load:
+  type: constant
+  stages:
+    - rate: 1
+      duration: 4
+  num_workers: 1
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true

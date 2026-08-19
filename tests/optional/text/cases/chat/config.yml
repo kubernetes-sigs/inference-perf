@@ -1,6 +1,12 @@
-# Plain text-only chat load: no `multimodal` block. This is the entire
-# difference from a multimodal case as far as inference-perf is concerned, and
-# the harness neither knows nor cares which one it is running.
+# Plain text-only chat: no `multimodal` block. This is the one case the
+# cluster-backed tier keeps: it exists to exercise the Kubernetes deploy path
+# (deploy/manifests.yaml, the published image, the ConfigMap and Job) end to
+# end, which nothing else covers. Payload acceptance for the multimodal
+# shapes this tier used to carry moved to real vLLM CPU servers in CI:
+# e2e/tests/test_vllm_cpu_multimodal.py.
+#
+# shared_prefix is the synthetic generator that speaks the chat API
+# (`synthetic` is completion-only); the harness neither knows nor cares.
 api:
   type: chat
   streaming: true
@@ -9,9 +15,13 @@ server:
   model_name: Qwen/Qwen3-0.6B
   base_url: http://qwen3-text-vllm-service:8000
 data:
-  type: synthetic
-  input_distribution: { type: uniform, min: 100, max: 1000 }
-  output_distribution: { type: uniform, min: 50, max: 100 }
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2
+    num_prompts_per_group: 5
+    system_prompt_len: { type: fixed, min: 100, max: 100, mean: 100 }
+    question_len: { type: uniform, min: 100, max: 500 }
+    output_len: { type: uniform, min: 50, max: 100 }
 load:
   type: constant
   stages:

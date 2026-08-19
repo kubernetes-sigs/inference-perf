@@ -63,6 +63,18 @@ logger = logging.getLogger(__name__)
 
 ENV_BASE_URL = "E2E_VLLM_BASE_URL"
 
+# Comma-separated modalities the external server's model accepts (image,
+# video, audio); set by whoever started the server. Overrides the table
+# below, which only knows the models this tree starts itself.
+ENV_MODALITIES = "E2E_VLLM_MODALITIES"
+
+# Modalities by served model id, for the models e2e/tests/test_vllm_cpu_*.py
+# start or expect. Text-only models are absent (empty set).
+MODALITIES_BY_MODEL = {
+    "OpenGVLab/InternVL3-1B-hf": frozenset({"image", "video"}),
+    "ibm-granite/granite-4.0-1b-speech": frozenset({"audio"}),
+}
+
 # vLLM's canonical tiny test model. Its tokenizer prepends a BOS token to
 # completion prompts, which keeps the #564-lineage special-token handling in
 # play on the completion path.
@@ -76,6 +88,18 @@ SIMPLE_CHAT_TEMPLATE = TEST_E2E_TESTDATA / "simple_chat_template.jinja"
 # different CPython ABI; a spawned vLLM must not inherit them (same fix as
 # the vllm-bench harness). LD_LIBRARY_PATH is deliberately kept.
 _HOST_PYTHON_ENV_VARS = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NIX_PYTHONPATH")
+
+
+# Which multimodal inputs the served model accepts, so a multimodal case can
+# skip cleanly against a text-only server. E2E_VLLM_MODALITIES="image,video"
+# -> {"image", "video"} regardless of model; unset with model
+# "ibm-granite/granite-4.0-1b-speech" -> {"audio"}; unset with
+# "facebook/opt-125m" -> set().
+def served_modalities(model: str) -> frozenset[str]:
+    declared = os.environ.get(ENV_MODALITIES)
+    if declared is not None:
+        return frozenset(m.strip() for m in declared.split(",") if m.strip())
+    return MODALITIES_BY_MODEL.get(model, frozenset())
 
 
 class VLLMServerRunner(AsyncContextDecorator):
