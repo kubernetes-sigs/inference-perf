@@ -60,6 +60,25 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Cache the Nix store (dev shell closure, including the sim built from
+      # source) keyed on the flake files. On a key miss the nearest older
+      # cache is restored and Nix fetches only the delta.
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Cache the pdm venv. Keyed on the flake files too because the venv's
+      # interpreter is the store path of the dev shell's Python.
+      - name: Restore pdm venv
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'pdm.lock') }}
+
+      # Kept on cache hits: pdm sync verifies the restored venv against
+      # pdm.lock in seconds and repairs a partial restore.
       - name: Install dependencies
         run: |
           nix develop -c pdm sync -d
