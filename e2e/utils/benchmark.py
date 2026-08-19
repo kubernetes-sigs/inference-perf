@@ -73,6 +73,23 @@ async def _process_yaml_config(config: Union[str, Path, Dict[str, Any]], out_dir
     return cfg_path
 
 
+def pythonpath_env(*paths: Union[str, Path]) -> Dict[str, str]:
+    """Build a ``PYTHONPATH`` override that keeps the inherited entries.
+
+    Tests that invoke ``inference_perf/main.py`` as a script have to put the
+    project root on ``PYTHONPATH``. Setting it to just the project root drops
+    whatever the surrounding environment had there, and the nix dev shell puts
+    its own ``numpy``/``torch`` on ``PYTHONPATH``. Without them the child falls
+    back to the venv wheels, which are not linked against the nix runtime
+    libraries and fail to import.
+    """
+    entries = [str(p) for p in paths]
+    inherited = os.environ.get("PYTHONPATH", "")
+    if inherited:
+        entries.append(inherited)
+    return {"PYTHONPATH": os.pathsep.join(entries)}
+
+
 def _find_report_files(path: Path) -> Optional[List[Path]]:
     """Return the json reports files under path (if any)."""
     candidates = list(path.glob("**/*.json"))

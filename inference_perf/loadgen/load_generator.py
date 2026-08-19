@@ -77,8 +77,14 @@ from rich.progress import (
 import signal
 
 from inference_perf.observability.logging import get_console
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on how long the parent waits for workers to finish starting up
+# before giving up and starting load anyway. Generous on purpose: a forkserver
+# worker has to rebuild a payload that can include a large tokenizer.
+WORKER_STARTUP_TIMEOUT_SEC = 300.0
 
 
 class RequestQueueData(NamedTuple):
@@ -88,7 +94,7 @@ class RequestQueueData(NamedTuple):
     lora_adapter: Optional[str]
 
 
-class Worker(mp.Process):
+class Worker(MP_CONTEXT.Process):  # type: ignore[name-defined,misc]
     def __init__(
         self,
         id: int,
@@ -104,6 +110,7 @@ class Worker(mp.Process):
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
         stage_barrier: Optional[SyncBarrier] = None,
+        ready_counter: Optional["Synchronized[int]"] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -120,6 +127,7 @@ class Worker(mp.Process):
         self.skip = False
         self.base_seed = base_seed
         self.stage_barrier = stage_barrier
+        self.ready_counter = ready_counter
         # Snapshot the parent's effective root log level so the worker
         # interpreter (which under forkserver/spawn does not inherit the
         # parent's basicConfig) can configure its own handler to surface
@@ -287,6 +295,14 @@ class Worker(mp.Process):
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         set_event_loop_policy(uvloop.EventLoopPolicy())
+
+        # Announce that startup is done: the payload has been unpickled and the
+        # queue is about to be consumed. The parent waits on this so worker
+        # startup is not billed as benchmark time (see _await_workers_ready).
+        if self.ready_counter is not None:
+            with self.ready_counter.get_lock():
+                self.ready_counter.value += 1
+
         run(self.loop())
 
 
@@ -305,6 +321,9 @@ class LoadGenerator:
         self.num_workers = load_config.num_workers
         self.worker_max_concurrency = load_config.worker_max_concurrency
         self.workers: List[Worker] = []
+        # Set once the workers are up and load is about to start; the reported
+        # run window is measured from here rather than from process startup.
+        self.load_start_time: Optional[float] = None
         self.circuit_breakers = [get_circuit_breaker(breaker_name) for breaker_name in load_config.circuit_breakers]
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
@@ -937,18 +956,54 @@ class LoadGenerator:
         self.stages = [StandardLoadStage(rate=r, duration=self.sweep_config.stage_duration) for r in rates]
         logger.info(f"Generated load stages: {[s.rate for s in self.stages]}")
 
+    async def _await_workers_ready(self, ready_counter: "Synchronized[int]") -> None:
+        """Wait until every worker has finished starting up.
+
+        ``Process.start()`` returns as soon as the child exists, well before it
+        has rebuilt its payload, so without this the parent starts dispatching
+        into a queue nobody is reading yet. ``fork`` workers inherited the
+        parent's memory and were ready almost immediately; ``forkserver`` ones
+        are rebuilt in a fresh interpreter, which takes long enough to stretch
+        the run window and deflate every rate derived from it.
+
+        Never fatal: on a dead worker or a timeout this logs and returns, so a
+        run that would have proceeded before still proceeds.
+        """
+        deadline = time.monotonic() + WORKER_STARTUP_TIMEOUT_SEC
+        while True:
+            with ready_counter.get_lock():
+                ready = ready_counter.value
+            if ready >= self.num_workers:
+                logger.debug(f"all {self.num_workers} workers ready")
+                return
+            exited = [w for w in self.workers if w.exitcode is not None]
+            if exited:
+                logger.error(
+                    f"{len(exited)} of {self.num_workers} workers exited during startup "
+                    f"(exit codes {[w.exitcode for w in exited]}); starting load with {ready} ready"
+                )
+                return
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    f"only {ready} of {self.num_workers} workers became ready within "
+                    f"{WORKER_STARTUP_TIMEOUT_SEC}s; starting load anyway"
+                )
+                return
+            await sleep(0.05)
+
     async def mp_run(self, client: ModelServerClient) -> None:
         request_queue: RequestQueue[RequestQueueData] = RequestQueue(
             self.num_workers if self.datagen.is_preferred_worker_requested() else 1
         )
-        finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
-        request_phase: SyncEvent = mp.Event()
-        stop_signal: SyncEvent = mp.Event()
-        cancel_signal: SyncEvent = mp.Event()
+        finished_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        active_requests_counter: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
+        request_phase: SyncEvent = MP_CONTEXT.Event()
+        stop_signal: SyncEvent = MP_CONTEXT.Event()
+        cancel_signal: SyncEvent = MP_CONTEXT.Event()
         # Synchronize workers and main at stage boundaries so workers finish
         # in-flight requests and clear session state before the next stage begins.
-        stage_barrier: SyncBarrier = mp.Barrier(self.num_workers + 1)
+        stage_barrier: SyncBarrier = MP_CONTEXT.Barrier(self.num_workers + 1)
+        workers_ready: "Synchronized[int]" = MP_CONTEXT.Value("i", 0)
         # start workers in the request phase
         request_phase.set()
 
@@ -956,7 +1011,7 @@ class LoadGenerator:
         for id in range(self.num_workers):
             # Create shared value for each worker's max concurrency if concurrent load type
             if self.load_type == LoadType.CONCURRENT:
-                shared_max_concurrency = mp.Value("i", self.worker_max_concurrency)
+                shared_max_concurrency = MP_CONTEXT.Value("i", self.worker_max_concurrency)
             else:
                 shared_max_concurrency = None
 
@@ -975,9 +1030,15 @@ class LoadGenerator:
                     shared_max_concurrency,
                     self.base_seed,
                     stage_barrier,
+                    workers_ready,
                 )
             )
             self.workers[-1].start()
+
+        # Keep worker startup out of the measured window: wait for the workers
+        # to come up, then treat that moment as the start of the run.
+        await self._await_workers_ready(workers_ready)
+        self.load_start_time = time.time()
 
         if self.sweep_config:
             try:
