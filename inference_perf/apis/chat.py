@@ -561,25 +561,36 @@ class ChatCompletionAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+            parsed = await parse_sse_stream(
+                response,
+                extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content"),
+                # Reasoning models stream thinking on a separate delta field
+                # (reasoning_content on vLLM/DeepSeek, reasoning on some
+                # gateways) before any content. Captured apart from content so
+                # TTFT sees it while output_len/TPOT/ITL don't (#559).
+                extract_reasoning=lambda data: (
+                    data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+                ),
             )
-            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
+            prompt_len = self._resolve_prompt_tokens(parsed.server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
             # never contains.
-            output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
+            output_len = tokenizer.count_tokens(parsed.output_text, add_special_tokens=False)
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, output_len),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
-                    server_usage=server_usage,
+                    output_token_times=parsed.chunk_times,
+                    server_usage=parsed.server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content},
+                extra_info={"raw_response": parsed.raw_content},
             )
 
         data = await response.json()
