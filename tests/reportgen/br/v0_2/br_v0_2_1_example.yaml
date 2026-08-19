@@ -1,0 +1,979 @@
+results:
+  component_health:
+  - component_label: vllm-svc-0
+    failed_replicas: 1
+    replica_health:
+    - healthy: true
+      logs: https://logs.example.com/vllm-svc-0-pod-1
+      replica_id: vllm-svc-0-pod-1
+      restarts: 1
+    - healthy: false
+      logs: /path/to/logs/vllm.log
+      replica_id: vllm-svc-0-pod-2
+      restarts: 2
+    - healthy: true
+      logs: s3://path/to/logs/vllm.log
+      replica_id: vllm-svc-0-pod-3
+      restarts: 0
+    total_restarts: 3
+  observability:
+    components:
+    - aggregate:
+        gpu_cache_usage:
+          max: 84.0
+          mean: 38.2
+          min: 10.1
+          p50: 37.5
+          p90: 58.7
+          p99: 78.3
+          units: percent
+        gpu_memory_usage:
+          max: 73.5
+          mean: 62.4
+          min: 58.1
+          p50: 62.0
+          p90: 66.8
+          p99: 71.2
+          units: GiB
+        gpu_utilization:
+          max: 96.8
+          mean: 76.0
+          min: 45.2
+          p50: 78.9
+          p90: 89.3
+          p99: 94.1
+          units: percent
+        kv_cache_usage:
+          max: 92.1
+          mean: 42.5
+          min: 12.3
+          p50: 41.8
+          p75: 52.1
+          p90: 63.4
+          p95: 71.2
+          p99: 85.6
+          units: percent
+        running_requests:
+          max: 62.0
+          mean: 24.6
+          min: 1.0
+          p50: 23.0
+          p90: 42.0
+          p99: 56.0
+          units: count
+        waiting_requests:
+          max: 25.0
+          mean: 3.2
+          min: 0.0
+          p50: 2.0
+          p90: 8.0
+          p99: 18.0
+          units: count
+      component_label: vllm-svc-0
+      time_series:
+        gpu_utilization:
+          series:
+          - mean: 73.2
+            p90: 85.4
+            ts: '2025-11-05T18:05:00Z'
+          - mean: 78.9
+            p90: 91.2
+            ts: '2025-11-05T18:10:00Z'
+          units: percent
+        kv_cache_usage:
+          series:
+          - mean: 35.2
+            p90: 48.1
+            p99: 62.5
+            ts: '2025-11-05T18:05:00Z'
+          - mean: 52.8
+            p90: 71.3
+            p99: 85.6
+            ts: '2025-11-05T18:10:00Z'
+          units: percent
+    - aggregate:
+        cpu_memory_usage:
+          max: 5.8
+          mean: 2.8
+          min: 1.2
+          p50: 2.6
+          p90: 4.1
+          p99: 5.3
+          units: GiB
+        cpu_utilization:
+          max: 42.0
+          mean: 18.4
+          min: 5.2
+          p50: 17.1
+          p90: 28.9
+          p99: 35.6
+          units: percent
+        running_requests:
+          max: 40.0
+          mean: 12.3
+          min: 0.0
+          p50: 11.0
+          p90: 22.0
+          p99: 34.0
+          units: count
+        waiting_requests:
+          max: 12.0
+          mean: 1.5
+          min: 0.0
+          p50: 1.0
+          p90: 4.0
+          p99: 9.0
+          units: count
+      component_label: epp-0
+    drop_rate:
+      max: 0.18
+      mean: 0.02
+      min: 0.0
+      p50: 0.0
+      p90: 0.05
+      p99: 0.12
+      units: percent
+    epp_dispatch_latency:
+      statistics:
+        graph_path: metrics/graphs/epp_dispatch_latency.png
+        mean: 0.0012
+        p50: 0.001
+        p99: 0.0035
+        stddev: 0.0008
+        units: seconds
+    epp_endpoint_scores:
+      components:
+      - component_id: qwen3-0p6b-decode-pod-1
+        statistics:
+          graph_path: metrics/graphs/epp_endpoint_scores.png
+          mean: 0.82
+          p50: 0.85
+          p99: 0.95
+          stddev: 0.08
+          units: score
+    epp_pool_avg_kv_cache_utilization:
+      components:
+      - component_id: epp-0
+        pod: qwen3-0p6b-epp-pod-1
+        role: epp
+        statistics:
+          graph_path: metrics/graphs/epp_pool_avg_kv_cache_utilization.png
+          mean: 40.3
+          p50: 39.8
+          p99: 82.1
+          stddev: 14.8
+          units: percent
+    epp_pool_avg_queue_size:
+      components:
+      - component_id: epp-0
+        pod: qwen3-0p6b-epp-pod-1
+        role: epp
+        statistics:
+          graph_path: metrics/graphs/epp_pool_avg_queue_size.png
+          mean: 4.7
+          p50: 3.0
+          p99: 22.0
+          stddev: 5.8
+          units: count
+    epp_pool_avg_running_requests:
+      components:
+      - component_id: epp-0
+        pod: qwen3-0p6b-epp-pod-1
+        role: epp
+        statistics:
+          graph_path: metrics/graphs/epp_pool_avg_running_requests.png
+          mean: 36.9
+          p50: 35.0
+          p99: 68.0
+          stddev: 16.2
+          units: count
+    epp_pool_ready_pods:
+      components:
+      - component_id: epp-0
+        pod: qwen3-0p6b-epp-pod-1
+        role: epp
+        statistics:
+          graph_path: metrics/graphs/epp_pool_ready_pods.png
+          mean: 2.4
+          p50: 2.0
+          p99: 3.0
+          stddev: 0.5
+          units: count
+    epp_request_distribution:
+      components:
+      - component_id: qwen3-0p6b-decode-pod-1
+        statistics:
+          count: 245
+          graph_path: metrics/graphs/epp_request_distribution.png
+          units: count
+      - component_id: qwen3-0p6b-decode-pod-2
+        statistics:
+          count: 255
+          graph_path: metrics/graphs/epp_request_distribution.png
+          units: count
+    pod_startup_times:
+      aggregate:
+        max: 95.0
+        mean: 84.0
+        min: 72.0
+        p50: 85.0
+        p90: 93.0
+        p99: 94.8
+        units: s
+      collected_at: '2025-11-05T18:17:00Z'
+      graph_path: metrics/graphs/pod_startup_times.png
+      pods:
+      - creation_timestamp: '2025-11-05T17:55:00Z'
+        model: Qwen/Qwen3-0.6B
+        name: qwen3-0p6b-decode-pod-1
+        node: gpu-node-01
+        ready_timestamp: '2025-11-05T17:56:12Z'
+        role: decode
+        startup_seconds: 72.0
+      - creation_timestamp: '2025-11-05T17:55:00Z'
+        model: Qwen/Qwen3-0.6B
+        name: qwen3-0p6b-decode-pod-2
+        node: gpu-node-02
+        ready_timestamp: '2025-11-05T17:56:25Z'
+        role: decode
+        startup_seconds: 85.0
+      - creation_timestamp: '2025-11-05T18:08:00Z'
+        model: Qwen/Qwen3-0.6B
+        name: qwen3-0p6b-decode-pod-3
+        node: gpu-node-03
+        ready_timestamp: '2025-11-05T18:09:35Z'
+        role: decode
+        startup_seconds: 95.0
+    replica_status:
+      aggregate_ready_replicas:
+        max: 3
+        mean: 2.4
+        min: 2
+        p50: 2
+        p90: 3
+        p99: 3
+        units: count
+      controllers:
+      - available_replicas: 3
+        desired_replicas: 3
+        kind: Deployment
+        model: Qwen/Qwen3-0.6B
+        name: qwen3-0p6b-decode
+        ready_replicas: 3
+        role: decode
+        updated_replicas: 3
+      - available_replicas: 0
+        desired_replicas: 0
+        kind: Deployment
+        model: Qwen/Qwen3-0.6B
+        name: qwen3-0p6b-prefill
+        ready_replicas: 0
+        role: prefill
+        updated_replicas: 0
+      graph_path: metrics/graphs/replica_status.png
+      namespace: benchmark-ns
+      time_series:
+      - controllers:
+        - available_replicas: 2
+          desired_replicas: 2
+          kind: Deployment
+          model: Qwen/Qwen3-0.6B
+          name: qwen3-0p6b-decode
+          ready_replicas: 2
+          role: decode
+          updated_replicas: 2
+        namespace: benchmark-ns
+        timestamp: '2025-11-05T18:00:40Z'
+      - controllers:
+        - available_replicas: 2
+          desired_replicas: 3
+          kind: Deployment
+          model: Qwen/Qwen3-0.6B
+          name: qwen3-0p6b-decode
+          ready_replicas: 2
+          role: decode
+          updated_replicas: 2
+        namespace: benchmark-ns
+        timestamp: '2025-11-05T18:08:10Z'
+      - controllers:
+        - available_replicas: 3
+          desired_replicas: 3
+          kind: Deployment
+          model: Qwen/Qwen3-0.6B
+          name: qwen3-0p6b-decode
+          ready_replicas: 3
+          role: decode
+          updated_replicas: 3
+        namespace: benchmark-ns
+        timestamp: '2025-11-05T18:09:40Z'
+      timestamp: '2025-11-05T18:17:00Z'
+    vllm_external_prefix_cache_hit_rate:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_external_prefix_cache_hit_rate.png
+          mean: 42.9
+          p50: 44.2
+          p99: 68.5
+          stddev: 14.3
+          units: percent
+    vllm_external_prefix_cache_hits_total:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_external_prefix_cache_hits_total.png
+          mean: 8200.0
+          p50: 8100.0
+          p99: 9500.0
+          stddev: 620.0
+          units: tokens
+    vllm_external_prefix_cache_queries_total:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_external_prefix_cache_queries_total.png
+          mean: 19100.0
+          p50: 19000.0
+          p99: 21500.0
+          stddev: 1200.0
+          units: tokens
+    vllm_kv_cache_usage_perc:
+      aggregated:
+        mean: 40.3
+        p50: 39.8
+        p99: 82.1
+        stddev: 14.8
+        units: percent
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_kv_cache_usage_perc.png
+          mean: 42.5
+          p50: 41.8
+          p99: 85.6
+          stddev: 15.2
+          units: percent
+    vllm_nixl_bytes_transferred_count:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_nixl_bytes_transferred_count.png
+          mean: 450.0
+          p50: 440.0
+          p99: 520.0
+          stddev: 35.0
+          units: count
+    vllm_nixl_bytes_transferred_sum:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_nixl_bytes_transferred_sum.png
+          mean: 1250000000.0
+          p50: 1220000000.0
+          p99: 1480000000.0
+          stddev: 85000000.0
+          units: bytes
+    vllm_nixl_xfer_time_seconds_count:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_nixl_xfer_time_seconds_count.png
+          mean: 450.0
+          p50: 440.0
+          p99: 520.0
+          stddev: 35.0
+          units: count
+    vllm_nixl_xfer_time_seconds_sum:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_nixl_xfer_time_seconds_sum.png
+          mean: 0.0045
+          p50: 0.0042
+          p99: 0.0098
+          stddev: 0.0015
+          units: seconds
+    vllm_num_preemptions_total:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_num_preemptions_total.png
+          mean: 0.5
+          p50: 0.0
+          p99: 3.0
+          stddev: 0.8
+          units: count
+    vllm_num_requests_running:
+      aggregated:
+        mean: 23.8
+        p50: 22.0
+        p99: 54.0
+        stddev: 11.5
+        units: count
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_num_requests_running.png
+          mean: 24.6
+          p50: 23.0
+          p99: 56.0
+          stddev: 12.1
+          units: count
+    vllm_num_requests_waiting:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_num_requests_waiting.png
+          mean: 3.2
+          p50: 2.0
+          p99: 18.0
+          stddev: 4.5
+          units: count
+    vllm_prefix_cache_hit_rate:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_prefix_cache_hit_rate.png
+          mean: 65.3
+          p50: 68.1
+          p99: 92.4
+          stddev: 18.7
+          units: percent
+    vllm_prefix_cache_hits_total:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_prefix_cache_hits_total.png
+          mean: 12500.0
+          p50: 12400.0
+          p99: 14200.0
+          stddev: 850.0
+          units: tokens
+    vllm_prefix_cache_queries_total:
+      components:
+      - component_id: decode-engine
+        pod: qwen3-0p6b-decode-pod-1
+        role: decode
+        statistics:
+          graph_path: metrics/graphs/vllm_prefix_cache_queries_total.png
+          mean: 19100.0
+          p50: 19000.0
+          p99: 21500.0
+          stddev: 1200.0
+          units: tokens
+  profiling:
+    anything_goes: 5
+  request_performance:
+    aggregate:
+      latency:
+        inter_token_latency:
+          mean: 0.0368578234128654
+          units: s/token
+        normalized_time_per_output_token:
+          mean: 0.0368578234128654
+          units: s/token
+        request_latency:
+          mean: 0.0368578234128654
+          units: s
+        time_per_output_token:
+          mean: 0.0368578234128654
+          units: s/token
+        time_to_first_token:
+          max: 0.0574655020609498
+          mean: 0.0368578234128654
+          min: 0.027276142966002226
+          p0p1: 0.027322400792501866
+          p1: 0.02785794825293124
+          p10: 0.031235878029838203
+          p25: 0.033357357955537736
+          p5: 0.030159439309500158
+          p50: 0.03622930939309299
+          p75: 0.03993474820163101
+          p90: 0.04262634576298297
+          p95: 0.045246614259667695
+          p99: 0.05029489721637218
+          p99p9: 0.057014757215045425
+          units: s
+      requests:
+        failures: 0
+        input_length:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: count
+        multimodal:
+          audio:
+            count:
+              mean: 1.0
+              units: count
+            duration:
+              mean: 10.0
+              units: s
+          image:
+            aspect_ratio:
+              mean: 1.78
+              units: ratio
+            filesize:
+              mean: 40000.0
+              units: bytes
+            count:
+              max: 4.0
+              mean: 2.0
+              units: count
+            pixels:
+              mean: 2073600.0
+              units: pixels
+          video:
+            filesize:
+              mean: 800000.0
+              units: bytes
+            count:
+              mean: 1.0
+              units: count
+            frames:
+              mean: 16.0
+              units: count
+        output_length:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: count
+        request_size:
+          max: 120000.0
+          mean: 51234.0
+          p50: 48000.0
+          units: bytes
+        total: 500
+      throughput:
+        audio_rate:
+          mean: 2.0
+          units: audios/s
+        image_rate:
+          mean: 24.0
+          units: images/s
+        input_token_rate:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: tokens/s
+        output_token_rate:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: tokens/s
+        request_rate:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: queries/s
+        total_token_rate:
+          max: 2328.0
+          mean: 2262.448
+          min: 2223.0
+          p0p1: 2223.998
+          p1: 2227.99
+          p10: 2240.0
+          p25: 2252.0
+          p5: 2234.95
+          p50: 2262.0
+          p75: 2270.0
+          p90: 2286.0
+          p95: 2294.0
+          p99: 2322.0
+          p99p9: 2326.503
+          units: tokens/s
+        video_rate:
+          mean: 3.0
+          units: videos/s
+    time_series:
+      latency:
+        time_to_first_token:
+          series:
+          - mean: 0.0368578234128654
+            p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:01:00Z'
+          - mean: 0.0368578234128654
+            p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:02:00Z'
+          units: s
+      throughput:
+        input_token_rate:
+          series:
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:01:00Z'
+            value: 204.0394
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:02:00Z'
+            value: 204.0394
+          units: tokens/s
+        output_token_rate:
+          series:
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:01:00Z'
+            value: 204.0394
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:02:00Z'
+            value: 204.0394
+          units: tokens/s
+        request_rate:
+          series:
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:01:00Z'
+            value: 204.0394
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:02:00Z'
+            value: 204.0394
+          units: queries/s
+        total_token_rate:
+          series:
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:01:00Z'
+            value: 204.0394
+          - p90: 0.04262634576298297
+            p95: 0.045246614259667695
+            ts: '2025-11-05T18:02:00Z'
+            value: 204.0394
+          units: tokens/s
+        units: tokens/s
+  session_performance:
+    sessions:
+      events_cancelled_per_session:
+        max: 3.0
+        mean: 0.18
+        min: 0.0
+        p50: 0.0
+        p99: 2.0
+        units: count
+      events_per_session:
+        max: 20.0
+        mean: 11.96
+        min: 1.0
+        p50: 12.0
+        p99: 20.0
+        units: count
+      failed: 2
+      input_tokens_per_session:
+        max: 46900.0
+        mean: 25612.4
+        min: 2148.0
+        p50: 25400.0
+        p99: 43020.0
+        units: count
+      output_tokens_per_session:
+        max: 22000.0
+        mean: 11800.2
+        min: 980.0
+        p50: 11700.0
+        p99: 20100.0
+        units: count
+      session_duration:
+        max: 80.1
+        mean: 48.3
+        min: 12.1
+        p50: 47.9
+        p90: 61.2
+        p99: 74.5
+        units: s
+      session_rate:
+        mean: 2.24
+        units: queries/s
+      succeeded: 110
+      total: 112
+      total_events: 1340
+      total_events_cancelled: 20
+      total_events_completed: 1320
+run:
+  cid: 09825952f60004aa59bb5b2a2eefa6d1
+  description: Baseline latency test for Qwen3-0.6B on inference-scheduling stack
+  eid: d9c5a5ddce6c2f885a9f8e6a6a6db0fb
+  keywords:
+  - baseline
+  - latency
+  - qwen3
+  pid: 052d5f654ea08edf5caa2c0293fa7fb3
+  time:
+    duration: PT49.97206788184121S
+    end: '2025-11-05T18:17:03Z'
+    start: '2025-11-05T18:00:42Z'
+  uid: 38b1f169ca178b756f7483523b17de61
+  user: namasluk
+scenario:
+  load:
+    metadata:
+      cfg_id: a4e18f265cc33786a42b8a3f7ac2edcb
+      description: Optional description of workload
+      schema_version: 0.0.1
+    native:
+      config:
+        api:
+          headers: null
+          streaming: true
+          type: completion
+        data:
+          input_distribution: null
+          output_distribution: null
+          path: null
+          shared_prefix:
+            num_groups: 32
+            num_prompts_per_group: 8
+            output_len: 1000
+            question_len: 100
+            system_prompt_len: 2048
+          type: shared_prefix
+        load:
+          interval: 1.0
+          num_workers: 112
+          stages:
+          - duration: 50
+            rate: 2.0
+          - duration: 50
+            rate: 5.0
+          - duration: 50
+            rate: 8.0
+          - duration: 50
+            rate: 10.0
+          - duration: 50
+            rate: 12.0
+          - duration: 50
+            rate: 15.0
+          - duration: 50
+            rate: 20.0
+          sweep: null
+          type: constant
+          worker_max_concurrency: 100
+          worker_max_tcp_connections: 2500
+        metrics: null
+        report:
+          prometheus:
+            per_stage: false
+            summary: true
+          request_lifecycle:
+            per_request: true
+            per_stage: true
+            summary: true
+        server:
+          api_key: null
+          base_url: http://infra-nam-release-inference-gateway.namasluk.svc.cluster.local:80/qwen-qwen3-0-6b
+          ignore_eos: true
+          model_name: Qwen/Qwen3-0.6B
+          type: vllm
+        storage:
+          google_cloud_storage: null
+          local_storage:
+            path: /requests/inference-perf_1759339259-cache_tracking-run_100_1000_llm-d-0p6b-base
+            report_file_prefix: null
+          simple_storage_service: null
+        tokenizer:
+          pretrained_model_name_or_path: Qwen/Qwen3-0.6B
+          token: null
+          trust_remote_code: null
+    standardized:
+      concurrency: .inf
+      input_seq_len:
+        distribution: fixed
+        value: 2148
+      multi_turn:
+        enabled: true
+        max_turns:
+          distribution: fixed
+          value: 20
+      output_seq_len:
+        distribution: gaussian
+        std_dev: 100.0
+        value: 1000
+      parallelism: 1
+      prefix:
+        num_groups: 32
+        num_prefixes: 8
+        num_users_per_group: 10
+        prefix_len:
+          distribution: fixed
+          value: 1000
+      rate_qps: 10.0
+      source: sampled
+      stage: 3
+      tool: inference-perf
+      tool_version: 0.3.0
+  stack:
+  - metadata:
+      cfg_id: cc73fc6b51a1d3b8128f312d70476d7c
+      description: Optional description of this component
+      label: vllm-svc-0
+      schema_version: 0.0.1
+    native:
+      args:
+        --block-size: 1024
+        --disable-uvicorn-access-log: null
+        --kv-transfer-config:
+          kv_connector: NixlConnector
+          kv_role: kv_both
+        --max-model-len: 1024
+        --no-enable-log-requests: null
+        --tensor-parallel-size: 8
+      envars:
+        NCCL_IB_HCA: mlx5_1
+        UCX_NET_DEVICES: mlx5_1:1
+        UCX_SOCKADDR_TLS_PRIORITY: tcp
+        UCX_TLS: rc,sm,cuda_ipc,cuda_copy,tcp
+        VLLM_ALLOW_LONG_MAX_MODEL_LEN: '1'
+        VLLM_LOGGING_LEVEL: DEBUG
+        VLLM_NIXL_SIDE_CHANNEL_HOST: 10.39.39.3
+        VLLM_NIXL_SIDE_CHANNEL_PORT: '5557'
+    standardized:
+      accelerator:
+        count: 8
+        model: NVIDIA-H100-80GB-HBM3
+        parallelism:
+          dp: 1
+          dp_local: 1
+          ep: 1
+          pp: 1
+          tp: 8
+          workers: 1
+      kind: inference_engine
+      model:
+        name: Qwen/Qwen3-0.6B
+      replicas: 2
+      role: decode
+      tool: llm-d
+      tool_version: ghcr.io/llm-d/llm-d-cuda:0.3.1
+  - metadata:
+      cfg_id: 47000e70c655e88198e0dc4e57d41d5f
+      description: This is a router, but no standardized component for this exists
+      label: epp-0
+      schema_version: 0.0.1
+    native:
+      config:
+        apiVersion: inference.networking.x-k8s.io/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: single-profile-handler
+        - type: decode-filter
+        - parameters:
+            blockSize: 16
+            indexerConfig:
+              kvBlockIndexConfig:
+                enableMetrics: true
+                metricsLoggingInterval: 60000000000
+              tokenProcessorConfig:
+                blockSize: 64
+                hashSeed: '42'
+            lruCapacityPerServer: 31250
+            maxPrefixBlocksToMatch: 256
+            mode: cache_tracking
+          type: prefix-cache-scorer
+        - type: kv-cache-scorer
+        - type: queue-scorer
+        - type: max-score-picker
+        schedulingProfiles:
+        - name: default
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 2.0
+          - pluginRef: kv-cache-scorer
+            weight: 1.0
+          - pluginRef: queue-scorer
+            weight: 1.0
+          - pluginRef: max-score-picker
+    standardized:
+      another_thing:
+      - a: 5
+      - a: 1
+      - b: 3
+      kind: generic
+      kind_draft: router
+      some_config_param: 93
+      tool: llm-d-inference-scheduler
+      tool_version: ghcr.io/llm-d/llm-d-inference-scheduler:0.3.2
+version: 0.2.1
