@@ -56,6 +56,7 @@ else:
 from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
 from types import FrameType
 import time
+import traceback
 import multiprocessing as mp
 from queue import Empty
 from multiprocessing.synchronize import Barrier as SyncBarrier, Event as SyncEvent
@@ -88,6 +89,74 @@ class RequestQueueData(NamedTuple):
     lora_adapter: Optional[str]
 
 
+class WorkerCrash(NamedTuple):
+    """What a worker managed to record about its own unhandled exception before dying."""
+
+    worker_id: int
+    stage_id: Optional[int]
+    exc_type: str
+    message: str
+    traceback_text: str
+    in_flight: int
+
+
+class WorkerFailure(NamedTuple):
+    """A worker that is no longer alive, with whatever the parent can say about why."""
+
+    worker_id: int
+    exitcode: Optional[int]
+    crash: Optional[WorkerCrash]
+
+    def describe(self) -> str:
+        if self.exitcode is not None and self.exitcode < 0:
+            try:
+                signame = signal.Signals(-self.exitcode).name
+            except ValueError:
+                signame = f"signal {-self.exitcode}"
+            cause = f"was killed by {signame}"
+        elif self.exitcode == 0:
+            cause = "exited cleanly before the stage finished"
+        else:
+            cause = f"exited with code {self.exitcode}"
+        if self.crash is not None:
+            return (
+                f"Worker {self.worker_id} {cause} after an unhandled "
+                f"{self.crash.exc_type} during stage {self.crash.stage_id} "
+                f"with {self.crash.in_flight} request(s) in flight: {self.crash.message}\n"
+                f"{self.crash.traceback_text.rstrip()}"
+            )
+        return (
+            f"Worker {self.worker_id} {cause} without reporting a Python traceback (segfault, OOM kill, or forced termination)"
+        )
+
+
+def collect_worker_failures(
+    workers: List["Worker"],
+    crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"],
+) -> List[WorkerFailure]:
+    """Pair every dead worker with its crash record, if the worker lived long enough to send one.
+
+    A worker killed by a signal never reports, so exitcode is the only evidence
+    available for that case and the record is None.
+    """
+    crashes: Dict[int, WorkerCrash] = {}
+    if crash_queue is not None:
+        while True:
+            try:
+                if crash_queue.empty():
+                    break
+                record = crash_queue.get()
+            except (OSError, EOFError, ValueError):
+                break
+            crashes[record.worker_id] = record
+    failures = []
+    for worker in workers:
+        if worker.is_alive() or worker.exitcode is None:
+            continue
+        failures.append(WorkerFailure(worker_id=worker.id, exitcode=worker.exitcode, crash=crashes.get(worker.id)))
+    return failures
+
+
 class Worker(mp.Process):
     def __init__(
         self,
@@ -104,6 +173,7 @@ class Worker(mp.Process):
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
         stage_barrier: Optional[SyncBarrier] = None,
+        crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -120,6 +190,10 @@ class Worker(mp.Process):
         self.skip = False
         self.base_seed = base_seed
         self.stage_barrier = stage_barrier
+        self.crash_queue = crash_queue
+        # Stage this worker is currently serving, reported alongside a crash so the
+        # failure can be attributed to a stage rather than to the run as a whole.
+        self._current_stage_id: Optional[int] = None
         # Snapshot the parent's effective root log level so the worker
         # interpreter (which under forkserver/spawn does not inherit the
         # parent's basicConfig) can configure its own handler to surface
@@ -163,6 +237,8 @@ class Worker(mp.Process):
                     # Use partial to pass named arg
                     get = partial(self.request_queue.get, timeout=timeout)
                     item = await event_loop.run_in_executor(None, get)
+                    if item is not None:
+                        self._current_stage_id = item.stage_id
                     if item is None:
                         self.request_queue.task_done()
                         semaphore.release()
@@ -266,6 +342,17 @@ class Worker(mp.Process):
         logger.debug(f"[Worker {self.id}] stopped")
 
     def run(self) -> None:
+        """Entry point in the worker process. Nothing below may escape unexplained."""
+        try:
+            self._run()
+        except BaseException as exc:
+            # Without this the process dies with the traceback on its own stderr,
+            # which races the parent's terminate() and is attributed to no worker.
+            # Record it first, then re-raise so the exit code still reflects the failure.
+            self._report_crash(exc)
+            raise
+
+    def _run(self) -> None:
         # forkserver/spawn workers start from a fresh interpreter without the
         # parent's logging.basicConfig, so logger.info() calls are silently
         # dropped by the lastResort handler (WARNING+). Install a minimal
@@ -289,6 +376,38 @@ class Worker(mp.Process):
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
+    def _report_crash(self, exc: BaseException) -> None:
+        """Log the failure locally and hand a structured copy to the parent before exiting."""
+        try:
+            in_flight = int(self.active_requests_counter.value)
+        except (AttributeError, OSError, ValueError):
+            in_flight = -1
+        record = WorkerCrash(
+            worker_id=self.id,
+            stage_id=self._current_stage_id,
+            exc_type=type(exc).__name__,
+            message=str(exc),
+            traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            in_flight=in_flight,
+        )
+        logger.error(
+            "[Worker %d] unhandled %s during stage %s with %d request(s) in flight: %s\n%s",
+            record.worker_id,
+            record.exc_type,
+            record.stage_id,
+            record.in_flight,
+            record.message,
+            record.traceback_text.rstrip(),
+        )
+        if self.crash_queue is None:
+            return
+        try:
+            # SimpleQueue writes straight to the pipe, so the record is not lost to an
+            # unflushed feeder thread when the process exits immediately after this.
+            self.crash_queue.put(record)
+        except Exception:
+            logger.error("[Worker %d] could not report its crash to the parent process", self.id)
+
 
 class LoadGenerator:
     def __init__(
@@ -309,6 +428,8 @@ class LoadGenerator:
         self.sweep_config = load_config.sweep
         self.interrupt_sig = False
         self.session_metrics_collector = session_metrics_collector
+        self.worker_crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None
+        self.worker_failures: List[WorkerFailure] = []
         signal.signal(signal.SIGINT, self._sigint_handler)
 
         # Validate that datagen type matches load_type
@@ -813,7 +934,12 @@ class LoadGenerator:
                 timed_out = True
                 break
             if self.workers and len([w for w in self.workers if w.is_alive()]) < self.num_workers:
-                logger.error("A worker process died unexpectedly!")
+                failures = collect_worker_failures(self.workers, self.worker_crash_queue)
+                for failure in failures:
+                    logger.error("%s", failure.describe())
+                self.worker_failures.extend(failures)
+                if not failures:
+                    logger.error("A worker process died unexpectedly and left no exit status behind!")
                 timed_out = True  # Trigger cleanup
                 break
             await sleep(1)
@@ -834,7 +960,14 @@ class LoadGenerator:
         # on all items it pulled before we drain/join (avoids orphaned untasked items).
         request_phase.clear()
         if stage_barrier:
-            stage_barrier.wait()
+            if self.worker_failures:
+                logger.warning(
+                    "Stage %d: skipping the worker rendezvous, %d dead worker(s) can never reach the barrier",
+                    stage_id,
+                    len(self.worker_failures),
+                )
+            else:
+                stage_barrier.wait()
         if stage_status == StageStatus.FAILED and cancel_signal:
             request_queue.drain()
             cancel_signal.clear()
@@ -949,6 +1082,8 @@ class LoadGenerator:
         # Synchronize workers and main at stage boundaries so workers finish
         # in-flight requests and clear session state before the next stage begins.
         stage_barrier: SyncBarrier = mp.Barrier(self.num_workers + 1)
+        # Channel a dying worker uses to hand its traceback to the parent.
+        self.worker_crash_queue = mp.SimpleQueue()
         # start workers in the request phase
         request_phase.set()
 
@@ -975,6 +1110,7 @@ class LoadGenerator:
                     shared_max_concurrency,
                     self.base_seed,
                     stage_barrier,
+                    crash_queue=self.worker_crash_queue,
                 )
             )
             self.workers[-1].start()
@@ -1085,6 +1221,13 @@ class LoadGenerator:
 
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
+                    break
+                if self.worker_failures:
+                    logger.error(
+                        "Stopping the run after %d worker failure(s): the load actually offered no longer "
+                        "matches the configuration, so the remaining stages would not be comparable",
+                        len(self.worker_failures),
+                    )
                     break
                 progress.update(overall_task, advance=1)
                 if self.stageInterval:
