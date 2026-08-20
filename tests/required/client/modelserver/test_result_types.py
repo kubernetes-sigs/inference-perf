@@ -75,9 +75,9 @@ def test_counter_metric_collects_total_avg_and_per_second() -> None:
     queries = metric.get_queries(30, "")
 
     assert queries == [
-        "sum(increase(vllm:prompt_tokens{}[30s]))",
-        "avg_over_time(rate(vllm:prompt_tokens{}[30s])[30s:30s])",
-        "sum(rate(vllm:prompt_tokens{}[30s]))",
+        "sum(increase(vllm:prompt_tokens_total{}[30s]) or increase(vllm:prompt_tokens{}[30s]))",
+        "avg_over_time((rate(vllm:prompt_tokens_total{}[30s]) or rate(vllm:prompt_tokens{}[30s]))[30s:30s])",
+        "sum(rate(vllm:prompt_tokens_total{}[30s]) or rate(vllm:prompt_tokens{}[30s]))",
     ]
 
     result = metric.collect(lambda q: float(queries.index(q) + 1), duration=30, filters="")
@@ -86,20 +86,23 @@ def test_counter_metric_collects_total_avg_and_per_second() -> None:
     assert (result.total, result.avg, result.per_second) == (1.0, 2.0, 3.0)
 
 
-def test_counter_metric_merges_filters_into_name_selector() -> None:
-    """A counter whose name is a `{__name__=~...}` selector (e.g. the requests count) merges
-    filters inside the braces rather than appending a second `{...}` group."""
-    metric = CounterMetric(metric_name='{__name__=~"vllm:request_success(_total)?"}')
-    queries = metric.get_queries(30, "model_name='m'")
+def test_counter_metric_spans_both_total_and_bare_names() -> None:
+    """A counter is stored as `name_total` (modern prometheus_client exposition) or as the bare
+    family name (older exporters), so queries match both exact forms with `or` - never a
+    `{__name__=~...}` regex selector, which Google Managed Prometheus rejects (#567). A name
+    declared with the `_total` suffix must not get a second one."""
+    for declared in ("vllm:request_success", "vllm:request_success_total"):
+        queries = CounterMetric(metric_name=declared).get_queries(30, "model_name='m'")
+        assert queries[0] == (
+            "sum(increase(vllm:request_success_total{model_name='m'}[30s])"
+            " or increase(vllm:request_success{model_name='m'}[30s]))"
+        )
 
-    assert queries[0] == "sum(increase({__name__=~\"vllm:request_success(_total)?\",model_name='m'}[30s]))"
-    assert queries[2] == "sum(rate({__name__=~\"vllm:request_success(_total)?\",model_name='m'}[30s]))"
 
-
-def test_gauge_and_histogram_reject_name_selectors() -> None:
-    """`{__name__=~...}` selector names are counter-only; the other metric types wrap or
-    suffix the name (`{...}{filters}`, `{...}_sum`), which builds invalid PromQL that would
-    fail silently at query time, so they must refuse the name up front."""
-    for metric_type in (GaugeMetric, HistogramMetric):
+def test_metric_types_reject_name_selectors() -> None:
+    """`{__name__=~...}` selector names build queries GMP rejects (regex on `__name__`), and
+    gauges/histograms would also wrap or suffix the braces (`{...}{filters}`, `{...}_sum`) into
+    invalid PromQL that fails silently at query time, so every type refuses the name up front."""
+    for metric_type in (CounterMetric, GaugeMetric, HistogramMetric):
         with pytest.raises(ValueError, match="selector"):
             metric_type(metric_name='{__name__=~"vllm:foo(_total)?"}')

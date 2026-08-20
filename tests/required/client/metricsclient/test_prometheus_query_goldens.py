@@ -99,23 +99,26 @@ def test_gauge_queries_and_parse() -> None:
 def test_counter_queries_and_parse() -> None:
     metric = CounterMetric("vllm:prompt_tokens")
     assert metric.get_queries(60.0, "model_name='m'") == [
-        "sum(increase(vllm:prompt_tokens{model_name='m'}[60s]))",
-        "avg_over_time(rate(vllm:prompt_tokens{model_name='m'}[60s])[60s:60s])",
-        "sum(rate(vllm:prompt_tokens{model_name='m'}[60s]))",
+        "sum(increase(vllm:prompt_tokens_total{model_name='m'}[60s]) or increase(vllm:prompt_tokens{model_name='m'}[60s]))",
+        "avg_over_time((rate(vllm:prompt_tokens_total{model_name='m'}[60s])"
+        " or rate(vllm:prompt_tokens{model_name='m'}[60s]))[60s:60s])",
+        "sum(rate(vllm:prompt_tokens_total{model_name='m'}[60s]) or rate(vllm:prompt_tokens{model_name='m'}[60s]))",
     ]
     assert metric.parse([600.0, 10.0, 10.0]) == CounterResult(total=600.0, avg=10.0, per_second=10.0)
 
 
-def test_counter_name_selector_merges_filters_inside_braces() -> None:
-    metric = CounterMetric('{__name__=~"vllm:request_success(_total)?"}')
-    assert metric.get_queries(60.0, "model_name='m'")[0] == (
-        "sum(increase({__name__=~\"vllm:request_success(_total)?\",model_name='m'}[60s]))"
+def test_counter_declared_with_total_suffix_is_not_double_suffixed() -> None:
+    metric = CounterMetric("sglang:prompt_tokens_total")
+    assert (
+        metric.get_queries(60.0, "")[2] == "sum(rate(sglang:prompt_tokens_total{}[60s]) or rate(sglang:prompt_tokens{}[60s]))"
     )
 
 
-def test_counter_name_selector_without_filters_stays_unchanged() -> None:
-    metric = CounterMetric('{__name__=~"vllm:request_success(_total)?"}')
-    assert metric.get_queries(60.0, "")[2] == 'sum(rate({__name__=~"vllm:request_success(_total)?"}[60s]))'
+def test_counter_over_histogram_series_keeps_single_leg() -> None:
+    """`_count`/`_sum`/`_bucket` series can never carry a `_total` suffix, so a counter over
+    one (e.g. sglang's requests) must not select a nonexistent `_count_total` leg."""
+    metric = CounterMetric("sglang:e2e_request_latency_seconds_count")
+    assert metric.get_queries(60.0, "")[0] == "sum(increase(sglang:e2e_request_latency_seconds_count{}[60s]))"
 
 
 def test_histogram_queries_and_parse() -> None:

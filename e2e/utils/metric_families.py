@@ -17,10 +17,10 @@ Three representations of "which metrics exist" meet in these tests, and this
 module converts between them:
 
 - declared: the (base name, type) pairs the vLLM client will query, read from
-  ``get_prometheus_metric_metadata()``. A name is either bare
-  (``vllm:num_requests_waiting``) or a version-spanning PromQL selector
-  (``{__name__=~"vllm:request_success(_total)?"}``), so matching is by base
-  name plus the type's naming convention, never string equality.
+  ``get_prometheus_metric_metadata()``. Names are bare family names
+  (``vllm:num_requests_waiting``, ``vllm:request_success``); counters span
+  the exposition's optional ``_total`` suffix at query time, so matching is
+  by base name plus the type's naming convention, never string equality.
 - exposed: what a live server's ``/metrics`` text actually contains.
 - golden: the committed per-release snapshot of the exposed ``vllm:*``
   families (``e2e/testdata/vllm_metric_families/<release-tag>.txt``), which

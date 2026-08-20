@@ -25,9 +25,9 @@ class HistogramResult(GaugeResult):
 
 class HistogramMetric(Metric[HistogramResult]):
     def __init__(self, metric_name: str) -> None:
-        # `{__name__=~...}` selector names are counter-only (CounterMetric merges filters into
-        # the braces); here the selector would be suffixed with _sum/_count/_bucket, building
-        # invalid PromQL that fails silently at query time.
+        # `{__name__=~...}` selector names are not supported (GMP rejects regex matchers on
+        # `__name__`); here the selector would also be suffixed with _sum/_count/_bucket,
+        # building invalid PromQL that fails silently at query time.
         if metric_name.startswith("{"):
             raise ValueError(f"HistogramMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name

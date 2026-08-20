@@ -27,24 +27,34 @@ MAIN_PY_PATH = PROJECT_ROOT / "inference_perf" / "main.py"
 
 
 class MockHandler(http.server.BaseHTTPRequestHandler):
-    metric_name = "vllm:request_success"
+    # "" mimics a legacy exposition (bare counter names), "_total" a modern
+    # prometheus_client one; both must resolve through the same declared names.
+    counter_suffix = ""
     success_count = 0
+    prompt_tokens = 0
 
     @classmethod
-    def reset(cls, metric_name: str) -> None:
-        cls.metric_name = metric_name
+    def reset(cls, counter_suffix: str) -> None:
+        cls.counter_suffix = counter_suffix
         cls.success_count = 0
+        cls.prompt_tokens = 0
 
     def do_GET(self):
         if self.path == "/health":
             self.send_response(200)
             self.end_headers()
         elif self.path == "/metrics":
-            body = (
-                f"# HELP {self.metric_name} Count of successfully processed requests.\n"
-                f"# TYPE {self.metric_name} counter\n"
-                f'{self.metric_name}{{model_name="facebook/opt-125m"}} {float(MockHandler.success_count)}\n'
-            )
+            body = ""
+            for base, help_text, value in (
+                ("vllm:request_success", "Count of successfully processed requests.", MockHandler.success_count),
+                ("vllm:prompt_tokens", "Number of prefill tokens processed.", MockHandler.prompt_tokens),
+            ):
+                name = f"{base}{MockHandler.counter_suffix}"
+                body += (
+                    f"# HELP {name} {help_text}\n"
+                    f"# TYPE {name} counter\n"
+                    f'{name}{{model_name="facebook/opt-125m"}} {float(value)}\n'
+                )
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -56,6 +66,7 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/v1/completions":
             MockHandler.success_count += 1
+            MockHandler.prompt_tokens += 10
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -76,8 +87,8 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
-def start_mock_server(port: int, metric_name: str) -> http.server.HTTPServer:
-    MockHandler.reset(metric_name)
+def start_mock_server(port: int, counter_suffix: str) -> http.server.HTTPServer:
+    MockHandler.reset(counter_suffix)
     server = http.server.HTTPServer(("127.0.0.1", port), MockHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True
@@ -133,8 +144,9 @@ def _benchmark_config(prometheus_url: str, port: int) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.skipif(not is_prometheus_available(), reason="local environment missing prometheus")
 async def test_legacy_metric_name(prometheus_server):
-    """Verifies that inference-perf can collect metrics using the legacy name 'vllm:request_success'."""
-    server = start_mock_server(prometheus_server.sim_port, "vllm:request_success")
+    """Verifies that inference-perf can collect metrics from a legacy exposition using bare
+    counter names ('vllm:request_success', 'vllm:prompt_tokens')."""
+    server = start_mock_server(prometheus_server.sim_port, "")
 
     try:
         result = await run_benchmark_minimal(
@@ -149,6 +161,8 @@ async def test_legacy_metric_name(prometheus_server):
         assert "successes" in report
         success_count = report["successes"]["request_success_count"]
         assert success_count > 0, f"Expected non-zero success count from mock, got {success_count}"
+        prompt_rate = report["successes"]["prompt_len"]["rate"]
+        assert prompt_rate > 0, f"Expected non-zero prompt token rate from mock, got {prompt_rate}"
 
     finally:
         server.shutdown()
@@ -158,8 +172,10 @@ async def test_legacy_metric_name(prometheus_server):
 @pytest.mark.asyncio
 @pytest.mark.skipif(not is_prometheus_available(), reason="local environment missing prometheus")
 async def test_new_metric_name(prometheus_server):
-    """Verifies that inference-perf can collect metrics using the new name 'vllm:request_success_total'."""
-    server = start_mock_server(prometheus_server.sim_port, "vllm:request_success_total")
+    """Verifies that inference-perf can collect metrics from a modern prometheus_client
+    exposition using '_total'-suffixed counter names ('vllm:request_success_total',
+    'vllm:prompt_tokens_total'), which is what a stock vLLM stores (#567)."""
+    server = start_mock_server(prometheus_server.sim_port, "_total")
 
     try:
         result = await run_benchmark_minimal(
@@ -174,6 +190,8 @@ async def test_new_metric_name(prometheus_server):
         assert "successes" in report
         success_count = report["successes"]["request_success_count"]
         assert success_count > 0, f"Expected non-zero success count from mock, got {success_count}"
+        prompt_rate = report["successes"]["prompt_len"]["rate"]
+        assert prompt_rate > 0, f"Expected non-zero prompt token rate from mock, got {prompt_rate}"
 
     finally:
         server.shutdown()

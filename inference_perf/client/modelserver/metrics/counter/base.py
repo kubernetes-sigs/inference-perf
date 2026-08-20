@@ -28,25 +28,38 @@ class CounterResult(BaseModel):
 
 class CounterMetric(Metric[CounterResult]):
     """avg is the average per-second rate over the window (avg_over_time of the rate), matching the
-    pre-refactor counter "mean" semantics rather than the window total."""
+    pre-refactor counter "mean" semantics rather than the window total.
+
+    A counter's stored series name depends on the exporter: prometheus_client appends `_total`
+    to every counter sample, while older exporters (and OTel re-exports) keep the bare family
+    name. Queries therefore match both exact forms joined with `or` rather than a
+    `{__name__=~"name(_total)?"}` selector: Google Managed Prometheus rejects regex matchers
+    on `__name__` with HTTP 400, which silently zeroed every counter backed by one (#567).
+    """
 
     def __init__(self, metric_name: str) -> None:
+        # `{__name__=~...}` selector names are not supported: GMP rejects regex matchers on
+        # `__name__`, so both name forms are queried exactly (see get_queries).
+        if metric_name.startswith("{"):
+            raise ValueError(f"CounterMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
 
-    def _selector(self, filters: str) -> str:
-        # A counter name may be a plain metric or a `{__name__=~"foo(_total)?"}` selector;
-        # merge the filters inside the braces for the latter instead of appending a second group.
-        m = self.metric_name
-        if m.startswith("{") and m.endswith("}"):
-            return f"{{{m[1:-1]},{filters}}}" if filters else m
-        return f"{m}{{{filters}}}"
+    def _spanning(self, fn: str, duration: float, filters: str) -> str:
+        # `fn` applied to the `_total`-suffixed and bare forms of the name, whichever exists;
+        # `or` unions the two so mixed fleets (old and new exporters) still sum correctly.
+        # Histogram series names (`_count`/`_sum`/`_bucket`) can never carry `_total`, so
+        # counters over them keep a single exact leg.
+        base = self.metric_name.removesuffix("_total")
+        d = f"{duration:.0f}s"
+        if base.endswith(("_count", "_sum", "_bucket")):
+            return f"{fn}({base}{{{filters}}}[{d}])"
+        return f"{fn}({base}_total{{{filters}}}[{d}]) or {fn}({base}{{{filters}}}[{d}])"
 
     def get_queries(self, duration: float, filters: str) -> List[str]:
-        s = self._selector(filters)
         return [
-            f"sum(increase({s}[{duration:.0f}s]))",
-            f"avg_over_time(rate({s}[{duration:.0f}s])[{duration:.0f}s:{duration:.0f}s])",
-            f"sum(rate({s}[{duration:.0f}s]))",
+            f"sum({self._spanning('increase', duration, filters)})",
+            f"avg_over_time(({self._spanning('rate', duration, filters)})[{duration:.0f}s:{duration:.0f}s])",
+            f"sum({self._spanning('rate', duration, filters)})",
         ]
 
     def parse(self, results: List[float]) -> CounterResult:
