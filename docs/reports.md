@@ -34,7 +34,12 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
     "throughput": {
       "requests_per_sec": 1.02,
       "total_tokens_per_sec": 676.12
-    }
+    },
+    "finish_reasons": {
+      "length": 478,
+      "stop": 2
+    },
+    "output_shortfalls": 2
   },
   "failures": {
     "count": 3,
@@ -85,6 +90,8 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 ### Key Sections
 
 - **`load_summary`**: Details about the requested vs achieved load.
-- **`successes`**: Metrics for successful requests.
-- **`failures`**: Metrics for failed requests, including the per-label error breakdown.
+- **`successes`**: Metrics for successful requests. Two fields describe whether those requests ran to the length they asked for:
+  - `finish_reasons`: how many successful requests ended with each reason the server reported, verbatim (OpenAI `finish_reason`: `stop`, `length`, `tool_calls`, ...; Anthropic `stop_reason`: `end_turn`, `max_tokens`, ...). `length` and `max_tokens` mean the requested budget was delivered; anything else means the server halted on its own. Requests whose server reported no reason are not counted.
+  - `output_shortfalls`: how many successful requests delivered fewer output tokens than their `max_tokens` asked for. Delivered means the server's own `usage.completion_tokens` when it reported one, otherwise the client-side count. Without `ignore_eos` a shortfall is usually the model emitting EOS as intended, which is why it is an observation here rather than a failure.
+- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body carrying a top-level `error` object (label `inbanderror`, `error_msg` is that object) or one with neither completion content nor `usage` (label `emptyresponseerror`). With `server.ignore_eos: true` (the default) a completion that delivered fewer output tokens than its `max_tokens` is also a failure (label `truncatedresponseerror`, `error_msg` names delivered-of-requested and the `finish_reason`): the server was asked to generate the full length and did not, whether it stopped early or capped the request. A server that ignores the `ignore_eos` field will report every natural stop this way; set `ignore_eos: false` for it. The body is kept as `response` in the per-request report in every case, and each per-request entry records the request's `max_tokens` alongside `info.response_metrics.finish_reason`.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.

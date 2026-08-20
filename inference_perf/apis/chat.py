@@ -34,7 +34,8 @@ from inference_perf.payloads import (
     SyntheticImageSpec,
     SyntheticMp4VideoSpec,
 )
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.mediagen.pool import get_video_pool
 from inference_perf.mediagen.synthesis import generate_jpeg_bytes, generate_mp4_bytes, generate_png_bytes, generate_wav_bytes
@@ -561,9 +562,13 @@ class ChatCompletionAPIData(InferenceAPIData):
         self, response: ClientResponse, config: APIConfig, tokenizer: CustomTokenizer, lora_adapter: Optional[str] = None
     ) -> InferenceInfo:
         if config.streaming:
-            output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            output_text, chunk_times, raw_content, response_chunks, server_usage, finish_reason = await parse_sse_stream(
                 response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
             )
+            # A stream that carried neither content nor usage is not a completion
+            # (an error page or an empty stream behind a 200), not a zero-token one.
+            if not output_text and server_usage is None:
+                raise EmptyResponseError(raw_content)
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
             # with special tokens would add a BOS the server's completion_tokens
@@ -577,24 +582,33 @@ class ChatCompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content},
             )
 
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         server_usage = data.get("usage")
-        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         choices = data.get("choices", [])
+        output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
+        # No content and no usage means the body is not a completion at all.
+        if not output_text and server_usage is None:
+            raise EmptyResponseError()
+        prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
         if len(choices) == 0:
             return InferenceInfo(
                 request_metrics=self._build_request_metrics(prompt_len, 0),
                 lora_adapter=lora_adapter,
             )
-        output_text = "".join([choice.get("message", {}).get("content", "") for choice in choices])
         output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
         return InferenceInfo(
             request_metrics=self._build_request_metrics(prompt_len, output_len),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+            response_metrics=UnaryResponseMetrics(
+                output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+            ),
             lora_adapter=lora_adapter,
         )

@@ -53,7 +53,7 @@ from inference_perf.apis.anthropic_messages import (
 )
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.config.datagen.replay import BadToolCallHandling
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
@@ -890,7 +890,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            text_content, chunk_times, raw_content, response_chunks, server_usage, finish_reason = await parse_sse_stream(
                 response, extract_content=_extract_streaming_content
             )
 
@@ -930,6 +930,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
@@ -975,7 +976,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+                ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
                 output_message=output_message,
@@ -1105,6 +1108,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
+                stop_reason,
             ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
@@ -1123,6 +1127,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=stop_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
@@ -1142,7 +1147,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
                     )
                 ),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, finish_reason=data.get("stop_reason")),
                 lora_adapter=lora_adapter,
                 extra_info={
                     "stop_reason": data.get("stop_reason"),

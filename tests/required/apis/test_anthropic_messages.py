@@ -143,6 +143,7 @@ async def test_anthropic_messages_process_response_uses_anthropic_usage() -> Non
     assert info.request_metrics.text.input_tokens == 3
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 5
+    assert info.response_metrics.finish_reason == "end_turn"
     assert info.extra_info["stop_reason"] == "end_turn"
 
 
@@ -170,6 +171,8 @@ async def test_anthropic_messages_streaming_preserves_usage_across_events() -> N
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 5
     assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
+    # The message_delta event's stop_reason is the Anthropic spelling of finish_reason.
+    assert info.response_metrics.finish_reason == "end_turn"
     assert info.extra_info["output_text"] == "hello back"
     assert info.extra_info["output_message"] == {"role": "assistant", "content": "hello back"}
 

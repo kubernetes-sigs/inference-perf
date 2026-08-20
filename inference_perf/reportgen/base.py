@@ -507,8 +507,21 @@ def summarize_requests(
     inter_token_latencies: List[float] = []
 
     mismatched_requests = 0
+    # Why the server said it stopped, and how often it stopped short of what the
+    # request asked for (#655). Both are observations over the success bucket:
+    # without ignore_eos a short response is usually the model emitting EOS as
+    # intended, so a shortfall is worth seeing, not a failure. Under ignore_eos
+    # the client has already moved shortfalls to the failure bucket
+    # (TruncatedResponseError), so anything counted here got past that rule.
+    finish_reason_counts: dict[str, int] = defaultdict(int)
+    output_shortfalls = 0
     for m in all_successful:
         request_latency_values.append(m.end_time - m.start_time)
+        if (response_metrics := m.info.response_metrics) is not None:
+            if response_metrics.finish_reason is not None:
+                finish_reason_counts[response_metrics.finish_reason] += 1
+            if isinstance(m.max_tokens, int) and response_metrics.delivered_output_tokens() < m.max_tokens:
+                output_shortfalls += 1
 
         # Process raw chunks if present and tokenizer is available
         if (
@@ -700,6 +713,8 @@ def summarize_requests(
         ),
         "output_tokens": summarize_output_token_usage(all_successful, percentiles),
         "token_count_mismatches": mismatched_requests,
+        "finish_reasons": dict(sorted(finish_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "output_shortfalls": output_shortfalls,
     }
     if goodput_metrics:
         successes_dict["goodput_metrics"] = goodput_metrics
@@ -831,6 +846,7 @@ class ReportGenerator:
                         "end_time": metric.end_time,
                         "request": metric.request_data,
                         "response": metric.response_data,
+                        "max_tokens": metric.max_tokens,
                         "info": metric.info.model_dump() if metric.info else None,
                         "error": metric.error.model_dump() if metric.error else None,
                     }

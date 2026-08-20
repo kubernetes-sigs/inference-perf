@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import base64
+import json
 import logging
 from typing import Any, AsyncGenerator, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError
 from inference_perf.config import APIType
 from inference_perf.payloads import (
     ImageRepresentation,
@@ -178,6 +180,47 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 17
+
+
+# Unary 200 whose body is `{"error": {...}}` (the #713 shape). Must raise
+# InBandError carrying that body as its message rather than return a zero-token
+# InferenceInfo through the empty-choices early return.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_in_band_error_body_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    body = {"error": {"message": "upstream unavailable", "type": "server_error", "code": 503}}
+    response = MagicMock()
+    response.json = AsyncMock(return_value=body)
+
+    with pytest.raises(InBandError) as exc_info:
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+    assert json.loads(str(exc_info.value)) == body
+
+
+# Unary 200 whose body is `{}`: no choices, no usage. Must raise EmptyResponseError.
+@pytest.mark.asyncio
+async def test_process_response_non_streaming_no_choices_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    response = MagicMock()
+    response.json = AsyncMock(return_value={})
+
+    with pytest.raises(EmptyResponseError):
+        await data.process_response(response, _make_config(streaming=False), _make_tokenizer())
+
+
+# Streaming 200 whose frames are a role-only delta and [DONE]: no content, no
+# usage. Must raise EmptyResponseError with the raw stream attached.
+@pytest.mark.asyncio
+async def test_process_response_streaming_no_content_no_usage_raises() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    sse = b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\ndata: [DONE]\n\n'
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    with pytest.raises(EmptyResponseError) as exc_info:
+        await data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+    assert exc_info.value.raw_content == sse.decode()
 
 
 def _reset_multimodal_progress_state() -> None:
@@ -372,3 +415,35 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+# Unary chat body whose choice finished with "tool_calls" and streamed chat whose
+# last delta frame carries finish_reason "length": each must land verbatim on
+# response_metrics.finish_reason ("tool_calls" and "length" respectively).
+@pytest.mark.asyncio
+async def test_process_response_records_finish_reason_unary_and_streaming() -> None:
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    response = MagicMock()
+    response.json = AsyncMock(
+        return_value={
+            "choices": [{"message": {"content": "calling"}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+    )
+    info = await data.process_response(response, _make_config(streaming=False), tokenizer)
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "tool_calls"
+
+    sse = (
+        b'data: {"choices": [{"delta": {"content": "hello"}, "finish_reason": null}]}\n\n'
+        b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    info = await data.process_response(
+        cast(ClientResponse, _FakeStreamingResponse([sse])), _make_config(streaming=True), tokenizer
+    )
+    assert info.response_metrics is not None
+    assert info.response_metrics.finish_reason == "length"

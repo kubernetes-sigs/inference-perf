@@ -26,6 +26,24 @@ class ResponseMetrics(BaseModel):
     # Last-seen `usage` dict reported by the server (streaming: the trailing
     # usage chunk; non-streaming: the response body's `usage`).
     server_usage: Optional[dict[str, Any]] = None
+    # Why the server stopped generating, verbatim as it reported it: OpenAI's
+    # `finish_reason` (`stop`, `length`, `tool_calls`, ...) or Anthropic's
+    # `stop_reason` (`end_turn`, `max_tokens`, ...). `length`/`max_tokens` mean
+    # the requested budget was delivered; anything else means the server
+    # halted on its own. None when the server did not report one.
+    finish_reason: Optional[str] = None
+
+    def delivered_output_tokens(self) -> int:
+        """Output tokens the server actually produced.
+
+        The server's own ``usage.completion_tokens`` when it reported one, since
+        that is an exact count; otherwise the client-side re-tokenization in
+        ``output_tokens``, which is an approximation (#564).
+        """
+        completion_tokens = self.server_usage.get("completion_tokens") if self.server_usage else None
+        if isinstance(completion_tokens, (int, float)) and not isinstance(completion_tokens, bool):
+            return int(completion_tokens)
+        return self.output_tokens
 
 
 class UnaryResponseMetrics(ResponseMetrics):
@@ -71,6 +89,10 @@ class RequestLifecycleMetric(BaseModel):
     response_data: Optional[str] = None
     info: InferenceInfo
     error: Optional[ErrorResponseInfo]
+    # The `max_tokens` the request body asked for, so requested-versus-delivered
+    # output length is computable at report time. None when the body carried no
+    # `max_tokens` (a replay whose trace omits it, or a client that never set one).
+    max_tokens: Optional[int] = None
 
     ttft_slo_sec: Optional[float] = None
     tpot_slo_sec: Optional[float] = None
