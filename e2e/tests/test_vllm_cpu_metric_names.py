@@ -45,6 +45,7 @@ what the check would have accepted.
 """
 
 import os
+from typing import Any
 
 import aiohttp
 import pytest
@@ -64,6 +65,7 @@ from utils.net import get_free_port
 from utils.testdata import extract_tarball
 from utils.vllm_server import DEFAULT_MODEL, VLLMServerRunner
 
+from inference_perf.client.modelserver.metrics.base import Metric
 from inference_perf.client.modelserver.vllm_client import vLLMModelServerClient
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
@@ -94,11 +96,27 @@ CONDITIONALLY_EXPOSED = {
     "vllm:prompt_tokens_recomputed",
 }
 
+# Declarations whose queries select nothing, with a fix already in flight. Kept
+# apart from CONDITIONALLY_EXPOSED because the reason is different: those names
+# are gated off on a stock server, these are simply queried under a name the
+# server does not use. Found by this check once it started asking what the
+# queries select rather than whether the declared name is findable (#669).
+#
+# The list cannot rot: test_known_unresolved_still_do_not_resolve fails the
+# moment an entry starts resolving, which forces it to be deleted.
+KNOWN_UNRESOLVED = {
+    "vllm:prompt_tokens": "queried bare; v0.26.0 exposes vllm:prompt_tokens_total. Fixed by #568",
+    "vllm:generation_tokens": "queried bare; v0.26.0 exposes vllm:generation_tokens_total. Fixed by #568",
+}
+
+# Names excluded from the strict checks for either reason.
+SKIPPED = CONDITIONALLY_EXPOSED | set(KNOWN_UNRESOLVED)
+
 GOLDEN_FILES = sorted(GOLDEN_DIR.glob("*.txt"))
 
 
-def _declared(base_url: str, model_name: str) -> dict[str, str]:
-    """Metric base names -> metric type, as declared by the vLLM client."""
+def _declared(base_url: str, model_name: str) -> dict[str, Metric[Any]]:
+    """Declared metric name -> the metric object, as declared by the vLLM client."""
     client = vLLMModelServerClient(
         metrics_collector=LocalRequestMetricCollector(),
         api_config=APIConfig(type=APIType.Completion),
@@ -134,14 +152,29 @@ def test_declared_names_resolve_against_goldens(golden_file) -> None:
     declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
     assert declared, "vLLM client declared no metric names"
 
-    missing = sorted(
-        name
-        for name, metric_type in declared.items()
-        if name not in CONDITIONALLY_EXPOSED and not in_golden(name, metric_type, golden)
-    )
+    missing = sorted(name for name, metric in declared.items() if name not in SKIPPED and not in_golden(metric, golden))
     assert not missing, (
         f"{len(missing)}/{len(declared)} declared metric names do not resolve against {golden_file.name} "
         f"(stale names produce silently empty report fields): {missing}"
+    )
+
+
+@pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
+def test_known_unresolved_still_do_not_resolve(golden_file) -> None:
+    # Guards the allowlist above. Each KNOWN_UNRESOLVED name must still be declared
+    # and must still fail to resolve; the moment #568 lands and vllm:prompt_tokens
+    # starts selecting vllm:prompt_tokens_total, this goes red and the entry has to
+    # be deleted. An allowlist that quietly stops applying is how a gate rots.
+    golden = load_golden(golden_file)
+    declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
+
+    undeclared = sorted(name for name in KNOWN_UNRESOLVED if name not in declared)
+    assert not undeclared, f"no longer declared, drop the KNOWN_UNRESOLVED entries: {undeclared}"
+
+    now_resolving = sorted(name for name in KNOWN_UNRESOLVED if in_golden(declared[name], golden))
+    assert not now_resolving, (
+        f"{now_resolving} now resolve against {golden_file.name}; drop their KNOWN_UNRESOLVED "
+        f"entries so the strict check covers them again"
     )
 
 
@@ -182,11 +215,7 @@ async def test_declared_metric_names_exist():
         declared = _declared(server.base_url, server.model)
 
     assert declared, "vLLM client declared no metric names"
-    missing = sorted(
-        name
-        for name, metric_type in declared.items()
-        if name not in CONDITIONALLY_EXPOSED and not is_exposed(name, metric_type, names)
-    )
+    missing = sorted(name for name, metric in declared.items() if name not in SKIPPED and not is_exposed(metric, names))
     assert not missing, (
         f"{len(missing)}/{len(declared)} declared metric names absent from a real vLLM /metrics exposition "
         f"(stale names produce silently empty report fields): {missing}"

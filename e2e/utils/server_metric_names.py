@@ -47,14 +47,13 @@ check that needs family-for-family equality is only meaningful against
 
 import json
 import os
-import re
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple, Type
+from typing import Any, Dict, Optional, Set, Type
 
 from inference_perf.client.modelserver.metrics import CounterMetric, GaugeMetric, HistogramMetric
-from inference_perf.client.modelserver.metrics.base import BaseMetrics
+from inference_perf.client.modelserver.metrics.base import BaseMetrics, Metric
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.modelserver.sglang_client import SGlangModelServerClient
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
@@ -70,11 +69,11 @@ PROVENANCES = (LIVE_SCRAPE, UPSTREAM_SOURCE)
 # without saying where its contents came from.
 REQUIRED_HEADER_KEYS = ("provenance", "server", "version", "source", "captured")
 
-# Series suffixes a histogram or summary family produces. A client may declare
-# one of these directly as a counter (SGLang counts requests off the latency
-# histogram's _count series), which is valid PromQL, so name resolution has to
-# recognise it.
-_AGGREGATE_SUFFIXES = ("_count", "_sum")
+# Series suffixes produced by a histogram or summary family rather than being
+# families in their own right. A client may declare one directly as a counter
+# (SGLang counts requests off the latency histogram's _count series), which is
+# valid PromQL, so resolving a series against a family map has to recognise it.
+_AGGREGATE_SUFFIXES = ("_bucket", "_count", "_sum")
 
 
 @dataclass(frozen=True)
@@ -159,28 +158,26 @@ def fetch_json(url: str, timeout: float = 30.0) -> Any:
     return json.loads(fetch_text(url, timeout))
 
 
-def declared_metrics(metadata: BaseMetrics, prefix: str) -> Dict[str, str]:
-    """Metric base names -> prometheus type, as declared by a client's metadata.
+def declared_metrics(metadata: BaseMetrics) -> Dict[str, Metric[Any]]:
+    """Declared metric name -> the metric object, as declared by a client's metadata.
 
-    A declared name is normally bare (``sglang:num_queue_reqs``) but the
-    counter type also accepts a version-spanning PromQL selector
-    (``{__name__=~"tgi_request_success(_total)?"}``), so base names are pulled
-    out by prefix rather than taken whole. A name that yields no base name at
-    all is kept verbatim: it cannot resolve against any fixture, and a
-    declaration this code cannot even parse is itself drift worth failing on.
+    The metric is carried rather than its name and type because only the metric
+    knows which series its queries select (``candidate_names``). The server's
+    family prefix used to be needed here to pull base names out of a declaration;
+    the metric takes itself apart now, so nothing here has to know the prefix.
     """
-    types: Tuple[Tuple[type, str], ...] = (
-        (CounterMetric, "counter"),
-        (GaugeMetric, "gauge"),
-        (HistogramMetric, "histogram"),
-    )
-    base_name = re.compile(re.escape(prefix) + r"[A-Za-z0-9_]+")
-    declared: Dict[str, str] = {}
+    declared: Dict[str, Metric[Any]] = {}
     for _field, metric in metadata:
-        metric_type = next(t for cls, t in types if isinstance(metric, cls))
-        for name in base_name.findall(metric.metric_name) or [metric.metric_name]:
-            declared[name] = metric_type
+        declared[metric.metric_name] = metric
     return declared
+
+
+def prometheus_type(metric: Metric[Any]) -> str:
+    """The exposition type a declared metric expects its family to carry."""
+    for cls, metric_type in ((CounterMetric, "counter"), (GaugeMetric, "gauge"), (HistogramMetric, "histogram")):
+        if isinstance(metric, cls):
+            return metric_type
+    raise TypeError(f"no prometheus type known for {type(metric).__name__}")
 
 
 def parse_exposition(metrics_text: str, prefix: str) -> Dict[str, str]:
@@ -207,43 +204,47 @@ def exposed_names(metrics_text: str) -> Set[str]:
 
 
 def _aggregate_of(name: str) -> str:
-    """The family a ``_count``/``_sum`` series belongs to, or "" if not one."""
+    """The family a ``_bucket``/``_count``/``_sum`` series belongs to, or "" if not one."""
     for suffix in _AGGREGATE_SUFFIXES:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return ""
 
 
-def resolves(name: str, metric_type: str, families: Dict[str, str]) -> bool:
-    """Whether a declared (name, type) resolves against a family -> type map.
+def provided_by_families(series: str, metric_type: str, families: Dict[str, str]) -> bool:
+    """Whether a family -> type map provides one series a query selects.
 
-    Type aware, mirroring what a Prometheus scrape stores:
-
-    - gauges and histograms by exact family name and type;
-    - counters by exact name, by the ``_total``-suffixed name that
-      prometheus_client emits for a counter registered without it, or as the
-      ``_count``/``_sum`` series of a histogram or summary family.
+    A fixture records what ``# TYPE`` declares, so counter and gauge series are
+    families in their own right, while ``_bucket``/``_count``/``_sum`` series come
+    from a histogram or summary family with the suffix stripped.
     """
-    if metric_type == "counter":
-        if families.get(name) == "counter" or families.get(f"{name}_total") == "counter":
-            return True
-        base = _aggregate_of(name)
-        return bool(base) and families.get(base) in ("histogram", "summary")
-    return families.get(name) == metric_type
+    if families.get(series) == metric_type:
+        return True
+    base = _aggregate_of(series)
+    return bool(base) and families.get(base) in ("histogram", "summary")
 
 
-def is_exposed(name: str, metric_type: str, names: Set[str]) -> bool:
-    """Whether a declared (name, type) is present in a live exposition's names.
+def resolves(metric: Metric[Any], families: Dict[str, str]) -> bool:
+    """Whether every series this metric's queries select resolves against a fixture.
 
-    Presence is type aware for the same reason as ``resolves``: gauges by bare
-    name, counters by bare or ``_total``-suffixed name, histograms by their
-    ``_bucket``/``_count``/``_sum`` series.
+    The naming conventions (a counter spanning the optional ``_total`` suffix, a
+    histogram needing all three of its series) are not restated here: they come
+    from the metric's own ``candidate_names``, so this check cannot drift away
+    from what the client actually queries the way it did in #669.
     """
-    if metric_type == "histogram":
-        return all(f"{name}{suffix}" in names for suffix in ("_bucket", "_count", "_sum"))
-    if metric_type == "counter":
-        return name in names or f"{name}_total" in names
-    return name in names
+    metric_type = prometheus_type(metric)
+    return any(
+        all(provided_by_families(series, metric_type, families) for series in group) for group in metric.candidate_names()
+    )
+
+
+def is_exposed(metric: Metric[Any], names: Set[str]) -> bool:
+    """Whether every series this metric's queries select is in a live exposition.
+
+    An exposition lists real series names, so this is a plain subset test over the
+    metric's candidate groups.
+    """
+    return any(group <= names for group in metric.candidate_names())
 
 
 def parse_fixture(text: str) -> Fixture:

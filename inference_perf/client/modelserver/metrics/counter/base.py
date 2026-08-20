@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+import re
+from typing import FrozenSet, List, Sequence
 from pydantic import BaseModel
 
 from ..base import Metric
@@ -32,6 +33,21 @@ class CounterMetric(Metric[CounterResult]):
 
     def __init__(self, metric_name: str) -> None:
         self.metric_name = metric_name
+
+    # The alternatives a `{__name__=~"X(_total)?"}` selector name spans. The selector is the
+    # only declaration form that reaches more than one series, so it is the only one that has
+    # to be taken apart to say what the queries select.
+    _SPANNING_SELECTOR = re.compile(r'^\{__name__=~"(?P<base>[^"(){}]+)\(_total\)\?"\}$')
+
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        # A plain name selects exactly itself: nothing in get_queries adds a `_total` suffix,
+        # so a counter declared bare against a server that suffixes its counters selects
+        # nothing at all. That is the gap this reports rather than papers over (#669).
+        match = self._SPANNING_SELECTOR.match(self.metric_name)
+        if not match:
+            return (frozenset({self.metric_name}),)
+        base = match.group("base")
+        return (frozenset({f"{base}_total"}), frozenset({base}))
 
     def _selector(self, filters: str) -> str:
         # A counter name may be a plain metric or a `{__name__=~"foo(_total)?"}` selector;

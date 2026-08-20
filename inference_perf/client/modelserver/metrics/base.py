@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, FrozenSet, Generic, Iterator, List, Optional, Sequence, Tuple, TypeVar
 from pydantic import BaseModel
 
 R = TypeVar("R", bound=BaseModel)
@@ -27,6 +27,24 @@ class Metric(ABC, Generic[R]):
 
         filters is the comma-joined label selector (e.g. "model_name='m'"), supplied by the
         owning container so it is not repeated on every metric.
+        """
+        ...
+
+    @abstractmethod
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        """The Prometheus series this metric's queries select.
+
+        Each frozenset is a group whose names must all exist for that group to be
+        satisfied, and the metric resolves if any group is satisfied. A histogram
+        needs all three of its `_bucket`/`_count`/`_sum` series, so it returns one
+        group of three; a counter that spans the exposition's optional `_total`
+        suffix accepts either form, so it returns two groups of one.
+
+        This lives next to get_queries so that a name-drift check can ask what the
+        queries actually select rather than restating the exposition's naming
+        conventions on its own. Restating them is how the two fell out of step:
+        the drift check accepted a counter declared as `X` because the server
+        exposed `X_total`, while the query only ever selected `X` (#669, #568).
         """
         ...
 
