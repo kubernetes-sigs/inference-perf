@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import FrozenSet, List, Sequence
 
 from ..base import Metric
 from ..gauge.base import GaugeResult
@@ -31,6 +31,11 @@ class HistogramMetric(Metric[HistogramResult]):
         if metric_name.startswith("{"):
             raise ValueError(f"HistogramMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
+
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        # A histogram's queries select all three of its series, so all three must exist;
+        # one family missing its _bucket is drift, not a partially usable metric.
+        return (frozenset({f"{self.metric_name}{suffix}" for suffix in ("_bucket", "_count", "_sum")}),)
 
     def get_queries(self, duration: float, filters: str) -> List[str]:
         f, m = filters, self.metric_name

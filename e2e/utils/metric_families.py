@@ -33,27 +33,36 @@ mechanical companions of their family, and vLLM can toggle them via
 ``PROMETHEUS_DISABLE_CREATED_SERIES`` without any semantic change.
 """
 
-import re
 from pathlib import Path
-from typing import Dict, Set
+from typing import Any, Dict, Set
 
 from inference_perf.client.modelserver.metrics import CounterMetric, GaugeMetric, HistogramMetric
+from inference_perf.client.modelserver.metrics.base import Metric
 from inference_perf.client.modelserver.openai_client import OpenAIMetrics
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "testdata" / "vllm_metric_families"
 
-_BASE_NAME = re.compile(r"vllm:[A-Za-z0-9_]+")
 
+def declared_metrics(metadata: OpenAIMetrics) -> Dict[str, Metric[Any]]:
+    """Declared metric name -> the metric object, as declared by a client's metadata.
 
-def declared_metrics(metadata: OpenAIMetrics) -> Dict[str, str]:
-    """Metric base names -> prometheus type, as declared by a client's metadata."""
-    types = ((CounterMetric, "counter"), (GaugeMetric, "gauge"), (HistogramMetric, "histogram"))
-    declared: Dict[str, str] = {}
+    The metric itself is carried, not just its name and type, because it is the
+    only thing that knows which series its queries select (``candidate_names``).
+    The key stays the declared name so callers can key allowlists and failure
+    messages off exactly what appears in the client source.
+    """
+    declared: Dict[str, Metric[Any]] = {}
     for _field, metric in metadata:
-        metric_type = next(t for cls, t in types if isinstance(metric, cls))
-        for name in _BASE_NAME.findall(metric.metric_name):
-            declared[name] = metric_type
+        declared[metric.metric_name] = metric
     return declared
+
+
+def prometheus_type(metric: Metric[Any]) -> str:
+    """The exposition type a declared metric expects its family to carry."""
+    for cls, metric_type in ((CounterMetric, "counter"), (GaugeMetric, "gauge"), (HistogramMetric, "histogram")):
+        if isinstance(metric, cls):
+            return metric_type
+    raise TypeError(f"no prometheus type known for {type(metric).__name__}")
 
 
 def exposed_names(metrics_text: str) -> Set[str]:
@@ -79,25 +88,39 @@ def exposed_vllm_families(metrics_text: str) -> Dict[str, str]:
     return families
 
 
-def is_exposed(name: str, metric_type: str, names: Set[str]) -> bool:
-    """Whether a declared (name, type) is present in a live exposition's names.
+def provided_by_families(series: str, metric_type: str, families: Dict[str, str]) -> bool:
+    """Whether a family -> type map provides one series a query selects.
 
-    Presence is type-aware, mirroring what a Prometheus scrape stores: gauges
-    by bare name, counters by bare or ``_total``-suffixed name, histograms by
-    their ``_bucket``/``_count``/``_sum`` series.
+    A family map records what ``# TYPE`` declares, so counter and gauge series
+    are families in their own right, while ``_bucket``/``_count``/``_sum`` series
+    are produced by a histogram or summary family with the suffix stripped. That
+    second case also covers a counter declared straight onto a histogram's
+    ``_count`` series, which is valid PromQL and which SGLang's request count uses.
     """
-    if metric_type == "histogram":
-        return all(f"{name}{suffix}" in names for suffix in ("_bucket", "_count", "_sum"))
-    if metric_type == "counter":
-        return name in names or f"{name}_total" in names
-    return name in names
+    if families.get(series) == metric_type:
+        return True
+    for suffix in ("_bucket", "_count", "_sum"):
+        if series.endswith(suffix) and families.get(series[: -len(suffix)]) in ("histogram", "summary"):
+            return True
+    return False
 
 
-def in_golden(name: str, metric_type: str, golden: Dict[str, str]) -> bool:
-    """Whether a declared (name, type) resolves against a golden family map."""
-    if metric_type == "counter":
-        return golden.get(name) == "counter" or golden.get(f"{name}_total") == "counter"
-    return golden.get(name) == metric_type
+def is_exposed(metric: Metric[Any], names: Set[str]) -> bool:
+    """Whether every series this metric's queries select is in a live exposition.
+
+    An exposition lists real series names, so this is a plain subset test over the
+    metric's own candidate groups; nothing here needs to know how a counter or a
+    histogram is spelled.
+    """
+    return any(group <= names for group in metric.candidate_names())
+
+
+def in_golden(metric: Metric[Any], golden: Dict[str, str]) -> bool:
+    """Whether every series this metric's queries select resolves against a golden."""
+    metric_type = prometheus_type(metric)
+    return any(
+        all(provided_by_families(series, metric_type, golden) for series in group) for group in metric.candidate_names()
+    )
 
 
 def golden_path(release_tag: str) -> Path:

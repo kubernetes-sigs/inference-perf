@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, List
+from typing import Dict, FrozenSet, List, Sequence
 from pydantic import BaseModel
 
 from ..base import Metric
@@ -40,6 +40,10 @@ class GaugeMetric(Metric[GaugeResult]):
         if metric_name.startswith("{"):
             raise ValueError(f"GaugeMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
+
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        # A gauge is stored under its bare name, which is the only name its queries select.
+        return (frozenset({self.metric_name}),)
 
     def get_queries(self, duration: float, filters: str) -> List[str]:
         f, m = filters, self.metric_name
