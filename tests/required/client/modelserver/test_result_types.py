@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import Any, List
 
 import pytest
 
+from inference_perf.client.modelserver.metrics.base import Metric
 from inference_perf.client.modelserver.metrics import (
     CounterMetric,
     CounterResult,
@@ -106,3 +107,58 @@ def test_metric_types_reject_name_selectors() -> None:
     for metric_type in (CounterMetric, GaugeMetric, HistogramMetric):
         with pytest.raises(ValueError, match="selector"):
             metric_type(metric_name='{__name__=~"vllm:foo(_total)?"}')
+
+
+def test_candidate_names_are_the_series_each_metric_actually_queries() -> None:
+    # The anti-drift invariant: whatever candidate_names() reports must literally
+    # appear in the metric's own get_queries() output. A gauge "vllm:queue" says
+    # [{"vllm:queue"}] and queries avg_over_time(vllm:queue{...}); a histogram
+    # "vllm:lat" says [{"vllm:lat_bucket","vllm:lat_count","vllm:lat_sum"}] and
+    # queries all three. If someone changes a query builder without changing the
+    # names it advertises, this test is what goes red.
+    #
+    # The counter now belongs here too: it spans both name forms as two exact legs
+    # (`increase(X_total{...}) or increase(X{...})`), so both advertised names appear
+    # literally in the query text and containment can judge them (#568).
+    metrics: List[Metric[Any]] = [
+        CounterMetric("vllm:prompt_tokens"),
+        GaugeMetric("vllm:num_requests_waiting"),
+        HistogramMetric("vllm:e2e_request_latency_seconds"),
+    ]
+    for metric in metrics:
+        queries = " ".join(metric.get_queries(60.0, "model_name='m'"))
+        advertised = {name for group in metric.candidate_names() for name in group}
+        assert advertised, f"{metric.metric_name} advertises no candidate names"
+        unqueried = sorted(name for name in advertised if name not in queries)
+        assert not unqueried, f"{metric.metric_name} advertises {unqueried} but never queries them"
+
+
+def test_counter_candidate_names_span_both_name_forms() -> None:
+    # CounterMetric("vllm:prompt_tokens") queries increase(vllm:prompt_tokens_total{...})
+    # or increase(vllm:prompt_tokens{...}), so it reports two single-name groups:
+    # satisfying either one resolves the metric. Declaring the name with the _total
+    # suffix already on it selects the same two series, so it reports the same groups.
+    expected = (frozenset({"vllm:prompt_tokens_total"}), frozenset({"vllm:prompt_tokens"}))
+    for declared in ("vllm:prompt_tokens", "vllm:prompt_tokens_total"):
+        assert CounterMetric(declared).candidate_names() == expected
+
+
+def test_counter_candidate_names_over_a_histogram_series_are_the_single_exact_name() -> None:
+    # A _count/_sum/_bucket series can never carry a _total suffix, so a counter over one
+    # queries the single exact leg and must advertise only that name: reporting
+    # "sglang:e2e_request_latency_seconds_count_total" would make the drift check demand
+    # a series no exposition ever produces.
+    metric = CounterMetric("sglang:e2e_request_latency_seconds_count")
+    assert metric.candidate_names() == (frozenset({"sglang:e2e_request_latency_seconds_count"}),)
+
+
+def test_histogram_candidate_names_require_all_three_series_together() -> None:
+    # HistogramMetric("vllm:lat") queries _sum, _count and _bucket, so all three
+    # go in ONE group: a family exposing _sum and _count but no _bucket is drift,
+    # not a metric that half works.
+    assert HistogramMetric("vllm:lat").candidate_names() == (frozenset({"vllm:lat_bucket", "vllm:lat_count", "vllm:lat_sum"}),)
+
+
+def test_gauge_candidate_names_are_the_bare_name() -> None:
+    # GaugeMetric("vllm:kv_cache_usage_perc") queries the bare name and nothing else.
+    assert GaugeMetric("vllm:kv_cache_usage_perc").candidate_names() == (frozenset({"vllm:kv_cache_usage_perc"}),)

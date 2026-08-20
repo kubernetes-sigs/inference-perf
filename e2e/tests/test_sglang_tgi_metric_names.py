@@ -51,7 +51,7 @@ result differs. Capture and check share ``utils.server_metric_names``, so a
 committed fixture is by construction what these checks would have parsed.
 """
 
-from typing import Dict
+from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,6 +74,7 @@ from utils.server_metric_names import (
 )
 
 from inference_perf.config import APIConfig, APIType
+from inference_perf.client.modelserver.metrics.base import Metric
 
 SERVER_IDS = sorted(SERVERS)
 
@@ -101,8 +102,11 @@ KNOWN_UNRESOLVED: Dict[str, Dict[str, str]] = {
 }
 
 
-def declared_for(spec: ServerSpec) -> Dict[str, str]:
-    """Metric base names -> type, as the server's client subclass declares them.
+def declared_for(spec: ServerSpec) -> Dict[str, Metric[Any]]:
+    """Declared metric name -> the metric object, as the server's client subclass declares them.
+
+    The metric is carried rather than its name and type because only the metric knows
+    which series its queries select (``candidate_names``).
 
     Only the declarations are read, never the tokenizer, so CustomTokenizer is
     patched out to keep construction offline (same approach as
@@ -118,7 +122,7 @@ def declared_for(spec: ServerSpec) -> Dict[str, str]:
             max_tcp_connections=1,
             additional_filters=[],
         )
-    declared = declared_metrics(client.get_prometheus_metric_metadata(), spec.prefix)
+    declared = declared_metrics(client.get_prometheus_metric_metadata())
     assert declared, f"{spec.name} client declared no metric names"
     return declared
 
@@ -153,9 +157,7 @@ def test_declared_names_resolve_against_fixture(server: str) -> None:
     allowed = KNOWN_UNRESOLVED[server]
 
     missing = sorted(
-        name
-        for name, metric_type in declared.items()
-        if name not in allowed and not resolves(name, metric_type, fixture.families)
+        name for name, metric in declared.items() if name not in allowed and not resolves(metric, fixture.families)
     )
     assert not missing, (
         f"{len(missing)}/{len(declared)} names declared by the {server} client do not resolve against "
@@ -177,7 +179,7 @@ def test_known_unresolved_are_still_unresolved(server: str) -> None:
     undeclared = sorted(name for name in allowed if name not in declared)
     assert not undeclared, f"{server} no longer declares {undeclared}; drop the KNOWN_UNRESOLVED entries"
 
-    now_resolving = sorted(name for name in allowed if resolves(name, declared[name], fixture.families))
+    now_resolving = sorted(name for name in allowed if resolves(declared[name], fixture.families))
     assert not now_resolving, (
         f"{server} declarations {now_resolving} now resolve against {fixture_path(server).name}; "
         f"drop their KNOWN_UNRESOLVED entries so the strict check covers them again"
@@ -215,9 +217,7 @@ def test_declared_metric_names_exist(server: str) -> None:
     declared = declared_for(spec)
     allowed = KNOWN_UNRESOLVED[server]
 
-    missing = sorted(
-        name for name, metric_type in declared.items() if name not in allowed and not is_exposed(name, metric_type, names)
-    )
+    missing = sorted(name for name, metric in declared.items() if name not in allowed and not is_exposed(metric, names))
     assert not missing, (
         f"{len(missing)}/{len(declared)} names declared by the {server} client are absent from a real "
         f"/metrics exposition (stale names produce silently empty report fields): {missing}"

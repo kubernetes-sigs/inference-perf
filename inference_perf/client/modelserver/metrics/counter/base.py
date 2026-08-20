@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import FrozenSet, List, Sequence
 from pydantic import BaseModel
 
 from ..base import Metric
@@ -43,6 +43,16 @@ class CounterMetric(Metric[CounterResult]):
         if metric_name.startswith("{"):
             raise ValueError(f"CounterMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
+
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        # The legs _spanning builds, reported as separate one-name groups: the queries `or`
+        # the two name forms, so either one alone resolves the metric. This is derived from
+        # the same base/suffix rule get_queries uses rather than restated, so a drift check
+        # cannot drift from what is actually selected (#669).
+        base = self.metric_name.removesuffix("_total")
+        if base.endswith(("_count", "_sum", "_bucket")):
+            return (frozenset({base}),)
+        return (frozenset({f"{base}_total"}), frozenset({base}))
 
     def _spanning(self, fn: str, duration: float, filters: str) -> str:
         # `fn` applied to the `_total`-suffixed and bare forms of the name, whichever exists;

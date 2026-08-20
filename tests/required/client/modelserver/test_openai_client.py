@@ -16,6 +16,7 @@ import logging
 import random
 import ssl
 from types import SimpleNamespace
+from typing import FrozenSet, Sequence
 
 from aiohttp.client_reqrep import ConnectionKey
 import pytest
@@ -417,6 +418,9 @@ def test_openai_metrics_iteration_yields_each_field_once() -> None:
 
         def get_queries(self, duration: float, filters: str) -> list[str]:
             return []
+
+        def candidate_names(self) -> Sequence[FrozenSet[str]]:
+            return (frozenset({self.metric_name}),)
 
         def parse(self, results: list[float]) -> CounterResult:
             return CounterResult()
