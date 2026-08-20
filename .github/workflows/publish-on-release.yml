@@ -157,7 +157,7 @@ jobs:
           mkdir -p helm-releases
           # Remove 'v' prefix from version
           CHART_VERSION=${GITHUB_REF#refs/tags/v}
-          helm package deploy/inference-perf -d helm-releases --version $CHART_VERSION --app-version ${{ env.RELEASE_VERSION }}
+          helm package deploy/inference-perf -d helm-releases --version $CHART_VERSION --app-version ${{ github.ref_name }}
 
       - name: Push Helm chart to OCI registry
         run: |
