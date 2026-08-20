@@ -23,6 +23,7 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION, parse_anthropic_content
+from inference_perf.apis.response_errors import InvalidResponseError
 from inference_perf.apis.streaming_parser import StreamInterruptedError
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils import CustomTokenizer
@@ -505,6 +506,12 @@ class openAIModelServerClientSession(ModelServerClientSession):
                                 original_error = read_error.original
                                 if read_error.raw_content:
                                     response_content = read_error.raw_content
+                            # A 200 whose body is not a completion (an in-band
+                            # error payload, or no content and no usage) is
+                            # reported under its own type; the body it carries
+                            # is the evidence, so keep it as the response.
+                            elif isinstance(read_error, InvalidResponseError) and read_error.raw_content:
+                                response_content = read_error.raw_content
                             error = ErrorResponseInfo(
                                 error_msg=str(original_error),
                                 error_type=type(original_error).__name__,

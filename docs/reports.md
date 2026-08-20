@@ -86,5 +86,5 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 
 - **`load_summary`**: Details about the requested vs achieved load.
 - **`successes`**: Metrics for successful requests.
-- **`failures`**: Metrics for failed requests, including the per-label error breakdown.
+- **`failures`**: Metrics for failed requests, including the per-label error breakdown. A request fails on a non-200 status, on a transport error, or on a 200 whose body is not a completion: a body carrying a top-level `error` object (label `inbanderror`, `error_msg` is that object) or one with neither completion content nor `usage` (label `emptyresponseerror`). The body is kept as `response` in the per-request report either way.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
