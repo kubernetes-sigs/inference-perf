@@ -23,6 +23,10 @@ To contribute to this project, please adhere to the following procedure:
 - **Branch Up-to-Date Requirement**: Your branch must be based on the latest `origin/main` before you can push. A pre-push hook enforces this by running `git fetch origin main` automatically. If it fails, you will need to rebase or merge `origin/main`.
 - **Submit the Pull Request** utilizing the provided template.
 
+### Regression tests for bug fixes
+
+A PR that fixes a behavioral bug should include the bug's reproduction as a test: a unit test where the bug reproduces in process, an e2e test where it only shows up end to end (a wrong metric in a full run, a report that disagrees with what the server actually sent). The test should fail on the code before the fix and pass after it, and reviewers should ask for it when a fix arrives without one. This is a norm rather than a CI gate: documentation, logging, and dependency changes have nothing to pin, and some fixes are already covered by an existing test. Shipping a fix without its repro should be a deliberate call, not an oversight.
+
 ### Resources
 - [Contributor License Agreement](https://git.k8s.io/community/CLA.md) - Kubernetes projects require that you sign a Contributor License Agreement (CLA) before we can accept your pull requests
 - [Kubernetes Contributor Guide](https://k8s.dev/guide) - Main contributor documentation, or you can just jump directly to the [contributing page](https://k8s.dev/docs/guide/contributing/)
