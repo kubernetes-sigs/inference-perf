@@ -92,6 +92,7 @@ Explore detailed documentation for specific topics:
 | **CLI Flags** | All command line flags: global options and configuration overrides. | [cli_flags.md](./docs/cli_flags.md) |
 | **Load Generation** | Detailed explanation of load patterns and multi-worker setup. | [loadgen.md](./docs/loadgen.md) |
 | **Metrics** | Definitions of TTFT, TPOT, ITL, etc. | [metrics.md](./docs/metrics.md) |
+| **Comparability** | Configuring runs that are comparable with other benchmarking tools. | [comparability.md](./docs/comparability.md) |
 | **Goodput** | How to measure requests meeting SLOs. | [goodput.md](./docs/goodput.md) |
 | **Reports** | Understanding generated JSON reports. | [reports.md](./docs/reports.md) |
 | **OTel Observability** | Instrument benchmark runs with OpenTelemetry tracing to export to Jaeger, Tempo, etc. | [otel_instrumentation.md](./docs/otel_instrumentation.md) |
