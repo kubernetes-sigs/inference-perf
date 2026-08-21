@@ -99,6 +99,74 @@ prompts that are longer on one side, including the tokenizer and chat-template o
 client does not model, can cross a chunked-prefill or context boundary and change the server's
 batching, which shows up as a client-side latency difference that no client caused.
 
+## Flag and setting map
+
+**Checked on 2026-08-21 against `vllm bench serve` from vLLM v0.10.0 and `aiperf profile` from
+AIPerf v0.12.0.** Both tools have changed what these flags mean between releases, so
+treat a row as unverified against any other version and re-read the tool's own `--help` before
+relying on it. The version of vLLM the parity harness (#481) pins is the one these rows were
+read from.
+
+| What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
+| :--- | :--- | :--- | :---
+| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
+| Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
+| Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
+| How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
+| Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
+| Output length | `data.output_distribution` (`type: fixed`, `mean`) | `--random-output-len` with `--random-range-ratio 0` | `--osl` with `--osl-stddev 0` |
+| Generate to the length cap | `server.ignore_eos: true` | `--ignore-eos` | `--extra-inputs ignore_eos:true` |
+| Streaming | `api.streaming` | fixed by the endpoint, no flag | `--streaming` |
+| Tokenizer | `tokenizer.pretrained_model_name_or_path` | `--tokenizer` | `--tokenizer` |
+| Reproducible prompts | `data.seed` | `--seed` (default `0`) | `--random-seed` |
+| Excluded warmup | no equivalent | no equivalent | `--warmup-request-count`, `--warmup-duration` |
+| Sampling parameters | no equivalent for synthetic data | `--temperature`, `--top-p`, `--top-k`, `--min-p` | `--extra-inputs temperature:0` and similar |
+
+### Where the map breaks
+
+These are the rows that cannot be translated by substituting a value, and they are the reason
+a converted config still needs reading:
+
+- **Arrival spacing defaults disagree.** Both peers default to Poisson at a given rate
+  (`--burstiness 1.0`, `--arrival-pattern poisson`), so "rate 40" on either side is not the
+  evenly spaced stimulus `load.type: constant` produces. Set the pattern explicitly on both
+  sides or compare only average offered rate. vLLM has no exactly even setting: burstiness
+  above 1 draws intervals from a gamma distribution that only approaches even spacing.
+- **vLLM sends everything at once unless you ask otherwise.** `--request-rate` defaults to
+  `inf`, which also disables `--burstiness`, so the default run offers all `--num-prompts`
+  immediately. The nearest inference-perf equivalent is `load.type: concurrent` with
+  `concurrency_level` set to the request count, not any rate.
+- **Count against duration.** `--num-prompts` and `--request-count` are counts; a `constant`
+  inference-perf stage is a rate for a duration, so the count is `rate * duration` and only
+  matches when the rate is actually achieved.
+- **`--random-input-len` is not the prompt length.** vLLM subtracts the tokenizer's special
+  tokens first (`real_input_len = input_len - num_special_tokens_to_add()`), so a
+  BOS-prepending tokenizer sends one token fewer than requested. Expect a small fixed offset
+  rather than an exact match on input tokens.
+- **One range ratio covers both directions.** `--random-range-ratio` widens input and output
+  together, while inference-perf configures each distribution separately. At v0.10.0 the range
+  is `[len * (1 - r), len * (1 + r)]` and the tool asserts `r < 1.0`, so the pre-v0.8.4
+  fixed-length recipe of `1.0` now fails loudly instead of silently producing a different
+  workload.
+- **Nobody's defaults agree.** inference-perf distributions default to `type: normal` with a
+  nonzero `std_dev`, AIPerf's `--isl-stddev` and `--osl-stddev` default to `0` (fixed) with
+  `--isl` defaulting to 550, and vLLM's range ratio defaults to `0` (fixed) at this version.
+  A comparison of two default configs compares three different workloads.
+- **Only AIPerf can exclude a warmup.** Its warmup requests are sent and dropped; inference-perf
+  measures everything it sends. See the warmup section above for the workaround.
+- **Sampling parameters are not configurable here** for synthetic workloads, so runs take the
+  server's defaults while both peers can pin greedy decoding. Pin the peer to whatever the
+  server defaults to, and say which that was.
+
+### Converting a run automatically
+
+There is no converter today, and the rows above are the mapping in the meantime. The parity
+harness in #481 carries worked examples of it: a `vllm bench` argument file and the
+inference-perf config that matches it, kept in sync by a test. A tool that reads one and emits
+the other would be built on those pairs, and would have to refuse or annotate every break
+listed above rather than translate silently. It is tracked separately and is not part of this
+release.
+
 ## Verify before comparing
 
 1. Compare the total tokens each tool sent and received, not just the rates. For fixed lengths,
