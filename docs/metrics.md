@@ -71,7 +71,8 @@ A nonzero `token_count_mismatches` means client and server disagree on how many 
 response contained, so any metric normalized by the client count is off by that much. A
 nonzero `client_fallback_counts` entry means the opposite problem: for those requests there is no
 server number to compare against, and `output_tokens` is carrying the client count. Both are
-worth checking before comparing runs, and before comparing against another tool.
+worth checking before comparing runs, and before comparing against another tool (see
+[comparability.md](./comparability.md)).
 
 The CLI summary's Token Length Aggregates table labels each column with its source and reports
 any fallbacks in the table caption.
