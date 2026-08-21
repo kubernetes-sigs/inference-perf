@@ -88,3 +88,14 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
 - **`successes`**: Metrics for successful requests.
 - **`failures`**: Metrics for failed requests, including the per-label error breakdown.
 - **`goodput_metrics`**: (Optional) Goodput statistics if constraints were configured.
+
+### Token Counts
+
+`successes` carries both a client-side and a server-side token count, and they are not
+interchangeable: `output_len` is the client's re-tokenization of the response text,
+`output_tokens` is the server's own count, `prompt_tokens` is the server's count of the prompt
+with client tokenization as the fallback, and `token_count_mismatches` counts the requests
+where the two output counts disagree. Alongside it, `client_fallback_counts` says how many
+requests had no server number at all, per side. See
+[Token Accounting and Provenance](./metrics.md#token-accounting-and-provenance) for what each
+field is derived from and which one normalizes per-token latency.
