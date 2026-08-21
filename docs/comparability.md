@@ -160,12 +160,11 @@ a converted config still needs reading:
 
 ### Converting a run automatically
 
-There is no converter today, and the rows above are the mapping in the meantime. The parity
-harness in #481 carries worked examples of it: a `vllm bench` argument file and the
-inference-perf config that matches it, kept in sync by a test. A tool that reads one and emits
-the other would be built on those pairs, and would have to refuse or annotate every break
-listed above rather than translate silently. It is tracked separately and is not part of this
-release.
+There is no converter today, and the rows above are the mapping in the meantime. One is tracked
+in #755, outside this release. The parity harness in #481 carries worked examples of the
+mapping, a `vllm bench` argument file and the inference-perf config that matches it, kept in
+sync by a test; a converter would be built and tested on those pairs, and would have to refuse
+or annotate every break listed above rather than translate silently.
 
 ## Verify before comparing
 
