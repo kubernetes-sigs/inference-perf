@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import re
-from typing import List, Dict, Any, Optional
+from typing import Iterable, List, Dict, Any, Optional
 from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
@@ -34,6 +34,32 @@ def extract_session_stage_id(report_name: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_output: bool) -> str:
+    """Caption naming the source of each token column, plus any client fallbacks.
+
+    Prompt and output counts are both dual-sourced: the server's usage when it
+    reports one, client-side tokenization otherwise. A run that silently fell back
+    for some requests reads identically to one that did not, so say how many.
+    """
+    parts = [
+        "Prompt: server-reported usage where available, client tokenization otherwise.",
+        "Out (client): response text re-tokenized by the client (output_len).",
+    ]
+    if has_server_output:
+        parts.append("Out (server): count reported in the server's usage (output_tokens).")
+
+    fallbacks = 0
+    for contents in stage_contents:
+        counts = contents.get("successes", {}).get("client_fallback_counts")
+        if isinstance(counts, dict):
+            fallbacks += sum(int(v or 0) for v in counts.values())
+    if fallbacks:
+        parts.append(f"{fallbacks} counts fell back to client tokenization (no server usage).")
+
+    parts.append("See docs/metrics.md.")
+    return " ".join(parts)
 
 
 def print_summary_table(reports: List[ReportFile]) -> None:
@@ -102,17 +128,31 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     speed_table.add_column("Norm TPOT Med", justify="right")
     speed_table.add_column("Norm TPOT P90", justify="right")
 
-    # Table 4: Token Lengths
+    # Table 4: Token Lengths. Column labels carry the source of each count: prompt tokens
+    # come from the server's usage when it reports them, output has two independent
+    # counts, and a report that mixes sources is otherwise indistinguishable from one
+    # that does not.
+    has_server_output = any(
+        isinstance(r.get("successes", {}).get("output_tokens"), dict) and "mean" in r["successes"]["output_tokens"]
+        for r in stage_reports.values()
+    )
     token_table = Table(
-        title="[bold magenta]Token Length Aggregates[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Token Length Aggregates[/bold magenta]",
+        caption=token_source_caption(stage_reports.values(), has_server_output),
+        show_header=True,
+        header_style="bold cyan",
     )
     token_table.add_column("Stage", justify="right")
     token_table.add_column("Prompt Mean", justify="right")
     token_table.add_column("Prompt Med", justify="right")
     token_table.add_column("Prompt P90", justify="right")
-    token_table.add_column("Output Mean", justify="right")
-    token_table.add_column("Output Med", justify="right")
-    token_table.add_column("Output P90", justify="right")
+    token_table.add_column("Out Mean\n(client)", justify="right")
+    token_table.add_column("Out Med\n(client)", justify="right")
+    token_table.add_column("Out P90\n(client)", justify="right")
+    if has_server_output:
+        token_table.add_column("Out Mean\n(server)", justify="right")
+        token_table.add_column("Out Med\n(server)", justify="right")
+        token_table.add_column("Out P90\n(server)", justify="right")
 
     for stage_id in sorted_stages:
         contents = stage_reports[stage_id]
@@ -214,6 +254,15 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             output_med = f"{output_len.get('median', 0.0):0.1f}"
             output_p90 = f"{output_len.get('p90', 0.0):0.1f}"
 
+        # Server-reported output tokens (usage.completion_tokens), the independent count
+        # that output_len is compared against.
+        server_output = successes.get("output_tokens")
+        srv_out_mean = srv_out_med = srv_out_p90 = "-"
+        if isinstance(server_output, dict) and "mean" in server_output:
+            srv_out_mean = f"{server_output.get('mean', 0.0):0.1f}"
+            srv_out_med = f"{server_output.get('median', 0.0):0.1f}"
+            srv_out_p90 = f"{server_output.get('p90', 0.0):0.1f}"
+
         # Populate Table 1
         summary_row = [
             str(stage_id),
@@ -267,7 +316,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         )
 
         # Populate Table 4
-        token_table.add_row(
+        token_row = [
             str(stage_id),
             prompt_mean,
             prompt_med,
@@ -275,7 +324,10 @@ def print_summary_table(reports: List[ReportFile]) -> None:
             output_mean,
             output_med,
             output_p90,
-        )
+        ]
+        if has_server_output:
+            token_row.extend([srv_out_mean, srv_out_med, srv_out_p90])
+        token_table.add_row(*token_row)
 
     console.print(summary_table)
     console.print(latency_table)
