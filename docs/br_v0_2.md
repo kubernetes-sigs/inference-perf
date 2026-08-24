@@ -7,9 +7,9 @@ llm-d-benchmark CLI, wrapper scripts, ad-hoc `yq` merges) layer their own
 partials on top to produce a complete BR0.2 document.
 
 inference-perf only writes the fields it can speak to truthfully from the
-run itself: the schema `version`, the `run.uid` and `run.time` window, and
-the entire `results` block. Everything else (`scenario.stack`,
-`scenario.load`, `run.{eid, cid, pid, user, description, keywords}`,
+run itself: the schema `version`, the `run.uid`, `run.eid`, and `run.time`
+window, and the entire `results` block. Everything else (`scenario.stack`,
+`scenario.load`, `run.{cid, pid, user, description, keywords}`,
 observability beyond what inference-perf measures) is left absent so a
 composer can merge another producer's partial on top without any
 inference-perf field silently overwriting their data.
@@ -34,6 +34,7 @@ and can be consumed directly or merged with other partials. The emitted
 version: "0.2.1"
 run:
   uid: inference-perf-stage-0-a1b2c3d4
+  eid: inference-perf-experiment-e5f6a7b8
   time:
     start: "2026-05-20T14:30:12.123+00:00"
     end:   "2026-05-20T14:30:17.456+00:00"
@@ -53,6 +54,13 @@ require.
 
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
+
+`run.eid` is generated once per inference-perf invocation and stamped on
+every stage partial. It is BR0.2's own cross-report grouping mechanism
+("common across benchmark reports from a particular experiment"), so the
+per-stage files of a sweep are machine-readably one experiment rather than
+being related only by filename. As with `uid`, a composer is free to
+overwrite it during merge.
 
 `run.time` is the stage's wall-clock window as recorded by the load
 generator (stage start to stage end, including drain), not the span from

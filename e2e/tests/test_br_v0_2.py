@@ -17,9 +17,9 @@ llm-d-inference-sim, and merges cleanly with a downstream-supplied partial
 into a full BR0.2 document.
 
 Inference-perf is always responsible for the inference-perf-owned slice of a
-BR0.2 report (``version``, ``run.uid``, ``run.time``, ``results``); a
-composer adds stack/scenario/run-metadata. This test pins both halves of
-that contract.
+BR0.2 report (``version``, ``run.uid``, ``run.eid``, ``run.time``,
+``results``); a composer adds stack/scenario/run-metadata. This test pins
+both halves of that contract.
 """
 
 from typing import Any, Dict
@@ -123,6 +123,15 @@ async def test_br_v0_2_partial_emitted_and_mergeable() -> None:
     }
     assert len(partials) == len(stages), f"expected one partial per stage, got {list(partials)}"
 
+    # Every stage partial of one invocation carries the same run.eid: it is
+    # the machine-readable marker that the files form a single experiment.
+    eids = {partial["run"].get("eid") for partial in partials.values()}
+    assert len(eids) == 1, f"stage partials must share one run.eid, got {eids}"
+    shared_eid = eids.pop()
+    assert shared_eid is not None and shared_eid.startswith("inference-perf-experiment-"), (
+        f"missing/malformed shared run.eid {shared_eid!r}"
+    )
+
     composer_partial = _composer_partial(model_name)
 
     for name, partial in partials.items():
@@ -141,6 +150,8 @@ async def test_br_v0_2_partial_emitted_and_mergeable() -> None:
         merged = _deep_merge(partial, composer_partial)
         parsed = BenchmarkReportV021.model_validate(merged)
         assert parsed.run.uid == partial["run"]["uid"]
+        # The composer's own eid wins the merge over the generated one.
+        assert parsed.run.eid == "br-v0-2-e2e"
         assert parsed.run.description == "br_v0_2 e2e"
         assert parsed.scenario is not None and parsed.scenario.stack is not None
         assert parsed.scenario.stack[0].metadata.label == "sim-0"

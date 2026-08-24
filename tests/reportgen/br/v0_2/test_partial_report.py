@@ -29,7 +29,7 @@ from inference_perf.apis import (
     StreamedResponseMetrics,
 )
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_run_uid
+from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
 from inference_perf.reportgen.br.v0_2.schema import VERSION
 
 import yaml
@@ -62,6 +62,47 @@ def test_generate_run_uid_is_unique_and_stage_tagged() -> None:
     assert a != b
     assert a.startswith("inference-perf-stage-0-")
     assert generate_run_uid(7).startswith("inference-perf-stage-7-")
+
+
+def test_generate_experiment_eid_is_unique_and_prefixed() -> None:
+    a = generate_experiment_eid()
+    b = generate_experiment_eid()
+    assert a != b
+    assert a.startswith("inference-perf-experiment-")
+
+
+def test_partial_report_stamps_shared_run_eid_across_stages() -> None:
+    """run.eid is the invocation-wide experiment id: two stage partials built
+    with the same run_eid must both emit it verbatim, so a composer can group
+    a sweep's files as one experiment without parsing uids or filenames."""
+    now = time.time()
+    eid = "inference-perf-experiment-abcd1234"
+
+    stage_0 = build_partial_report(
+        [_metric(now, now + 0.1)], tokenizer=None, run_uid="stage-0-uid", run_eid=eid, stage_start=now, stage_end=now + 1.0
+    )
+    stage_1 = build_partial_report(
+        [_metric(now + 1.0, now + 1.1)],
+        tokenizer=None,
+        run_uid="stage-1-uid",
+        run_eid=eid,
+        stage_start=now + 1.0,
+        stage_end=now + 2.0,
+    )
+
+    assert stage_0["run"]["eid"] == eid
+    assert stage_1["run"]["eid"] == eid
+    assert stage_0["run"]["uid"] != stage_1["run"]["uid"]
+
+
+def test_partial_report_omits_run_eid_when_not_supplied() -> None:
+    """Without a run_eid the field must be absent, not null: a fabricated or
+    null eid would clobber a composer's grouping on merge."""
+    now = time.time()
+
+    partial = build_partial_report([_metric(now, now + 0.1)], tokenizer=None, run_uid="uid")
+
+    assert "eid" not in partial["run"]
 
 
 def test_partial_report_top_level_shape() -> None:

@@ -895,12 +895,15 @@ class ReportGenerator:
             # own partials on top to produce a full BR0.2 document.
             # Imported here rather than at module top: the br.v0_2 adapter
             # imports effective_output_tokens from this module.
-            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_run_uid
+            from inference_perf.reportgen.br.v0_2 import build_partial_report, generate_experiment_eid, generate_run_uid
 
             br_stage_buckets: dict[int, List[RequestLifecycleMetric]] = defaultdict(list)
             for metric in request_metrics:
                 if metric.stage_id is not None:
                     br_stage_buckets[metric.stage_id].append(metric)
+            # One eid for the whole invocation: run.eid is what lets a
+            # composer group the per-stage partials as a single experiment.
+            br_run_eid = generate_experiment_eid()
             for br_stage_id, stage_metrics in br_stage_buckets.items():
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
@@ -909,6 +912,7 @@ class ReportGenerator:
                     stage_metrics,
                     tokenizer,
                     run_uid=generate_run_uid(br_stage_id),
+                    run_eid=br_run_eid,
                     use_server_output_tokens=use_server_output_tokens,
                     stage_start=stage_info.start_time if stage_info else None,
                     stage_end=stage_info.end_time if stage_info else None,

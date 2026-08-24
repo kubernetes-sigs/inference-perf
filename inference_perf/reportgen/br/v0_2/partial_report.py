@@ -15,10 +15,11 @@
 
 Inference-perf only speaks to the sections of a BR0.2 report it can fill
 truthfully from a run: the schema ``version``, the ``run`` block (a generated
-``uid`` and the wall-clock ``time`` window of the stage), and the ``results``
-block built from the actual request metrics. Everything else (stack,
-scenario, observability beyond what we measure, user/eid/cid/pid/description)
-is left absent so a downstream composer can merge another producer's partial
+``uid``, an ``eid`` shared by every stage of the invocation, and the
+wall-clock ``time`` window of the stage), and the ``results`` block built
+from the actual request metrics. Everything else (stack, scenario,
+observability beyond what we measure, user/cid/pid/description) is left
+absent so a downstream composer can merge another producer's partial
 on top with ``yq '. * load("other.yaml")'`` and have no inference-perf field
 silently overwrite the composer's data.
 
@@ -46,11 +47,23 @@ def generate_run_uid(stage_id: int) -> str:
     return f"inference-perf-stage-{stage_id}-{uuid.uuid4().hex[:8]}"
 
 
+def generate_experiment_eid() -> str:
+    """Generate a run eid for one inference-perf invocation.
+
+    BR0.2's ``run.eid`` is "common across benchmark reports from a particular
+    experiment": generated once per invocation and stamped on every stage
+    partial, it is what marks the per-stage files of a sweep as one
+    experiment, machine-readably, rather than only by filename convention.
+    """
+    return f"inference-perf-experiment-{uuid.uuid4().hex[:8]}"
+
+
 def build_partial_report(
     stage_metrics: List[RequestLifecycleMetric],
     tokenizer: CustomTokenizer | None,
     *,
     run_uid: str,
+    run_eid: str | None = None,
     use_server_output_tokens: bool = False,
     stage_start: float | None = None,
     stage_end: float | None = None,
@@ -61,6 +74,12 @@ def build_partial_report(
     the other report files. ``None``-valued fields are stripped so the file
     yq-merges cleanly with partials from other producers.
 
+    ``run_eid`` is the invocation-wide experiment id: pass the same value for
+    every stage of a run so a composer can group the per-stage partials as one
+    experiment without parsing uids or filenames. When ``None`` the field is
+    omitted, not emitted as null. Like ``run.uid``, a composer is free to
+    overwrite it during merge.
+
     ``stage_start``/``stage_end`` are the stage's wall-clock (epoch) window
     from ``StageRuntimeInfo``. They are the only usable time source here: the
     request lifecycle timestamps are monotonic-clock values with an arbitrary
@@ -70,7 +89,7 @@ def build_partial_report(
     Pass the same ``use_server_output_tokens`` as the native lifecycle
     reports so both reports of the run agree on token counts.
     """
-    run = Run(uid=run_uid, time=_build_run_time(stage_start, stage_end))
+    run = Run(uid=run_uid, eid=run_eid, time=_build_run_time(stage_start, stage_end))
     results = build_results(stage_metrics, tokenizer, use_server_output_tokens)
 
     return {
