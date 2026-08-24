@@ -229,7 +229,11 @@ class TestToolChoiceInjection:
         assert payload["tool_choice"] == "required"
 
     @pytest.mark.asyncio
-    async def test_no_tool_choice_when_not_tool_call_output(self) -> None:
+    async def test_tool_choice_none_when_not_tool_call_output(self) -> None:
+        # A plain-text turn that still advertises a tool catalog must forbid a
+        # structured tool call (tool_choice="none") and stop at natural EOS --
+        # otherwise a model deep in a tool loop can emit a dangling tool_call
+        # (no matching role:tool successor) or run past EOS into template tokens.
         tool_defs = [
             {
                 "type": "function",
@@ -240,7 +244,8 @@ class TestToolChoiceInjection:
         ]
         api_data = self._make_api_data(tool_defs, False, None)
         payload = await api_data.to_request_body("model", 100, False, False)
-        assert "tool_choice" not in payload
+        assert payload["tool_choice"] == "none"
+        assert payload["ignore_eos"] is False
 
     @pytest.mark.asyncio
     async def test_no_tool_choice_when_no_tool_definitions(self) -> None:

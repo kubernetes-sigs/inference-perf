@@ -356,6 +356,10 @@ At the end of a run, the CLI also prints these session-level statistics as
 summary tables (Session Summary, Session Duration & Events, Session Token
 Totals) alongside the standard per-stage tables.
 
+The session summary also includes KV cache hit rate metrics (`kv_cache_hit_percent`, `kv_cache_hit_per_session_percent`) when the server reports cached token counts. See [Metrics Definition](metrics.md#kv-cache-hit-rate) for details.
+
+> **Note:** vLLM requires `--enable-prompt-tokens-details` to populate cache token counts in the usage response. Without this flag, cache metrics will be `None`.
+
 These complement the standard per-request metrics, giving you both micro (individual LLM calls) and macro (complete workflows) views of performance.
 
 ## OpenTelemetry Background

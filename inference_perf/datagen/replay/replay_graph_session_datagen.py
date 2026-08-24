@@ -98,6 +98,24 @@ class SessionReplayLazyLoadData(LazyLoadInferenceAPIData):
 # short-circuited and behavior is identical to upstream main.
 
 
+# Envelope for an async sub-agent notification (`async_report` segments).
+#
+# A real async harness does not hand the orchestrator a bare string: the child's
+# report arrives wrapped in a `<task-notification>` block whose `<result>` holds
+# the report body. We reproduce the RESULT wrapper only.
+#
+# Applied at REPLAY time (not graph-build) because the body is the child's live
+# generated text. Adds a small fixed number of tokens to the notification turn's
+# input relative to the recorded placeholder.
+ASYNC_NOTIFICATION_OPEN = "<task-notification>\n<result>\n"
+ASYNC_NOTIFICATION_CLOSE = "\n</result>\n</task-notification>"
+
+
+def _wrap_async_notification(report_text: str) -> str:
+    """Wrap a child sub-agent's live report in the `<task-notification>` envelope."""
+    return f"{ASYNC_NOTIFICATION_OPEN}{report_text}{ASYNC_NOTIFICATION_CLOSE}"
+
+
 def _detect_bad_tool_calls(
     tool_calls: Optional[List[Dict[str, Any]]],
 ) -> List[Tuple[int, str, str]]:
@@ -363,8 +381,16 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         payload = await super().to_request_body(effective_model_name, max_tokens, ignore_eos, streaming)
 
         if self.expected_output_is_tool_call and self.tool_definitions:
+            # A forced tool call MUST stop at its natural end-of-sequence: the model
+            # emits the call and is done. ignore_eos=True (the load default, used to
+            # make plain-text turns generate exactly N tokens) is WRONG here -- with
+            # EOS ignored the model emits the correct call then keeps generating,
+            # spilling chat-template control tokens (<|im_end|> etc.) into the
+            # arguments string until it hits max_tokens; replaying that malformed
+            # assistant message 400s the next turn. So force ignore_eos=False for
+            # ALL forced tool-call turns, regardless of override_tool_call_max_tokens.
+            payload["ignore_eos"] = False
             if self.override_tool_call_max_tokens:
-                payload["ignore_eos"] = False
                 # The recorded output_tokens might come from a different model/tokenizer.
                 # The replay model may need significantly more tokens to express the
                 # same tool call (different tokenizer, different tool-call preamble).
@@ -393,6 +419,20 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 #   a tool_choice that names a function not present in tools), or
                 # - there were multiple tool calls (vLLM only accepts one name at a time).
                 payload["tool_choice"] = "required"
+        elif self.tool_definitions:
+            # PLAIN-TEXT turn that still advertises a tool catalog (the terminal
+            # "answer" turn of a tool loop, or a round principal in a multi-turn
+            # conversation). The recorded output here is a text answer, NOT a tool
+            # call -- but a model deep in a tool loop is primed to keep calling
+            # tools. Two failure modes if we let it: (1) it emits a STRUCTURED
+            # tool_call that, replayed as the prior turn of the NEXT round, has no
+            # matching role:tool result -> dangling tool_call_id -> 400; (2) with
+            # ignore_eos=True it never stops and spills <|im_end|> template tokens.
+            # tool_choice="none" forbids a structured call (a text <tool_call> in
+            # content is harmless -- no role:tool is expected for it), and
+            # ignore_eos=False lets the answer stop at its natural end.
+            payload["tool_choice"] = "none"
+            payload["ignore_eos"] = False
 
         return payload
 
@@ -493,7 +533,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         # Substitute output segments with actual predecessor outputs, or inject random session ID into unique segments
         needs_substitution = (not self.disable_output_substitution) and any(
-            seg.type == "output" or seg.type == "shared" for seg in self.input_segments
+            seg.type == "output" or seg.type == "shared" or seg.type == "async_report" for seg in self.input_segments
         )
         # Inject random string if flag is enabled OR session is a duplicate
         is_duplicate = ReplayGraphSessionGeneratorBase.is_duplicate_session(session_id)
@@ -682,6 +722,38 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 else:
                     logger.debug(f"Event {self.event_id}: output segment has no source_event_id, using recorded content")
                     result.extend(seg_msgs)
+            elif seg.type == "async_report":
+                # Inject a child agent's live report TEXT into a role:"user" slot,
+                # wrapped in the `<task-notification><result>` envelope a real async
+                # harness delivers (see _wrap_async_notification). Content-only
+                # replacement, preserving role.
+                if seg.message_count != 1:
+                    logger.error(
+                        f"Event {self.event_id}: async_report segment has message_count="
+                        f"{seg.message_count} (expected 1). Using recorded message."
+                    )
+                    result.extend(seg_msgs)
+                    cursor += seg.message_count
+                    continue
+                recorded = seg_msgs[0]
+                if recorded.get("role") != "user":
+                    logger.error(
+                        f"Event {self.event_id}: async_report segment target role="
+                        f"{recorded.get('role')!r} (expected 'user'). Using recorded message."
+                    )
+                    result.append(recorded)
+                    cursor += 1
+                    continue
+                actual_output = self.registry.get_output_by_event_id(seg.source_event_id) if seg.source_event_id else None
+                if actual_output is not None:
+                    substituted = dict(recorded)
+                    substituted["content"] = _wrap_async_notification(actual_output)
+                    result.append(substituted)
+                else:
+                    # child output unavailable — fall back to recorded placeholder
+                    result.append(recorded)
+                cursor += 1
+                continue
             elif seg.type == "shared":
                 if seg.source_event_id is None:
                     logger.error(f"CRITICAL: Event {self.event_id} shared segment has no source_event_id")
@@ -1784,7 +1856,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             predecessor_wait_timeout_sec=self.replay_config.predecessor_wait_timeout_sec if self.replay_config else 3600.0,
             # Mitigation knob: read once per event from replay_config. Default
             # NONE keeps the wire format byte-identical to upstream main.
-            bad_tool_call_handling=getattr(self.replay_config, "bad_tool_call_handling", BadToolCallHandling.NONE)
+            bad_tool_call_handling=self.replay_config.bad_tool_call_handling
             if self.replay_config
             else BadToolCallHandling.NONE,
             disable_output_substitution=getattr(self.replay_config, "disable_output_substitution", False)

@@ -1,0 +1,287 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Live golden accuracy against a real vLLM server in CPU mode (#627).
+
+The sim goldens (#631) control ground truth but share none of a real
+server's tokenization; this test uses the real server itself as the oracle.
+Every request is sent with ``ignore_eos``, so the server must generate
+exactly the request's token budget, and:
+
+- server-reported ``usage.completion_tokens`` == the budget, per request,
+  zero tolerance (proves the run is deterministic in length)
+- client-derived ``output_len`` == server ``completion_tokens`` (the
+  #564-class check: our re-tokenization of the real model's real output
+  against the real server's count). Zero tolerance per request on the mock
+  rows; bounded-plus-majority-exact on the random rows, see below.
+- for completions, client ``input_tokens`` == server ``prompt_tokens``,
+  zero tolerance (both sides prepend special tokens; opt-125m's tokenizer
+  adds a BOS, keeping #564-lineage special-token handling in play)
+
+Client-side exactness cannot be zero-tolerance per request on the random
+rows, because re-encoding generated text is not injective: the server
+detokenizes its N generated tokens to text, and re-encoding that text can
+merge adjacent tokens into one (measured against v0.26.0: greedy opt-125m
+answers random-token prompts with e.g. ``'\\n' + '\\n'`` or ``'.' + 'I'``,
+which re-encode as the single tokens ``'\\n\\n'`` / ``'.I'``; 1-8 of 40
+outputs at budget 16 and 3-6 of 40 at budget 2 lose exactly one token this
+way). Pinning a lucky seed does not help: the worker split varies run to
+run, so a run draws from ~24 reachable prompts, and any vLLM release can
+shift greedy numerics and re-roll them all. The invariants that do hold:
+
+- merges only ever shorten, so ``output_len <= completion_tokens`` stays
+  strict per request (a #564-class inflation bug still fails every entry)
+- a merge costs one token and is rare, so ``output_len`` may fall at most
+  ``MAX_REENCODE_SHORTFALL`` short, per request
+- merge luck hits a minority of requests while a broken accounting path
+  shifts every one, so at least ``min_exact`` of the 10 requests must
+  round-trip exactly (a systematic off-by-one yields 0 exact and fails)
+
+The token budget reaches the server by two different paths, and the table
+covers both:
+
+- mock rows: mock datagen sets no per-request ``max_tokens``, so the
+  client-level default (``openai_client.py``) applies; these rows cover
+  the completion/chat x stream/unary matrix. Their natural-text prompts
+  have produced no re-encode merges across CI history, so they stay
+  zero-tolerance per request and anchor client-side exactness.
+- random rows: a fixed output distribution stamps an explicit
+  ``max_tokens`` on every request, proving the configured budget survives
+  datagen -> request body -> server, a path the mock rows never exercise.
+  The 2-token row sits just above the single-token case that masked the
+  pre-#410 accounting flaw, and runs unary only: real vLLM may coalesce a
+  tiny response into one chunk, so the >=2-chunk structure invariant is
+  only asserted for budgets comfortably above the coalescing scale.
+  Random datagen is completion-only today; chat rows with explicit
+  budgets become possible once random chat-template support (#693) lands.
+
+CPU mode changes generation speed, not token accounting, so this runs on a
+plain CI runner. See utils.vllm_server for provisioning; without a server
+or a ``vllm`` executable the tests skip. The server is module-scoped, so
+spawned mode pays one model load for the whole table rather than one per
+row (external mode only re-runs the health check).
+"""
+
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, Optional
+
+import pytest
+
+from utils.accuracy import (
+    SUMMARY_REPORT,
+    assert_successful_run,
+    chunk_times,
+    client_output_tokens,
+    request_body,
+    response_metrics,
+    server_completion_tokens,
+    ttft,
+)
+from utils.benchmark import run_benchmark_minimal
+from utils.net import get_free_port
+from utils.vllm_server import VLLMServerRunner
+
+# One worker for all vLLM CPU tests: the token-mismatch module's /metrics
+# counter deltas need exclusive access to the shared server.
+pytestmark = pytest.mark.xdist_group(name="vllm-cpu-server")
+
+# The client-level default max_completion_tokens (openai_client.py); with
+# no per-request max_tokens and ignore_eos, every request must produce
+# exactly this many output tokens.
+CLIENT_DEFAULT_OUTPUT_TOKENS = 30
+
+RATE = 2
+DURATION = 5
+EXPECTED_REQUESTS = RATE * DURATION
+
+# Deterministic prompts for the random rows: server-side greedy decoding
+# (see utils.vllm_server) means a failing request replays identically
+# instead of flaking, even though the worker split still varies which
+# prompts a given run draws.
+BASE_SEED = 42
+
+# A re-encode merge costs exactly one token and hitting two in one output
+# is already rare; anything below this is not merge luck but a bug.
+MAX_REENCODE_SHORTFALL = 2
+
+
+@dataclass(frozen=True)
+class Case:
+    api_type: str
+    streaming: bool
+    data: Dict[str, Any]
+    # Ground truth for every request in the row: server completion_tokens,
+    # the wire budget, and the client-side re-tokenization target.
+    expected_output_tokens: int
+    # True when datagen must stamp max_tokens == the budget on the wire
+    # (random rows); False when the client default is the budget (mock).
+    explicit_budget: bool
+    # How many of EXPECTED_REQUESTS must round-trip client == server
+    # exactly; None means all of them. Random rows set this below 10 to
+    # tolerate re-encode merges on a minority of requests (module
+    # docstring); a broken accounting path shifts every request, yields 0
+    # exact, and still fails.
+    min_exact: Optional[int] = None
+
+
+def fixed_distribution(value: int) -> Dict[str, Any]:
+    # "fixed" emits total_count copies of mean; the headroom over
+    # EXPECTED_REQUESTS keeps lazy data indexing in range no matter how
+    # workers split the stream.
+    return {
+        "type": "fixed",
+        "min": value,
+        "max": value,
+        "mean": value,
+        "total_count": 4 * EXPECTED_REQUESTS,
+    }
+
+
+def random_data(budget: int) -> Dict[str, Any]:
+    """Data config whose every request carries an explicit max_tokens."""
+    return {
+        "type": "random",
+        "input_distribution": fixed_distribution(16),
+        "output_distribution": fixed_distribution(budget),
+    }
+
+
+MOCK_DATA: Dict[str, Any] = {"type": "mock"}
+
+CASES = [
+    # Client-default budget path across the full API matrix.
+    pytest.param(Case("completion", True, MOCK_DATA, CLIENT_DEFAULT_OUTPUT_TOKENS, False), id="completion-stream"),
+    pytest.param(Case("completion", False, MOCK_DATA, CLIENT_DEFAULT_OUTPUT_TOKENS, False), id="completion-unary"),
+    pytest.param(Case("chat", True, MOCK_DATA, CLIENT_DEFAULT_OUTPUT_TOKENS, False), id="chat-stream"),
+    pytest.param(Case("chat", False, MOCK_DATA, CLIENT_DEFAULT_OUTPUT_TOKENS, False), id="chat-unary"),
+    # Explicit-budget path: the configured output length must reach the wire.
+    # Merge odds per request are a few percent at budget 16 (measured 1-8 of
+    # 40 prompts), so most requests must still round-trip exactly.
+    pytest.param(Case("completion", True, random_data(16), 16, True, min_exact=6), id="completion-stream-budget16"),
+    # Smallest multi-token budget: the boundary just above the 1-token case
+    # that masked the pre-#410 flaw. Unary only, see the module docstring.
+    # A 2-token output merges more often (~15% of prompts greedily answer
+    # with '\n'+'\n'), so the exactness floor is lower; 0 exact, the
+    # signature of a systematic accounting bug, still fails by a wide margin.
+    pytest.param(Case("completion", False, random_data(2), 2, True, min_exact=3), id="completion-unary-budget2"),
+]
+
+
+@pytest.fixture(scope="module")
+async def vllm_server() -> AsyncIterator[VLLMServerRunner]:
+    async with VLLMServerRunner(port=get_free_port()) as server:
+        yield server
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not VLLMServerRunner.is_available(), reason="no vLLM server or executable available")
+@pytest.mark.parametrize("case", CASES)
+async def test_golden_accuracy_vllm_cpu(vllm_server: VLLMServerRunner, case: Case) -> None:
+    result = await run_benchmark_minimal(
+        {
+            "data": case.data,
+            "load": {
+                "type": "constant",
+                "stages": [{"rate": RATE, "duration": DURATION}],
+                "num_workers": 2,
+                "base_seed": BASE_SEED,
+            },
+            "api": {"type": case.api_type, "streaming": case.streaming},
+            "server": {
+                "type": "vllm",
+                "model_name": vllm_server.model,
+                "base_url": vllm_server.base_url,
+                "ignore_eos": True,
+            },
+            "tokenizer": {"pretrained_model_name_or_path": vllm_server.model},
+            "report": {
+                "request_lifecycle": {
+                    "summary": True,
+                    "per_stage": True,
+                    "per_request": True,
+                },
+            },
+        },
+        timeout_sec=300,
+    )
+
+    entries = assert_successful_run(result, EXPECTED_REQUESTS)
+
+    exact = 0
+    for entry in entries:
+        # The live-oracle core. The server side is unconditional: ignore_eos
+        # means completion_tokens must equal the budget on every request.
+        # The client side is bounded per request and exact for at least
+        # min_exact of them (module docstring: re-encode merges only ever
+        # shorten, by one token at a time, on a minority of requests).
+        client = client_output_tokens(entry)
+        server = server_completion_tokens(entry)
+        assert server == case.expected_output_tokens, (
+            f"server completion_tokens {server} != expected {case.expected_output_tokens}"
+        )
+        assert client <= server, (
+            f"client output_len {client} exceeds server completion_tokens {server}; "
+            f"re-encoding cannot lengthen, this is a #564-class inflation bug"
+        )
+        assert client >= max(1, server - MAX_REENCODE_SHORTFALL), (
+            f"client output_len {client} vs server completion_tokens {server} falls short "
+            f"by more than {MAX_REENCODE_SHORTFALL} merges"
+        )
+        exact += int(client == server)
+
+        if case.explicit_budget:
+            # The budget must arrive via the request body, not the client
+            # default: datagen -> request -> server is the path under test.
+            sent = request_body(entry).get("max_tokens")
+            assert sent == case.expected_output_tokens, (
+                f"request carries max_tokens {sent}, expected {case.expected_output_tokens}"
+            )
+
+        # Prompt side, against the server's own count. Completion prompts are
+        # tokenized by both sides as sequence starts (special tokens
+        # included), so the counts must agree exactly. Chat prompts go
+        # through the server-side template, whose special-token convention
+        # may differ from a raw encode by the BOS, so allow exactly that.
+        server_prompt = response_metrics(entry)["server_usage"]["prompt_tokens"]
+        client_prompt = entry["info"]["request_metrics"]["text"]["input_tokens"]
+        if case.api_type == "completion":
+            assert client_prompt == server_prompt, f"client prompt_len {client_prompt} != server prompt_tokens {server_prompt}"
+        else:
+            assert abs(client_prompt - server_prompt) <= 1, (
+                f"client prompt_len {client_prompt} vs server prompt_tokens {server_prompt} differs by more than a BOS"
+            )
+
+        if case.streaming:
+            # Real vLLM streams roughly one token per chunk, but may coalesce
+            # under load, so chunk structure is asserted, not chunk count:
+            # a streamed response must arrive in more than one chunk and
+            # never in more chunks than tokens.
+            times = chunk_times(entry)
+            assert 2 <= len(times) <= case.expected_output_tokens, (
+                f"{len(times)} chunks for {case.expected_output_tokens} tokens"
+            )
+            assert times == sorted(times), "chunk_times are not monotonically nondecreasing"
+            assert ttft(entry) > 0, "nonpositive TTFT"
+
+    min_exact = EXPECTED_REQUESTS if case.min_exact is None else case.min_exact
+    assert exact >= min_exact, (
+        f"only {exact}/{EXPECTED_REQUESTS} requests round-trip client == server exactly "
+        f"(need {min_exact}); merge luck hits a minority, a systematic accounting bug hits every request"
+    )
+
+    # The summary's output_tokens prefers server usage.completion_tokens
+    # (summarize_output_token_usage), which ignore_eos pins to the budget,
+    # so the total stays exact even on rows where re-encode merges make the
+    # client-side counts fall short.
+    summary = result.reports[SUMMARY_REPORT]["successes"]
+    assert summary["output_tokens"]["total"] == float(case.expected_output_tokens * EXPECTED_REQUESTS)

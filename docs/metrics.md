@@ -33,3 +33,18 @@ This document outlines the key metrics used for evaluating performance, their de
 | **Throughput / $** | `(output tokens / second) / (accelerator $ / second)` | million output tokens | Calculating the performance to price ratio to get the throughput we are able to achieve for the cost spent
 
 *\*Note: input and output token cost might need to be divided in mixed-batching cases since they are handled together by the server, using some factor like 1:4 for cost to generate input vs output tokens.*
+
+---
+
+## Session-Based KV Cache Hit Rate
+
+| Metric | Formula | Unit | Used For
+| :--- | :--- | :--- | :---
+| **kv_cache_hit_percent** | `100 × (total cached prompt tokens / total prompt tokens)` | percent (0–100) | Token-weighted cache hit rate across all sessions
+| **kv_cache_hit_per_session_percent** | distribution of `100 × (session cached tokens / session prompt tokens)` | percent (0–100) | Per-session cache hit rate distribution (min/mean/max/percentiles)
+
+Both metrics use the server-reported `prompt_tokens` as the denominator and `prompt_tokens_details.cached_tokens` as the numerator. Sessions where the server does not report cache information are excluded (reported as `None`, not 0%).
+
+**Server requirement:** vLLM must be started with `--enable-prompt-tokens-details` for the server to populate `prompt_tokens_details.cached_tokens` in the usage response.
+
+**Note:** vLLM's `cached_tokens` is block-granular — the reported value is quantized by the KV cache block size, so the hit rate may not reflect exact token-level precision.

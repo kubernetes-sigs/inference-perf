@@ -1372,12 +1372,25 @@ def _shorten_string(s: str, max_length: int = 100) -> str:
     return f"{s[:side_length]} ... ... {s[-side_length:]}"
 
 
+def _message_text(msg: Dict[str, Any]) -> str:
+    """Readable text for a chat message. Tool-call assistant turns carry no 'content'
+    key (they carry 'tool_calls'), so fall back to a compact tool-call rendering."""
+    content = msg.get("content")
+    if content:
+        return str(content)
+    tool_calls = msg.get("tool_calls")
+    if tool_calls:
+        names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+        return f"[tool_calls: {', '.join(names)}]"
+    return ""
+
+
 def _segment_label(seg: InputSegment, messages: List[Dict[str, str]]) -> str:
     """One-line label for an input segment."""
     type_labels = {"shared": "SHARED", "output": "OUTPUT", "unique": "UNIQUE"}
     label = type_labels.get(seg.type, seg.type.upper())
     src = f" <- {seg.source_event_id}" if seg.source_event_id else ""
-    msg_str = "\n\t\t\t".join(f"{x['role']} : {_shorten_string(x['content'])}" for x in messages)
+    msg_str = "\n\t\t\t".join(f"{x['role']} : {_shorten_string(_message_text(x))}" for x in messages)
     return f"{label}({seg.message_count}msg/{seg.token_count}t{src})\n\t\t\t{msg_str}"
 
 

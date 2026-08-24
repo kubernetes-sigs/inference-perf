@@ -12,10 +12,48 @@ on:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest
+    # ARM, not x86: the live-oracle step below starts a real vLLM CPU server,
+    # and the ubuntu-latest x86 pool hands out several CPU models, some of
+    # which cannot run it (AMD EPYC 9xxx VMs with AVX-512 masked by the
+    # hypervisor: vLLM's sampler is a Triton kernel that triton-cpu compiles
+    # for the host CPU name, znver4, so the worker traps on invalid opcode).
+    # That made the job red on a runner draw, not on a code change. GitHub's
+    # ARM pool is one CPU, so the same job on it is deterministic; there is
+    # no way to pin a CPU model within the x86 pool.
+    runs-on: ubuntu-24.04-arm
+    env:
+      VLLM_MODEL: facebook/opt-125m
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # The version table lives with the tests (e2e/vllm_releases.txt), so
+      # adding or pruning a release is a reviewed code change next to the
+      # tests that run against it. This step only loads it; an empty table
+      # fails here because a zero-iteration live-oracle loop below would
+      # pass silently, and a merge gate whose oracle silently skips gates
+      # nothing.
+      - name: Load vLLM version table
+        run: |
+          versions="$(grep -vE '^[[:space:]]*(#|$)' e2e/vllm_releases.txt | xargs)"
+          [ -n "$versions" ]
+          echo "VLLM_VERSIONS=$versions" >> "$GITHUB_ENV"
+          echo "VLLM_HF_CACHE=$HOME/hf-cache" >> "$GITHUB_ENV"
+
+      - name: Cache model weights
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/hf-cache
+          key: hf-${{ env.VLLM_MODEL }}
+
+      # Backgrounded so the pulls overlap the Nix and dependency install
+      # below; the per-version docker run later pulls anything not local
+      # yet, so a failure here costs time, not correctness.
+      - name: Prefetch vLLM images
+        run: |
+          for v in $VLLM_VERSIONS; do
+            docker pull "docker.io/vllm/vllm-openai-cpu:$v" > /dev/null 2>&1 &
+          done
 
       - name: Install Nix
         uses: cachix/install-nix-action@4eae8bea4afaa8f8ea8aa638ab9a7fead2f3d21e # v31
@@ -26,14 +64,67 @@ jobs:
         run: |
           nix develop -c pdm sync -d
 
-      - name: Run end-to-end tests
+      # The vLLM live-oracle modules (e2e/tests/test_vllm_cpu_*.py) skip in
+      # this invocation: no server is up yet. They run against every table
+      # version in the next step.
+      - name: Run end-to-end tests (sim suite)
         run: |
           set -euxo pipefail
           nix develop -c pdm run test:e2e -o log_cli_level=DEBUG |& tee test_e2e.out
 
-      - name: Upload test_e2e.out
+      # Real-server oracle for the live-tier slice: CPU mode changes
+      # generation speed, not token accounting, so a plain runner can check
+      # our numbers against a real vLLM's tokenizer, usage accounting, and
+      # /metrics exposition. The server is required: a release whose server
+      # cannot start fails the job rather than skipping, because a merge
+      # gate whose oracle silently skips gates nothing. Every release runs
+      # even after one fails, so a red run names all failed releases.
+      #
+      # What runs lives in the test tree: the release table is
+      # e2e/vllm_releases.txt, the server invocation is
+      # e2e/vllm_cpu_server.sh, and test:e2e:live selects every
+      # e2e/tests/test_vllm_*.py. Only CI plumbing (prefetch, caching, step
+      # summary, artifacts) belongs here.
+      - name: Run live-oracle e2e tests per vLLM version
+        run: |
+          set -uo pipefail
+          failed=""
+          for v in $VLLM_VERSIONS; do
+            if e2e/vllm_cpu_server.sh start "$v"; then
+              # A red release must name what it resolved to; latest
+              # points at a different release over time.
+              {
+                echo "### $v resolved to"
+                echo '```'
+                curl -sf http://127.0.0.1:8000/version || true
+                echo
+                docker inspect --format '{{index .RepoDigests 0}}' \
+                  "docker.io/vllm/vllm-openai-cpu:$v" || true
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+
+              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
+                nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
+                |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+            else
+              failed="$failed $v"
+            fi
+
+            e2e/vllm_cpu_server.sh logs > "vllm_server-$v.log" 2>&1 || true
+            e2e/vllm_cpu_server.sh stop > /dev/null 2>&1 || true
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::live-oracle slice failed for:$failed"
+            exit 1
+          fi
+
+      - name: Upload e2e outputs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test_e2e
-          path: test_e2e.out
+          path: |
+            test_e2e.out
+            test_vllm_e2e-*.out
+            vllm_server-*.log

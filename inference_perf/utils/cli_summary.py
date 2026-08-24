@@ -439,10 +439,41 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             f"{output_p90:.1f}",
         )
 
+    # Table 4: KV Cache Hit Rate (only when at least one stage reports it)
+    has_cache_info = any(session_reports[stage_id].get("kv_cache_hit_percent") is not None for stage_id in sorted_stages)
+    cache_table: Optional[Table] = None
+    if has_cache_info:
+        cache_table = Table(
+            title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]", show_header=True, header_style="bold cyan"
+        )
+        cache_table.add_column("Stage", justify="right")
+        cache_table.add_column("Hit % (pooled)", justify="right")
+        cache_table.add_column("Hit %/Sess Mean", justify="right")
+        cache_table.add_column("Hit %/Sess Med", justify="right")
+        cache_table.add_column("Hit %/Sess P90", justify="right")
+        cache_table.add_column("Sessions w/ Info", justify="right")
+
+        for stage_id in sorted_stages:
+            contents = session_reports[stage_id]
+            pooled = contents.get("kv_cache_hit_percent")
+            per_session = contents.get("kv_cache_hit_per_session_percent") or {}
+            sessions_info = contents.get("sessions_with_cache_info", 0)
+
+            cache_table.add_row(
+                str(stage_id),
+                f"{pooled:.1f}" if pooled is not None else "N/A",
+                f"{per_session.get('mean', 0.0):.1f}" if per_session else "N/A",
+                f"{per_session.get('median', 0.0):.1f}" if per_session else "N/A",
+                f"{per_session.get('p90', 0.0):.1f}" if per_session else "N/A",
+                str(sessions_info),
+            )
+
     # Print all session tables
     console.print(session_summary_table)
     console.print(session_duration_table)
     console.print(session_tokens_table)
+    if cache_table is not None:
+        console.print(cache_table)
 
 
 def _collect_error_labels(failures_by_stage: Dict[int, Dict[str, Any]]) -> list[str]:

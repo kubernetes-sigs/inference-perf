@@ -179,6 +179,40 @@ def summarize(items: List[float], percentiles: List[float]) -> Optional[dict[str
     return result
 
 
+def extract_cached_prompt_tokens(server_usage: Optional[dict[str, Any]]) -> Optional[tuple[int, int]]:
+    """Cached and total prompt tokens from a server ``usage`` dict.
+
+    Returns ``(cached_tokens, prompt_tokens)`` taken from the *same* source so a
+    hit rate built from them never mixes a server numerator with a client-side
+    denominator. Returns ``None`` — not ``(0, 0)`` — when the response carries no
+    cache information at all, so "the server never told us" stays distinguishable
+    from a genuine 0% hit rate.
+
+    Supports the **nested** layout (OpenAI, vLLM) where ``prompt_tokens`` is the
+    whole prompt and ``prompt_tokens_details.cached_tokens`` is a subset of it.
+
+    Returns ``None`` when the dict carries no cache field, so "the server never
+    reported" stays distinguishable from a genuine 0% rate.
+
+    Cached tokens are clamped to ``[0, prompt_tokens]``: a hit rate above 1.0 is
+    never a real measurement, and reporting one would be worse than clamping.
+    """
+    if not server_usage:
+        return None
+
+    prompt_tokens_details = server_usage.get("prompt_tokens_details")
+    if prompt_tokens_details and prompt_tokens_details.get("cached_tokens") is not None:
+        cached = int(safe_float(prompt_tokens_details.get("cached_tokens")))
+        prompt = int(safe_float(server_usage.get("prompt_tokens")))
+    else:
+        return None
+
+    if prompt <= 0:
+        return None
+
+    return min(max(cached, 0), prompt), prompt
+
+
 def summarize_prompt_token_usage(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> dict[str, float]:
     """Input tokens already resolved at request time (request_metrics.text.input_tokens).
 
@@ -412,7 +446,6 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
             "request_success_count": metrics.request_success_count.total,
             "iteration_tokens": metrics.iteration_tokens.as_summary(),
             "prompt_tokens_cached": metrics.prompt_tokens_cached.total,
-            "prompt_tokens_recomputed": metrics.prompt_tokens_recomputed.total,
             "external_prefix_cache_hit_percent": {
                 "mean": _ratio(metrics.external_prefix_cache_hits.total, metrics.external_prefix_cache_queries.total)
             },
@@ -912,6 +945,21 @@ class ReportGenerator:
             if total_span > 0:
                 sessions_per_second = num_sessions / total_span
 
+        # Per-session KV/prefix cache hit rate = cached / total server-reported
+        # prompt tokens. Both sides come from the same server usage dicts (see
+        # extract_cached_prompt_tokens) rather than pairing the server numerator
+        # with the client-side total_input_tokens. Only sessions that reported
+        # cache info with a positive prompt-token count contribute; the rest are
+        # skipped so a missing/None field never becomes a misleading 0.0.
+        kv_cache_hit_per_session_percent = [
+            100.0 * m.total_cached_tokens / m.total_cacheable_input_tokens
+            for m in metrics
+            if m.total_cached_tokens is not None and m.total_cacheable_input_tokens
+        ]
+        cached_total = sum(m.total_cached_tokens for m in metrics if m.total_cached_tokens is not None)
+        prompt_total = sum(m.total_cacheable_input_tokens for m in metrics if m.total_cacheable_input_tokens is not None)
+        kv_cache_hit_percent = (100.0 * cached_total / prompt_total) if prompt_total else None
+
         return {
             "num_sessions": num_sessions,
             "num_sessions_succeeded": num_succeeded,
@@ -933,6 +981,18 @@ class ReportGenerator:
             "total_output_tokens": summarize(
                 [float(m.total_output_tokens) for m in metrics if m.total_output_tokens is not None], percentiles
             ),
+            "total_cached_tokens": summarize(
+                [float(m.total_cached_tokens) for m in metrics if m.total_cached_tokens is not None], percentiles
+            ),
+            "total_cacheable_input_tokens": summarize(
+                [float(m.total_cacheable_input_tokens) for m in metrics if m.total_cacheable_input_tokens is not None],
+                percentiles,
+            ),
+            "sessions_with_cache_info": sum(
+                1 for m in metrics if m.total_cached_tokens is not None and m.total_cacheable_input_tokens
+            ),
+            "kv_cache_hit_percent": kv_cache_hit_percent,
+            "kv_cache_hit_per_session_percent": summarize(kv_cache_hit_per_session_percent, percentiles),
         }
 
     def _enrich_sessions(
@@ -944,11 +1004,19 @@ class ReportGenerator:
         """Aggregate per-request token totals and error status onto each session.
 
         Mutates each ``SessionLifecycleMetric`` in ``session_metrics`` in place,
-        setting ``total_input_tokens``, ``total_output_tokens``, ``error``, and
-        ``success`` from the matching request-level metrics.
+        setting ``total_input_tokens``, ``total_output_tokens``,
+        ``total_cached_tokens``, ``error``, and ``success`` from the matching
+        request-level metrics.
         """
         token_by_session: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
         error_by_session: dict[str, Any] = {}
+        # session_id -> (summed cached prompt tokens, summed server prompt tokens),
+        # or absent when no request in the session reported cache info. Absence is
+        # preserved as None on the session (not coerced to 0) so a session with no
+        # cache info is distinguishable from one that had usage but zero cached
+        # tokens. Numerator and denominator accumulate over exactly the same
+        # requests so the ratio never mixes sources.
+        cache_by_session: dict[str, tuple[int, int]] = {}
 
         for m in request_metrics:
             if m.session_id:
@@ -960,10 +1028,22 @@ class ReportGenerator:
                 if m.session_id not in error_by_session and m.error is not None:
                     error_by_session[m.session_id] = m.error
 
+                if m.error is None:
+                    response_metrics = m.info.response_metrics
+                    server_usage = response_metrics.server_usage if response_metrics else None
+                    cache_usage = extract_cached_prompt_tokens(server_usage)
+                    if cache_usage is not None:
+                        cached, prompt = cache_usage
+                        prev_cached, prev_prompt = cache_by_session.get(m.session_id, (0, 0))
+                        cache_by_session[m.session_id] = (prev_cached + cached, prev_prompt + prompt)
+
         for sm in session_metrics:
             inp, out = token_by_session.get(sm.session_id, (0, 0))
             sm.total_input_tokens = inp
             sm.total_output_tokens = out
+            cache_usage = cache_by_session.get(sm.session_id)
+            sm.total_cached_tokens = cache_usage[0] if cache_usage else None
+            sm.total_cacheable_input_tokens = cache_usage[1] if cache_usage else None
             request_error = error_by_session.get(sm.session_id)
             if request_error is not None:
                 sm.error = request_error

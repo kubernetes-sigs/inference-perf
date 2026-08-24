@@ -21,6 +21,7 @@ from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenC
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
+    SyntheticAgenticConfig,
     WekaTraceReplayConfig,
     TraceConfig,
 )
@@ -40,6 +41,7 @@ class DataGenType(Enum):
     WekaTraceReplay = "weka_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
+    SyntheticAgentic = "synthetic_agentic"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -146,6 +148,10 @@ class DataConfig(StrictBaseModel):
 
     visionarena: Optional[VisionArenaConfig] = Field(
         default=None, description="VisionArena-Chat dataset settings. Only used by the 'visionarena' type."
+    )
+
+    synthetic_agentic: Optional[SyntheticAgenticConfig] = Field(
+        default=None, description="Synthetic agentic sessions settings. Only used by the 'synthetic_agentic' type."
     )
 
     use_chat_template: bool = Field(

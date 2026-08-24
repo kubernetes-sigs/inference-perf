@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.common import Distribution, DistributionType, StrictBaseModel
 
 
 class TraceFormat(Enum):
@@ -145,6 +145,23 @@ class SessionReplayConfig(StrictBaseModel):
     include_errors: bool = Field(True, description="Include spans with error status")
     skip_invalid_files: bool = Field(False, description="Skip invalid trace files instead of failing")
 
+    # Client-side mitigation for server-side tool-call parser bugs (e.g.
+    # vLLM's `qwen3_xml` leaking closing XML markers into the JSON `arguments`
+    # string at decode time). The default `none` preserves upstream behavior
+    # (the bug reproduces). `use_recorded` substitutes the recorded
+    # assistant message at the affected slot. See BadToolCallHandling.
+    bad_tool_call_handling: BadToolCallHandling = Field(
+        BadToolCallHandling.NONE,
+        description=(
+            "How to handle tool_calls whose function.arguments is not valid "
+            "JSON. none (default): no mitigation, bytes propagate and vLLM "
+            "may return HTTP 400 on the next turn. use_recorded: discard "
+            "the live response and substitute the recorded assistant "
+            "message at the affected slot; the recorded tool_call_id flows "
+            "into the recorded role:tool successor unchanged."
+        ),
+    )
+
     @model_validator(mode="after")
     def validate_static_model(self) -> "SessionReplayConfig":
         # Validate static model configuration
@@ -189,23 +206,6 @@ class OTelTraceReplayConfig(SessionReplayConfig):
     attribute_to_header_map: Optional[Dict[str, str]] = Field(None, description="Map OTel span attributes to HTTP headers")
     attribute_to_label_map: Optional[Dict[str, str]] = Field(
         None, description="Map OTel span attributes to metrics reporting labels"
-    )
-
-    # Client-side mitigation for server-side tool-call parser bugs (e.g.
-    # vLLM's `qwen3_xml` leaking closing XML markers into the JSON `arguments`
-    # string at decode time). The default `none` preserves upstream behavior
-    # (the bug reproduces). `use_recorded` substitutes the recorded
-    # assistant message at the affected slot. See BadToolCallHandling.
-    bad_tool_call_handling: BadToolCallHandling = Field(
-        BadToolCallHandling.NONE,
-        description=(
-            "How to handle tool_calls whose function.arguments is not valid "
-            "JSON. none (default): no mitigation, bytes propagate and vLLM "
-            "may return HTTP 400 on the next turn. use_recorded: discard "
-            "the live response and substitute the recorded assistant "
-            "message at the affected slot; the recorded tool_call_id flows "
-            "into the recorded role:tool successor unchanged."
-        ),
     )
 
     @model_validator(mode="after")
@@ -291,5 +291,283 @@ class WekaTraceReplayConfig(SessionReplayConfig):
         if sources_provided > 1:
             raise ValueError(
                 "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
+        return self
+
+
+class ContextCompactionConfig(BaseModel):
+    """Context compaction policy: model long-horizon agents that COMPACT
+    instead of growing the transcript forever.
+
+    When present, and a round's accumulated principal input (message content +
+    advertised tool catalog) would cross `trigger_tokens`, the NEXT round starts
+    fresh: a `target_tokens`-sized summary block replaces the grown transcript
+    instead of re-injecting it — a sharp prefill drop + KV-prefix reset that pure
+    growth can't produce. Omit the whole block to never compact (pure growth).
+    Both fields are required when the block is present.
+    """
+
+    trigger_tokens: Distribution = Field(
+        ...,
+        description=(
+            "When a round's accumulated principal input (message content + advertised tool "
+            "catalog) would cross this many tokens, the NEXT round starts fresh with a "
+            "summary block replacing the grown transcript. Sampled per session."
+        ),
+    )
+    target_tokens: Distribution = Field(
+        ...,
+        description=(
+            "Size (tokens) of the summary block that replaces the transcript on compaction. "
+            "Sampled per session. Set it to the size you want the post-compaction context to "
+            "have -- typically a fraction of the trigger (a real compaction reduces a bloated "
+            "window to ~20-40% of its size)."
+        ),
+    )
+
+
+class ThemeSpec(BaseModel):
+    """Explicit per-theme entry in `theme_mix`: `{weight: W}`. A bare float in
+    `theme_mix` is also accepted and is equivalent to `{weight: <float>}`. The
+    block form leaves room for future per-theme overrides."""
+
+    weight: float = Field(..., ge=0.0, description="Relative sampling weight for this theme")
+
+
+class SyntheticAgenticConfig(SessionReplayConfig):
+    """Procedural multi-agent agentic session generation."""
+
+    # Required: load volume + per-turn token sizing (these drive the load, so the user
+    # must choose them; there is no neutral default token profile).
+    num_sessions: int = Field(..., gt=0, description="Number of sessions (load volume)")
+    input_tokens_per_turn: Distribution = Field(..., description="per-turn input tokens")
+    output_tokens_per_turn: Distribution = Field(..., description="per-turn output tokens (plain-text turns)")
+
+    # Structural/content shape: sensible defaults, override to shape the workload.
+    turns_per_session: Distribution = Field(
+        default_factory=lambda: Distribution(type="fixed", mean=1),
+        description="N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn",
+    )
+    fanout_probability: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Probability an agent spawns sub-agents (instead of just answering), rolled fresh for "
+            "each of the root's turns and once for each sub-agent. Default 0 = single-agent; 1 = always "
+            "spawn (full tree to max_depth)."
+        ),
+    )
+    theme_mix: Dict[str, Union[float, ThemeSpec]] = Field(
+        default_factory=lambda: cast(
+            Dict[str, Union[float, ThemeSpec]],
+            {
+                "generic": ThemeSpec(weight=0.25),
+                "db2_latency_incident": ThemeSpec(weight=0.25),
+                "research_rag": ThemeSpec(weight=0.25),
+                "code_change_task": ThemeSpec(weight=0.25),
+            },
+        ),
+        description=(
+            "theme name -> weight. Preferred form is an explicit block, `{name: {weight: W}}`; "
+            "a bare float `{name: W}` is also accepted for brevity. Default is an equal mix of the "
+            "four built-in themes. Use theme_weights() to read normalized {name: float}."
+        ),
+    )
+
+    def theme_weights(self) -> Dict[str, float]:
+        """Normalize theme_mix (bare-float or {weight: ...} block) to {name: float}."""
+        return {name: (spec.weight if isinstance(spec, ThemeSpec) else float(spec)) for name, spec in self.theme_mix.items()}
+
+    # Defaulted
+    seed: int = Field(42, description="Base seed for stable per-session RNG")
+    shared_system_prompt_len: int = Field(
+        1000,
+        ge=0,
+        description=(
+            "Tokens of a fixed system-prompt head that opens EVERY agent call (the standing "
+            "'system head' real agents carry: tool instructions, policies). Defaults to 1000 "
+            "because virtually every agentic flow ships a non-trivial system prompt; set 0 only "
+            "for a deliberately head-less baseline."
+        ),
+    )
+    tool_loop_depth: Optional[Distribution] = Field(
+        None,
+        description=(
+            "How many times an agent goes around its tool loop before answering -- each iteration "
+            "is a model call that emits a tool call and gets a result. 0 = answer directly (no tool "
+            "loop). Then the agent makes one more model call for its final answer, so total model "
+            "calls = this value + 1. Drawn fresh for each of the root's turns, and once for each "
+            "sub-agent. Fallback fixed 2."
+        ),
+    )
+    sub_agents_per_spawn: Optional[Distribution] = Field(None, description="K children per spawn (fallback uniform 2-4)")
+    max_depth: int = Field(2, ge=0, description="Hard recursion terminator")
+    max_events_per_session: int = Field(64, gt=0, description="Self-limiting event budget")
+    tool_catalog_size_per_agent: Optional[Distribution] = Field(
+        None, description="advertised tool-catalog size per agent (fallback fixed 8)"
+    )
+    parallel_tool_calls_per_step: Optional[Distribution] = Field(
+        None, description="parallel tool calls emitted in one step's tool round (fallback fixed 1)"
+    )
+    tool_call_latency_sec: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Pause between an agent's steps, in seconds, modelling how long a tool takes "
+            "to run (the tool round-trip). Held as an offline wait that frees the GPU. "
+            "Omit to use the default (fixed 1s)."
+        ),
+    )
+    user_think_time_sec: Optional[Distribution] = Field(
+        None,
+        description=(
+            "Pause before each follow-up turn (turns 2..N), in seconds, modelling the user's "
+            "read/think/reply time. Omit to use the default (fixed 10s)."
+        ),
+    )
+    max_model_len: Optional[int] = Field(
+        None,
+        description=(
+            "Fail-fast context-length ceiling (tokens). When set, a config whose single largest "
+            "request -- worst-case inputs (system head + tool catalog + accumulated turns + tool "
+            "loop) plus the output to generate -- would exceed this is rejected at load, instead "
+            "of 400-ing mid-run. Uses each distribution's clip ceiling (`max`) as the worst case. "
+            "Excludes the model's per-message chat-template wrapper (~10-15 tok/msg), so set this "
+            "at or a little below your model's true window. Omit to skip the check."
+        ),
+    )
+
+    # Context compaction: omit to never compact (pure growth). When set,
+    # both trigger_tokens and target_tokens are required (enforced by the submodel).
+    context_compaction: Optional[ContextCompactionConfig] = Field(
+        None,
+        description=(
+            "Context compaction policy. When set, a round whose accumulated input crosses "
+            "trigger_tokens is followed by a fresh round whose grown transcript is replaced "
+            "by a target_tokens-sized summary block. Omit for pure growth (no compaction)."
+        ),
+    )
+
+    # Inherited from SessionReplayConfig but inert for synthetic generation: pinned
+    # so a synthetic config can't accidentally enable trace-replay-only behavior.
+    inject_random_session_id: bool = Field(
+        False,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned False): sessions are already "
+            "generated with distinct content per session index, so there is no recorded "
+            "session ID to randomize."
+        ),
+    )
+    duplicate_sessions_target: Optional[int] = Field(
+        None,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned None): raise num_sessions to "
+            "generate more sessions instead of duplicating existing ones."
+        ),
+    )
+    override_tool_call_max_tokens: bool = Field(
+        False,
+        description=(
+            "Override tool-call max_tokens to 4096 instead of using the generated call's own "
+            "length. Defaults False here (unlike trace replay) because the generator sizes each "
+            "tool call itself, so the generated length is already correct for this model."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_theme_mix(self) -> "SyntheticAgenticConfig":
+        if not self.theme_mix:
+            raise ValueError("theme_mix must be non-empty (at least one theme name -> weight)")
+        weights = self.theme_weights()  # normalizes bare-float and {weight: ...} forms
+        if any(w < 0 for w in weights.values()):
+            raise ValueError(f"theme_mix weights must all be >= 0, got: {weights}")
+        if sum(weights.values()) <= 0:
+            raise ValueError(f"theme_mix weights must sum to a positive value (at least one weight > 0), got: {weights}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_max_model_len(self) -> "SyntheticAgenticConfig":
+        # Fail-fast context-length ceiling. Reject a config whose single
+        # LARGEST request would exceed the model's window, so it fails at load
+        # instead of 400-ing deep inside a live run. We model the whole final
+        # message (all inputs + the output we must still generate), not just a
+        # bare turn, because the naive one-turn check happily passes configs
+        # (e.g. a 487-tool catalog) that then overrun live.
+        #
+        # Worst-case sizing per distribution. The sampler HARD-CLIPS every draw
+        # to [min, max] (sample_from_distribution), so the realized value never
+        # exceeds `max` -- for fixed it is exactly `mean` (max is ignored). We
+        # therefore take the worst case as `max` for every distribution EXCEPT
+        # fixed (which uses `mean`). This matters because Distribution's unset
+        # fields carry stale defaults (`mean` defaults to 512, `max` to 1024),
+        # and only the field a given type actually samples from is meaningful:
+        # a uniform ignores `mean`, a fixed ignores `max`. Reading the wrong one
+        # would inject a bogus 512/1024 into the projection. None-valued optional
+        # knobs fall back to the SAME fixed defaults the generator uses (matched
+        # by value, not import, to avoid a config -> datagen circular import).
+        if self.max_model_len is None:
+            return self
+
+        import math
+
+        def _hi(dist: Optional[Distribution], fallback_fixed_mean: float) -> int:
+            # Worst-case value a knob can contribute. None => the generator's
+            # fixed fallback (its `mean`). fixed => its `mean`. All other types
+            # are clipped to `max`, so `max` is the true achievable ceiling.
+            if dist is None:
+                return int(math.ceil(fallback_fixed_mean))
+            if dist.type == DistributionType.FIXED:
+                return int(math.ceil(dist.mean))
+            return int(math.ceil(dist.max))
+
+        # ~380 tok per advertised tool: real serialized theme tool schemas
+        # (name + description + JSON-Schema params) measure ~235-376 tok each
+        # across the built-in themes; 380 is the rounded-up ceiling so the
+        # estimate over-, never under-, counts the catalog.
+        CATALOG_TOKENS_PER_TOOL = 380
+
+        head = self.shared_system_prompt_len
+        # input/output tokens are required fields (never None), so their fallback
+        # is unreachable -- passed as 0 to make that explicit.
+        in_hi = _hi(self.input_tokens_per_turn, 0)
+        out_hi = _hi(self.output_tokens_per_turn, 0)
+        turns_hi = _hi(self.turns_per_session, 1)
+        k_hi = max(0, _hi(self.tool_loop_depth, 2))  # generator _FB_STEPS = fixed 2
+        par_hi = max(1, _hi(self.parallel_tool_calls_per_step, 1))  # _FB_PARALLEL = fixed 1
+        catalog = _hi(self.tool_catalog_size_per_agent, 8) * CATALOG_TOKENS_PER_TOOL  # _FB_TOOL_DEFS = fixed 8
+
+        # A single agent turn runs a tool loop whose transcript GROWS each
+        # iteration: iteration t re-injects the prior turn plus its output-call
+        # message and `par` tool results. The deepest step therefore carries the
+        # turn's input + k*(one output-call msg + par results). We size a tool
+        # result as ~one output turn (results echo the payload-sized call args;
+        # there is no separate tool-result-size knob), so the loop adds
+        # k*(out + par*out) on top of the turn's input.
+        per_turn_loop = in_hi + k_hi * (out_hi + par_hi * out_hi)
+
+        # Peak A -- the ROOT's final turn: the whole accumulated transcript
+        # (every prior turn's input AND answer) plus this turn's own loop, then
+        # one more output to generate.
+        root_peak = head + catalog + turns_hi * per_turn_loop + out_hi
+        # Peak B -- a SUB-AGENT's single request: one input turn + its full tool
+        # loop + one output (no user turns of its own). Today sub-agents share
+        # the root's depth/catalog knobs, so root_peak >= sub_peak whenever
+        # turns_hi >= 1; the max() keeps the check correct if sub-agents ever
+        # get independent depth/catalog knobs.
+        sub_peak = head + catalog + per_turn_loop + out_hi
+        projected = max(root_peak, sub_peak)
+
+        if projected > self.max_model_len:
+            raise ValueError(
+                f"max_model_len ({self.max_model_len}) is too small for this configuration: "
+                f"the peak request is ~{projected} tokens and would overrun the model's context "
+                f"window (prompt + generated output). Breakdown: system_head({head}) + "
+                f"tool_catalog({_hi(self.tool_catalog_size_per_agent, 8)} tools x{CATALOG_TOKENS_PER_TOOL}"
+                f"={catalog}) + turns({turns_hi}) x per_turn_loop({per_turn_loop}) + output({out_hi}), "
+                f"where per_turn_loop = input({in_hi}) + tool_loop_depth({k_hi}) x "
+                f"(output({out_hi}) + parallel({par_hi}) x output). Reduce input/output/catalog/turns/"
+                f"tool_loop_depth, or raise max_model_len."
             )
         return self
