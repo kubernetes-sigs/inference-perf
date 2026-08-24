@@ -23,6 +23,8 @@ Emission is unconditional and has no config surface: every run drops one `infere
 
 ## Resyncing the vendored schema
 
+The vendoring is transitional: once the schema is published to PyPI as `llmd-benchmark-report` ([llm-d/llm-d-benchmark#1730](https://github.com/llm-d/llm-d-benchmark/pull/1730)), the vendored files go away and `schema.py` re-exports from the package instead. Tracked in [#758](https://github.com/kubernetes-sigs/inference-perf/issues/758).
+
 The four vendored files map 1:1 to upstream files in `llmdbenchmark/analysis/benchmark_report/`. Each has a header pinning the upstream commit SHA. To bump the BR0.2 schema:
 
 1. Copy the four upstream files over `base.py`, `schema_v0_2.py`, `schema_v0_2_1.py`, `schema_v0_2_components.py`.
