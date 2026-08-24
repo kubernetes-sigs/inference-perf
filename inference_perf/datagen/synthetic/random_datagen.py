@@ -17,7 +17,13 @@ from typing import Callable, Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import (
+    ChatCompletionAPIData,
+    ChatMessage,
+    CompletionAPIData,
+    InferenceAPIData,
+    LazyLoadInferenceAPIData,
+)
 from inference_perf.config import APIConfig, APIType, DataConfig, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -93,6 +99,12 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.wrap_fn: Optional[Callable[[str], str]] = None
         if config.use_chat_template:
+            if api_config.type == APIType.Chat:
+                raise ValueError(
+                    "data.use_chat_template cannot be combined with api.type: chat. "
+                    "The chat endpoint applies its chat template to the messages array; "
+                    "using both would apply chat templating twice."
+                )
             if not self.tokenizer.has_chat_template():
                 raise ValueError(
                     "data.use_chat_template is set but the tokenizer has no chat template. "
@@ -128,7 +140,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         return min(len(self.input_lengths), len(self.output_lengths))
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -149,12 +161,19 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
             # not to prepend another BOS so its prefill count matches the target.
             add_special_tokens = False if self.wrap_fn is not None else None
             return CompletionAPIData(prompt=text, max_tokens=self.output_lengths[n], add_special_tokens=add_special_tokens)
+        elif self.api_config.type == APIType.Chat:
+            length = self.input_lengths[n]
+            text = self._generate_exact_length_text(length)
+            return ChatCompletionAPIData(
+                messages=[ChatMessage(role="user", content=text)],
+                max_tokens=self.output_lengths[n],
+            )
         else:
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.api_config.type != APIType.Completion:
-            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
+        if self.api_config.type not in self.get_supported_apis():
+            raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion and Chat.")
 
         i = 0
         while True:

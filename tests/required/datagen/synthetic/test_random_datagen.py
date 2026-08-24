@@ -15,7 +15,7 @@
 import numpy as np
 import pytest
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import ChatCompletionAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -231,3 +231,39 @@ def test_random_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+def test_random_datagen_chat_yields_chat_completion_data() -> None:
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+    generator = RandomDataGenerator(api_config, data_config, tokenizer)
+
+    assert APIType.Chat in generator.get_supported_apis()
+
+    for i in range(5):
+        data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+
+        assert isinstance(data, ChatCompletionAPIData)
+        assert len(data.messages) == 1
+        assert data.messages[0].role == "user"
+        assert isinstance(data.messages[0].content, str)
+        assert tokenizer.count_tokens(data.messages[0].content) == generator.input_lengths[i]
+        assert data.max_tokens == generator.output_lengths[i]
+
+
+def test_random_datagen_use_chat_template_rejects_chat_api() -> None:
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined with api.type: chat"):
+        RandomDataGenerator(api_config, data_config, ChatTemplateDummyCustomTokenizer())
