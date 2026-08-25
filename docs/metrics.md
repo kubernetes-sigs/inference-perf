@@ -50,7 +50,7 @@ therefore keeps both and records which is which.
 | `prompt_tokens.cached` / `.uncached` | server `usage.prompt_tokens_details` | Absent when the server does not report the detail |
 | `output_len` | client | The response text re-tokenized as one whole message |
 | `output_tokens` | server `usage.completion_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
-| `client_fallback_counts` | n/a | Per side (`prompt_tokens`, `output_tokens`), how many successful requests carry a client count because the server reported none. Nonzero means that distribution mixes sources |
+| `client_fallback_requests` | n/a | Per side (`prompt`, `output`), how many successful requests carry a client count because the server reported none. Counts requests, not tokens. Nonzero means that distribution mixes sources |
 | `token_count_mismatches` | n/a | Streamed requests where the sum of the per-chunk client tokenization differs from the server count |
 
 Usage keys differ by API: OpenAI-compatible servers report `prompt_tokens` and
@@ -69,7 +69,7 @@ per-token metrics divide by.
 
 A nonzero `token_count_mismatches` means client and server disagree on how many tokens the
 response contained, so any metric normalized by the client count is off by that much. A
-nonzero `client_fallback_counts` entry means the opposite problem: for those requests there is no
+nonzero `client_fallback_requests` entry means the opposite problem: for those requests there is no
 server number to compare against, and `output_tokens` is carrying the client count. Both are
 worth checking before comparing runs, and before comparing against another tool.
 

@@ -98,8 +98,9 @@ def test_partial_usage_falls_back_only_on_the_missing_side() -> None:
 
 
 # Two requests through the full report path, one with usage and one without. The report carries
-# the counts as successes.client_fallback_counts = {prompt_tokens: 1, output_tokens: 1}, and the
-# token summaries stay a total plus a pure distribution, with no count mixed in.
+# the request counts as successes.client_fallback_requests = {prompt: 1, output: 1} (keyed by
+# side, since the values count requests, not tokens), and the token summaries stay a total plus
+# a pure distribution, with no count mixed in.
 def test_report_carries_fallback_counts_outside_the_distributions() -> None:
     requests = [
         _request(10, 100, {"prompt_tokens": 10, "completion_tokens": 100}),
@@ -108,28 +109,30 @@ def test_report_carries_fallback_counts_outside_the_distributions() -> None:
 
     successes = summarize_requests(requests, [50]).successes
 
-    assert successes["client_fallback_counts"] == {"prompt_tokens": 1, "output_tokens": 1}
+    assert successes["client_fallback_requests"] == {"prompt": 1, "output": 1}
     assert set(successes["output_tokens"]) == {"total", "mean", "min", "max", "median"}
     assert set(successes["output_tokens"].values()) - {200.0} == {100.0}
 
 
 # One stage report with 2 prompt-side and 3 output-side fallbacks. The CLI caption names the
-# source of each column and reports the 5 fallbacks in one line.
-def test_caption_reports_sources_and_fallback_total() -> None:
-    stage = {"successes": {"client_fallback_counts": {"prompt_tokens": 2, "output_tokens": 3}}}
+# source of each column and reports the fallbacks per side ("2 prompt-side, 3 output-side"),
+# not summed: one request missing usage entirely falls back on both sides, so a sum would
+# overstate the number of requests.
+def test_caption_reports_sources_and_per_side_fallbacks() -> None:
+    stage = {"successes": {"client_fallback_requests": {"prompt": 2, "output": 3}}}
 
     caption = token_source_caption([stage], has_server_output=True)
 
     assert "Prompt: server-reported usage where available" in caption
     assert "Out (client)" in caption
     assert "Out (server)" in caption
-    assert "5 counts fell back to client tokenization" in caption
+    assert "2 prompt-side, 3 output-side" in caption
 
 
 # A run against a server that reported usage for everything: no fallback sentence at all, and no
 # server column described, since the caller found no server-sourced distribution to show.
 def test_caption_omits_fallback_line_when_every_count_is_server_sourced() -> None:
-    stage = {"successes": {"client_fallback_counts": {"prompt_tokens": 0, "output_tokens": 0}}}
+    stage = {"successes": {"client_fallback_requests": {"prompt": 0, "output": 0}}}
 
     caption = token_source_caption([stage], has_server_output=False)
 

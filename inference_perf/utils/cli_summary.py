@@ -42,6 +42,8 @@ def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_ou
     Prompt and output counts are both dual-sourced: the server's usage when it
     reports one, client-side tokenization otherwise. A run that silently fell back
     for some requests reads identically to one that did not, so say how many.
+    Reported per side: a request with no usage at all falls back on both sides,
+    so summing the two would overstate the number of requests.
     """
     parts = [
         "Prompt: server-reported usage where available, client tokenization otherwise.",
@@ -50,13 +52,18 @@ def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_ou
     if has_server_output:
         parts.append("Out (server): count reported in the server's usage (output_tokens).")
 
-    fallbacks = 0
+    prompt_fallbacks = 0
+    output_fallbacks = 0
     for contents in stage_contents:
-        counts = contents.get("successes", {}).get("client_fallback_counts")
+        counts = contents.get("successes", {}).get("client_fallback_requests")
         if isinstance(counts, dict):
-            fallbacks += sum(int(v or 0) for v in counts.values())
-    if fallbacks:
-        parts.append(f"{fallbacks} counts fell back to client tokenization (no server usage).")
+            prompt_fallbacks += int(counts.get("prompt") or 0)
+            output_fallbacks += int(counts.get("output") or 0)
+    if prompt_fallbacks or output_fallbacks:
+        parts.append(
+            "Requests that fell back to client tokenization (no server usage): "
+            f"{prompt_fallbacks} prompt-side, {output_fallbacks} output-side."
+        )
 
     parts.append("See docs/metrics.md.")
     return " ".join(parts)

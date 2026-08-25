@@ -737,9 +737,11 @@ def summarize_requests(
         ),
         "output_tokens": summarize_output_token_usage(all_successful, percentiles),
         "token_count_mismatches": mismatched_requests,
-        "client_fallback_counts": {
-            "prompt_tokens": count_client_fallbacks(all_successful, SERVER_PROMPT_TOKEN_KEYS),
-            "output_tokens": count_client_fallbacks(all_successful, SERVER_OUTPUT_TOKEN_KEYS),
+        # Keyed by side, not by the sibling field names: the values count requests,
+        # and a prompt_tokens/output_tokens key here would read as a token count.
+        "client_fallback_requests": {
+            "prompt": count_client_fallbacks(all_successful, SERVER_PROMPT_TOKEN_KEYS),
+            "output": count_client_fallbacks(all_successful, SERVER_OUTPUT_TOKEN_KEYS),
         },
     }
     if goodput_metrics:
