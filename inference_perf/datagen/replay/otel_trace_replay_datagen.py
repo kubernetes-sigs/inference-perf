@@ -75,10 +75,21 @@ from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_graph,
     tag_user_facing_events,
 )
+from inference_perf.datagen.replay.wire_trace_converter import (
+    FORMAT_OTEL_JSONL,
+    WIRE_FORMATS,
+    convert_wire_file,
+    detect_trace_format,
+    iter_otel_jsonl_traces,
+)
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
 
 logger = logging.getLogger(__name__)
+
+# Local trace files may be OTel documents (.json), or line-delimited OTel traces and agent
+# wire captures (.jsonl). The actual format is detected from file content, not the suffix.
+TRACE_FILE_SUFFIXES = (".json", ".jsonl")
 
 
 def resolve_trace_files(trace_files: List[str]) -> List[Path]:
@@ -146,7 +157,12 @@ def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
     logger.info(f"Schema validation passed for dataset '{dataset_path}'")
 
 
-def _normalize_file_trace(data: Dict[str, Any], source_name: str, source_path: str) -> Dict[str, Any]:
+def _normalize_file_trace(
+    data: Dict[str, Any],
+    source_name: str,
+    source_path: str,
+    row_index: Optional[int] = None,
+) -> Dict[str, Any]:
     """Normalize a local OTel JSON trace to align with the HF dataset schema.
 
     Local files have:  trace_id, span_count, collected_at, spans
@@ -163,14 +179,24 @@ def _normalize_file_trace(data: Dict[str, Any], source_name: str, source_path: s
         data: Raw trace data loaded from a local JSON file
         source_name: Filename, used to derive a fallback session_id
         source_path: Full file path, stored as source_id for traceability
+        row_index: Position of this trace within a multi-trace .jsonl file. Appended to the
+            fallback session_id so traces from one file cannot collide. None for
+            single-trace files, which keep their session_id unchanged.
 
     Returns:
         A new dict with HF-schema fields added (existing fields preserved)
+
+    Raises:
+        ValueError: If the trace is not a JSON object (e.g. a top-level JSON array)
     """
+    if not isinstance(data, dict):
+        raise ValueError(f"{source_path}: expected an OTel trace object, got {type(data).__name__}")
+
     normalized = dict(data)
 
     if "session_id" not in normalized:
-        normalized["session_id"] = normalized.get("trace_id") or Path(source_name).stem
+        fallback = Path(source_name).stem if row_index is None else f"{Path(source_name).stem}_{row_index}"
+        normalized["session_id"] = normalized.get("trace_id") or fallback
 
     normalized["source_id"] = source_path
 
@@ -221,13 +247,45 @@ def _load_trace_file(
         return None
 
 
+def _rows_for_file(trace_file: Path, skip_invalid: bool) -> List[Dict[str, Any]]:
+    """Produce the normalized rows for one trace file, converting wire captures.
+
+    The file's format is detected from its content, not its extension. An OTel .jsonl
+    file yields one row per line; every other shape yields a single row.
+    """
+    trace_format = detect_trace_format(trace_file)
+
+    if trace_format == FORMAT_OTEL_JSONL:
+        docs = list(iter_otel_jsonl_traces(trace_file))
+        multi = len(docs) > 1
+        return [
+            _normalize_file_trace(doc, trace_file.name, str(trace_file), row_index=i if multi else None)
+            for i, doc in enumerate(docs)
+        ]
+
+    if trace_format in WIRE_FORMATS:
+        # Converted in memory; records are streamed and dropped as spans are built.
+        converted = convert_wire_file(trace_file)
+        if not converted["spans"]:
+            raise ValueError(f"{trace_file}: wire capture produced no convertible spans")
+        return [_normalize_file_trace(converted, trace_file.name, str(trace_file))]
+
+    data = _load_trace_file(trace_file, skip_invalid)
+    if data is None:
+        return []
+    return [_normalize_file_trace(data, trace_file.name, str(trace_file))]
+
+
 def _load_files_to_dataset(files: List[Path], skip_invalid: bool) -> Dataset:
     """Load a list of trace files, normalize them, and return as a Dataset."""
     rows = []
     for trace_file in files:
-        data = _load_trace_file(trace_file, skip_invalid)
-        if data is not None:
-            rows.append(_normalize_file_trace(data, trace_file.name, str(trace_file)))
+        try:
+            rows.extend(_rows_for_file(trace_file, skip_invalid))
+        except Exception as e:
+            logger.error(f"Failed to load {trace_file}: {e}")
+            if not skip_invalid:
+                raise
     return Dataset.from_list(rows)
 
 
@@ -346,9 +404,9 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if not trace_dir.is_dir():
                 raise ValueError(f"Trace directory path is not a directory: {trace_dir}")
 
-            trace_files = sorted(trace_dir.glob("*.json"))
+            trace_files = sorted(p for p in trace_dir.glob("*.json*") if p.suffix in TRACE_FILE_SUFFIXES)
             if not trace_files:
-                raise ValueError(f"No JSON files found in {trace_dir}")
+                raise ValueError(f"No .json or .jsonl files found in {trace_dir}")
 
             dataset: Dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
             _validate_dataset_schema(dataset, self.otel_config.trace_directory)
@@ -369,8 +427,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     raise ValueError(f"Trace file does not exist: {trace_file}")
                 if not trace_file.is_file():
                     raise ValueError(f"Trace file path is not a file: {trace_file}")
-                if trace_file.suffix != ".json":
-                    raise ValueError(f"Trace file must be a JSON file: {trace_file}")
+                if trace_file.suffix not in TRACE_FILE_SUFFIXES:
+                    raise ValueError(f"Trace file must be a .json or .jsonl file: {trace_file}")
 
             dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
             _validate_dataset_schema(dataset, str(self.otel_config.trace_files))

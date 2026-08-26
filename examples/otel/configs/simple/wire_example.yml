@@ -1,0 +1,54 @@
+# OTel Trace Replay Configuration with Session-Based Load
+# This configuration uses trace_session_replay to dispatch entire trace sessions
+
+api:
+  type: chat
+  streaming: false
+  session_id_header_key: "x-session-id"
+
+data:
+  type: otel_trace_replay
+  otel_trace_replay:
+    # List of specific OTel JSON trace files
+    trace_files:
+      - "my_path/nm-output/*/*/*/*/*/calls.jsonl"
+    # Model configuration - use static model
+    use_static_model: true
+    static_model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+
+    # Request settings
+    default_max_tokens: 100000
+
+    # predecessor_wait_timeout_sec (default: 3600). Increase it to make the sessions wait longer.
+    # Set to 0 to wait indefinitely for predecessor events instead of failing deep chains whose cumulative ancestor
+    # latency exceeds a fixed timeout. Use with care: a genuinely stuck predecessor
+    # will then never time out, and successors will wait forever.
+
+    # Error handling
+    include_errors: true
+    skip_invalid_files: true
+
+load:
+  type: trace_session_replay
+
+  # Session concurrency control (moved from data config!)
+  stages:
+    - concurrent_sessions: 1  # Sequential execution (one session at a time)
+
+  worker_max_concurrency: 10
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"
+  model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+
+storage:
+  local_storage:
+    path: "reports-wire-example"
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+
