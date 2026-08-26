@@ -47,7 +47,8 @@ from inference_perf.payloads import (
     VideoSpecUnion,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution, sample_lengths
+from inference_perf.utils.numeric.expression import Expression
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..datagen_utils import (
@@ -71,18 +72,54 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     _session_namespace_counter: ClassVar[Iterator[int]] = count()
 
     @staticmethod
-    def _resolve_distribution(
-        param: Union[int, Distribution],
+    def _resolve_length(
+        param: Union[int, Distribution, str],
         legacy_dist: Optional[Distribution] = None,
-    ) -> Distribution:
-        """Resolve a Union[int, Distribution] + optional legacy Distribution into a Distribution."""
-        if isinstance(param, Distribution):
-            return param
-        # param is an int
-        if legacy_dist is not None:
+    ) -> Union[int, Distribution, str]:
+        """Resolve a length field plus its optional legacy distribution into the value to sample from.
+
+        The legacy field only applies when the inline field was left as a
+        plain int (the config validator rejects the ambiguous combinations);
+        sample_lengths handles each resulting form.
+        """
+        if isinstance(param, int) and legacy_dist is not None:
             return legacy_dist
-        # Fixed value: min=max=mean, std_dev=0
-        return Distribution(mean=float(param), min=param, max=param, std_dev=0.0)
+        return param
+
+    def _check_output_leaves_prompt_budget(self, output_spec: Union[int, Distribution, str]) -> None:
+        """Reject an output length whose ceiling leaves no room for a prompt in multi-turn chat.
+
+        An int or a Distribution has a known ceiling (the value, the fixed
+        mean, or max). An expression string has one only when its range can be
+        proven: one that provably can exceed the budget is rejected, and one
+        whose range can't be decided is accepted, since the expression author
+        owns its range.
+        """
+        limit = self.max_model_len - PROMPT_TOKEN_BUFFER
+        if isinstance(output_spec, str):
+            try:
+                Expression(output_spec, allow_time=False, maximum=limit - 1)
+            except ValueError as e:
+                raise ValueError(
+                    f"output_len {output_spec!r} can exceed {limit - 1} tokens, which leaves no room for a prompt "
+                    f"within max_model_len ({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token "
+                    f"safety buffer. Bound it, e.g. 'Min({output_spec}, {limit - 1})', or raise max_model_len."
+                ) from e
+            return
+
+        if isinstance(output_spec, int):
+            output_ceiling, ceiling_desc = output_spec, "output_len"
+        elif output_spec.type == DistributionType.FIXED:
+            output_ceiling, ceiling_desc = int(output_spec.mean), "output_len.mean"
+        else:
+            output_ceiling, ceiling_desc = output_spec.max, "output_len.max"
+
+        if output_ceiling >= limit:
+            raise ValueError(
+                f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within max_model_len "
+                f"({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. "
+                f"Lower it below {limit} or raise max_model_len."
+            )
 
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
@@ -111,38 +148,26 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.prefix_multimodal: Optional[SyntheticMultimodalDatagenConfig] = self.shared_prefix.multimodal
         self.payload_multimodal: Optional[SyntheticMultimodalDatagenConfig] = config.multimodal
 
-        # Resolve all parameters to Distribution
-        system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
-        question_dist = self._resolve_distribution(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
-        output_dist = self._resolve_distribution(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
+        # Resolve each length field to the value to sample from
+        system_prompt_spec = self._resolve_length(self.shared_prefix.system_prompt_len)
+        question_spec = self._resolve_length(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
+        output_spec = self._resolve_length(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
 
         if self.enable_multi_turn_chat:
-            if output_dist.type == DistributionType.FIXED:
-                output_ceiling, ceiling_desc = int(output_dist.mean), "output_len.mean"
-            else:
-                output_ceiling, ceiling_desc = output_dist.max, "output_len.max"
-
-            if output_ceiling + PROMPT_TOKEN_BUFFER >= self.max_model_len:
-                raise ValueError(
-                    f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within max_model_len "
-                    f"({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. "
-                    f"Lower it below {self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
-                )
+            self._check_output_leaves_prompt_budget(output_spec)
 
         # Generate per-group system prompt lengths
-        self.system_prompt_lens_per_group: List[int] = sample_from_distribution(
-            system_prompt_dist, self.num_groups, self.rng
-        ).tolist()
+        self.system_prompt_lens_per_group: List[int] = sample_lengths(system_prompt_spec, self.num_groups, self.rng).tolist()
 
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
 
         for _ in range(self.num_groups):
-            question_lens = sample_from_distribution(question_dist, self.num_prompts_per_group, self.rng)
+            question_lens = sample_lengths(question_spec, self.num_prompts_per_group, self.rng)
             self.question_len_list_per_group.append(question_lens.tolist())
 
-            output_lens = sample_from_distribution(output_dist, self.num_prompts_per_group, self.rng)
+            output_lens = sample_lengths(output_spec, self.num_prompts_per_group, self.rng)
             self.output_len_list_per_group.append(output_lens.tolist())
 
         # Per-prompt storage, all parallel (same length after _generate_prompts).
