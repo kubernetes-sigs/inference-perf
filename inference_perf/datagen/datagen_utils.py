@@ -16,7 +16,24 @@ from typing import Callable, List, Optional, Set, Tuple
 
 import numpy as np
 
+from inference_perf.config import Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+
+def effective_sample_count(run_count: Optional[int], distribution: Distribution) -> int:
+    """Resolve how many values to pre-generate for one IO distribution.
+
+    Both the run-level count (derived from the load stages by main) and the
+    optional user-supplied ``total_count`` on the distribution are floors; the
+    pre-generated array must satisfy whichever is larger.
+
+    Raises:
+        ValueError: If neither count is provided.
+    """
+    candidates = [c for c in (run_count, distribution.total_count) if c is not None]
+    if not candidates:
+        raise ValueError("IODistribution requires total_count to be set")
+    return max(candidates)
 
 
 def init_vocab_sampling(tokenizer: CustomTokenizer) -> Tuple[int, Set[int], np.ndarray]:
