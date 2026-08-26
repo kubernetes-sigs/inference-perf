@@ -26,6 +26,7 @@ from inference_perf.config import (
     APIType,
     ConcurrentLoadStage,
     DataGenType,
+    Distribution,
     DistributionType,
     LoadType,
     StandardLoadStage,
@@ -81,11 +82,11 @@ def test_case_a_fixed_rate_converts() -> None:
     assert config.api.type == APIType.Completion
     assert config.api.streaming is True
     assert config.data.type == DataGenType.Random
-    assert config.data.input_distribution is not None
+    assert isinstance(config.data.input_distribution, Distribution)
     assert config.data.input_distribution.type == DistributionType.FIXED
     assert config.data.input_distribution.mean == 128
     assert config.data.input_distribution.min == config.data.input_distribution.max == 128
-    assert config.data.output_distribution is not None
+    assert isinstance(config.data.output_distribution, Distribution)
     assert config.data.output_distribution.mean == 64
     # v0.10.0 draws exponential gaps at burstiness 1.0 and rescales them so
     # the last request lands at exactly --num-prompts / --request-rate
@@ -202,7 +203,7 @@ def test_range_ratio_fans_out_to_uniform_bounds() -> None:
     assert conversion.config is not None
     input_dist = conversion.config.data.input_distribution
     output_dist = conversion.config.data.output_distribution
-    assert input_dist is not None and output_dist is not None
+    assert isinstance(input_dist, Distribution) and isinstance(output_dist, Distribution)
     assert input_dist.type == DistributionType.UNIFORM
     assert (input_dist.min, input_dist.max) == (50, 150)
     assert (output_dist.min, output_dist.max) == (25, 75)
