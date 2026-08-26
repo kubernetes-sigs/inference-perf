@@ -22,27 +22,13 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
-| `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
-| `--data.input_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
-| `--data.input_distribution.mean` | float | Mean of the distribution. |
-| `--data.input_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
-| `--data.input_distribution.total_count` | int | Total number of values to sample from the distribution. |
-| `--data.input_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
-| `--data.input_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
-| `--data.input_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.output_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
-| `--data.output_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
-| `--data.output_distribution.mean` | float | Mean of the distribution. |
-| `--data.output_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
-| `--data.output_distribution.total_count` | int | Total number of values to sample from the distribution. |
-| `--data.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
-| `--data.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
-| `--data.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
+| `--data.input_distribution` | string | Input (prompt) length distribution in tokens: a distribution, or (for the 'synthetic' and 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's min/max as filter bounds. |
+| `--data.output_distribution` | string | Output length distribution in tokens: a distribution, or (for the 'synthetic' and 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's min/max as filter bounds. |
 | `--data.shared_prefix.num_groups` | int | Number of unique system prompts (shared prefix groups) to generate. |
 | `--data.shared_prefix.num_prompts_per_group` | int | Number of prompts generated per shared system prompt. |
-| `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value or a distribution. |
-| `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value or a distribution. |
-| `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
+| `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
+| `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
 | `--data.shared_prefix.max_model_len` | int | Maximum model context length in tokens for multi-turn sessions. Defaults to 225000 when omitted, matching conversation_replay. |
 | `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
 | `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |

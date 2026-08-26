@@ -28,7 +28,11 @@ import numpy as np
 import pytest
 
 from inference_perf.config import Distribution, DistributionType
-from inference_perf.utils.numeric.distribution import distribution_to_expression, sample_from_distribution
+from inference_perf.utils.numeric.distribution import (
+    distribution_to_expression,
+    sample_from_distribution,
+    sample_lengths,
+)
 from inference_perf.utils.numeric.expression import Expression
 
 
@@ -139,6 +143,42 @@ class TestRepeatedVariablesAreIndependent:
         expression = Expression("Normal(0, 1) + Normal(0, 1)", allow_time=False)
         draws = np.asarray(expression.sample(rng=np.random.default_rng(7), size=20000))
         assert abs(float(draws.var()) - 2.0) < 0.1
+
+
+class TestSampleLengths:
+    # A plain int is repeated as-is: 5 draws of 42 are exactly [42]*5, with no
+    # random draws consumed.
+    def test_int_repeats_constant(self) -> None:
+        result = sample_lengths(42, 5)
+        assert result.tolist() == [42, 42, 42, 42, 42]
+
+    # A Distribution routes through sample_from_distribution: same config and
+    # seed give the identical array either way.
+    def test_distribution_matches_sample_from_distribution(self) -> None:
+        config = Distribution(type=DistributionType.NORMAL, mean=100.0, min=0, max=1000, std_dev=10.0)
+        via_lengths = sample_lengths(config, 100, np.random.default_rng(12))
+        direct = sample_from_distribution(config, 100, np.random.default_rng(12))
+        np.testing.assert_array_equal(via_lengths, direct)
+
+    # An expression string samples as written and rounds to integers:
+    # Uniform(10, 20) draws stay in [10, 20], and no bound is clamped on top
+    # (the expression author owns the range).
+    def test_expression_string_rounds_to_ints(self) -> None:
+        result = sample_lengths("Uniform(10, 20)", 1000, np.random.default_rng(13))
+        assert np.issubdtype(result.dtype, np.integer)
+        assert result.min() >= 10
+        assert result.max() <= 20
+
+    # Same seed, same array for the expression path.
+    def test_expression_string_reproducible(self) -> None:
+        a = sample_lengths("Normal(100, 10)", 50, np.random.default_rng(14))
+        b = sample_lengths("Normal(100, 10)", 50, np.random.default_rng(14))
+        np.testing.assert_array_equal(a, b)
+
+    # count must be positive, matching sample_from_distribution's contract.
+    def test_nonpositive_count_rejected(self) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            sample_lengths(42, 0)
 
 
 class TestDegenerateConfigs:

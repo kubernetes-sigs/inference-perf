@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from math import log, sqrt
-from typing import TYPE_CHECKING, Literal, Optional, cast, overload
+from typing import TYPE_CHECKING, Literal, Optional, Union, cast, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -66,10 +66,7 @@ def distribution_to_expression(config: "Distribution", *, integer: bool = True) 
             return repr(float(config.mean))
         delta = config.skew / sqrt(1.0 + config.skew**2)
         tail = sqrt(1.0 - delta**2)
-        return (
-            f"{float(config.mean)!r} + {float(config.std_dev)!r}"
-            f"*({delta!r}*Abs(Normal(0, 1)) + {tail!r}*Normal(0, 1))"
-        )
+        return f"{float(config.mean)!r} + {float(config.std_dev)!r}*({delta!r}*Abs(Normal(0, 1)) + {tail!r}*Normal(0, 1))"
 
     if config.type == DistributionType.LOGNORMAL:
         if config.mean <= 0:
@@ -167,6 +164,44 @@ def generate_distribution(
     generated_lengths = np.clip(generated_lengths, min, max)
 
     return cast(NDArray[np.int_], generated_lengths)
+
+
+def sample_lengths(
+    value: Union[int, "Distribution", str],
+    count: int,
+    rng: Optional[np.random.Generator] = None,
+) -> NDArray[np.int_]:
+    """Sample integer lengths from any length-field config value.
+
+    - int: the constant, repeated (no random draws are consumed).
+    - Distribution: :func:`sample_from_distribution`'s legacy contract (draws
+      clipped into the config bounds and rounded).
+    - str: an Expression sampled as written and rounded to integers. The
+      expression author owns the value range; nothing is clamped on top.
+
+    Args:
+        value: The configured length: a fixed int, a Distribution, or an
+            expression string.
+        count: Number of lengths to sample.
+        rng: Optional numpy Generator for deterministic seeding. If None, creates a default one.
+
+    Returns:
+        A numpy array of ``count`` integers.
+    """
+    if count <= 0:
+        raise ValueError("Count must be a positive integer.")
+
+    if isinstance(value, int):
+        return cast(NDArray[np.int_], np.full(count, value, dtype=int))
+
+    if isinstance(value, str):
+        if rng is None:
+            rng = np.random.default_rng()
+        expression = Expression(value, allow_time=False)
+        samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
+        return cast(NDArray[np.int_], np.round(samples).astype(int))
+
+    return sample_from_distribution(value, count, rng)
 
 
 @overload

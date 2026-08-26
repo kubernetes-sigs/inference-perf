@@ -12,12 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
 from inference_perf.config import Distribution
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.numeric.distribution import generate_distribution, sample_lengths
+
+
+def pregenerate_lengths(
+    distribution: Union[Distribution, str],
+    run_count: Optional[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Pre-generate the length array for one synthetic/random IO field.
+
+    A Distribution keeps :func:`generate_distribution`'s legacy contract
+    (mean-in-bounds validation, min-shifted lognormal, clip and round into
+    the config bounds) and takes the larger of the run-derived count and its
+    own total_count. An expression string samples through
+    :func:`sample_lengths` with the run-derived count, which is then required.
+    """
+    if isinstance(distribution, str):
+        if run_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+        return sample_lengths(distribution, run_count, rng)
+    return generate_distribution(
+        distribution.min,
+        distribution.max,
+        distribution.mean,
+        distribution.std_dev,
+        effective_sample_count(run_count, distribution),
+        dist_type=distribution.type,
+        rng=rng,
+    )
 
 
 def effective_sample_count(run_count: Optional[int], distribution: Distribution) -> int:

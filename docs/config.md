@@ -61,6 +61,11 @@ data:
     mean: 50
     std_dev: 10
     total_count: 100
+  # Alternatively (synthetic/random only), either field takes an expression
+  # string built from constants, standard math, and sympy.stats distribution
+  # constructors. The expression owns its value range: nothing is clamped.
+  # output_distribution: "LogNormal(5.0, 0.5)"
+  # output_distribution: "100 + Uniform(0, 400)"
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
@@ -68,6 +73,8 @@ data:
     question_len: 50          # Default question length (tokens), used when question_distribution is absent
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
     max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
+    # system_prompt_len, question_len, and output_len also accept an inline
+    # distribution or an expression string, e.g. question_len: "Normal(50, 10)"
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024
