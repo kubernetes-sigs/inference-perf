@@ -38,7 +38,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
     def wait(self) -> None:
         """
         Waits for the Prometheus server to scrape the metrics.
-        We have added a buffer of 5 seconds to the scrape interval to ensure that metrics for even the last request are collected.
+        We have added a buffer (PROMETHEUS_SCRAPE_BUFFER_SEC) to the scrape interval to ensure that metrics for even the last request are collected.
         """
         wait_time = self.scrape_interval + PROMETHEUS_SCRAPE_BUFFER_SEC
         time.sleep(wait_time)
