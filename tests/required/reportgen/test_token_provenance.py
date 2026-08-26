@@ -21,11 +21,12 @@ from inference_perf.reportgen.base import (
     SERVER_OUTPUT_TOKEN_KEYS,
     SERVER_PROMPT_TOKEN_KEYS,
     count_client_fallbacks,
+    effective_output_tokens,
     summarize_output_token_usage,
     summarize_prompt_token_usage,
     summarize_requests,
 )
-from inference_perf.utils.cli_summary import token_source_caption
+from inference_perf.utils.cli_summary import has_server_reported_output, token_source_caption
 
 DEFAULT_PERCENTILES = RequestLifecycleMetricsReportConfig().percentiles
 
@@ -138,3 +139,64 @@ def test_caption_omits_fallback_line_when_every_count_is_server_sourced() -> Non
 
     assert "fell back" not in caption
     assert "Out (server)" not in caption
+
+
+# Two requests through the full report path, neither with any server usage. output_tokens still
+# has a distribution, because both requests contributed their client count to it, but no value
+# in it came from the server, so the table must not grow "(server)" columns: they would repeat
+# the client numbers and read as two independent counts agreeing.
+def test_no_server_columns_when_every_request_fell_back() -> None:
+    successes = summarize_requests([_request(10, 100, None), _request(20, 200, None)], [50]).successes
+
+    assert "mean" in successes["output_tokens"]
+    assert successes["client_fallback_requests"]["output"] == 2
+    assert has_server_reported_output([{"successes": successes}]) is False
+
+
+# Two requests, one with server usage and one without. One request the server did count is
+# enough for the "(server)" columns to mean something, so the check passes while the caption
+# reports the one fallback.
+def test_server_columns_when_any_request_has_a_server_count() -> None:
+    requests = [_request(10, 99, {"prompt_tokens": 10, "completion_tokens": 100}), _request(20, 200, None)]
+
+    successes = summarize_requests(requests, [50]).successes
+
+    assert successes["client_fallback_requests"]["output"] == 1
+    assert has_server_reported_output([{"successes": successes}]) is True
+
+
+# A report written before client_fallback_requests existed carries no such key. It cannot be
+# classified, so it keeps the pre-existing behavior of showing the server columns rather than
+# silently dropping them.
+def test_report_without_fallback_counts_keeps_showing_server_columns() -> None:
+    stage = {"successes": {"count": 2, "output_tokens": {"total": 300.0, "mean": 150.0}}}
+
+    assert has_server_reported_output([stage]) is True
+
+
+# A stage with no successful requests at all: nothing was counted by anyone, so no server column.
+def test_no_server_columns_without_successful_requests() -> None:
+    stage = {"successes": {"count": 0, "output_tokens": {"total": 0.0}, "client_fallback_requests": {"output": 0}}}
+
+    assert has_server_reported_output([stage]) is False
+
+
+# One response carrying the Anthropic usage spelling (output_tokens: 500) next to a client
+# re-tokenization of 480. With use_server_output_tokens on, the per-token metrics must normalize
+# by the server's 500, the same count the report field shows; with it off, by the client's 480.
+def test_use_server_output_tokens_reads_the_anthropic_spelling() -> None:
+    response_metrics = _request(40, 480, {"input_tokens": 40, "output_tokens": 500}).info.response_metrics
+
+    assert effective_output_tokens(response_metrics, use_server_output_tokens=False) == 480
+    assert effective_output_tokens(response_metrics, use_server_output_tokens=True) == 500
+
+
+# A server that reports 0 output tokens has counted the request; that is not the same as
+# reporting no count. With the flag on, normalization takes the server's 0 rather than
+# substituting the client's 7, which is what the report's own output_tokens total does.
+def test_server_reported_zero_is_a_count_not_a_missing_count() -> None:
+    requests = [_request(10, 7, {"prompt_tokens": 10, "completion_tokens": 0})]
+
+    assert count_client_fallbacks(requests, SERVER_OUTPUT_TOKEN_KEYS) == 0
+    assert summarize_output_token_usage(requests, DEFAULT_PERCENTILES)["total"] == 0.0
+    assert effective_output_tokens(requests[0].info.response_metrics, use_server_output_tokens=True) == 0

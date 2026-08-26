@@ -316,15 +316,21 @@ def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_ser
     """Output token count used to normalize per-token latency metrics (TPOT, NTPOT).
 
     Defaults to the client-side re-tokenized count (`output_tokens`). When
-    `use_server_output_tokens` is set and the server reported an exact
-    `usage.completion_tokens`, that count is used instead.
+    `use_server_output_tokens` is set and the server reported a count under any of
+    SERVER_OUTPUT_TOKEN_KEYS, that count is used instead. Reads the same keys as
+    summarize_output_token_usage so "the server's output count" means one thing:
+    against a server reporting the Anthropic spelling, resolving only
+    `completion_tokens` here left the flag a silent no-op while the report field
+    said the count was server-sourced.
     """
     if response_metrics is None:
         return 0
-    if use_server_output_tokens and response_metrics.server_usage:
-        completion_tokens = response_metrics.server_usage.get("completion_tokens")
-        if completion_tokens:
-            return int(completion_tokens)
+    if use_server_output_tokens:
+        # `is not None`, not truthiness: a server that reports 0 output tokens has
+        # counted the request, and the report's own summary already records that 0.
+        server_tokens = server_reported_tokens(response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
+        if server_tokens is not None:
+            return int(server_tokens)
     return response_metrics.output_tokens
 
 

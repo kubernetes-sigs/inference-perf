@@ -49,7 +49,7 @@ therefore keeps both and records which is which.
 | `prompt_tokens` | server `usage.prompt_tokens`, client tokenization when the server reports none | Resolved per request while the response is processed. Supersedes `prompt_len`. |
 | `prompt_tokens.cached` / `.uncached` | server `usage.prompt_tokens_details` | Absent when the server does not report the detail |
 | `output_len` | client | The response text re-tokenized as one whole message |
-| `output_tokens` | server `usage.completion_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
+| `output_tokens` | server `usage.completion_tokens` / `usage.output_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
 | `client_fallback_requests` | n/a | Per side (`prompt`, `output`), how many successful requests carry a client count because the server reported none. Counts requests, not tokens. Nonzero means that distribution mixes sources |
 | `token_count_mismatches` | n/a | Streamed requests where the sum of the per-chunk client tokenization differs from the server count |
 
@@ -61,8 +61,9 @@ Both are read.
 
 TPOT, normalized TPOT, output token throughput and token goodput divide by the client-side
 `output_len` by default. Setting `report.request_lifecycle.use_server_output_tokens: true`
-switches them to the server count for every request where the server reported one. The flag
-does not change `output_len` or `output_tokens` themselves, only which of the two the
+switches them to the server count for every request where the server reported one. It resolves
+that count from the same usage keys the report does, so either spelling switches the metrics.
+The flag does not change `output_len` or `output_tokens` themselves, only which of the two the
 per-token metrics divide by.
 
 ### Reading a mismatch

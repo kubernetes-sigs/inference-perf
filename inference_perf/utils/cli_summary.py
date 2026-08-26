@@ -50,7 +50,10 @@ def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_ou
         "Out (client): response text re-tokenized by the client (output_len).",
     ]
     if has_server_output:
-        parts.append("Out (server): count reported in the server's usage (output_tokens).")
+        parts.append(
+            "Out (server): the count reported in the server's usage (output_tokens), "
+            "with the client count substituted for any request the server did not count."
+        )
 
     prompt_fallbacks = 0
     output_fallbacks = 0
@@ -67,6 +70,29 @@ def token_source_caption(stage_contents: Iterable[Dict[str, Any]], has_server_ou
 
     parts.append("See docs/metrics.md.")
     return " ".join(parts)
+
+
+def has_server_reported_output(stage_contents: Iterable[Dict[str, Any]]) -> bool:
+    """Whether any successful request carried an output count the server actually reported.
+
+    Not the same question as "does output_tokens have a distribution". A request whose
+    usage reports no output count contributes the client count to that distribution, so
+    against a server that reports no usage at all the distribution is still there and is
+    identical to the client one: labeling those values "(server)" would show one number
+    twice and read as two independent counts agreeing. What earns the label is a request
+    that did not fall back, which is the success count minus the output-side fallbacks.
+    """
+    for contents in stage_contents:
+        successes = contents.get("successes", {})
+        if not isinstance(successes.get("output_tokens"), dict):
+            continue
+        fallbacks = successes.get("client_fallback_requests")
+        # A report predating client_fallback_requests cannot be classified; treat it as
+        # having server counts, which is what the table did before that field existed.
+        fallback_count = int(fallbacks.get("output") or 0) if isinstance(fallbacks, dict) else 0
+        if int(successes.get("count") or 0) - fallback_count > 0:
+            return True
+    return False
 
 
 def print_summary_table(reports: List[ReportFile]) -> None:
@@ -139,10 +165,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     # come from the server's usage when it reports them, output has two independent
     # counts, and a report that mixes sources is otherwise indistinguishable from one
     # that does not.
-    has_server_output = any(
-        isinstance(r.get("successes", {}).get("output_tokens"), dict) and "mean" in r["successes"]["output_tokens"]
-        for r in stage_reports.values()
-    )
+    has_server_output = has_server_reported_output(stage_reports.values())
     token_table = Table(
         title="[bold magenta]Token Length Aggregates[/bold magenta]",
         caption=token_source_caption(stage_reports.values(), has_server_output),
