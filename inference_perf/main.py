@@ -311,6 +311,11 @@ def main_cli() -> None:
                     "Please ensure a valid tokenizer is configured in the 'tokenizer' section of your config file."
                 )
 
+        # How many values the synthetic/random datagens must pre-generate,
+        # derived from the load stages. Passed to the datagen rather than
+        # written back onto the (already validated) config object; the datagen
+        # combines it with any user-supplied total_count on the distribution.
+        sample_count: Optional[int] = None
         if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
             if config.data.trace is None:
                 if config.data.input_distribution is None:
@@ -322,24 +327,13 @@ def main_cli() -> None:
                         f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
                     )
 
-                # Calculate total count based on stage type
                 max_requests = 0
                 for stage in config.load.stages:
                     if isinstance(stage, StandardLoadStage):
                         max_requests = max(max_requests, int(stage.rate * stage.effective_duration))
                     elif isinstance(stage, ConcurrentLoadStage):
                         max_requests = max(max_requests, stage.num_requests)
-                total_count = max_requests + 1
-                if (
-                    config.data.input_distribution.total_count is None
-                    or config.data.input_distribution.total_count < total_count
-                ):
-                    config.data.input_distribution.total_count = total_count
-                if (
-                    config.data.output_distribution.total_count is None
-                    or config.data.output_distribution.total_count < total_count
-                ):
-                    config.data.output_distribution.total_count = total_count
+                sample_count = max_requests + 1
 
         if config.data.type == DataGenType.SharedPrefix and config.data.shared_prefix is None:
             raise Exception(f"{config.data.type.value} data generator requires 'shared_prefix' to be configured")
@@ -358,9 +352,13 @@ def main_cli() -> None:
             if config.data.multimodal:
                 datagen = MultimodalDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
             else:
-                datagen = SyntheticDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
+                datagen = SyntheticDataGenerator(
+                    config.api, config.data, tokenizer, seed=config.load.base_seed, total_count=sample_count
+                )
         elif config.data.type == DataGenType.Random:
-            datagen = RandomDataGenerator(config.api, config.data, tokenizer, seed=config.load.base_seed)
+            datagen = RandomDataGenerator(
+                config.api, config.data, tokenizer, seed=config.load.base_seed, total_count=sample_count
+            )
         elif config.data.type == DataGenType.SharedPrefix:
             datagen = SharedPrefixDataGenerator(config.api, config.data, tokenizer)
         elif config.data.type == DataGenType.ConversationReplay:
