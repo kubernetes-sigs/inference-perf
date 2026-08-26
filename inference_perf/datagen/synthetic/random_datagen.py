@@ -23,7 +23,12 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from ..base import DataGenerator, LazyLoadDataMixin
-from ..datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
+from ..datagen_utils import (
+    effective_sample_count,
+    generate_random_exact_length_text,
+    init_vocab_sampling,
+    random_token_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,25 +42,22 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         config: DataConfig,
         tokenizer: Optional[CustomTokenizer],
         seed: Optional[int] = None,
+        total_count: Optional[int] = None,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
 
         if self.trace is None:
-            # let's read the trace file and get the input and output lengths
             if self.input_distribution is None or self.output_distribution is None:
                 raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
-
-            if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
-                raise ValueError("IODistribution requires total_count to be set")
 
             self.input_lengths = generate_distribution(
                 self.input_distribution.min,
                 self.input_distribution.max,
                 self.input_distribution.mean,
                 self.input_distribution.std_dev,
-                self.input_distribution.total_count,
+                effective_sample_count(total_count, self.input_distribution),
                 dist_type=self.input_distribution.type,
                 rng=self.rng,
             )
@@ -64,7 +66,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.output_distribution.max,
                 self.output_distribution.mean,
                 self.output_distribution.std_dev,
-                self.output_distribution.total_count,
+                effective_sample_count(total_count, self.output_distribution),
                 dist_type=self.output_distribution.type,
                 rng=self.rng,
             )
