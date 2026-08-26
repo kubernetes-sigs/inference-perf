@@ -22,9 +22,8 @@ import numpy as np
 from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import generate_distribution
 from ..base import DataGenerator, LazyLoadDataMixin
-from ..datagen_utils import converge_to_exact_length_text, effective_sample_count
+from ..datagen_utils import converge_to_exact_length_text, pregenerate_lengths
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +45,14 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
+        # Read the raw config values, not the base-class attributes: those
+        # only carry the structured Distribution view, and these fields may
+        # hold expression strings.
+        input_spec = config.input_distribution
+        output_spec = config.output_distribution
         # Embeddings requests generate no output, so they take no output lengths.
         is_embeddings = api_config.type == APIType.Embeddings
-        if (
-            self.input_distribution is None
-            or (self.output_distribution is None and not is_embeddings)
-            or self.tokenizer is None
-        ):
+        if input_spec is None or (output_spec is None and not is_embeddings) or self.tokenizer is None:
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
@@ -60,31 +60,11 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         # total_count counts requests. An embeddings request carries batch_size
         # inputs, each with its own length drawn from input_distribution.
         self.embeddings_batch_size = api_config.embeddings.batch_size if api_config.embeddings else 1
-        input_count = effective_sample_count(total_count, self.input_distribution) * (
-            self.embeddings_batch_size if is_embeddings else 1
-        )
-
-        self.input_lengths = generate_distribution(
-            self.input_distribution.min,
-            self.input_distribution.max,
-            self.input_distribution.mean,
-            self.input_distribution.std_dev,
-            input_count,
-            dist_type=self.input_distribution.type,
-            rng=self.rng,
+        self.input_lengths = pregenerate_lengths(
+            input_spec, total_count, self.rng, per_request=self.embeddings_batch_size if is_embeddings else 1
         )
         self.output_lengths = (
-            generate_distribution(
-                self.output_distribution.min,
-                self.output_distribution.max,
-                self.output_distribution.mean,
-                self.output_distribution.std_dev,
-                effective_sample_count(total_count, self.output_distribution),
-                dist_type=self.output_distribution.type,
-                rng=self.rng,
-            )
-            if self.output_distribution is not None
-            else np.array([], dtype=np.int_)
+            pregenerate_lengths(output_spec, total_count, self.rng) if output_spec is not None else np.array([], dtype=np.int_)
         )
         if self.config and self.config.corpus_file_path:
             corpus_path = Path(self.config.corpus_file_path)
