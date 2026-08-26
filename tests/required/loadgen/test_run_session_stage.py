@@ -20,7 +20,7 @@ import unittest
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from inference_perf.apis import LazyLoadInferenceAPIData
+from inference_perf.apis import LazyLoadInferenceAPIData, SessionLifecycleMetric
 from inference_perf.config import APIType, LoadConfig, LoadType, TraceSessionReplayLoadStage
 from inference_perf.datagen.base import SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
@@ -98,8 +98,27 @@ class FakeSessionGenerator(SessionGenerator):
             return True
         return False
 
-    def build_session_metric(self, session_id: str, stage_id: int, start_time: float, end_time: float) -> Any:
-        return {"session_id": session_id, "stage_id": stage_id}
+    # Returns the same SessionLifecycleMetric type the real generators return, not a
+    # stand-in dict. run_session_stage stamps fields onto this object after we hand it
+    # back (dispatch_perf_counter, for one), so a dict here would raise AttributeError
+    # and, worse, would let the double drift out of step with the model unnoticed.
+    # Example: session_id="s1", stage_id=3, start_time=100.0, end_time=104.0 gives a
+    # metric with duration_sec=4.0 and num_events set to however many events the
+    # session was scripted with.
+    def build_session_metric(
+        self, session_id: str, stage_id: int, start_time: float, end_time: float
+    ) -> SessionLifecycleMetric:
+        num_events = len(self.events.get(session_id, []))
+        return SessionLifecycleMetric(
+            session_id=session_id,
+            stage_id=stage_id,
+            file_path=f"{session_id}.jsonl",
+            start_time=start_time,
+            end_time=end_time,
+            duration_sec=end_time - start_time,
+            num_events=num_events,
+            num_events_completed=num_events,
+        )
 
     def cleanup_session(self, session_id: str) -> None:
         self.cleaned.append(session_id)
@@ -241,7 +260,7 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(datagen.activated, ["s1"], "unbuildable session is never activated")
         self.assertEqual(len(request_queue.put.call_args_list), datagen.events_per_session)
         self.assertEqual(self.collector.record_metric.call_count, 1)
-        self.assertEqual(self.collector.record_metric.call_args.args[0]["session_id"], "s1")
+        self.assertEqual(self.collector.record_metric.call_args.args[0].session_id, "s1")
         self.assertEqual(load_generator.stage_runtime_info[0].status.name, "COMPLETED")
 
 
