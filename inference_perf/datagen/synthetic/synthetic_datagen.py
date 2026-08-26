@@ -33,7 +33,7 @@ from inference_perf.config import APIConfig, APIType, DataConfig, RerankConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
 from ..base import DataGenerator, LazyLoadDataMixin
-from ..datagen_utils import converge_to_exact_length_text
+from ..datagen_utils import converge_to_exact_length_text, effective_sample_count
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         config: DataConfig,
         tokenizer: Optional[CustomTokenizer],
         seed: Optional[int] = None,
+        total_count: Optional[int] = None,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
@@ -63,11 +64,6 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             or self.tokenizer is None
         ):
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
-
-        if self.input_distribution.total_count is None or (
-            self.output_distribution is not None and self.output_distribution.total_count is None
-        ):
-            raise ValueError("IODistribution requires total_count to be set")
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
 
@@ -82,7 +78,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             inputs_per_request = self.rerank_document_count + 1
         else:
             inputs_per_request = 1
-        input_count = self.input_distribution.total_count * inputs_per_request
+        input_count = effective_sample_count(total_count, self.input_distribution) * inputs_per_request
 
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
@@ -99,11 +95,11 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
                 self.output_distribution.max,
                 self.output_distribution.mean,
                 self.output_distribution.std_dev,
-                self.output_distribution.total_count,
+                effective_sample_count(total_count, self.output_distribution),
                 dist_type=self.output_distribution.type,
                 rng=self.rng,
             )
-            if self.output_distribution is not None and self.output_distribution.total_count is not None
+            if self.output_distribution is not None
             else np.array([], dtype=np.int_)
         )
         if self.config and self.config.corpus_file_path:
