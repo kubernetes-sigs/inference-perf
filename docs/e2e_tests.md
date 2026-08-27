@@ -50,12 +50,22 @@ convention: a new `test_vllm_*.py` file joins the slice, and CI, with no
 registration anywhere.
 
 ```sh
-# Start a real vLLM CPU server (the same script CI uses):
-e2e/vllm_cpu_server.sh
+# Start a real vLLM CPU server (the same script CI uses). Release tags
+# come from e2e/vllm_releases.txt:
+e2e/vllm_cpu_server.sh start v0.26.0
 
-# In another shell:
-pdm run test:e2e:live
+# Run the slice against it. The base URL selects the external server; the
+# version selects the committed metric-families golden to check against:
+E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION=v0.26.0 \
+  pdm run test:e2e:live
+
+e2e/vllm_cpu_server.sh stop
 ```
+
+When the server turns healthy, `start` prints the exact
+`E2E_VLLM_BASE_URL=... E2E_VLLM_VERSION=...` prefix for its actual port and
+tag, so the ready line is the copy source if this snippet ever drifts from
+the script.
 
 Server resolution, in order:
 
