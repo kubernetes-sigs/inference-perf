@@ -38,6 +38,7 @@ from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 from inference_perf.apis.base import RequestLifecycleMetric
 from inference_perf.config import Config
+from inference_perf.observability.context import RunContext, StageContext
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +51,18 @@ def always(config: Config) -> bool:
     return True
 
 
-def _no_requests_in_flight() -> int:
-    return 0
+def exposition_name(spec: "MetricSpec[Any]") -> str:
+    """The sample name a metric appears under in the exposition format.
 
-
-@dataclass(frozen=True)
-class RunContext:
-    """What ``on_run_start`` hooks may read: the static run config plus live
-    probes into the load generator that gauges can sample on every scrape."""
-
-    config: Config
-    in_flight_requests: Callable[[], int] = _no_requests_in_flight
+    ``prometheus_client`` appends ``_total`` to Counter sample names, so a
+    Counter declared as ``inference_perf_requests`` is scraped, and read back
+    via ``CollectorRegistry.get_sample_value``, as
+    ``inference_perf_requests_total``. Anything resolving a spec to a sample
+    must go through here rather than using ``spec.name`` directly.
+    """
+    if spec.metric_type is Counter:
+        return f"{spec.name}_total"
+    return spec.name
 
 
 @dataclass(frozen=True)
@@ -83,8 +85,8 @@ class MetricSpec(Generic[MetricT]):
     buckets: Optional[Tuple[float, ...]] = None  # histograms only
     enabled: Callable[[Config], bool] = always
     on_run_start: Optional[Callable[[MetricT, RunContext], None]] = None
-    on_stage_start: Optional[Callable[[MetricT, int], None]] = None
-    on_stage_end: Optional[Callable[[MetricT, int], None]] = None
+    on_stage_start: Optional[Callable[[MetricT, StageContext], None]] = None
+    on_stage_end: Optional[Callable[[MetricT, StageContext], None]] = None
     on_request: Optional[Callable[[MetricT, RequestLifecycleMetric], None]] = None
 
     def __post_init__(self) -> None:
@@ -121,11 +123,11 @@ class MetricsHub:
             context = RunContext(config=self._config if self._config is not None else Config())
         self._dispatch("on_run_start", context)
 
-    def on_stage_start(self, stage_id: int) -> None:
-        self._dispatch("on_stage_start", stage_id)
+    def on_stage_start(self, context: StageContext) -> None:
+        self._dispatch("on_stage_start", context)
 
-    def on_stage_end(self, stage_id: int) -> None:
-        self._dispatch("on_stage_end", stage_id)
+    def on_stage_end(self, context: StageContext) -> None:
+        self._dispatch("on_stage_end", context)
 
     def _dispatch(self, event: str, *args: Any) -> None:
         for spec, prom_metric in self._bindings:

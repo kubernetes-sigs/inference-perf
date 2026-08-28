@@ -14,8 +14,10 @@
 
 """Aggregation point for the exported metric sets.
 
-``core.py`` holds the run/stage/request specs exported on every run and
-``latency.py`` the per-request histograms (TTFT and TPOT gated on streaming).
+``core.py`` holds the run/stage/request specs exported on every run,
+``progress.py`` the stage-completion family the CLI's progress bars are built
+from, and ``latency.py`` the per-request histograms (TTFT and TPOT gated on
+streaming).
 Further config-conditional sets should live in sibling modules and be
 appended to ``ALL_SPECS`` here as they are added.
 """
@@ -26,7 +28,8 @@ from inference_perf.observability.metrics.registry import MetricSpec
 
 from .core import CORE_SPECS
 from .latency import LATENCY_SPECS
+from .progress import PROGRESS_SPECS
 
-ALL_SPECS: Tuple[MetricSpec[Any], ...] = (*CORE_SPECS, *LATENCY_SPECS)
+ALL_SPECS: Tuple[MetricSpec[Any], ...] = (*CORE_SPECS, *PROGRESS_SPECS, *LATENCY_SPECS)
 
-__all__ = ["ALL_SPECS", "CORE_SPECS", "LATENCY_SPECS"]
+__all__ = ["ALL_SPECS", "CORE_SPECS", "LATENCY_SPECS", "PROGRESS_SPECS"]

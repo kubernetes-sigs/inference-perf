@@ -3,9 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from prometheus_client import Counter
-
-from inference_perf.observability.metrics.registry import MetricSpec, always
+from inference_perf.observability.metrics.registry import MetricSpec, always, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 
 HEADER = """# Inference-Perf Runtime Metrics
@@ -17,13 +15,6 @@ This document is automatically generated from the metric specs under `inference_
 | Metric | Type | Labels | Exported | Description |
 | --- | --- | --- | --- | --- |
 """
-
-
-def exposition_name(spec: MetricSpec[Any]) -> str:
-    # prometheus_client appends _total to Counter sample names.
-    if spec.metric_type is Counter:
-        return f"{spec.name}_total"
-    return spec.name
 
 
 def exported_when(spec: MetricSpec[Any]) -> str:
