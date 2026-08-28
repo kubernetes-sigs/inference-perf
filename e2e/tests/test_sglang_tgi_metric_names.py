@@ -212,13 +212,26 @@ def test_exposed_families_match_fixture(server: str) -> None:
 
 @pytest.mark.parametrize("server", SERVER_IDS)
 def test_declared_metric_names_exist(server: str) -> None:
+    # Two oracles over one exposition, both driven by the metric's own
+    # candidate_names(): every series a query selects must be present
+    # (is_exposed, over sample and family names), and the family behind it must
+    # carry the type the query assumes (resolves, over the `# TYPE` map).
+    # Presence alone is not enough. Given `# TYPE sglang:prefix_cache_hit gauge`
+    # and a matching sample line, a declared CounterMetric("sglang:prefix_cache_hit")
+    # is_exposed -> True on the bare-name candidate group, while the increase()
+    # it emits is nonsense over a gauge and reports no error. resolves -> False.
     spec = SERVERS[server]
-    names = exposed_names(live_metrics_text(spec))
+    exposition = live_metrics_text(spec)
+    names = exposed_names(exposition)
+    families = parse_exposition(exposition, spec.prefix)
     declared = declared_for(spec)
     allowed = KNOWN_UNRESOLVED[server]
+    checked = {name: metric for name, metric in declared.items() if name not in allowed}
 
-    missing = sorted(name for name, metric in declared.items() if name not in allowed and not is_exposed(metric, names))
-    assert not missing, (
-        f"{len(missing)}/{len(declared)} names declared by the {server} client are absent from a real "
-        f"/metrics exposition (stale names produce silently empty report fields): {missing}"
+    absent = {name for name, metric in checked.items() if not is_exposed(metric, names)}
+    mistyped = sorted(name for name, metric in checked.items() if name not in absent and not resolves(metric, families))
+    assert not (absent or mistyped), (
+        f"{len(absent) + len(mistyped)}/{len(checked)} names declared by the {server} client are unusable "
+        f"against a real /metrics exposition (a stale name reports an empty field, a retyped family reports "
+        f"a nonsense one, and neither raises): absent={sorted(absent)}, wrong_type={mistyped}"
     )
