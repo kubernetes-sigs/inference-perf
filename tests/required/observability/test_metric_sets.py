@@ -33,7 +33,7 @@ from inference_perf.apis.base import (
     UnaryResponseMetrics,
 )
 from inference_perf.config import APIConfig, Config, LoadConfig, StandardLoadStage
-from inference_perf.observability.metrics import MetricsHub, RunContext, build_metrics
+from inference_perf.observability.metrics import MetricsHub, RunContext, StageContext, build_metrics
 from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.observability.metrics.sets.core import output_tokens
 from inference_perf.payloads import RequestMetrics, Text
@@ -117,18 +117,18 @@ def test_stage_gauges_follow_transitions() -> None:
     assert _sample(hub, "inference_perf_stage_running", stage="0") is None, "no series before the stage starts"
 
     before = time.time()
-    hub.on_stage_start(0)
+    hub.on_stage_start(StageContext(stage_id=0))
     assert _sample(hub, "inference_perf_stage_running", stage="0") == 1.0
     started = _sample(hub, "inference_perf_stage_start_timestamp_seconds", stage="0")
     assert started is not None and before <= started <= time.time()
     assert _sample(hub, "inference_perf_stage_end_timestamp_seconds", stage="0") is None
 
-    hub.on_stage_end(0)
+    hub.on_stage_end(StageContext(stage_id=0))
     assert _sample(hub, "inference_perf_stage_running", stage="0") == 0.0
     ended = _sample(hub, "inference_perf_stage_end_timestamp_seconds", stage="0")
     assert ended is not None and ended >= started
 
-    hub.on_stage_start(1)
+    hub.on_stage_start(StageContext(stage_id=1))
     assert _sample(hub, "inference_perf_stage_running", stage="1") == 1.0
     assert _sample(hub, "inference_perf_stage_running", stage="0") == 0.0
 
