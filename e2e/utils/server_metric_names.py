@@ -243,6 +243,10 @@ def is_exposed(metric: Metric[Any], names: Set[str]) -> bool:
 
     An exposition lists real series names, so this is a plain subset test over the
     metric's candidate groups.
+
+    Presence only. It cannot see a family that kept its name and changed type, so
+    the live check pairs it with ``resolves`` over the same exposition's family
+    map rather than using it alone (#669).
     """
     return any(group <= names for group in metric.candidate_names())
 
