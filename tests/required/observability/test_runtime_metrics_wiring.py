@@ -53,7 +53,7 @@ from inference_perf.metrics.request_collector import (
     LocalRequestMetricCollector,
     MultiprocessRequestMetricCollector,
 )
-from inference_perf.observability.metrics import MetricSpec, RunContext, build_metrics
+from inference_perf.observability.metrics import MetricSpec, RunContext, StageContext, build_metrics
 from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -82,15 +82,18 @@ def _metric(stage_id: int = 0) -> RequestLifecycleMetric:
 class _RecordingObserver:
     def __init__(self) -> None:
         self.events: List[Any] = []
+        self.contexts: List[StageContext] = []
 
     def __call__(self, metric: RequestLifecycleMetric) -> None:
         self.events.append(metric)
 
-    def on_stage_start(self, stage_id: int) -> None:
-        self.events.append(("start", stage_id))
+    def on_stage_start(self, context: StageContext) -> None:
+        self.events.append(("start", context.stage_id))
+        self.contexts.append(context)
 
-    def on_stage_end(self, stage_id: int) -> None:
-        self.events.append(("end", stage_id))
+    def on_stage_end(self, context: StageContext) -> None:
+        self.events.append(("end", context.stage_id))
+        self.contexts.append(context)
 
 
 class TestCollectorObservers(unittest.IsolatedAsyncioTestCase):
@@ -139,11 +142,11 @@ class TestHubLifecycleHooks(unittest.TestCase):
             seen.append(("run", len(context.config.load.stages)))
             gauge.set_function(context.in_flight_requests)
 
-        def _stage_start(counter: Counter, stage_id: int) -> None:
-            seen.append(("start", stage_id))
+        def _stage_start(counter: Counter, context: StageContext) -> None:
+            seen.append(("start", context.stage_id))
 
-        def _stage_end(counter: Counter, stage_id: int) -> None:
-            seen.append(("end", stage_id))
+        def _stage_end(counter: Counter, context: StageContext) -> None:
+            seen.append(("end", context.stage_id))
 
         specs = (
             MetricSpec(name="test_in_flight", documentation="live probe", metric_type=Gauge, on_run_start=_run_start),
@@ -160,8 +163,8 @@ class TestHubLifecycleHooks(unittest.TestCase):
 
         in_flight = 7
         hub.on_run_start(RunContext(config=config, in_flight_requests=lambda: in_flight))
-        hub.on_stage_start(0)
-        hub.on_stage_end(0)
+        hub.on_stage_start(StageContext(stage_id=0))
+        hub.on_stage_end(StageContext(stage_id=0))
 
         self.assertEqual(seen, [("run", 3), ("start", 0), ("end", 0)])
         self.assertEqual(hub.registry.get_sample_value("test_in_flight"), 7.0)
@@ -238,6 +241,10 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
             await loadgen.run(client)
 
         self.assertEqual(observer.events, [("start", 0), ("end", 0)])
+        # The bar's denominator has to travel with the transition, and the
+        # finished probe has to read the requests that actually completed.
+        self.assertEqual([c.planned_requests for c in observer.contexts], [2, 2])
+        self.assertEqual(observer.contexts[-1].requests_finished(), 2)
         self.assertEqual(sampled, [1, 1], "each request should see itself in flight while it runs")
         self.assertEqual(loadgen.in_flight_requests(), 0)
 
@@ -272,6 +279,9 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(collector.get_metrics()), 2 * num_requests)
         self.assertEqual(observer.events, [("start", 0), ("end", 0), ("start", 1), ("end", 1)])
+        self.assertEqual([c.planned_requests for c in observer.contexts], [num_requests] * 4)
+        self.assertEqual(observer.contexts[-1].requests_finished(), num_requests)
+        self.assertEqual(observer.contexts[-1].requests_skipped(), 0)
         counter = "inference_perf_requests_total"
         self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "0", "status": "success"}), float(num_requests))
         self.assertEqual(hub.registry.get_sample_value(counter, {"stage": "1", "status": "success"}), float(num_requests))
