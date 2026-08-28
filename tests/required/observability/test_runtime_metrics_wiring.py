@@ -48,6 +48,7 @@ from inference_perf.config import (
 )
 from inference_perf.datagen import DataGenerator
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
+from inference_perf.main import log_metrics_endpoint_failure
 from inference_perf.loadgen.load_generator import LoadGenerator
 from inference_perf.metrics.request_collector import (
     LocalRequestMetricCollector,
@@ -185,19 +186,48 @@ class TestHubLifecycleHooks(unittest.TestCase):
 
 
 class TestObservabilityConfig(unittest.TestCase):
-    def test_defaults_are_off_and_port_matches_server_default(self) -> None:
+    def test_defaults_are_on_and_port_matches_server_default(self) -> None:
+        # A Config with no observability block at all.
+        # Expects the endpoint on and bound to 0.0.0.0:9464, so a run is
+        # scrapeable without having been configured for it.
         config = Config()
-        self.assertFalse(config.observability.metrics.enabled)
+        self.assertTrue(config.observability.metrics.enabled)
         self.assertEqual(config.observability.metrics.host, "0.0.0.0")
         # The config default is a literal to avoid a config <-> observability
         # import cycle; this pins it to the server's default.
         self.assertEqual(config.observability.metrics.port, DEFAULT_PORT)
 
     def test_yaml_shape_round_trips(self) -> None:
-        config = Config.model_validate({"observability": {"metrics": {"enabled": True, "port": 0}}})
+        # YAML turning the endpoint off and pinning an ephemeral port.
+        # Expects both to survive parsing, since disabling is now the setting
+        # a user has to write out rather than the default.
+        config = Config.model_validate({"observability": {"metrics": {"enabled": False, "port": 0}}})
         self.assertEqual(
-            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=True, host="0.0.0.0", port=0))
+            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="0.0.0.0", port=0))
         )
+
+
+class TestMetricsEndpointFailureLogging(unittest.TestCase):
+    def test_default_port_collision_is_a_warning(self) -> None:
+        # The endpoint fails to bind on the default port, which is what happens
+        # to every run but the first when several share a host (the e2e tier
+        # runs inference-perf subprocesses under `pytest -n auto`).
+        # Expects WARNING, not ERROR: the endpoint is on by default now, so this
+        # is an expected outcome rather than a fault, and ERROR here would be
+        # noise in every parallel run's log.
+        with self.assertLogs("inference_perf.main", level="WARNING") as cm:
+            log_metrics_endpoint_failure(RuntimeMetricsConfig(), OSError("Address already in use"))
+        self.assertEqual([r.levelname for r in cm.records], ["WARNING"])
+        self.assertIn("default port 9464 unavailable", cm.output[0])
+
+    def test_requested_port_collision_is_an_error(self) -> None:
+        # The endpoint fails to bind on port 9999, which a run only ever uses
+        # because someone asked for it.
+        # Expects ERROR: the user named that port and did not get it.
+        with self.assertLogs("inference_perf.main", level="WARNING") as cm:
+            log_metrics_endpoint_failure(RuntimeMetricsConfig(port=9999), OSError("Address already in use"))
+        self.assertEqual([r.levelname for r in cm.records], ["ERROR"])
+        self.assertIn("requested port", cm.output[0])
 
 
 class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
