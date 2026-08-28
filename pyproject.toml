@@ -128,12 +128,20 @@ indent-width = 4
 # On top of the defaults (`E4`, E7`, `E9`, and `F`), enable flake8-bugbear (`B`)
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
 # McCabe complexity (`C901`) by default.
-select = ["E4", "E7", "E9", "F", "B"]
+select = ["E4", "E7", "E9", "F", "B", "TID251"]
 ignore = []
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
+
+# Progress bars must be built from exported metrics, not from local counts, so
+# that the bar and the metric can never disagree. observability/progress.py is
+# the one module that renders them; everywhere else asks it for a declared
+# BarSpec. Banning the module here is what keeps that true without relying on
+# a reviewer noticing a second import.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"rich.progress".msg = "Import ProgressBars from inference_perf.observability.progress instead: every bar must read exported metrics (see that module's docstring)."
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.

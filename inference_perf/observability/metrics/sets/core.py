@@ -30,7 +30,8 @@ from typing import Any, Optional
 from prometheus_client import Counter, Gauge
 
 from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics
-from inference_perf.observability.metrics.registry import MetricSpec, RunContext
+from inference_perf.observability.context import RunContext, StageContext
+from inference_perf.observability.metrics.registry import MetricSpec
 
 
 def stage_label(metric: RequestLifecycleMetric) -> str:
@@ -64,16 +65,16 @@ def _bind_in_flight(gauge: Gauge, context: RunContext) -> None:
     gauge.set_function(context.in_flight_requests)
 
 
-def _stage_running(gauge: Gauge, stage_id: int) -> None:
-    gauge.labels(str(stage_id)).set(1)
+def _stage_running(gauge: Gauge, context: StageContext) -> None:
+    gauge.labels(context.stage_label).set(1)
 
 
-def _stage_done(gauge: Gauge, stage_id: int) -> None:
-    gauge.labels(str(stage_id)).set(0)
+def _stage_done(gauge: Gauge, context: StageContext) -> None:
+    gauge.labels(context.stage_label).set(0)
 
 
-def _stamp_stage(gauge: Gauge, stage_id: int) -> None:
-    gauge.labels(str(stage_id)).set(time.time())
+def _stamp_stage(gauge: Gauge, context: StageContext) -> None:
+    gauge.labels(context.stage_label).set(time.time())
 
 
 def _count_request(counter: Counter, metric: RequestLifecycleMetric) -> None:
@@ -96,6 +97,13 @@ def _count_output_tokens(counter: Counter, metric: RequestLifecycleMetric) -> No
         counter.labels(stage_label(metric)).inc(output_tokens(metric.info.response_metrics))
 
 
+STAGES = MetricSpec[Gauge](
+    name="inference_perf_stages",
+    documentation="Number of load stages configured for the run.",
+    metric_type=Gauge,
+    on_run_start=_set_stage_count,
+)
+
 CORE_SPECS: tuple[MetricSpec[Any], ...] = (
     MetricSpec(
         name="inference_perf_run_elapsed_seconds",
@@ -103,12 +111,7 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         metric_type=Gauge,
         on_run_start=_mark_run_start,
     ),
-    MetricSpec(
-        name="inference_perf_stages",
-        documentation="Number of load stages configured for the run.",
-        metric_type=Gauge,
-        on_run_start=_set_stage_count,
-    ),
+    STAGES,
     MetricSpec(
         name="inference_perf_stage_running",
         documentation="1 while the stage is executing, 0 once it has ended. A stage that has not started has no series.",

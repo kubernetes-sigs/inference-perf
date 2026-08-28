@@ -70,18 +70,18 @@ from functools import partial
 import logging
 import uvloop
 import numpy as np
-from rich.progress import (
-    Progress,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-    MofNCompleteColumn,
-)
+from prometheus_client import CollectorRegistry
 import signal
 
+from inference_perf.observability.context import StageContext
 from inference_perf.observability.logging import get_console
+from inference_perf.observability.progress import (
+    OVERALL_BAR,
+    STAGE_REQUESTS_BAR,
+    STAGE_SESSIONS_BAR,
+    BarHandle,
+    ProgressBars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +120,9 @@ class StageLifecycleObserver(Protocol):
     kept as a Protocol so the load generator does not import the metrics package.
     """
 
-    def on_stage_start(self, stage_id: int) -> None: ...
+    def on_stage_start(self, context: StageContext) -> None: ...
 
-    def on_stage_end(self, stage_id: int) -> None: ...
+    def on_stage_end(self, context: StageContext) -> None: ...
 
 
 class RequestQueueData(NamedTuple):
@@ -218,6 +218,7 @@ class Worker(mp.Process):
         request_phase: SyncEvent,
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
         force_stop_signal: Optional[SyncEvent] = None,
@@ -237,6 +238,7 @@ class Worker(mp.Process):
         self.request_phase = request_phase
         self.finished_requests_counter = finished_requests_counter
         self.active_requests_counter = active_requests_counter
+        self.skipped_requests_counter = skipped_requests_counter
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
         self.base_seed = base_seed
@@ -351,6 +353,12 @@ class Worker(mp.Process):
                             logger.debug(
                                 f"Skipping request - session failure detected: {getattr(request_data, 'event_id', 'unknown')}"
                             )
+                            # Retired without being sent, so no lifecycle metric will
+                            # exist for it. Counted here so the finished total the
+                            # progress bar reads can still be reconciled against the
+                            # outcome counters the report is built from.
+                            with self.skipped_requests_counter.get_lock():
+                                self.skipped_requests_counter.value += 1
                             return  # Exit this task, finally block will clean up
 
                         # Stage is winding down: in-flight requests may finish,
@@ -385,6 +393,8 @@ class Worker(mp.Process):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 except Exception as e:
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
+                    with self.skipped_requests_counter.get_lock():
+                        self.skipped_requests_counter.value += 1
                     with self.finished_requests_counter.get_lock():
                         self.finished_requests_counter.value += 1
                     semaphore.release()
@@ -553,13 +563,20 @@ class LoadGenerator:
         load_config: LoadConfig,
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
         stage_observer: Optional[StageLifecycleObserver] = None,
+        metrics_registry: Optional[CollectorRegistry] = None,
     ) -> None:
         self.datagen = datagen
         self.stage_observer = stage_observer
+        # The registry the progress bars read. Without one the run is silent
+        # rather than showing bars built from some second set of counters.
+        self.metrics_registry = metrics_registry
         # Requests sent and not yet finished. Multiprocess runs read the shared
         # counter the workers maintain; the in-process run() path counts locally.
         self._active_requests_counter: Optional["Synchronized[int]"] = None
         self._local_in_flight = 0
+        # The in-process run() path has no worker counters to sample, so it
+        # keeps its own. Reset per stage, like the shared ones.
+        self._local_finished = 0
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
         self.stages = load_config.stages
@@ -630,14 +647,15 @@ class LoadGenerator:
             await request
         finally:
             self._local_in_flight -= 1
+            self._local_finished += 1
 
-    def _stage_started(self, stage_id: int) -> None:
+    def _stage_started(self, context: StageContext) -> None:
         if self.stage_observer is not None:
-            self.stage_observer.on_stage_start(stage_id)
+            self.stage_observer.on_stage_start(context)
 
-    def _stage_ended(self, stage_id: int) -> None:
+    def _stage_ended(self, context: StageContext) -> None:
         if self.stage_observer is not None:
-            self.stage_observer.on_stage_end(stage_id)
+            self.stage_observer.on_stage_end(context)
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -681,7 +699,7 @@ class LoadGenerator:
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
-        progress_ctx: Optional[Progress] = None,
+        progress_ctx: Optional[ProgressBars] = None,
     ) -> None:
         """Run a session-based trace replay stage.
 
@@ -743,8 +761,19 @@ class LoadGenerator:
             range(stage_start_cursor, stage_start_cursor + effective_num_sessions)
         )  # Sessions waiting to start
         completed_session_ids: Set[str] = set()  # Session IDs that have completed
+        skipped_session_count = 0  # Sessions counted complete that dispatched nothing
         session_dispatch_times: Dict[str, float] = {}  # session_id → wall-clock dispatch time
         session_dispatch_perf_counters: Dict[str, float] = {}  # session_id → perf_counter dispatch time
+
+        # Reported from here, not from the driver loop, because the planned
+        # count the progress metrics need is only known once it is computed.
+        stage_context = StageContext(
+            stage_id=stage_id,
+            planned_sessions=effective_num_sessions,
+            sessions_finished=lambda: len(completed_session_ids),
+            sessions_skipped=lambda: skipped_session_count,
+        )
+        self._stage_started(stage_context)
 
         # Cache OTEL instrumentation to avoid redundant calls
         otel_instr = get_otel_instrumentation()
@@ -803,6 +832,8 @@ class LoadGenerator:
             # NOT appear in the session lifecycle metrics. To surface them later, record a
             # skipped/failed session metric here instead of only marking them complete.
             if hasattr(self.datagen, "is_session_buildable") and not self.datagen.is_session_buildable(session_idx):
+                nonlocal skipped_session_count
+                skipped_session_count += 1
                 completed_session_ids.add(self.datagen._session_ids[session_idx])  # type: ignore[attr-defined]
                 return 0
 
@@ -864,15 +895,15 @@ class LoadGenerator:
             return dispatched_count
 
         # Main dispatch and wait loop
-        stage_task = None
+        stage_task: Optional[BarHandle] = None
         if progress_ctx:
-            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Sessions", total=effective_num_sessions)
+            stage_task = progress_ctx.open(STAGE_SESSIONS_BAR, stage=str(stage_id))
 
         while True:
             # Check for interrupts
             if self.interrupt_sig:
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.info("Loadgen encountered SIGINT")
                 stage_status = StageStatus.FAILED
@@ -883,8 +914,8 @@ class LoadGenerator:
                 break
 
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                 stage_status = StageStatus.FAILED
@@ -895,8 +926,8 @@ class LoadGenerator:
                 break
 
             if timeout is not None and time.perf_counter() - start_time >= timeout:
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
                 stage_status = StageStatus.FAILED
@@ -909,8 +940,8 @@ class LoadGenerator:
             # Fail fast on worker death instead of waiting out the stage
             # timeout: sessions assigned to a dead worker can never complete.
             if self.workers and any(not w.is_alive() for w in self.workers):
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 failures = collect_worker_failures(self.workers, self.worker_crash_queue)
                 for failure in failures:
@@ -1000,13 +1031,15 @@ class LoadGenerator:
             # Sleep and update progress
             await sleep(0)
 
-            # Update progress
-            if progress_ctx and stage_task:
-                progress_ctx.update(stage_task, completed=len(completed_session_ids))
+            # Refresh is throttled internally, so driving it from this hot loop
+            # costs a clock read per iteration rather than a registry collect.
+            if progress_ctx:
+                progress_ctx.refresh()
 
         # Clean up progress task
-        if progress_ctx and stage_task:
-            progress_ctx.remove_task(stage_task)
+        if stage_task:
+            stage_task.close()
+            stage_task = None
 
         # Mark stage as completed if we finished normally
         if stage_status == StageStatus.RUNNING:
@@ -1045,6 +1078,7 @@ class LoadGenerator:
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
         )
+        self._stage_ended(stage_context)
 
     async def _teardown_stage(
         self,
@@ -1169,6 +1203,7 @@ class LoadGenerator:
             dead.request_phase,
             dead.finished_requests_counter,
             dead.active_requests_counter,
+            dead.skipped_requests_counter,
             dead.shared_max_concurrency,
             dead.base_seed,
             force_stop_signal=dead.force_stop_signal,
@@ -1186,11 +1221,13 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
-        progress_ctx: Optional[Progress] = None,
+        progress_ctx: Optional[ProgressBars] = None,
+        report_stage: bool = True,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -1200,6 +1237,8 @@ class LoadGenerator:
         request_phase.set()
         with finished_requests_counter.get_lock():
             finished_requests_counter.value = 0
+        with skipped_requests_counter.get_lock():
+            skipped_requests_counter.value = 0
         timer = self.get_timer(rate, duration)
 
         # Allow generation a second to begin populating the queue so the workers
@@ -1213,6 +1252,16 @@ class LoadGenerator:
             num_requests = int(rate * duration)
 
         stage_status = StageStatus.RUNNING
+        # Reported from here, not from the driver loop, because the planned
+        # count the progress metrics need is only known once it is computed.
+        stage_context = StageContext(
+            stage_id=stage_id,
+            planned_requests=num_requests,
+            requests_finished=lambda: int(finished_requests_counter.value),
+            requests_skipped=lambda: int(skipped_requests_counter.value),
+        )
+        if report_stage:
+            self._stage_started(stage_context)
 
         time_generator = timer.start_timer(start_time)
         if isinstance(self.datagen, DataGenerator):
@@ -1239,7 +1288,7 @@ class LoadGenerator:
         # Wait until all requests are finished processing
         stage_task = None
         if progress_ctx:
-            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Requests", total=num_requests)
+            stage_task = progress_ctx.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
         timed_out = False
         while finished_requests_counter.value < num_requests:
@@ -1264,11 +1313,11 @@ class LoadGenerator:
                 timed_out = True  # Trigger cleanup
                 break
             await sleep(1)
-            if progress_ctx and stage_task:
-                progress_ctx.update(stage_task, completed=finished_requests_counter.value)
+            if progress_ctx:
+                progress_ctx.refresh()
 
-        if progress_ctx and stage_task:
-            progress_ctx.remove_task(stage_task)
+        if stage_task:
+            stage_task.close()
 
         stage_status = StageStatus.FAILED if (timed_out or self.interrupt_sig) else StageStatus.COMPLETED
 
@@ -1296,6 +1345,8 @@ class LoadGenerator:
             dropped_requests=teardown.dropped_requests,
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
+        if report_stage:
+            self._stage_ended(stage_context)
 
     async def preprocess(
         self,
@@ -1303,6 +1354,7 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: SyncEvent,
     ) -> None:
@@ -1340,9 +1392,11 @@ class LoadGenerator:
             request_queue,
             active_requests_counter,
             finished_requests_counter,
+            skipped_requests_counter,
             request_phase,
             timeout=timeout,
             cancel_signal=cancel_signal,
+            report_stage=False,
         )
 
         aggregator_task.cancel()
@@ -1388,6 +1442,7 @@ class LoadGenerator:
         )
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
+        skipped_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         self._active_requests_counter = active_requests_counter
         request_phase: SyncEvent = mp.Event()
         stop_signal: SyncEvent = mp.Event()
@@ -1431,6 +1486,7 @@ class LoadGenerator:
                     request_phase,
                     finished_requests_counter,
                     active_requests_counter,
+                    skipped_requests_counter,
                     shared_max_concurrency,
                     self.base_seed,
                     force_stop_signal=force_stop_signal,
@@ -1449,6 +1505,7 @@ class LoadGenerator:
                     request_queue,
                     active_requests_counter,
                     finished_requests_counter,
+                    skipped_requests_counter,
                     request_phase,
                     cancel_signal,
                 )
@@ -1477,20 +1534,9 @@ class LoadGenerator:
                     )
 
         # Create progress context for all stages
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-            console=get_console(),
-            redirect_stdout=True,
-            redirect_stderr=True,
-        ) as progress:
-            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        with ProgressBars(self.metrics_registry, console=get_console()) as progress:
+            progress.open(OVERALL_BAR)
             for stage_id, stage in enumerate(self.stages):
-                self._stage_started(stage_id)
                 # Handle session-based trace replay
                 if self.load_type == LoadType.TRACE_SESSION_REPLAY and isinstance(stage, TraceSessionReplayLoadStage):
                     await self.run_session_stage(
@@ -1519,6 +1565,7 @@ class LoadGenerator:
                         request_queue,
                         active_requests_counter,
                         finished_requests_counter,
+                        skipped_requests_counter,
                         request_phase,
                         cancel_signal,
                         concurrency_level=concurrency_level,
@@ -1535,6 +1582,7 @@ class LoadGenerator:
                         request_queue,
                         active_requests_counter,
                         finished_requests_counter,
+                        skipped_requests_counter,
                         request_phase,
                         cancel_signal,
                         concurrency_level=concurrency_level,
@@ -1542,7 +1590,6 @@ class LoadGenerator:
                     )
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
-                self._stage_ended(stage_id)
 
                 # Stage rendezvous already happened inside _teardown_stage
                 # (bounded, liveness-aware), so no barrier is needed here.
@@ -1550,7 +1597,7 @@ class LoadGenerator:
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
                     break
-                progress.update(overall_task, advance=1)
+                progress.refresh(force=True)
                 if self.stageInterval:
                     await sleep(self.stageInterval)
 
@@ -1563,18 +1610,8 @@ class LoadGenerator:
             return await self.mp_run(client)
 
         # Create progress context
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-            console=get_console(),
-            redirect_stdout=True,
-            redirect_stderr=True,
-        ) as progress:
-            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        with ProgressBars(self.metrics_registry, console=get_console()) as progress:
+            progress.open(OVERALL_BAR)
 
             for stage_id, stage in enumerate(self.stages):
                 if not isinstance(stage, StandardLoadStage):
@@ -1586,19 +1623,26 @@ class LoadGenerator:
                 end_time = start_time + stage.duration
                 stage_status = StageStatus.RUNNING
                 logger.info("Stage %d - run started", stage_id)
-                self._stage_started(stage_id)
 
                 num_requests = int(stage.rate * stage.duration)
-                stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
+                # This path has no worker processes to sample, so it counts its
+                # own completions; reset per stage like the shared counters are.
+                self._local_finished = 0
+                stage_context = StageContext(
+                    stage_id=stage_id,
+                    planned_requests=num_requests,
+                    requests_finished=lambda: self._local_finished,
+                )
+                self._stage_started(stage_context)
+                stage_task = progress.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
                 if not isinstance(self.datagen, DataGenerator):
                     raise TypeError("Non-multiprocessing run() requires DataGenerator")
 
                 async with TaskGroup() as tg:
                     time_generator = timer.start_timer(start_time)
-                    for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=False)):
-                        if progress and stage_task:
-                            progress.update(stage_task, completed=count + 1)
+                    for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
+                        progress.refresh()
                         data.stage_id = stage_id
                         request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                         lora_adapter = self._get_lora_adapter()
@@ -1625,8 +1669,8 @@ class LoadGenerator:
                         else:
                             break
 
-                progress.update(stage_task, completed=1.0)
-                progress.remove_task(stage_task)  # Clean up after completion
+                progress.refresh(force=True)
+                stage_task.close()  # Clean up after completion
 
                 if stage_status == StageStatus.RUNNING:
                     stage_status = StageStatus.COMPLETED
@@ -1641,8 +1685,8 @@ class LoadGenerator:
                     status=stage_status,
                     concurrency_level=None,
                 )
-                self._stage_ended(stage_id)
-                progress.update(overall_task, advance=1)
+                self._stage_ended(stage_context)
+                progress.refresh(force=True)
                 LocalUserSession.clear_instances()
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
