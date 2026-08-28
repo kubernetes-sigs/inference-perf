@@ -111,15 +111,26 @@ def is_exposed(metric: Metric[Any], names: Set[str]) -> bool:
     An exposition lists real series names, so this is a plain subset test over the
     metric's own candidate groups; nothing here needs to know how a counter or a
     histogram is spelled.
+
+    Presence only. It cannot see a family that kept its name and changed type, so
+    the live check pairs it with ``resolves`` over the same exposition's family
+    map rather than using it alone (#669).
     """
     return any(group <= names for group in metric.candidate_names())
 
 
-def in_golden(metric: Metric[Any], golden: Dict[str, str]) -> bool:
-    """Whether every series this metric's queries select resolves against a golden."""
+def resolves(metric: Metric[Any], families: Dict[str, str]) -> bool:
+    """Whether every series this metric's queries select resolves against a family map.
+
+    Takes a family -> type map, so it serves both a committed golden and a map
+    parsed off a live exposition. Unlike ``is_exposed`` this is type-aware: a
+    family carrying the right name under the wrong type does not resolve, which
+    is what a name-only check cannot see (a counter turned gauge still answers
+    to its bare name while ``increase()`` over it returns nonsense).
+    """
     metric_type = prometheus_type(metric)
     return any(
-        all(provided_by_families(series, metric_type, golden) for series in group) for group in metric.candidate_names()
+        all(provided_by_families(series, metric_type, families) for series in group) for group in metric.candidate_names()
     )
 
 
