@@ -28,9 +28,14 @@ class TriggerRateOverWindow(BaseModel):
     min_samples: int = Field(0, ge=0, description="Minimum samples in the window before the trigger can trip.")
 
 
-TriggerSpec = Union[
-    TriggerConsecutive,
-    TriggerRateOverWindow,
+from typing import Annotated
+
+TriggerSpec = Annotated[
+    Union[
+        TriggerConsecutive,
+        TriggerRateOverWindow,
+    ],
+    Field(discriminator="type")
 ]
 
 

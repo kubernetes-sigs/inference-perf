@@ -36,18 +36,29 @@ class SimpleCircuitBreaker(CircuitBreaker):
 
     def _search(self, exprs: List[jmespath.parser.ParsedResult], data: Dict[str, Any]) -> bool:
         for expr in exprs:
-            try:
-                if bool(expr.search(data)):
-                    return True
-            except Exception:
-                pass
+            if bool(expr.search(data)):
+                return True
         return False
 
     def feed(self, metric: BaseModel) -> None:
         data = metric.model_dump(mode="json", exclude_unset=True, exclude_none=True)
         if self._search(self._matches, data):
             hit = 1 if not self._rules or self._search(self._rules, data) else 0
-            hit_sample = HitSample(datetime.now(), hit)
+            
+            # Use metric.end_time if available to get request time
+            if hasattr(metric, 'end_time') and metric.end_time is not None:
+                ts = datetime.fromtimestamp(metric.end_time)
+            elif hasattr(metric, 'end_timestamp_ns') and metric.end_timestamp_ns is not None:
+                ts = datetime.fromtimestamp(metric.end_timestamp_ns / 1e9)
+            elif hasattr(metric, 'timestamp') and metric.timestamp is not None:
+                if isinstance(metric.timestamp, datetime):
+                    ts = metric.timestamp
+                else:
+                    ts = datetime.fromtimestamp(metric.timestamp)
+            else:
+                ts = datetime.now()
+                
+            hit_sample = HitSample(ts, hit)
             for t in self._triggers:
                 t.update(hit_sample)
                 if t.fired():
@@ -58,3 +69,5 @@ class SimpleCircuitBreaker(CircuitBreaker):
 
     def reset(self) -> None:
         self._open = False
+        for t in self._triggers:
+            t.reset()
