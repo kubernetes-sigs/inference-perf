@@ -376,12 +376,12 @@ Runtime metrics inference-perf exports about the benchmark run itself (stage sta
 ```yaml
 observability:
   metrics:
-    enabled: false      # Serve the metrics over HTTP /metrics for Prometheus to scrape
+    enabled: true       # Serve the metrics over HTTP /metrics for Prometheus to scrape
     host: "0.0.0.0"     # Bind address of the endpoint
     port: 9464          # Port of the endpoint; 0 picks an ephemeral port (logged at startup)
 ```
 
-Metrics are always collected in-process; `enabled` only controls the HTTP endpoint. It is off by default so that side-by-side runs on one host do not contend for the port. If the port cannot be bound the run continues and logs an error; the reports are unaffected. For an in-cluster Job, enable it and point a `PodMonitor`/scrape config at the port; transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run.
+Metrics are always collected in-process; `enabled` only controls the HTTP endpoint. It is on by default, so a run is observable without having been configured for it. If the port cannot be bound the run continues and the reports are unaffected: that is logged as a warning on the default port, where side-by-side runs on one host are expected to contend, and as an error on a port you asked for explicitly. Set `enabled: false` to keep the port free. For an in-cluster Job, point a `PodMonitor`/scrape config at the port; transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run.
 
 ## Full Configuration Examples
 

@@ -19,11 +19,12 @@ class RuntimeMetricsConfig(StrictBaseModel):
     """Exposition of inference-perf's own runtime metrics (not the model server's)."""
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an "
             "HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this "
-            "only controls whether the HTTP endpoint is started."
+            "only controls whether the HTTP endpoint is started. On by default, so a run is observable "
+            "without being configured for it; set false to keep the port free."
         ),
     )
     host: str = Field(default="0.0.0.0", description="Address the runtime metrics endpoint binds to.")

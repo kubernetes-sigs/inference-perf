@@ -405,6 +405,6 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. |
 | `--tokenizer.load_timeout` | float | Deadline in seconds for loading the tokenizer, including any download from Hugging Face Hub. Null disables the deadline. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |
-| `--observability.metrics.enabled` | boolean | Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this only controls whether the HTTP endpoint is started. |
+| `--observability.metrics.enabled` | boolean | Serve inference-perf's own runtime metrics (stage state, request counts, latencies) over an HTTP /metrics endpoint for Prometheus to scrape. Metrics are always collected in-process; this only controls whether the HTTP endpoint is started. On by default, so a run is observable without being configured for it; set false to keep the port free. |
 | `--observability.metrics.host` | str | Address the runtime metrics endpoint binds to. |
 | `--observability.metrics.port` | int | Port the runtime metrics endpoint listens on. 0 picks an ephemeral port, logged at startup. |
