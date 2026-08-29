@@ -326,6 +326,8 @@ tokenizer:
                                               # Set to null to disable. Default: 300.
 ```
 
+`load_timeout: null` can only be set in a YAML config file; the `--tokenizer.load_timeout` CLI flag parses a float and rejects `null`. The deadline applies to each tokenizer construction independently; a run constructs a tokenizer in several stages (data generation, the model server client, report generation), so the worst-case total wait is a small multiple of `load_timeout`.
+
 ## Full Configuration Examples
 
 ### Minimal Configuration

@@ -27,6 +27,8 @@ class CustomTokenizerConfig(StrictBaseModel):
     token: Optional[str] = Field(default=None, description="HuggingFace access token used to download the tokenizer.")
     load_timeout: Optional[float] = Field(
         default=300.0,
+        gt=0,
+        allow_inf_nan=False,
         description="Deadline in seconds for loading the tokenizer, including any download from"
-        " Hugging Face Hub. None disables the deadline.",
+        " Hugging Face Hub. Null disables the deadline.",
     )

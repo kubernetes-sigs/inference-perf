@@ -66,16 +66,19 @@ def _load_tokenizer_with_deadline(config: CustomTokenizerConfig) -> PreTrainedTo
     # are not cached, and a wedged transfer (e.g. hf_xet hanging on a CDN error instead of
     # raising) would otherwise block the whole benchmark forever with no visible failure.
     # Loading in a daemon thread bounds the wait; the stuck thread cannot be cancelled, but it
-    # no longer blocks the process from failing fast or exiting.
+    # no longer blocks the process from failing fast or exiting. The deadline only bounds loads
+    # blocked in operations that release the GIL (network and file I/O, the hang class this
+    # targets); a loader wedged in pure-Python or GIL-holding native code would also starve the
+    # timer thread.
     result: dict[str, PreTrainedTokenizerBase] = {}
-    error: dict[str, BaseException] = {}
+    error: dict[str, Exception] = {}
 
     def load() -> None:
         try:
-            result["tokenizer"] = AutoTokenizer.from_pretrained(  # type: ignore[no-untyped-call]
+            result["tokenizer"] = AutoTokenizer.from_pretrained(
                 config.pretrained_model_name_or_path, token=config.token, trust_remote_code=config.trust_remote_code
             )
-        except BaseException as e:
+        except Exception as e:
             error["error"] = e
 
     logger.info("Loading tokenizer '%s'", config.pretrained_model_name_or_path)
@@ -96,4 +99,9 @@ def _load_tokenizer_with_deadline(config: CustomTokenizerConfig) -> PreTrainedTo
         )
     if "error" in error:
         raise error["error"]
+    if "tokenizer" not in result:
+        raise RuntimeError(
+            f"Tokenizer loader thread for '{config.pretrained_model_name_or_path}' exited without "
+            "producing a tokenizer or an error."
+        )
     return result["tokenizer"]

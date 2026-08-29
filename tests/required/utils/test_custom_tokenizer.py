@@ -11,14 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 import threading
 import time
 import unittest
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+from pydantic import ValidationError
+
 from inference_perf.config import CustomTokenizerConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+
+# If the deadline mechanism is disarmed (e.g. a bare thread.join()), the hung-download
+# test blocks forever; fail the file instead of hanging CI.
+pytestmark = pytest.mark.timeout(30)
 
 
 class TestCustomTokenizerLoadDeadline(unittest.TestCase):
@@ -50,9 +58,13 @@ class TestCustomTokenizerLoadDeadline(unittest.TestCase):
 
         mock_auto_tokenizer.from_pretrained.side_effect = hang
         try:
+            start = time.monotonic()
             with self.assertRaises(TimeoutError) as ctx:
                 CustomTokenizer(CustomTokenizerConfig(pretrained_model_name_or_path="some/model", load_timeout=0.1))
+            elapsed = time.monotonic() - start
             self.assertIn("did not finish within 0.1 seconds", str(ctx.exception))
+            # The timeout must fire near the configured deadline, not merely eventually.
+            self.assertLess(elapsed, 5.0)
         finally:
             release.set()
 
@@ -78,6 +90,22 @@ class TestCustomTokenizerLoadDeadline(unittest.TestCase):
 
     def test_default_load_timeout(self) -> None:
         self.assertEqual(CustomTokenizerConfig().load_timeout, 300.0)
+
+
+class TestLoadTimeoutValidation(unittest.TestCase):
+    def test_accepts_positive_and_null(self) -> None:
+        self.assertEqual(CustomTokenizerConfig(load_timeout=300.0).load_timeout, 300.0)
+        self.assertEqual(CustomTokenizerConfig(load_timeout=0.001).load_timeout, 0.001)
+        self.assertIsNone(CustomTokenizerConfig(load_timeout=None).load_timeout)
+
+    def test_rejects_non_positive_and_non_finite(self) -> None:
+        # 0 and negatives would make thread.join() return immediately, so every
+        # load would surface as a Hub outage; inf and nan raise from
+        # threading internals, bypassing the TimeoutError path. All four must
+        # fail config validation instead.
+        for value in (0, -5, math.inf, math.nan):
+            with self.assertRaises(ValidationError, msg=f"load_timeout={value}"):
+                CustomTokenizerConfig(load_timeout=value)
 
 
 if __name__ == "__main__":
