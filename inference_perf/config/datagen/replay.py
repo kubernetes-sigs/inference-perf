@@ -279,9 +279,11 @@ class WekaTraceReplayConfig(SessionReplayConfig):
         ge=1,
         description=(
             "Number of processes used to reconstruct trace sessions during data generation. "
-            "Defaults to the number of available CPU cores (capped at the trace count). "
-            "Set to 1 to disable multiprocessing. Output is deterministic and identical "
-            "regardless of this value."
+            "Defaults to the number of CPUs available to the process (the minimum of the "
+            "scheduling affinity and the cgroup CPU quota), capped at the trace count. "
+            "Set to 1 to disable multiprocessing. Parallel building requires Linux; other "
+            "platforms build serially. Output is deterministic and identical regardless "
+            "of this value."
         ),
     )
 

@@ -55,6 +55,7 @@ hashes recorded in the trace.
 """
 
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 import hashlib
 import json
@@ -64,6 +65,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import random
+import sys
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, Annotated
 from multiprocessing.managers import SyncManager
@@ -80,9 +82,10 @@ from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     DEPENDENCY_TYPE,
     RawCall,
     build_graph,
+    find_predecessors_by_text_matching,
     message_content_text,
 )
-from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
+from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage, ReplayMessage
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
@@ -598,12 +601,30 @@ def _build_trace_idle_timing(
 _build_ctx: Optional[Tuple["WekaTraceReplayDataGenerator", List[WekaTrace]]] = None
 
 
-def _pool_worker_init() -> None:
-    # The parent used the Rust tokenizer before forking, so its internal thread
-    # pool cannot be reused in children. Disable it explicitly to avoid the
-    # "process just got forked, after parallelism has already been used"
-    # warning from every worker.
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+def _cgroup_cpu_limit(cgroup_root: Path = Path("/sys/fs/cgroup")) -> Optional[int]:
+    """CPU limit imposed by the cgroup CFS quota, or None when unlimited or
+    undeterminable.
+
+    Kubernetes enforces CPU limits via the CFS quota by default (cpusets are
+    used only under the static CPU manager policy), so sched_getaffinity alone
+    can report far more CPUs than the pod is allowed to use.
+    """
+    try:
+        # cgroup v2: "<quota_us> <period_us>" or "max <period_us>".
+        fields = (cgroup_root / "cpu.max").read_text().split()
+        if len(fields) == 2 and fields[0] != "max":
+            return max(1, math.ceil(int(fields[0]) / int(fields[1])))
+    except (OSError, ValueError):
+        pass
+    try:
+        # cgroup v1: quota of -1 means unlimited.
+        quota = int((cgroup_root / "cpu" / "cpu.cfs_quota_us").read_text())
+        period = int((cgroup_root / "cpu" / "cpu.cfs_period_us").read_text())
+        if quota > 0 and period > 0:
+            return max(1, math.ceil(quota / period))
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def _first_assistant_match(
@@ -659,6 +680,14 @@ def _find_weka_predecessors(
     substitution cache, and temporal fallbacks are reproduced exactly;
     equivalence is asserted against the generic finder in tests.
     """
+    # This fast path reproduces only get_causal_dep's plain-text
+    # CAUSAL_FULL_MATCH branch; the structured-match branches fire only for
+    # ComplexReplayMessage outputs. Weka synthesizes plain ReplayMessages
+    # today, but if that ever changes, defer to the generic finder rather
+    # than silently dropping structured-match edges.
+    if any(isinstance(c.out_message, ComplexReplayMessage) for c in calls):
+        return find_predecessors_by_text_matching(calls)
+
     n = len(calls)
     predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
     output_matches_for_substitutions: Dict[Tuple[str, str], List[int]] = {}
@@ -917,6 +946,7 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         start = time.perf_counter()
         _build_ctx = (self, traces)
+        prev_tok_parallelism = os.environ.get("TOKENIZERS_PARALLELISM")
         try:
             if num_workers > 1:
                 logger.info(f"Building replay sessions for {len(traces)} traces with {num_workers} processes")
@@ -926,13 +956,29 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 # re-sorted by trace index below, so the output is identical
                 # to the serial path.
                 order = sorted(range(len(traces)), key=lambda i: -_estimated_trace_cost(traces[i]))
+                # Disable the Rust tokenizer's thread pool in the parent
+                # before forking (not in a post-fork worker initializer): the
+                # parent already used the tokenizer, and children must not
+                # inherit a live thread pool. Restored in the finally block.
+                os.environ["TOKENIZERS_PARALLELISM"] = "false"
                 fork_ctx = multiprocessing.get_context("fork")
-                with ProcessPoolExecutor(max_workers=num_workers, mp_context=fork_ctx, initializer=_pool_worker_init) as pool:
-                    results = list(pool.map(_build_session_for_trace, order))
+                try:
+                    with ProcessPoolExecutor(max_workers=num_workers, mp_context=fork_ctx) as pool:
+                        results = list(pool.map(_build_session_for_trace, order))
+                except BrokenProcessPool:
+                    # A worker died mid-build (typically the kernel OOM killer
+                    # at high worker counts). Rebuild serially instead of
+                    # failing the run; output is identical, only slower.
+                    logger.warning("A session-build worker process died; rebuilding all replay sessions serially")
+                    results = [_build_session_for_trace(i) for i in range(len(traces))]
             else:
                 results = [_build_session_for_trace(i) for i in range(len(traces))]
         finally:
             _build_ctx = None
+            if prev_tok_parallelism is None:
+                os.environ.pop("TOKENIZERS_PARALLELISM", None)
+            else:
+                os.environ["TOKENIZERS_PARALLELISM"] = prev_tok_parallelism
 
         sessions: List[ReplaySession] = []
         for trace_index, session, error in sorted(results, key=lambda r: r[0]):
@@ -953,27 +999,40 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
     def _resolve_datagen_workers(self, num_traces: int) -> int:
         """Resolve the process count for parallel session building.
 
-        Defaults to the number of CPUs available to this process, capped at the
-        trace count. A fork start method is required because pool workers
-        inherit the generator (tokenizer, corpus, traces) by copy-on-write
-        rather than pickling; without fork we fall back to serial.
+        Defaults to the number of CPUs available to this process (the minimum
+        of the scheduling affinity and the cgroup CFS quota), capped at the
+        trace count. The parallel path requires fork - pool workers inherit
+        the generator (tokenizer, corpus, traces) by copy-on-write rather
+        than pickling - and fork is only safe on Linux: macOS lists fork as
+        available, but it is unsafe in multi-threaded processes such as this
+        one (the Rust tokenizer starts threads) and Python 3.14 emits a
+        DeprecationWarning for it. Non-Linux platforms fall back to serial.
         """
         if self.weka_config.datagen_workers is not None:
             n = self.weka_config.datagen_workers
         else:
-            # sched_getaffinity respects container CPU limits but is Linux-only.
+            # sched_getaffinity reflects the cpuset only; Kubernetes normally
+            # enforces CPU limits via the CFS quota instead, so take the
+            # minimum of both.
             sched_getaffinity = getattr(os, "sched_getaffinity", None)
             n = len(sched_getaffinity(0)) if sched_getaffinity is not None else (os.cpu_count() or 1)
+            quota_limit = _cgroup_cpu_limit()
+            if quota_limit is not None:
+                n = min(n, quota_limit)
         n = max(1, min(n, num_traces))
-        if n > 1 and "fork" not in multiprocessing.get_all_start_methods():
-            logger.warning("'fork' start method unavailable on this platform; building replay sessions serially")
+        if n > 1 and not sys.platform.startswith("linux"):
+            logger.warning("Parallel session building requires fork and is Linux-only; building replay sessions serially")
             return 1
         return n
 
     def _reconstruct_raw_calls(self, trace: WekaTrace) -> List[RawCall]:
         # Per-trace deterministic scratch state. Kept local (not on self) so
         # this method is reentrant and safe to run concurrently for different
-        # traces in parallel worker processes.
+        # traces in parallel worker processes. Determinism across worker
+        # counts holds only because every draw from hash_id_rng is preceded
+        # by reseed_for_hash_id (see decode_block_tokens); a caller that
+        # draws without reseeding (randrange via sample_tokens_from_corpus,
+        # or choice) would make results depend on draw order.
         cache: Dict[int, List[int]] = {}
         hash_id_rng = HashIdRandomGenerator(self.base_seed)
         hash_id_rng.set_trace_id(trace.id)

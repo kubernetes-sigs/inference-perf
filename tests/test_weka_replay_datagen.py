@@ -444,6 +444,119 @@ def test_find_weka_predecessors_matches_generic_finder() -> None:
     assert expected_cache, "expected at least one exact-match cache entry"
 
 
+def test_find_weka_predecessors_matches_generic_finder_randomized() -> None:
+    """Differential fuzz over randomly generated call lists.
+
+    The hand-written scenario above covers the cases we thought of; this covers
+    the ones we did not. Short strings over a tiny alphabet so exact matches,
+    containment matches and duplicate outputs all collide frequently.
+    """
+    import random
+
+    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+        RawCall,
+        find_predecessors_by_text_matching,
+    )
+    from inference_perf.datagen.replay.replay_graph_types import ReplayMessage
+    from inference_perf.datagen.replay.weka_trace_replay_datagen import _find_weka_predecessors
+
+    atoms = ["", "a", "b", "c", "ab", "ba", "bc", "abc", "aab"]
+
+    def rand_call(rng: random.Random, i: int) -> RawCall:
+        messages = [
+            ReplayMessage(role=rng.choice(["user", "assistant", "assistant", "system", "tool"]), text=rng.choice(atoms))
+            for _ in range(rng.randint(0, 4))
+        ]
+        out = ReplayMessage(role="assistant", text=rng.choice(atoms)) if rng.random() < 0.85 else None
+        # Overlapping call windows so the temporal fallback is exercised too.
+        t_start = i * 100 + rng.randint(-60, 60)
+        return RawCall(
+            call_id=f"c{i}",
+            trace_id="t",
+            t_start_ms=t_start,
+            t_end_ms=t_start + rng.randint(1, 150),
+            model="m",
+            messages=messages,
+            out_message=out,
+            prompt_tokens=1,
+            completion_tokens=1,
+            temperature=0.0,
+            max_tokens_recorded=1,
+        )
+
+    for seed in range(500):
+        rng = random.Random(seed)
+        calls = [rand_call(rng, i) for i in range(rng.randint(1, 9))]
+        expected_preds, expected_cache = find_predecessors_by_text_matching(calls)
+        actual_preds, actual_cache = _find_weka_predecessors(calls)
+        assert [list(d.items()) for d in actual_preds] == [list(d.items()) for d in expected_preds], f"seed={seed}"
+        assert actual_cache == expected_cache, f"seed={seed}"
+
+
+def test_find_weka_predecessors_defers_on_complex_outputs() -> None:
+    """A ComplexReplayMessage output must route through the generic finder:
+    the fast path implements only the plain-text CAUSAL_FULL_MATCH branch, and
+    handling it there would silently drop structured-match edges (e.g.
+    CAUSAL_TOOL_CALL_IDS_MATCHED)."""
+    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+        DEPENDENCY_TYPE,
+        RawCall,
+        find_predecessors_by_text_matching,
+    )
+    from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage, ReplayMessage
+    from inference_perf.datagen.replay.weka_trace_replay_datagen import _find_weka_predecessors
+
+    # c0's output is a structured tool call; c1 references its tool call ID in
+    # a structured message but never repeats the output text verbatim.
+    tool_call_out = ComplexReplayMessage(
+        role="assistant",
+        message_info={"parts": [{"type": "tool_call", "id": "tc_1", "content": "run"}], "parts_text": ["run"]},
+        raw_reconstructed_text="run",
+    )
+    tool_call_echo = ComplexReplayMessage(
+        role="assistant",
+        message_info={"tool_calls": [{"id": "tc_1"}]},
+        raw_reconstructed_text="different text",
+    )
+    calls = [
+        RawCall(
+            call_id="c0",
+            trace_id="t",
+            t_start_ms=0,
+            t_end_ms=100,
+            model="m",
+            messages=[ReplayMessage(role="user", text="go")],
+            out_message=tool_call_out,
+            prompt_tokens=1,
+            completion_tokens=1,
+            temperature=0.0,
+            max_tokens_recorded=1,
+        ),
+        RawCall(
+            call_id="c1",
+            trace_id="t",
+            t_start_ms=150,
+            t_end_ms=250,
+            model="m",
+            messages=[ReplayMessage(role="user", text="go"), tool_call_echo],
+            out_message=ReplayMessage(role="assistant", text="done"),
+            prompt_tokens=1,
+            completion_tokens=1,
+            temperature=0.0,
+            max_tokens_recorded=1,
+        ),
+    ]
+
+    expected_preds, expected_cache = find_predecessors_by_text_matching(calls)
+    actual_preds, actual_cache = _find_weka_predecessors(calls)
+
+    assert [list(d.items()) for d in actual_preds] == [list(d.items()) for d in expected_preds]
+    assert actual_cache == expected_cache
+    # Sanity: this scenario requires a structured-match branch the fast path
+    # does not implement, so the guard (not luck) produced the agreement.
+    assert expected_preds[1] == {0: DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED}
+
+
 def _write_mock_trace(tmp_path: Path, trace_id: str, hash_base: int) -> str:
     trace_data = {
         "id": trace_id,
@@ -513,12 +626,16 @@ def test_weka_skip_invalid_files_through_parallel_path(tmp_path: Path, monkeypat
         _build_generator(good_files, datagen_workers=2, skip_invalid_files=False)
 
 
-def test_weka_resolve_datagen_workers(tmp_path: Path) -> None:
-    """Explicit datagen_workers is honored and capped at the trace count."""
+def test_weka_resolve_datagen_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit datagen_workers is honored, capped at the trace count, and the
+    parallel path is restricted to Linux."""
+    import sys as sys_module
+
     trace_files = [_write_mock_trace(tmp_path, f"t_{i}", 10 * (i + 1)) for i in range(2)]
     gen = _build_generator(trace_files, datagen_workers=1, skip_invalid_files=False)
 
     # Explicit value passes through; both are capped by the number of traces.
+    monkeypatch.setattr(sys_module, "platform", "linux")
     gen.weka_config.datagen_workers = 5
     assert gen._resolve_datagen_workers(num_traces=2) == 2
     assert gen._resolve_datagen_workers(num_traces=10) == 5
@@ -529,3 +646,42 @@ def test_weka_resolve_datagen_workers(tmp_path: Path) -> None:
     # Auto (None) resolves to at least 1 and never exceeds the trace count.
     gen.weka_config.datagen_workers = None
     assert 1 <= gen._resolve_datagen_workers(num_traces=3) <= 3
+
+    # Non-Linux platforms fall back to serial: fork is listed as available on
+    # macOS but is unsafe in multi-threaded processes.
+    monkeypatch.setattr(sys_module, "platform", "darwin")
+    gen.weka_config.datagen_workers = 5
+    assert gen._resolve_datagen_workers(num_traces=10) == 1
+
+
+def test_cgroup_cpu_limit(tmp_path: Path) -> None:
+    """CFS quota parsing for cgroup v2 and v1; unlimited/absent yields None."""
+    from inference_perf.datagen.replay.weka_trace_replay_datagen import _cgroup_cpu_limit
+
+    # No cgroup files at all.
+    assert _cgroup_cpu_limit(tmp_path / "missing") is None
+
+    # cgroup v2, limited: 250% of one CPU rounds up to 3.
+    v2 = tmp_path / "v2"
+    v2.mkdir()
+    (v2 / "cpu.max").write_text("250000 100000\n")
+    assert _cgroup_cpu_limit(v2) == 3
+
+    # cgroup v2, unlimited.
+    (v2 / "cpu.max").write_text("max 100000\n")
+    assert _cgroup_cpu_limit(v2) is None
+
+    # Sub-CPU quota clamps to 1 worker.
+    (v2 / "cpu.max").write_text("50000 100000\n")
+    assert _cgroup_cpu_limit(v2) == 1
+
+    # cgroup v1, limited.
+    v1 = tmp_path / "v1"
+    (v1 / "cpu").mkdir(parents=True)
+    (v1 / "cpu" / "cpu.cfs_quota_us").write_text("400000\n")
+    (v1 / "cpu" / "cpu.cfs_period_us").write_text("100000\n")
+    assert _cgroup_cpu_limit(v1) == 4
+
+    # cgroup v1, unlimited (quota -1).
+    (v1 / "cpu" / "cpu.cfs_quota_us").write_text("-1\n")
+    assert _cgroup_cpu_limit(v1) is None
