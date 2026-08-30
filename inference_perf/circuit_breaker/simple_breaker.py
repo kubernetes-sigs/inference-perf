@@ -44,20 +44,20 @@ class SimpleCircuitBreaker(CircuitBreaker):
         data = metric.model_dump(mode="json", exclude_unset=True, exclude_none=True)
         if self._search(self._matches, data):
             hit = 1 if not self._rules or self._search(self._rules, data) else 0
-            
+
             # Use metric.end_time if available to get request time
-            if hasattr(metric, 'end_time') and metric.end_time is not None:
+            if hasattr(metric, "end_time") and metric.end_time is not None:
                 ts = datetime.fromtimestamp(metric.end_time)
-            elif hasattr(metric, 'end_timestamp_ns') and metric.end_timestamp_ns is not None:
+            elif hasattr(metric, "end_timestamp_ns") and metric.end_timestamp_ns is not None:
                 ts = datetime.fromtimestamp(metric.end_timestamp_ns / 1e9)
-            elif hasattr(metric, 'timestamp') and metric.timestamp is not None:
+            elif hasattr(metric, "timestamp") and metric.timestamp is not None:
                 if isinstance(metric.timestamp, datetime):
                     ts = metric.timestamp
                 else:
                     ts = datetime.fromtimestamp(metric.timestamp)
             else:
                 ts = datetime.now()
-                
+
             hit_sample = HitSample(ts, hit)
             for t in self._triggers:
                 t.update(hit_sample)
