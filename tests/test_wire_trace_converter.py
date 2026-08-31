@@ -33,6 +33,7 @@ from inference_perf.datagen.replay.otel_trace_replay_datagen import (
 )
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import build_graph, build_raw_calls
 from inference_perf.datagen.replay.wire_trace_converter import (
+    FORMAT_ANTHROPIC_WIRE,
     FORMAT_CHAT_COMPLETIONS_WIRE,
     FORMAT_OTEL_JSON,
     FORMAT_OTEL_JSONL,
@@ -176,6 +177,114 @@ def responses_record(
     }
 
 
+def anthropic_record(
+    *,
+    status: int = 200,
+    system: Any = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    content_blocks: Optional[List[Dict[str, Any]]] = None,
+    tool_arg_fragments: Optional[List[str]] = None,
+    stop_reason: str = "end_turn",
+    input_tokens: int = 30,
+    output_tokens: int = 9,
+    cache_read_tokens: int = 0,
+    session_id: Optional[str] = "sess-anth-1",
+    tools: Optional[List[Dict[str, Any]]] = None,
+    path: str = "/anthropic/v1/messages",
+) -> Dict[str, Any]:
+    """One Anthropic Messages wire record; the response body is an incremental SSE stream.
+
+    Unlike the Responses API stream, nothing restates the finished message, so the events
+    are emitted exactly as the real API does: a start, per-block deltas, then a stop.
+    """
+    if messages is None:
+        messages = [{"role": "user", "content": [{"type": "text", "text": "do the thing"}]}]
+    if content_blocks is None:
+        content_blocks = [{"type": "text", "text": "answer"}]
+
+    events: List[Dict[str, Any]] = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg-test",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "test/model",
+                "usage": {"input_tokens": input_tokens, "cache_read_input_tokens": cache_read_tokens},
+            },
+        }
+    ]
+
+    for index, block in enumerate(content_blocks):
+        block_type = block.get("type")
+        if block_type == "tool_use":
+            events.append(
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": block.get("id", ""),
+                        "name": block.get("name", ""),
+                        "input": {},
+                    },
+                }
+            )
+            # Arguments stream as JSON fragments that are only valid once concatenated.
+            fragments = tool_arg_fragments if tool_arg_fragments is not None else [json.dumps(block.get("input", {}))]
+            for fragment in fragments:
+                events.append(
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "input_json_delta", "partial_json": fragment},
+                    }
+                )
+        elif block_type == "thinking":
+            events.append(
+                {"type": "content_block_start", "index": index, "content_block": {"type": "thinking", "thinking": ""}}
+            )
+            events.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "thinking_delta", "thinking": block.get("thinking", "")},
+                }
+            )
+        else:
+            events.append({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}})
+            events.append(
+                {"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": block.get("text", "")}}
+            )
+        events.append({"type": "content_block_stop", "index": index})
+
+    events.append({"type": "message_delta", "delta": {"stop_reason": stop_reason}, "usage": {"output_tokens": output_tokens}})
+    events.append({"type": "message_stop"})
+
+    request: Dict[str, Any] = {"model": "test/model", "messages": messages, "max_tokens": 1024, "stream": True}
+    if system is not None:
+        request["system"] = system
+    if tools is not None:
+        request["tools"] = tools
+
+    headers = {"content-type": "application/json"}
+    if session_id:
+        headers["session_id"] = session_id
+
+    return {
+        "path": path,
+        "wire": "anthropic",
+        "start_unix": START_UNIX,
+        "headers": headers,
+        "request": json.dumps(request),
+        "model": "test/model",
+        "status": status,
+        "response": _sse(events) if status == 200 else "",
+        "total_ms": 400.0,
+    }
+
+
 def otel_trace(trace_id: str = "trace-1", n_spans: int = 2) -> Dict[str, Any]:
     """A minimal OTel trace document with replayable LLM spans."""
     spans = []
@@ -225,6 +334,28 @@ def test_detect_format_chat_completions_wire(tmp_path: Path) -> None:
 def test_detect_format_responses_wire(tmp_path: Path) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [responses_record()])
     assert detect_trace_format(f) == FORMAT_RESPONSES_WIRE
+
+
+def test_detect_format_anthropic_wire(tmp_path: Path) -> None:
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record()])
+    assert detect_trace_format(f) == FORMAT_ANTHROPIC_WIRE
+
+
+def test_detect_format_anthropic_wire_bare_v1_messages_path(tmp_path: Path) -> None:
+    """A capture taken directly against the API, with no gateway prefix."""
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(path="/v1/messages")])
+    assert detect_trace_format(f) == FORMAT_ANTHROPIC_WIRE
+
+
+def test_detect_format_anthropic_wire_from_gateway_root_probe(tmp_path: Path) -> None:
+    """Detection reads only line 1, which can be a rejected probe to the gateway root.
+
+    Real captures open with a 405 against "/anthropic" before any /v1/messages call, so
+    the wire dialect has to carry detection or the whole file would be rejected.
+    """
+    probe = anthropic_record(status=405, path="/anthropic")
+    f = write_jsonl(tmp_path / "calls.jsonl", [probe, anthropic_record()])
+    assert detect_trace_format(f) == FORMAT_ANTHROPIC_WIRE
 
 
 def test_detect_format_otel_jsonl(tmp_path: Path) -> None:
@@ -437,6 +568,175 @@ def test_responses_conversion_flat_tool_definitions(tmp_path: Path) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [responses_record(tools=tools)])
     defs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.tool.definitions"])
     assert defs == [{"type": "function", "name": "exec", "description": "run", "parameters": {"type": "object"}}]
+
+
+# --------------------------------------------------------------------------------------
+# Anthropic Messages conversion
+# --------------------------------------------------------------------------------------
+
+
+def test_anthropic_conversion_basic_span_shape(tmp_path: Path) -> None:
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record()])
+    trace = convert_wire_file(f)
+
+    assert trace["span_count"] == 1
+    span = trace["spans"][0]
+    assert span["name"] == "chat test/model"
+    assert span["kind"] == "SPAN_KIND_CLIENT"
+    assert span["status"] == {"code": 1, "message": ""}
+    attrs = span["attributes"]
+    assert attrs["gen_ai.operation.name"] == "chat"
+    assert attrs["gen_ai.usage.input_tokens"] == 30
+    assert attrs["gen_ai.usage.output_tokens"] == 9
+    # end_turn is normalized to the finish_reason vocabulary the OpenAI converters emit.
+    assert attrs["gen_ai.response.finish_reasons"] == ["stop"]
+    assert span["start_time"].startswith("2023-11-14")
+    assert span["start_time"] != span["end_time"]
+
+
+def test_anthropic_conversion_reassembles_streamed_text(tmp_path: Path) -> None:
+    """Nothing in the stream restates the message, so text_delta events must accumulate."""
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(content_blocks=[{"type": "text", "text": "hello world"}])])
+    parts = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.output.messages"])[0]["parts"]
+    assert parts == [{"type": "text", "content": "hello world"}]
+
+
+def test_anthropic_conversion_tool_use_arguments_reassembled_from_fragments(tmp_path: Path) -> None:
+    """input_json_delta streams arguments as fragments that are invalid until joined."""
+    block = {"type": "tool_use", "id": "toolu_1", "name": "Bash"}
+    record = anthropic_record(
+        content_blocks=[block],
+        tool_arg_fragments=['{"comm', 'and": "ls', ' -la"}'],
+        stop_reason="tool_use",
+    )
+    f = write_jsonl(tmp_path / "calls.jsonl", [record])
+    attrs = convert_wire_file(f)["spans"][0]["attributes"]
+
+    parts = json.loads(attrs["gen_ai.output.messages"])[0]["parts"]
+    assert parts == [{"type": "tool_call", "id": "toolu_1", "name": "Bash", "arguments": {"command": "ls -la"}}]
+    assert attrs["gen_ai.response.finish_reasons"] == ["tool_calls"]
+
+
+def test_anthropic_conversion_drops_thinking_blocks(tmp_path: Path) -> None:
+    """thinking is skipped like OpenAI reasoning; see the note in docs/superpowers/notes."""
+    record = anthropic_record(
+        content_blocks=[{"type": "thinking", "thinking": "secret deliberation"}, {"type": "text", "text": "final"}],
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "prior deliberation", "signature": "sig"},
+                    {"type": "text", "text": "kept"},
+                ],
+            }
+        ],
+    )
+    f = write_jsonl(tmp_path / "calls.jsonl", [record])
+    trace = convert_wire_file(f)
+
+    blob = json.dumps(trace)
+    assert "secret deliberation" not in blob
+    assert "prior deliberation" not in blob
+    out_parts = json.loads(trace["spans"][0]["attributes"]["gen_ai.output.messages"])[0]["parts"]
+    assert out_parts == [{"type": "text", "content": "final"}]
+    in_parts = json.loads(trace["spans"][0]["attributes"]["gen_ai.input.messages"])[0]["parts"]
+    assert in_parts == [{"type": "text", "content": "kept"}]
+
+
+def test_anthropic_conversion_tool_result_becomes_user_message(tmp_path: Path) -> None:
+    """A tool_result rides on a user message, as role=tool does in Chat Completions."""
+    messages = [
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_9", "content": "exit 0"}]},
+    ]
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(messages=messages)])
+    msgs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.input.messages"])
+
+    assert msgs == [
+        {"role": "user", "parts": [{"type": "tool_call_response", "id": "toolu_9", "result": "exit 0"}]},
+    ]
+
+
+def test_anthropic_conversion_structured_tool_result_serialized(tmp_path: Path) -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_9", "content": [{"type": "text", "text": "ok"}]},
+            ],
+        },
+    ]
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(messages=messages)])
+    part = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.input.messages"])[0]["parts"][0]
+    assert part["type"] == "tool_call_response"
+    assert json.loads(part["result"]) == [{"type": "text", "text": "ok"}]
+
+
+def test_anthropic_conversion_system_list_becomes_system_message(tmp_path: Path) -> None:
+    """system is a top-level field, not a message, and is commonly a list of text blocks."""
+    system = [{"type": "text", "text": "you are a test agent"}]
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(system=system)])
+    msgs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.input.messages"])
+
+    assert msgs[0] == {"role": "system", "parts": [{"type": "text", "content": "you are a test agent"}]}
+    assert msgs[1]["role"] == "user"
+
+
+def test_anthropic_conversion_system_string_becomes_system_message(tmp_path: Path) -> None:
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(system="be brief")])
+    msgs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.input.messages"])
+    assert msgs[0] == {"role": "system", "parts": [{"type": "text", "content": "be brief"}]}
+
+
+def test_anthropic_conversion_absent_system_emits_no_system_message(tmp_path: Path) -> None:
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record()])
+    msgs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.input.messages"])
+    assert [m["role"] for m in msgs] == ["user"]
+
+
+def test_anthropic_conversion_tool_definitions_from_input_schema(tmp_path: Path) -> None:
+    """Anthropic names the schema input_schema where OpenAI uses parameters."""
+    tools = [{"name": "exec", "description": "run", "input_schema": {"type": "object", "properties": {}}}]
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(tools=tools)])
+    defs = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.tool.definitions"])
+    assert defs == [
+        {"type": "function", "name": "exec", "description": "run", "parameters": {"type": "object", "properties": {}}}
+    ]
+
+
+def test_anthropic_conversion_cache_read_tokens_added_back_to_input(tmp_path: Path) -> None:
+    """Anthropic reports input_tokens net of cache hits; the span reports the full prompt."""
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(input_tokens=100, cache_read_tokens=900)])
+    attrs = convert_wire_file(f)["spans"][0]["attributes"]
+    assert attrs["gen_ai.usage.input_tokens"] == 1000
+    assert attrs["gen_ai.usage.cache_read_tokens"] == 900
+
+
+def test_anthropic_conversion_max_tokens_stop_reason_mapped(tmp_path: Path) -> None:
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(stop_reason="max_tokens")])
+    attrs = convert_wire_file(f)["spans"][0]["attributes"]
+    assert attrs["gen_ai.response.finish_reasons"] == ["length"]
+
+
+def test_anthropic_conversion_blocks_keep_source_order(tmp_path: Path) -> None:
+    """Block indices address a dict, so ordering must come from the index, not arrival."""
+    blocks: List[Dict[str, Any]] = [
+        {"type": "text", "text": "first"},
+        {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file": "a.py"}},
+    ]
+    f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(content_blocks=blocks, stop_reason="tool_use")])
+    parts = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.output.messages"])[0]["parts"]
+    assert [p["type"] for p in parts] == ["text", "tool_call"]
+    assert parts[1]["arguments"] == {"file": "a.py"}
+
+
+def test_anthropic_conversion_empty_response_body_yields_no_output(tmp_path: Path) -> None:
+    """A truncated capture has no message_start; the span still converts."""
+    record = anthropic_record()
+    record["response"] = ""
+    f = write_jsonl(tmp_path / "calls.jsonl", [record])
+    attrs = convert_wire_file(f)["spans"][0]["attributes"]
+    assert "gen_ai.output.messages" not in attrs
+    assert json.loads(attrs["gen_ai.input.messages"])[0]["role"] == "user"
 
 
 # --------------------------------------------------------------------------------------

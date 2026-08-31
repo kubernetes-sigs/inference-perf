@@ -24,10 +24,13 @@ Supports four file shapes, detected from the first non-blank line rather than th
 - OTel JSONL (.jsonl)            one dict with "spans" per line; 1..N traces per file
 - Responses API wire (.jsonl)    path contains "/responses"; response is an SSE stream
 - Chat Completions wire (.jsonl) path contains "/chat/completions"; response is plain JSON
+- Anthropic Messages wire (.jsonl) path contains "/v1/messages"; response is an SSE stream
 
-Reasoning content is intentionally never emitted. The replay path flattens message parts
-and only consumes text / tool_call / tool_call_response, so reasoning would be silently
-dropped downstream anyway.
+Reasoning content is intentionally never emitted -- OpenAI `reasoning` items and
+Anthropic `thinking` blocks alike. The replay path flattens message parts and only
+consumes text / tool_call / tool_call_response, so reasoning would be silently dropped
+downstream anyway. This costs workload fidelity on reasoning models; see
+docs/superpowers/notes/reasoning-content-dropped-in-wire-replay.md.
 """
 
 import hashlib
@@ -42,8 +45,9 @@ FORMAT_OTEL_JSON = "otel_json"
 FORMAT_OTEL_JSONL = "otel_jsonl"
 FORMAT_RESPONSES_WIRE = "responses_wire"
 FORMAT_CHAT_COMPLETIONS_WIRE = "chat_completions_wire"
+FORMAT_ANTHROPIC_WIRE = "anthropic_wire"
 
-WIRE_FORMATS = (FORMAT_RESPONSES_WIRE, FORMAT_CHAT_COMPLETIONS_WIRE)
+WIRE_FORMATS = (FORMAT_RESPONSES_WIRE, FORMAT_CHAT_COMPLETIONS_WIRE, FORMAT_ANTHROPIC_WIRE)
 
 # OTel status codes.
 _STATUS_OK = 1
@@ -106,7 +110,7 @@ def detect_trace_format(path: Path) -> str:
     """Detect a trace file's format from its content.
 
     Returns one of FORMAT_OTEL_JSON, FORMAT_OTEL_JSONL, FORMAT_RESPONSES_WIRE,
-    FORMAT_CHAT_COMPLETIONS_WIRE.
+    FORMAT_CHAT_COMPLETIONS_WIRE, FORMAT_ANTHROPIC_WIRE.
 
     Raises ValueError naming the file when the shape is empty or unrecognizable.
     """
@@ -124,6 +128,14 @@ def detect_trace_format(path: Path) -> str:
             return FORMAT_CHAT_COMPLETIONS_WIRE
         if "/responses" in api_path:
             return FORMAT_RESPONSES_WIRE
+        # Matched on the API suffix, not a gateway prefix: captures reach the Anthropic
+        # Messages API as "/v1/messages", "/anthropic/v1/messages", "/v1/messages?beta=true", ...
+        # A capture's first record can be a rejected probe to the bare gateway root
+        # (path="/anthropic", HTTP 405), so the wire dialect is honored as a fallback:
+        # detection only ever sees line 1, and rejecting the file on a probe would discard
+        # every real /v1/messages record behind it.
+        if "/v1/messages" in api_path or first.get("wire") == "anthropic":
+            return FORMAT_ANTHROPIC_WIRE
         raise ValueError(f"{path}: unsupported wire capture API path {api_path!r}")
 
     raise ValueError(
@@ -158,6 +170,100 @@ def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, A
     if not isinstance(resp, dict) or "choices" not in resp:
         return None
     return resp
+
+
+def _parse_anthropic_sse(response_text: str) -> Optional[Dict[str, Any]]:
+    """Reassemble an Anthropic Messages SSE stream into a response-shaped dict.
+
+    Unlike the Responses API, whose response.completed event carries the whole result,
+    Anthropic streams the message incrementally and never restates it, so the content
+    blocks have to be accumulated:
+
+      message_start        message envelope + prompt-side usage
+      content_block_start  opens a block at an index (text / thinking / tool_use)
+      content_block_delta  text_delta appends text; input_json_delta appends a fragment
+                           of the tool-call arguments as a JSON *string*
+      content_block_stop   closes the block at that index
+      message_delta        stop_reason + output-side usage
+      message_stop         end of stream
+
+    Returns a dict with "content", "usage", "stop_reason" and "id", or None when the
+    stream carries no message_start (an empty or truncated body).
+    """
+    if not response_text:
+        return None
+
+    message: Optional[Dict[str, Any]] = None
+    usage: Dict[str, Any] = {}
+    stop_reason: Optional[str] = None
+    # Blocks are addressed by index, and indices need not arrive in order.
+    blocks: Dict[int, Dict[str, Any]] = {}
+    # Tool-call arguments arrive as JSON fragments that are only valid once concatenated.
+    json_fragments: Dict[int, List[str]] = {}
+
+    for line in response_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            event = json.loads(line[6:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type")
+
+        if event_type == "message_start":
+            msg = event.get("message")
+            if isinstance(msg, dict):
+                message = msg
+                if isinstance(msg.get("usage"), dict):
+                    usage.update(msg["usage"])
+
+        elif event_type == "content_block_start":
+            index = event.get("index")
+            block = event.get("content_block")
+            if isinstance(index, int) and isinstance(block, dict):
+                blocks[index] = dict(block)
+                json_fragments[index] = []
+
+        elif event_type == "content_block_delta":
+            index = event.get("index")
+            delta = event.get("delta")
+            if not isinstance(index, int) or not isinstance(delta, dict):
+                continue
+            block = blocks.setdefault(index, {"type": "text", "text": ""})
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                block["text"] = (block.get("text") or "") + (delta.get("text") or "")
+            elif delta_type == "thinking_delta":
+                block["thinking"] = (block.get("thinking") or "") + (delta.get("thinking") or "")
+            elif delta_type == "input_json_delta":
+                json_fragments.setdefault(index, []).append(delta.get("partial_json") or "")
+
+        elif event_type == "message_delta":
+            delta = event.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                stop_reason = delta["stop_reason"]
+            if isinstance(event.get("usage"), dict):
+                usage.update(event["usage"])
+
+    if message is None:
+        return None
+
+    # Materialize accumulated tool-call arguments now that every fragment has arrived.
+    for index, fragments in json_fragments.items():
+        if not fragments or index not in blocks:
+            continue
+        blocks[index]["input"] = _parse_arguments("".join(fragments))
+
+    content = [blocks[i] for i in sorted(blocks)]
+    return {
+        "id": message.get("id", ""),
+        "content": content,
+        "usage": usage,
+        "stop_reason": stop_reason or message.get("stop_reason"),
+    }
 
 
 def _parse_arguments(args: Any) -> Dict[str, Any]:
@@ -337,6 +443,110 @@ def _convert_chat_messages(messages: List[Any]) -> List[Dict[str, Any]]:
         if parts:
             result.append({"role": role, "parts": parts})
 
+    return result
+
+
+def _anthropic_blocks_to_parts(content: Any) -> List[Dict[str, Any]]:
+    """Convert Anthropic content blocks to OTel parts, preserving block boundaries.
+
+    thinking / redacted_thinking blocks are skipped, matching how the OpenAI converters
+    treat reasoning (see the module docstring).
+    """
+    if isinstance(content, str):
+        return [{"type": "text", "content": content}] if content else []
+    if not isinstance(content, list):
+        return []
+
+    parts: List[Dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                parts.append({"type": "text", "content": block})
+            continue
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append({"type": "text", "content": block.get("text", "")})
+        elif block_type == "tool_use":
+            # Anthropic already sends arguments as an object; _parse_arguments passes
+            # a dict straight through and repairs the streamed-fragment case.
+            parts.append(
+                {
+                    "type": "tool_call",
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "arguments": _parse_arguments(block.get("input", {})),
+                }
+            )
+        elif block_type == "tool_result":
+            result = block.get("content")
+            parts.append(
+                {
+                    "type": "tool_call_response",
+                    "id": block.get("tool_use_id", ""),
+                    "result": result if isinstance(result, str) else json.dumps(result),
+                }
+            )
+        # type=thinking / redacted_thinking: skipped
+
+    return parts
+
+
+def _convert_anthropic_messages(system: Any, messages: List[Any]) -> List[Dict[str, Any]]:
+    """Convert an Anthropic request's system + messages[] to OTel messages.
+
+    `system` is a top-level field rather than a message, and may be a plain string or a
+    list of text blocks; it becomes a leading system message so the replayed prompt keeps
+    the instructions the harness actually sent.
+
+    A tool_result block is carried on a user message, matching how the Chat Completions
+    converter handles role=tool: the replay path keys tool responses off the part, not
+    the role.
+    """
+    result: List[Dict[str, Any]] = []
+
+    system_parts = _anthropic_blocks_to_parts(system)
+    if system_parts:
+        result.append({"role": "system", "parts": system_parts})
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        parts = _anthropic_blocks_to_parts(msg.get("content"))
+        if parts:
+            result.append({"role": msg.get("role", ""), "parts": parts})
+
+    return result
+
+
+def _convert_anthropic_output(resp: Dict[str, Any], finish_reason: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Convert a reassembled Anthropic response's content blocks to one OTel message."""
+    parts = _anthropic_blocks_to_parts(resp.get("content") or [])
+    if not parts:
+        return None
+
+    output_msg: Dict[str, Any] = {"role": "assistant", "parts": parts}
+    if finish_reason:
+        output_msg["finish_reason"] = finish_reason
+    return output_msg
+
+
+def _extract_anthropic_tool_defs(tools: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize Anthropic tool definitions, whose schema key is input_schema."""
+    result: List[Dict[str, Any]] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        result.append(
+            {
+                "type": "function",
+                "name": t.get("name", ""),
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {}),
+            }
+        )
     return result
 
 
@@ -543,6 +753,57 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str) -> Op
     )
 
 
+# Anthropic stop_reason -> the finish_reason vocabulary the OpenAI converters emit.
+_ANTHROPIC_STOP_REASONS = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "tool_use": "tool_calls",
+    "max_tokens": "length",
+    "refusal": "content_filter",
+}
+
+
+def convert_anthropic_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
+    """Convert one Anthropic Messages wire record to an OTel span.
+
+    The response body is an SSE stream that has to be reassembled; usage arrives split
+    across message_start (prompt side) and message_delta (output side).
+    Returns None if the request body is unparseable.
+    """
+    request = _load_request(record)
+    if request is None:
+        return None
+
+    resp = _parse_anthropic_sse(record.get("response") or "") or {}
+    usage = resp.get("usage") or {}
+
+    stop_reason = resp.get("stop_reason")
+    finish_reason = _ANTHROPIC_STOP_REASONS.get(stop_reason, stop_reason) if stop_reason else None
+
+    start_time, end_time = _timestamps(record)
+
+    # Anthropic reports input_tokens net of cache hits, so the cached count has to be added
+    # back to get the full prompt size the other converters report.
+    cached_tokens = usage.get("cache_read_input_tokens", 0) or 0
+    input_tokens = (usage.get("input_tokens", 0) or 0) + cached_tokens
+
+    return _build_span(
+        trace_id=trace_id,
+        model=record.get("model") or request.get("model", "unknown"),
+        start_time=start_time,
+        end_time=end_time,
+        http_status=int(record.get("status", 200)),
+        input_tokens=input_tokens,
+        output_tokens=usage.get("output_tokens", 0) or 0,
+        cached_tokens=cached_tokens,
+        response_id=resp.get("id", ""),
+        finish_reason=finish_reason,
+        input_messages=_convert_anthropic_messages(request.get("system"), request.get("messages") or []),
+        output_msg=_convert_anthropic_output(resp, finish_reason) if resp else None,
+        tool_defs=_extract_anthropic_tool_defs(request.get("tools") or []),
+    )
+
+
 def convert_wire_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
     """Convert one wire record to an OTel span, dispatching on its API path."""
     api_path = record.get("path", "")
@@ -550,6 +811,8 @@ def convert_wire_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[
         return convert_chat_completions_record(record, trace_id)
     if "/responses" in api_path:
         return convert_responses_api_record(record, trace_id)
+    if "/v1/messages" in api_path or record.get("wire") == "anthropic":
+        return convert_anthropic_record(record, trace_id)
     return None
 
 
