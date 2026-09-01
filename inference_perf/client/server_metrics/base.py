@@ -34,11 +34,18 @@ class StageStatus(Enum):
 class StageRuntimeInfo(BaseModel):
     stage_id: int
     rate: float
+    # End of the load window. Stage teardown (draining or cancelling in-flight
+    # requests) happens after end_time and is reported in teardown_duration,
+    # so metrics windows derived from [start_time, end_time] exclude it.
     end_time: float
     start_time: float
     status: StageStatus
     concurrency_level: Optional[int] = None
     timeout: Optional[float] = None
+    teardown_duration: Optional[float] = None
+    # Requests generated for the stage but never dispatched to the model
+    # server because the stage ended first; > 0 marks a truncated stage.
+    dropped_requests: Optional[int] = None
 
 
 class PerfRuntimeParameters:

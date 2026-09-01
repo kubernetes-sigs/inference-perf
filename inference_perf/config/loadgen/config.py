@@ -189,7 +189,9 @@ class LoadConfig(StrictBaseModel):
             "before they are cancelled. Teardown is bounded: once the grace (plus a fixed "
             "margin) expires, remaining work is force-cancelled and unresponsive workers "
             "are terminated and respawned, so report generation always runs. Set to 0 to "
-            "cancel in-flight requests immediately at stage end."
+            "cancel in-flight requests immediately at stage end. The teardown window is "
+            "excluded from the stage's reported end_time and metrics windows; it is "
+            "reported separately as teardown_duration."
         ),
     )
     lora_traffic_split: Optional[List[MultiLoRAConfig]] = Field(

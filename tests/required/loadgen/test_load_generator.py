@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import unittest
-from itertools import repeat
+from itertools import count, repeat
 from unittest.mock import MagicMock, AsyncMock, patch
 import multiprocessing as mp
 import asyncio
@@ -170,10 +170,10 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
     @patch("inference_perf.loadgen.load_generator.time")
     async def test_run_stage_timeout(self, mock_time: MagicMock, mock_sleep: AsyncMock) -> None:
         mock_time.time.return_value = 1000
-        mock_time.perf_counter.side_effect = [0, 10, 20]  # simulate time passing
+        mock_time.perf_counter.side_effect = count(0, 10)  # simulate time passing
 
         request_queue = MagicMock(spec=RequestQueue)
-        request_queue.drain = MagicMock()
+        request_queue.drain = MagicMock(return_value=0)
         active_counter = MagicMock()
         active_counter.value = 0
         finished_counter = MagicMock()
@@ -240,16 +240,20 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "COMPLETED")
 
     async def test_drain(self) -> None:
+        from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
+
         q: RequestQueue[RequestQueueData] = RequestQueue(1)
-        dummy_data = MagicMock(spec=InferenceAPIData)
+        # Payload must be picklable: the queue's feeder thread silently drops
+        # anything it cannot serialize (e.g. MagicMock).
+        dummy_data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="drain me")])
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
 
         # Small sleep to let queue populate
         await asyncio.sleep(0.1)
 
-        # Add tasks to queue so task_done doesn't fail
-        await self.load_generator.drain(q.get_channel(0))
+        drained = q.drain(0)
+        self.assertEqual(drained, 2)
         self.assertTrue(q.get_channel(0).empty())
 
     def test_sigint_handler(self) -> None:

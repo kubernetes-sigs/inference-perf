@@ -298,6 +298,8 @@ class TestGenerateSessionReports:
             "status": "COMPLETED",
             "timeout_configured": 30.0,
             "actual_duration": 6.0,
+            "teardown_duration": None,
+            "dropped_requests": None,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }

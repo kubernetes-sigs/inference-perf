@@ -1330,6 +1330,8 @@ class ReportGenerator:
                         "status": status_str,
                         "timeout_configured": stage_info.timeout,
                         "actual_duration": stage_info.end_time - stage_info.start_time,
+                        "teardown_duration": stage_info.teardown_duration,
+                        "dropped_requests": stage_info.dropped_requests,
                         "concurrent_sessions": stage_info.concurrency_level,
                         "session_rate": stage_info.rate if stage_info.rate > 0 else None,
                     }

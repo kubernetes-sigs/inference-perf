@@ -56,8 +56,9 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict
+from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict, cast
 from types import FrameType
+import ctypes
 import time
 import multiprocessing as mp
 from queue import Empty
@@ -95,6 +96,22 @@ _TEARDOWN_MARGIN_SECONDS = 15.0
 _FORCE_REAP_SECONDS = 20.0
 
 
+def _counter_value_nolock(counter: "Synchronized[int]") -> int:
+    """Read a shared counter without acquiring its lock.
+
+    `Synchronized.value` acquires the mutex, so a worker terminated while
+    holding it would strand the lock and hang any later locked access. The
+    main process must only read worker-owned counters through this helper so
+    that teardown always returns.
+    """
+    return int(cast("ctypes.c_int", counter.get_obj()).value)
+
+
+class TeardownResult(NamedTuple):
+    clean: bool
+    dropped_requests: int
+
+
 class RequestQueueData(NamedTuple):
     stage_id: int
     request_data: InferenceAPIData
@@ -107,7 +124,7 @@ class Worker(mp.Process):
         self,
         id: int,
         client: ModelServerClient,
-        request_queue: "mp.JoinableQueue[RequestQueueData]",
+        request_queue: "mp.Queue[RequestQueueData]",
         datagen: BaseGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
@@ -119,6 +136,7 @@ class Worker(mp.Process):
         base_seed: int,
         force_stop_signal: Optional[SyncEvent] = None,
         stage_done_counter: Optional["Synchronized[int]"] = None,
+        stage_boundary_seq: Optional["Synchronized[int]"] = None,
         teardown_grace_seconds: float = 120.0,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
@@ -137,6 +155,7 @@ class Worker(mp.Process):
         self.base_seed = base_seed
         self.force_stop_signal = force_stop_signal
         self.stage_done_counter = stage_done_counter
+        self.stage_boundary_seq = stage_boundary_seq
         self.teardown_grace_seconds = teardown_grace_seconds
         # True while the stage is winding down: in-flight requests may finish,
         # but no new requests are dispatched to the model server.
@@ -184,13 +203,23 @@ class Worker(mp.Process):
                 and not self.skip
                 and not self.stop_signal.is_set()
             ):
-                await semaphore.acquire()
+                # Bounded acquire so a worker saturated with hung in-flight
+                # requests (all permits held) still re-checks the loop
+                # condition and reaches the stage boundary, where those
+                # requests get the teardown grace and are then cancelled.
                 try:
-                    # Use partial to pass named arg
-                    get = partial(self.request_queue.get, timeout=timeout)
-                    item = await event_loop.run_in_executor(None, get)
+                    await wait_for(semaphore.acquire(), timeout=timeout)
+                except (AsyncioTimeoutError, TimeoutError):
+                    continue
+                try:
+                    # Non-blocking get: a blocking get(timeout=...) holds the
+                    # queue's shared reader lock across the poll, so a worker
+                    # killed abruptly (OOM, terminate) mid-poll would strand
+                    # the lock and starve every consumer of this channel,
+                    # including its own respawned replacement. get_nowait
+                    # holds the lock only while actually transferring an item.
+                    item = await event_loop.run_in_executor(None, self.request_queue.get_nowait)
                     if item is None:
-                        self.request_queue.task_done()
                         semaphore.release()
                         continue
                 except TimeoutError:
@@ -199,6 +228,7 @@ class Worker(mp.Process):
                     continue
                 except Empty:
                     semaphore.release()
+                    await sleep(0.02)
                     continue
                 except Exception as e:
                     logger.info(f"[Worker {self.id}] hit exception {e}")
@@ -206,7 +236,6 @@ class Worker(mp.Process):
                     continue
 
                 async def schedule_client(
-                    queue: "mp.JoinableQueue[RequestQueueData]",
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
@@ -256,7 +285,6 @@ class Worker(mp.Process):
                                 self.active_requests_counter.value -= 1
                         with self.finished_requests_counter.get_lock():
                             self.finished_requests_counter.value += 1
-                        queue.task_done()
                         semaphore.release()
 
                 try:
@@ -266,13 +294,10 @@ class Worker(mp.Process):
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
                     with self.finished_requests_counter.get_lock():
                         self.finished_requests_counter.value += 1
-                    self.request_queue.task_done()
                     semaphore.release()
                     continue
 
-                task = create_task(
-                    schedule_client(self.request_queue, request_data, request_time, stage_id, semaphore, lora_adapter)
-                )
+                task = create_task(schedule_client(request_data, request_time, stage_id, semaphore, lora_adapter))
                 logging.debug(
                     f"creating inference task with request data {request_data}", extra={"request_data": request_data}
                 )
@@ -286,17 +311,34 @@ class Worker(mp.Process):
                 await self._wind_down_stage(tasks)
                 tasks = []
                 LocalUserSession.clear_instances()
-                if self.stage_done_counter is not None:
+                if self.stage_done_counter is not None and self.stage_boundary_seq is not None:
+                    # Assign the main-published boundary sequence rather than
+                    # incrementing: a worker that enters this block without
+                    # having served the stage (e.g. respawned between stages)
+                    # then converges on the current boundary instead of
+                    # running permanently ahead of the rendezvous.
                     with self.stage_done_counter.get_lock():
-                        self.stage_done_counter.value += 1
-                # Hold until the main process acknowledges the stage boundary by
-                # clearing cancel_signal, so one stage cannot be reported done
-                # twice by the same worker.
-                while self.cancel_signal.is_set() and not self.stop_signal.is_set():
-                    await sleep(0.05)
-                logger.debug(f"[Worker {self.id}] waiting for next phase")
-                while not self.request_phase.is_set() and not self.stop_signal.is_set():
-                    self.request_phase.wait(timeout=0.5)
+                        self.stage_done_counter.value = _counter_value_nolock(self.stage_boundary_seq)
+                    logger.debug(f"[Worker {self.id}] waiting for next phase")
+                    # Hold until the next stage is running, or until a newer
+                    # boundary is published. The latter covers a stage that
+                    # started and finished entirely between two samples of
+                    # these events (e.g. zero requests, or a circuit breaker
+                    # opening immediately): the worker then re-enters the
+                    # boundary block and acknowledges the new sequence instead
+                    # of waiting out a signal edge it never observed.
+                    while not self.stop_signal.is_set():
+                        if self.request_phase.is_set() and not self.cancel_signal.is_set():
+                            break
+                        if _counter_value_nolock(self.stage_boundary_seq) > _counter_value_nolock(self.stage_done_counter):
+                            break
+                        self.request_phase.wait(timeout=0.05)
+                else:
+                    while self.cancel_signal.is_set() and not self.stop_signal.is_set():
+                        await sleep(0.05)
+                    logger.debug(f"[Worker {self.id}] waiting for next phase")
+                    while not self.request_phase.is_set() and not self.stop_signal.is_set():
+                        self.request_phase.wait(timeout=0.5)
 
         logger.debug(f"[Worker {self.id}] stopped")
 
@@ -391,9 +433,12 @@ class LoadGenerator:
         # Set by mp_run; broadcast to workers when the teardown grace expires
         # so they cancel whatever is still in flight.
         self._force_stop_signal: Optional[SyncEvent] = None
-        # Number of stage teardowns completed so far; each worker's
+        # Number of stage teardowns initiated so far; each worker's
         # stage_done_counter must reach this value at the stage rendezvous.
+        # Published to workers through _stage_boundary_seq so they assign
+        # (not increment) their counter at the boundary.
         self._expected_stage_done = 0
+        self._stage_boundary_seq: Optional["Synchronized[int]"] = None
         signal.signal(signal.SIGINT, self._sigint_handler)
 
         # Validate that datagen type matches load_type
@@ -461,17 +506,6 @@ class LoadGenerator:
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
         # For concurrent and constant load types (rate is adjusted in main.py for concurrent load type)
         return ConstantLoadTimer(rate=rate, duration=duration)
-
-    async def drain(self, queue: "mp.JoinableQueue[RequestQueueData]") -> None:
-        while True:
-            try:
-                _ = queue.get_nowait()
-                queue.task_done()
-            except Empty:
-                # No qsize() check: it raises NotImplementedError on macOS.
-                # Empty from get_nowait() is sufficient since producers are stopped before drain.
-                logger.debug("Drain finished")
-                return
 
     async def run_session_stage(
         self,
@@ -807,10 +841,17 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
+        # The metrics window ends here: the teardown tail carries no offered
+        # load, so including it would stretch every server-side rate average.
+        end_time_epoch = time.time()
+
         # Bounded teardown: stop dispatching, give in-flight requests the
         # configured grace to complete (their metrics are kept), then force
         # the stage boundary. Guaranteed to return, so reports always generate.
-        if not await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal):
+        teardown_start = time.perf_counter()
+        teardown = await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal)
+        teardown_duration = time.perf_counter() - teardown_start
+        if not teardown.clean:
             stage_status = StageStatus.FAILED
 
         # End stage-level span if trace_per_stage is enabled
@@ -823,10 +864,12 @@ class LoadGenerator:
             stage_id=stage_id,
             rate=session_rate if session_rate else 0.0,
             start_time=start_time_epoch,
-            end_time=time.time(),
+            end_time=end_time_epoch,
             status=stage_status,
             concurrency_level=concurrent_sessions,
             timeout=timeout,
+            teardown_duration=teardown_duration,
+            dropped_requests=teardown.dropped_requests,
         )
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
@@ -838,7 +881,7 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData],
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent],
-    ) -> bool:
+    ) -> TeardownResult:
         """Bounded stage teardown; always returns, so reports always generate.
 
         Stops dispatch immediately, gives in-flight requests the configured
@@ -846,24 +889,34 @@ class LoadGenerator:
         the force-stop signal makes workers cancel whatever is left, and any
         worker that still fails to reach the stage rendezvous (died, or its
         event loop is wedged) is terminated and respawned so subsequent stages
-        run at full capacity. Returns True when every worker wound down
-        cleanly, False when the stage had to be forced.
+        run at full capacity. Returns clean=True when every worker wound down
+        cleanly, clean=False when the stage had to be forced, plus the number
+        of never-dispatched requests dropped from the queue.
         """
+        event_loop = get_event_loop()
+        forced: Set[int] = set()
+
+        clean = True
+        if self.workers:
+            # Publish the boundary sequence before signalling so any worker
+            # observing the boundary reads the current value.
+            self._expected_stage_done += 1
+            expected = self._expected_stage_done
+            if self._stage_boundary_seq is not None:
+                self._stage_boundary_seq.value = expected
         if cancel_signal is not None:
             cancel_signal.set()
         request_phase.clear()
 
-        clean = True
         if self.workers:
-            self._expected_stage_done += 1
-            expected = self._expected_stage_done
             grace_deadline = time.perf_counter() + self.teardown_grace_seconds + _TEARDOWN_MARGIN_SECONDS
             force_deadline: Optional[float] = None
             while True:
                 pending = [
                     w
                     for w in self.workers
-                    if w.is_alive() and (w.stage_done_counter is None or w.stage_done_counter.value < expected)
+                    if w.is_alive()
+                    and (w.stage_done_counter is None or _counter_value_nolock(w.stage_done_counter) < expected)
                 ]
                 if not pending:
                     break
@@ -881,12 +934,15 @@ class LoadGenerator:
                     for worker in pending:
                         logger.error("Stage %d: terminating worker %d stuck in teardown", stage_id, worker.id)
                         worker.terminate()
+                        forced.add(worker.id)
                     clean = False
                     break
                 await sleep(0.25)
 
         # Nobody is pulling anymore: remove undispatched items left in the queue.
-        request_queue.drain()
+        dropped = request_queue.drain()
+        if dropped:
+            logger.warning("Stage %d: dropped %d request(s) that were never dispatched to the model server", stage_id, dropped)
         if self._force_stop_signal is not None:
             self._force_stop_signal.clear()
         if cancel_signal is not None:
@@ -894,34 +950,47 @@ class LoadGenerator:
 
         # Replace workers that did not survive the stage (terminated above, or
         # died earlier e.g. from an OOM kill) so later stages keep full capacity.
+        # A terminated worker may have died holding its counter's lock, so its
+        # counter is never re-read here: forced membership already implies the
+        # worker missed the rendezvous.
         for idx, worker in enumerate(self.workers):
             if not worker.is_alive() and worker.exitcode is None:
                 continue  # never started; leave to caller
-            if not worker.is_alive() or (
-                worker.stage_done_counter is not None and worker.stage_done_counter.value < self._expected_stage_done
+            if (
+                worker.id in forced
+                or not worker.is_alive()
+                or (
+                    worker.stage_done_counter is not None
+                    and _counter_value_nolock(worker.stage_done_counter) < self._expected_stage_done
+                )
             ):
                 clean = False
-                worker.join(timeout=5.0)
+                await event_loop.run_in_executor(None, partial(worker.join, 5.0))
                 if worker.is_alive():
                     worker.kill()
-                    worker.join(timeout=5.0)
+                    await event_loop.run_in_executor(None, partial(worker.join, 5.0))
                 logger.warning("Stage %d: worker %d did not survive the stage; respawning", stage_id, worker.id)
-                self.workers[idx] = self._respawn_worker(worker)
+                # A per-worker channel has no other consumers, so swap it out
+                # in case the dead worker stranded the old queue's locks. A
+                # shared channel is kept: surviving workers still hold it.
+                fresh_channel = request_queue.replace_channel(worker.id) if request_queue.num_channels > 1 else None
+                self.workers[idx] = self._respawn_worker(worker, request_channel=fresh_channel)
                 self.workers[idx].start()
-        return clean
+        return TeardownResult(clean=clean, dropped_requests=dropped)
 
-    def _respawn_worker(self, dead: Worker) -> Worker:
+    def _respawn_worker(self, dead: Worker, request_channel: Optional["mp.Queue[RequestQueueData]"] = None) -> Worker:
         """Build a replacement for a dead worker, sharing the same IPC objects.
 
         The replacement forks from the main process' current state, and its
         stage-done counter starts at the current expected value so it is
-        considered up to date at the next rendezvous.
+        considered up to date at the next rendezvous. request_channel, when
+        given, replaces the dead worker's queue channel (see _teardown_stage).
         """
         stage_done_counter: "Synchronized[int]" = mp.Value("i", self._expected_stage_done)
         return Worker(
             dead.id,
             dead.client,
-            dead.request_queue,
+            request_channel if request_channel is not None else dead.request_queue,
             dead.datagen,
             dead.max_concurrency,
             dead.stop_signal,
@@ -933,6 +1002,7 @@ class LoadGenerator:
             dead.base_seed,
             force_stop_signal=dead.force_stop_signal,
             stage_done_counter=stage_done_counter,
+            stage_boundary_seq=dead.stage_boundary_seq,
             teardown_grace_seconds=dead.teardown_grace_seconds,
         )
 
@@ -1024,18 +1094,29 @@ class LoadGenerator:
             progress_ctx.remove_task(stage_task)
 
         stage_status = StageStatus.FAILED if (timed_out or self.interrupt_sig) else StageStatus.COMPLETED
+
+        # The metrics window ends here: the teardown tail carries no offered
+        # load, so including it would stretch every server-side rate average.
+        end_time_epoch = time.time()
+
         # Bounded teardown: stop dispatching, give in-flight requests the
         # configured grace to complete, then force the stage boundary.
-        if not await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal):
+        teardown_start = time.perf_counter()
+        teardown = await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal)
+        teardown_duration = time.perf_counter() - teardown_start
+        if not teardown.clean:
             stage_status = StageStatus.FAILED
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
             rate=rate,
             start_time=start_time_epoch,
-            end_time=time.time(),
+            end_time=end_time_epoch,
             status=stage_status,
             concurrency_level=concurrency_level,
+            timeout=timeout,
+            teardown_duration=teardown_duration,
+            dropped_requests=teardown.dropped_requests,
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
 
@@ -1137,6 +1218,11 @@ class LoadGenerator:
         # is still in flight (see _teardown_stage).
         force_stop_signal: SyncEvent = mp.Event()
         self._force_stop_signal = force_stop_signal
+        # Stage-boundary sequence number, written only by the main process.
+        # Workers assign it to their stage_done_counter at each rendezvous
+        # (see _teardown_stage).
+        stage_boundary_seq: "Synchronized[int]" = mp.Value("i", 0)
+        self._stage_boundary_seq = stage_boundary_seq
         # start workers in the request phase
         request_phase.set()
 
@@ -1149,7 +1235,8 @@ class LoadGenerator:
                 shared_max_concurrency = None
 
             # Per-worker stage-done counter for the stage rendezvous: the worker
-            # increments it after winding down each stage (see _teardown_stage).
+            # sets it to the published boundary sequence after winding down each
+            # stage (see _teardown_stage).
             stage_done_counter: "Synchronized[int]" = mp.Value("i", 0)
 
             self.workers.append(
@@ -1168,6 +1255,7 @@ class LoadGenerator:
                     self.base_seed,
                     force_stop_signal=force_stop_signal,
                     stage_done_counter=stage_done_counter,
+                    stage_boundary_seq=stage_boundary_seq,
                     teardown_grace_seconds=self.teardown_grace_seconds,
                 )
             )
