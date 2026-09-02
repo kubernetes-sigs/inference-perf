@@ -46,6 +46,10 @@ class StageRuntimeInfo(BaseModel):
     # Requests generated for the stage but never dispatched to the model
     # server because the stage ended first; > 0 marks a truncated stage.
     dropped_requests: Optional[int] = None
+    # The `duration` configured for this stage, when it was bounded by time instead of by
+    # session count. Compare against end_time - start_time to see whether the stage ran
+    # the full window or stopped early because the corpus ran out.
+    duration: Optional[float] = None
 
 
 class PerfRuntimeParameters:

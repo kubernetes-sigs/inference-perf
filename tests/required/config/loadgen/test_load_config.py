@@ -103,6 +103,42 @@ def test_trace_session_replay_stage_forbids_extra_fields() -> None:
         TraceSessionReplayLoadStage(concurrent_sessions=2, bogus_field=1)  # type: ignore[call-arg]
 
 
+def test_trace_session_replay_stage_duration_defaults_to_none() -> None:
+    assert TraceSessionReplayLoadStage(concurrent_sessions=2).duration is None
+
+
+def test_trace_session_replay_stage_duration_alone_is_valid() -> None:
+    # timeout is optional: duration on its own bounds load generation, and the
+    # teardown grace bounds the wind-down that follows.
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800)
+    assert stage.duration == 1800
+    assert stage.timeout is None
+
+
+def test_trace_session_replay_stage_duration_shorter_than_timeout_is_valid() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, timeout=2100)
+    assert stage.duration == 1800
+    assert stage.timeout == 2100
+
+
+def test_trace_session_replay_stage_duration_cannot_exceed_timeout() -> None:
+    # timeout would fire before the planned stop, reporting FAILED for a run that
+    # asked to end.
+    with pytest.raises(ValueError, match="must be shorter than timeout"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, timeout=1800)
+
+
+def test_trace_session_replay_stage_duration_cannot_equal_timeout() -> None:
+    # Equal is not shorter: the two deadlines coincide and the failure path wins.
+    with pytest.raises(ValueError, match="must be shorter than timeout"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, timeout=1800)
+
+
+def test_trace_session_replay_stage_duration_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0)
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 

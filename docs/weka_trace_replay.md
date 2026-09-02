@@ -51,6 +51,23 @@ data:
                           # Defaults to available CPU cores; set to 1 for serial.
 ```
 
+### Bounding a stage by time instead of session count
+
+These corpora are large and usually are not replayed in full — the useful measurement is sustained load over a fixed window. Set `duration` on the stage instead of `num_sessions`:
+
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 16
+      duration: 1800     # hold 16 conversations open for 30 minutes
+      timeout: 2100      # safety net; must be longer than duration
+```
+
+At the deadline the stage stops dispatching and reports `COMPLETED` (not `FAILED`, which is what using `timeout` alone would give you). Sessions still running are recorded as **truncated**: counted under `num_sessions_truncated` and kept out of the session success/failure counts and duration percentiles, while the requests they completed still count.
+
+The corpus has to be large enough to fill the window, since each session is drawn once. If it runs out early the stage ends short and logs a warning; raise `duplicate_sessions_target` until the corpus covers the window. See [OTel Trace Replay](otel_trace_replay.md#bounding-a-stage-by-time) for the full description.
+
 ---
 
 ## 🏃 Running the Benchmark

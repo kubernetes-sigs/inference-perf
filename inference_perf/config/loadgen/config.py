@@ -119,6 +119,18 @@ class TraceSessionReplayLoadStage(LoadStage):
             "cancelled and stage exits as FAILED. Optional."
         ),
     )
+    duration: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "Planned run length in seconds. When reached, the stage stops dispatching and "
+            "reports COMPLETED rather than FAILED. Sessions still running are cut short and "
+            "recorded as truncated: they are kept out of the session success/failure counts "
+            "and duration percentiles, while the requests they did complete still count. "
+            "In-flight requests finish within load.stage_teardown_grace_seconds and keep "
+            "their metrics. Must be shorter than timeout when both are set. Optional."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -132,6 +144,17 @@ class TraceSessionReplayLoadStage(LoadStage):
                     f"concurrent_sessions ({self.concurrent_sessions}). "
                     f"You can't start sessions faster than the concurrency limit allows."
                 )
+
+        # duration is the planned stop; timeout is the failure safety net. If the net fires
+        # first, every duration-bounded run reports FAILED and duration silently does
+        # nothing, so require a real gap rather than only documenting one.
+        if self.duration is not None and self.timeout is not None and self.duration >= self.timeout:
+            raise ValueError(
+                f"duration ({self.duration}) must be shorter than timeout ({self.timeout}). "
+                f"duration is the planned stop and reports success; timeout is a safety limit "
+                f"that reports FAILED. With timeout <= duration the stage always fails before "
+                f"reaching its planned stop."
+            )
 
         return self
 

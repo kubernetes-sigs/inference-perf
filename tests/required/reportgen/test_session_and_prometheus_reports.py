@@ -114,6 +114,7 @@ def _stage_info(
     end_time: float = 10.0,
     rate: float = 2.0,
     timeout: Optional[float] = None,
+    duration: Optional[float] = None,
     concurrency_level: Optional[int] = None,
 ) -> StageRuntimeInfo:
     return StageRuntimeInfo(
@@ -123,6 +124,7 @@ def _stage_info(
         end_time=end_time,
         status=status,
         timeout=timeout,
+        duration=duration,
         concurrency_level=concurrency_level,
     )
 
@@ -297,12 +299,38 @@ class TestGenerateSessionReports:
             "stage_id": 0,
             "status": "COMPLETED",
             "timeout_configured": 30.0,
+            # None for a count-bounded stage; set when the stage was bounded by time.
+            "duration_configured": None,
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }
+
+    def test_duration_bounded_stage_reports_the_window_it_asked_for(self) -> None:
+        """A time-bounded stage reports COMPLETED plus the duration it was given.
+
+        duration_configured next to actual_duration is what tells a reader of the report
+        whether the stage ran its full window or ended early because the corpus ran out —
+        both of which report COMPLETED.
+        """
+        gen = _make_generator()
+        runtime = _runtime({0: _stage_info(0, start_time=1.0, end_time=7.0, timeout=30.0, duration=20.0, concurrency_level=4)})
+
+        reports = gen.generate_session_reports(
+            [_sess(stage_id=0)],
+            SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False),
+            PERCENTILES,
+            runtime,
+            100,
+        )
+
+        metadata = reports[0].contents["stage_metadata"]
+        assert metadata["status"] == "COMPLETED"
+        assert metadata["duration_configured"] == 20.0
+        # Ran 6s of a 20s window: the corpus ran out before the deadline.
+        assert metadata["actual_duration"] == 6.0
 
     def test_a_stage_with_no_runtime_info_reports_measurements_without_metadata(self) -> None:
         gen = _make_generator()

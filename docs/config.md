@@ -537,9 +537,10 @@ load:
   type: trace_session_replay                      # Required for otel_trace_replay
   stages:
     - concurrent_sessions: 4                      # Max sessions active simultaneously
-      num_sessions: 20                            # Run 20 sessions in this stage
+      num_sessions: 20                            # Run 20 sessions in this stage (omit when using duration)
       session_rate: 2.0                           # Optional: start max 2 sessions/sec
-      timeout: 300                                # Optional: stage timeout in seconds
+      duration: 1800                              # Optional: planned stop after 30 min; stage reports COMPLETED
+      timeout: 2100                               # Optional: safety limit; reports FAILED. Must exceed duration
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
 ```
@@ -558,8 +559,15 @@ load:
 - Omit for no rate limiting
 - Useful for controlled ramp-up scenarios
 
+**`duration`** (optional): Planned stage length in seconds — bound the stage by time rather than by session count
+- At the deadline the stage stops dispatching and exits as COMPLETED
+- Sessions still running are recorded as truncated: counted under `num_sessions_truncated`, and left out of the session success/failure counts and duration percentiles. The requests they completed still count
+- The corpus must be large enough to fill the window (each session is drawn once); a stage that runs out early ends short and logs a warning. Raise `duplicate_sessions_target` to cover it
+- Wall-clock time is `duration` plus teardown, since in-flight requests are given a chance to finish
+
 **`timeout`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
+- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration` when both are set
 
 #### Trace File Format
 
