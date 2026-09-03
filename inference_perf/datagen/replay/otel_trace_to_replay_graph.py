@@ -53,7 +53,7 @@ import argparse
 import json
 import logging
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -921,6 +921,36 @@ def _try_match_parts(
 # ---------------------------------------------------------------------------
 
 
+def _rescale_segments_to_wire(
+    segments: List[InputSegment],
+    expansion: List[int],
+) -> List[InputSegment]:
+    """Restate segment ``message_count`` in POST-expansion wire messages.
+
+    ``decompose_input`` counts recorded messages, but ``GraphCall.messages`` is the
+    flattened wire list: a message bundling N parallel tool results becomes N
+    ``role:tool`` messages (see :func:`_replay_message_to_dict`). ``expansion[i]`` is
+    how many wire messages recorded message ``i`` produced, so each segment's count
+    becomes the sum of the expansions of the recorded messages it covers.
+
+    Segments are consumed positionally, so the walk mirrors how callers slice: the
+    cursor advances through the recorded list while the rescaled count accumulates
+    wire messages.
+    """
+    if not segments:
+        return segments
+
+    rescaled: List[InputSegment] = []
+    cursor = 0
+    for seg in segments:
+        recorded_span = expansion[cursor : cursor + seg.message_count]
+        wire_count = sum(recorded_span)
+        rescaled.append(replace(seg, message_count=wire_count))
+        cursor += seg.message_count
+
+    return rescaled
+
+
 def decompose_input(
     call: RawCall,
     predecessors: List[RawCall],
@@ -1247,9 +1277,22 @@ def build_graph(
         # Decompose input into message-level segments
         segments = decompose_input(rc, ancestor_calls, ancestor_event_ids, output_matches_for_substitutions)
 
+        # `decompose_input` counts RECORDED messages, but GraphCall.messages below is
+        # the flattened wire list, where one message bundling N parallel tool results
+        # expands to N `role:tool` messages (see `_replay_message_to_dict`). Rescale
+        # each segment to post-expansion counts so consumers that slice
+        # GraphCall.messages by `message_count` stay aligned; without this the
+        # trailing results fall past the last segment and their recorded
+        # tool_call_ids are never rewritten during substitution.
+        # Expand once and reuse for both the rescale and GraphCall.messages below;
+        # these payloads can be very large, so converting twice is wasteful.
+        expanded_messages = [_replay_message_to_dict(x) for x in rc.messages]
+        expansion = [len(group) for group in expanded_messages]
+        segments = _rescale_segments_to_wire(segments, expansion)
+
         # Validate that segment message counts sum to total messages
         total_segment_messages = sum(seg.message_count for seg in segments)
-        actual_message_count = len(rc.messages)
+        actual_message_count = sum(expansion)
         if total_segment_messages != actual_message_count:
             logger.warning(
                 f"Segment validation failed for call {rc.call_id}: "
@@ -1302,7 +1345,7 @@ def build_graph(
             model=rc.model,
             # One recorded message can expand to several wire messages: a bundle of
             # parallel tool results becomes one role:tool message per tool_call_id.
-            messages=[wire_msg for x in rc.messages for wire_msg in _replay_message_to_dict(x)],
+            messages=[wire_msg for group in expanded_messages for wire_msg in group],
             expected_output=(rc.out_message.text or "" if rc.out_message else ""),
             input_segments=segments,
             total_input_tokens=total_input_tokens,
