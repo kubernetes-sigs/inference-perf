@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from inference_perf.observability.metrics.registry import MetricSpec, always, exposition_name
+from inference_perf.observability.metrics.registry import MetricSpec, MetricStability, always, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 
 HEADER = """# Inference-Perf Runtime Metrics
@@ -12,9 +12,19 @@ These are the Prometheus metrics inference-perf can export about its own runtime
 
 This document is automatically generated from the metric specs under `inference_perf/observability/metrics/sets/`. Do not edit it by hand; run `pdm run update:runtime-metrics` after changing the specs.
 
-| Metric | Type | Labels | Exported | Description |
-| --- | --- | --- | --- | --- |
-"""
+## Stability
+
+Every metric declares a stability level, and that level is prepended to the metric's HELP text, so a scrape says what is promised without anyone having to find this file:
+
+{levels}
+
+**Every metric below is `ALPHA` today, and the whole set stays `ALPHA` through v0.7.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; nothing is promoted before v1.0.0, and promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+
+## Metrics
+
+| Metric | Type | Stability | Labels | Exported | Description |
+| --- | --- | --- | --- | --- | --- |
+""".format(levels="\n".join(f"- `{level.value}`: {level.promise}" for level in MetricStability))
 
 
 def exported_when(spec: MetricSpec[Any]) -> str:
@@ -36,7 +46,7 @@ def generate_doc() -> str:
     for spec in ALL_SPECS:
         labels = ", ".join(f"`{label}`" for label in spec.labelnames) or "none"
         rows.append(
-            f"| `{exposition_name(spec)}` | {spec.metric_type.__name__} | {labels} "
+            f"| `{exposition_name(spec)}` | {spec.metric_type.__name__} | `{spec.stability.value}` | {labels} "
             f"| {exported_when(spec)} | {spec.documentation} |"
         )
     return HEADER + "\n".join(rows) + "\n"
