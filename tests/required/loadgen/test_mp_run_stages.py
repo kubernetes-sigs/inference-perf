@@ -13,10 +13,10 @@
 # limitations under the License.
 """Multi-stage mp_run integration test with real worker processes.
 
-Locks the stage-boundary protocol invariant: every stage end pairs one
-main-side stage_barrier.wait() with one arrival from each worker, so a
-multi-stage run completes without deadlock and every stage's requests are
-accounted. Any stage-driving code path that runs a stage outside the
+Locks the stage-boundary protocol invariant: every stage end publishes one
+main-side stage_boundary_seq that each worker acknowledges in its own
+stage_done_counter, so a multi-stage run completes without deadlock and every
+stage's requests are accounted. Any stage-driving code path that runs a stage outside the
 mp_run stage loop (as the sweep pre-pass does) breaks this pairing and
 hangs the run — asyncio.wait_for turns that hang into a test failure.
 """

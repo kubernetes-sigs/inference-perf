@@ -242,8 +242,9 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         for event in datagen.events["s0"]:
             self.assertEqual(event.session_id, "s0")
             self.assertEqual(event.stage_id, 9)
+        # The stage-end path releases the queue with the bounded drain; the
+        # queue join it used to call was removed with the teardown rework.
         request_queue.drain.assert_called_once()
-        request_queue.join.assert_called_once()
 
     async def test_unbuildable_session_counts_complete_but_goes_unreported(self) -> None:
         # Pins the documented behavior: a session whose graph cannot be built
