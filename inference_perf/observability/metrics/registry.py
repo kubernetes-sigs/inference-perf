@@ -21,6 +21,11 @@ predicate inspects the run :class:`~inference_perf.config.Config`.
 lifecycle events out to them. Disabled metrics are never instantiated, so
 they are absent from the exposition output rather than present at zero.
 
+Every spec carries a :class:`MetricStability` level, and the level is
+prepended to the metric's HELP text so it reaches whoever is reading the
+exposition output rather than living only in this repo's docs. New specs are
+``ALPHA`` unless they say otherwise.
+
 The metric definitions themselves live under ``sets/``: ``sets/core.py``
 holds the specs exported on every run, and config-conditional sets get
 sibling modules aggregated in ``sets/__init__.py``. The exposition server in
@@ -32,6 +37,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
@@ -44,6 +50,38 @@ logger = logging.getLogger(__name__)
 
 PrometheusMetric = Union[Counter, Gauge, Histogram]
 MetricT = TypeVar("MetricT", bound=PrometheusMetric)
+
+
+class MetricStability(StrEnum):
+    """How much a metric's shape is promised to callers, per metric.
+
+    The level travels into the HELP text (see :func:`_instantiate`) and into
+    the generated ``docs/runtime_metrics.md``. It is deliberately per metric, not
+    per set, so a metric can graduate on its own without moving modules.
+
+    Nothing here is ``STABLE`` before v1.0.0; ``ALPHA`` is the default so a
+    new metric cannot become a promise by omission.
+    """
+
+    ALPHA = "ALPHA"
+    BETA = "BETA"
+    STABLE = "STABLE"
+
+    @property
+    def promise(self) -> str:
+        """What this level guarantees to whoever is scraping the metric.
+
+        Defined once here so the generated ``docs/runtime_metrics.md`` and any
+        reviewer reading the specs get the same wording.
+        """
+        return _PROMISES[self]
+
+
+_PROMISES = {
+    MetricStability.ALPHA: "May be renamed, relabeled or removed in any release, with no notice.",
+    MetricStability.BETA: ("Labels may still change, but no rename or removal without a release that deprecates it first."),
+    MetricStability.STABLE: "Name, type and label names are fixed for the current major version.",
+}
 
 
 def always(config: Config) -> bool:
@@ -65,6 +103,19 @@ def exposition_name(spec: "MetricSpec[Any]") -> str:
     return spec.name
 
 
+def help_text(spec: "MetricSpec[Any]") -> str:
+    """The HELP string a metric is exported with: its stability, then its docs.
+
+    Kubernetes components mark stability the same way, so a scraped
+    ``inference_perf_*`` metric reads like the rest of the ecosystem and a
+    consumer learns what is promised from the exposition output alone, without
+    finding this repo. The level is only here, never in the metric name and
+    never in a label, so promoting a metric does not break the queries and
+    dashboards written against it.
+    """
+    return f"[{spec.stability.value}] {spec.documentation}"
+
+
 @dataclass(frozen=True)
 class MetricSpec(Generic[MetricT]):
     """Declares one exported metric and how it reacts to run lifecycle events.
@@ -76,6 +127,9 @@ class MetricSpec(Generic[MetricT]):
     Anything a hook needs to know about a request must travel on the
     ``RequestLifecycleMetric`` it is passed; anything it needs about the run
     travels on the :class:`RunContext`.
+
+    ``stability`` is the compatibility promise for this one metric; leaving it
+    at the default keeps the metric changeable.
     """
 
     name: str
@@ -83,6 +137,7 @@ class MetricSpec(Generic[MetricT]):
     metric_type: type[MetricT]
     labelnames: Tuple[str, ...] = ()
     buckets: Optional[Tuple[float, ...]] = None  # histograms only
+    stability: MetricStability = MetricStability.ALPHA
     enabled: Callable[[Config], bool] = always
     on_run_start: Optional[Callable[[MetricT, RunContext], None]] = None
     on_stage_start: Optional[Callable[[MetricT, StageContext], None]] = None
@@ -179,9 +234,8 @@ def build_metrics(config: Config, specs: Optional[Sequence[MetricSpec[Any]]] = N
 
 
 def _instantiate(spec: MetricSpec[Any], registry: CollectorRegistry) -> PrometheusMetric:
+    documentation = help_text(spec)
     if spec.metric_type is Histogram and spec.buckets is not None:
-        return Histogram(spec.name, spec.documentation, labelnames=spec.labelnames, registry=registry, buckets=spec.buckets)
-    prom_metric: PrometheusMetric = spec.metric_type(
-        spec.name, spec.documentation, labelnames=spec.labelnames, registry=registry
-    )
+        return Histogram(spec.name, documentation, labelnames=spec.labelnames, registry=registry, buckets=spec.buckets)
+    prom_metric: PrometheusMetric = spec.metric_type(spec.name, documentation, labelnames=spec.labelnames, registry=registry)
     return prom_metric
