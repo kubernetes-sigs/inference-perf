@@ -47,6 +47,11 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.load_generator = _make_load_generator()
         self.request_queue = MagicMock(spec=RequestQueue)
+        # num_channels is set in RequestQueue.__init__, so spec=RequestQueue
+        # does not supply it. 1 matches what mp_run builds when the datagen
+        # requests no preferred worker, and keeps a dead worker's channel from
+        # being swapped out on respawn.
+        self.request_queue.num_channels = 1
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
         self.request_phase = MagicMock()
@@ -130,7 +135,14 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         self.load_generator.workers = [alive_worker, dead_worker]
         self.load_generator.num_workers = 2
 
-        with patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock):
+        # Teardown respawns the dead worker so later stages run at full
+        # capacity. Stub it: the real one builds a Worker from the dead one's
+        # attributes and starts it, which cannot pickle a MagicMock.
+        with (
+            patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock),
+            patch.object(self.load_generator, "_respawn_worker") as respawn,
+        ):
+            respawn.return_value = MagicMock()
             await self.load_generator.run_stage(
                 stage_id=0,
                 rate=5,
@@ -147,6 +159,8 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         self.cancel_signal.clear.assert_called_once()
         self.request_queue.drain.assert_called_once()
         self.request_phase.clear.assert_called_once()
+        # Only the dead worker is replaced; the surviving one is left running.
+        respawn.assert_called_once_with(dead_worker, request_channel=None)
 
 
 if __name__ == "__main__":
