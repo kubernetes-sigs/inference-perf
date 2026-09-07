@@ -2121,25 +2121,6 @@ def _graph_messages_from_input(input_messages: List[dict[str, Any]]) -> List[dic
 class TestStructuredToolCallPreservation:
     """GraphCall.messages must carry structured tool_calls / tool_call_id."""
 
-    @pytest.mark.parametrize("container", ["parts", "content"])
-    @pytest.mark.parametrize("role", ["tool", "user"])
-    @pytest.mark.parametrize(
-        ("fields", "expected"),
-        [
-            ({"response": "sunny"}, "sunny"),
-            ({"response": [{"type": "text", "text": "sunny"}]}, "sunny"),
-            ({"response": {"temp_c": 18}}, "{'temp_c': 18}"),
-            ({"response": ""}, ""),
-            ({"response": None}, ""),
-            ({"result": "legacy", "response": "standard"}, "legacy"),
-            ({"result": "", "response": "standard"}, ""),
-            ({}, ""),
-        ],
-    )
-    def test_tool_response_fields(self, container: str, role: str, fields: dict[str, Any], expected: str) -> None:
-        msgs = _graph_messages_from_input([{"role": role, container: [{"type": "tool_call_response", "id": "c1", **fields}]}])
-        assert msgs == [{"role": "tool", "tool_call_id": "c1", "content": expected}]
-
     def test_assistant_tool_calls_only_openai_format(self) -> None:
         msgs = _graph_messages_from_input(
             [

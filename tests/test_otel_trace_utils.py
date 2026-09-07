@@ -16,10 +16,6 @@
 
 """Tests for otel_trace_utils - LLM output/input reconstruction."""
 
-from typing import Any
-
-import pytest
-
 from inference_perf.datagen.replay.otel_trace_utils import (
     reconstruct_llm_output,
     reconstruct_llm_input,
@@ -62,23 +58,6 @@ class TestReconstructLLMOutput:
 
 class TestReconstructLLMInput:
     """Test reconstruct_llm_input."""
-
-    @pytest.mark.parametrize("container", ["parts", "content"])
-    @pytest.mark.parametrize(
-        ("fields", "expected"),
-        [
-            ({"response": "sunny"}, "sunny"),
-            ({"response": ""}, ""),
-            ({"response": 0}, "0"),
-            ({"result": "legacy", "response": "standard"}, "legacy"),
-            ({"result": "", "response": "standard"}, ""),
-            ({"content": "native", "result": "legacy", "response": "standard"}, "native"),
-            ({}, ""),
-        ],
-    )
-    def test_tool_response_fields(self, container: str, fields: dict[str, Any], expected: str) -> None:
-        msg = {"role": "tool", container: [{"type": "tool_call_response", "id": "c1", **fields}]}
-        assert reconstruct_llm_input(msg) == f"<tool_result: c1>\n{expected}\n</tool_result>"
 
     def test_basic_formats(self) -> None:
         """Test basic input formats."""

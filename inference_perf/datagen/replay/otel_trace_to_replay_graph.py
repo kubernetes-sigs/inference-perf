@@ -235,7 +235,7 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
                 tool_call_id = first.get("id")
                 if tool_call_id:
                     msg["tool_call_id"] = tool_call_id
-                text_parts.append(_coerce_text(first.get("result", first.get("response", ""))))
+                text_parts.append(_coerce_text(first.get("result", "")))
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             # Emit content for text / tool-result messages. For an assistant
@@ -268,7 +268,7 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
                 tool_call_id = first.get("id")
                 if tool_call_id:
                     msg["tool_call_id"] = tool_call_id
-                msg["content"] = _coerce_text(first.get("result", first.get("response", "")))
+                msg["content"] = _coerce_text(first.get("result", ""))
                 return msg
 
         if info.get("tool_calls") is not None:

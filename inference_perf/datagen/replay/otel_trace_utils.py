@@ -240,13 +240,12 @@ def _format_tool_result(tool_result: Dict[str, Any]) -> str:
     Handles tool result formatting consistently across different parts of the code.
     Supports both formats:
     - tool_result: {"tool_use_id": "...", "content": "...", "is_error": ...}
-    - tool_call_response: {"id": "...", "response": "...", "is_error": ...}
-      (older traces use "result" instead of "response")
+    - tool_call_response: {"id": "...", "result": "...", "is_error": ...}
     """
     # Handle both "tool_use_id" and "id" field names
     tool_id = tool_result.get("tool_use_id") or tool_result.get("id", "unknown")
-    # Preserve legacy field precedence, falling back to the OTel "response" field.
-    result_content = tool_result.get("content") or tool_result.get("result", tool_result.get("response", ""))
+    # Handle both "content" and "result" field names
+    result_content = tool_result.get("content") or tool_result.get("result", "")
     is_error = tool_result.get("is_error", False)
     error_marker = " [ERROR]" if is_error else ""
     return f"<tool_result: {tool_id}{error_marker}>\n{result_content}\n</tool_result>"
