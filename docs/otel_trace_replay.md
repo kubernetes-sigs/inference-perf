@@ -132,6 +132,7 @@ The `data.otel_trace_replay` section controls what traces to replay and how to p
 | `skip_invalid_files` | boolean | No (default: `false`) | Skip invalid traces instead of failing. Covers both file-level parse errors (bad JSON, missing file) and graph-build errors (malformed spans). Skipped sessions are logged and silently omitted from the run. |
 | `filter` | string | No | Lambda expression applied to each trace record before replay. Evaluated via `eval()` — use only with trusted inputs. Example: `"lambda x: x['benchmark'] == 'gsm8k'"`. Applies uniformly across all three trace sources |
 | `bad_tool_call_handling` | enum | No (default: `none`) | How to handle tool_calls whose `function.arguments` is not valid JSON. `none`: no mitigation (upstream behavior). `use_recorded`: substitute the recorded assistant message at the affected slot. See [Bad tool-call handling](#bad-tool-call-handling) |
+| `tool_choice_mode` | enum | No (default: `force_recorded`) | Whether to inject a `tool_choice` on recorded tool-call turns. `force_recorded`: force the recorded function, or `"required"` when that isn't possible (upstream behavior). `as_recorded`: inject nothing, leaving the choice to the model. See [Forced `tool_choice` and Token Budget](#forced-tool_choice-and-token-budget) |
 | `disable_output_substitution` | boolean | No (default: `false`) | When `true`, replay each call with its recorded assistant output (text and tool calls) instead of substituting the live output from predecessor calls. Predecessor wait timing is still enforced. Cannot be combined with `inject_random_session_id` or `duplicate_sessions_target` (those trigger substitution and would contradict this flag — config validation rejects the combination) |
 
 **Examples:**
@@ -614,6 +615,50 @@ When the recorded output was a tool call, the request is sent with
 possible) so the model cannot return plain text. `ignore_eos` is also disabled
 and `max_tokens` raised, since the replay model's tokenizer may need more
 headroom than the original to express the same call.
+
+Forcing is the default because a replayed session is a graph: the successor turn
+already holds the `role: "tool"` messages that answer this turn's calls. If the
+live model replies in prose where the recording called a tool, those recorded
+results answer nothing.
+
+`tool_choice_mode` selects the policy:
+
+| Value | Behavior |
+| :--- | :--- |
+| `force_recorded` | Default, unchanged from earlier releases. `{"type": "function", "function": {"name": ...}}` when the recorded turn made a single call whose name appears in this turn's tool list; `"required"` otherwise — that is, when the turn made several calls (only one name can be forced at a time) or named a tool absent from the list (which servers may reject). |
+| `as_recorded` | Inject nothing. Traces do not carry a `tool_choice`, so the request goes out without one — which the OpenAI spec reads as `auto` alongside `tools`. |
+
+Prefer `as_recorded` when `"required"` misbehaves on your server. vLLM compiles
+`"required"` into an unbounded array schema (`minItems: 1`, no `maxItems`), so
+nothing forces the model to stop after one call and it may repeat the same call
+until `max_tokens` — see
+[#772](https://github.com/kubernetes-sigs/inference-perf/issues/772) and
+[vllm#50399](https://github.com/vllm-project/vllm/issues/50399). Note that under
+streaming this truncation is reported as `finish_reason: "tool_calls"`, not
+`"length"`, so it is easy to miss.
+
+The trade-off is fidelity in the other direction, and it is not local. With
+`as_recorded` the model may answer in prose on a turn the recording answered with
+a call. Replay does not degrade that turn gracefully: the successor's recorded
+`role: "tool"` messages would carry dangling `tool_call_id` references, so the
+event is marked failed, and because failure is session-scoped
+(`record_failure` -> `_fail_and_notify` -> `mark_session_failed`) **the entire
+session fails and every event downstream of that turn is cancelled.**
+
+Because a replayed session is a graph, the cost depends on where the prose answer
+lands, not on how minor it looks. A prose answer early in a long session discards
+nearly all of that session's remaining LLM calls. That also biases the run: the
+sessions that survive are the ones whose forced turns happened to behave, so
+throughput and latency get computed over a subset that is not the workload you
+configured. Cross-check `total_events_cancelled` and the failed-session count
+rather than reading the request-level error rate alone.
+
+So prefer `as_recorded` when `"required"` is actively breaking your server, and
+expect to trade session completeness for it. Which matters more depends on what
+you are measuring.
+
+`tool_choice_mode` is independent of `override_tool_call_max_tokens`: it changes
+what the model generates, not the `max_tokens` the request asks for.
 
 #### Output Substitution
 

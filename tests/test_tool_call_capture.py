@@ -19,10 +19,12 @@ from typing import Any, Dict, List, Optional
 import pytest
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventOutputRegistry,
+    SessionAnthropicMessagesAPIData,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
 )
 from inference_perf.datagen.replay.replay_graph_types import InputSegment
+from inference_perf.config.datagen.replay import ToolChoiceMode
 
 
 _TOOL_CALLS = [
@@ -169,14 +171,22 @@ class TestSubstitutionWithToolCalls:
         assert result[1] == mixed_msg
 
 
-class TestToolChoiceInjection:
-    """Tests for tool_choice injection in to_request_body when expected output was a tool call."""
+class ToolChoiceEventFactory:
+    """Builds a SessionChatCompletionAPIData for tool_choice tests.
+
+    A plain mixin, not a test class: both TestToolChoiceInjection and
+    TestToolChoiceModeAsRecorded pull the helper from here so neither inherits
+    the other's assertions. Inheriting the test class instead would re-run
+    force_recorded cases under the as_recorded class name, which reads as
+    coverage of a mode that those cases never exercise.
+    """
 
     def _make_api_data(
         self,
         tool_definitions: Optional[List[Dict[str, Any]]],
         expected_output_is_tool_call: bool,
         expected_output_tool_names: Optional[List[str]],
+        tool_choice_mode: ToolChoiceMode = ToolChoiceMode.FORCE_RECORDED,
     ) -> SessionChatCompletionAPIData:
         from inference_perf.datagen.replay.replay_graph_session_datagen import WorkerSessionTracker
         from inference_perf.apis.chat import ChatMessage
@@ -192,7 +202,12 @@ class TestToolChoiceInjection:
             total_events_in_session=1,
             expected_output_is_tool_call=expected_output_is_tool_call,
             expected_output_tool_names=expected_output_tool_names,
+            tool_choice_mode=tool_choice_mode,
         )
+
+
+class TestToolChoiceInjection(ToolChoiceEventFactory):
+    """tool_choice injection under force_recorded (the default)."""
 
     @pytest.mark.asyncio
     async def test_single_tool_call_forces_specific_function(self) -> None:
@@ -272,6 +287,158 @@ class TestToolChoiceInjection:
         api_data = self._make_api_data(tool_defs, True, ["some_other_tool_not_in_list"])
         payload = await api_data.to_request_body("model", 100, False, False)
         assert payload["tool_choice"] == "required"
+
+
+class TestToolChoiceModeAsRecorded(ToolChoiceEventFactory):
+    """tool_choice_mode=as_recorded suppresses every injection.
+
+    Shares only the event factory with TestToolChoiceInjection. Every case here
+    passes tool_choice_mode=AS_RECORDED explicitly, so a passing test in this
+    class always says something about as_recorded -- including the plain-text
+    turn, which is the branch that injects "none" under force_recorded.
+    """
+
+    _SINGLE_TOOL = [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }
+    ]
+    _TWO_TOOLS = _SINGLE_TOOL + [
+        {
+            "type": "function",
+            "name": "get_time",
+            "description": "Get time",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }
+    ]
+
+    @pytest.mark.asyncio
+    async def test_single_recorded_call_injects_nothing(self) -> None:
+        """The case force_recorded would turn into a named function."""
+        api_data = self._make_api_data(self._SINGLE_TOOL, True, ["get_weather"], tool_choice_mode=ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+
+    @pytest.mark.asyncio
+    async def test_multiple_recorded_calls_do_not_become_required(self) -> None:
+        """The defect case: force_recorded sends "required" here, as_recorded must not."""
+        api_data = self._make_api_data(
+            self._TWO_TOOLS, True, ["get_weather", "get_time"], tool_choice_mode=ToolChoiceMode.AS_RECORDED
+        )
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+
+    @pytest.mark.asyncio
+    async def test_recorded_tool_absent_from_definitions_does_not_become_required(self) -> None:
+        """The other route to "required" is suppressed too."""
+        api_data = self._make_api_data(
+            self._SINGLE_TOOL, True, ["some_other_tool_not_in_list"], tool_choice_mode=ToolChoiceMode.AS_RECORDED
+        )
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+
+    @pytest.mark.asyncio
+    async def test_text_turn_none_is_suppressed_but_ignore_eos_kept(self) -> None:
+        """A text turn advertising tools gets no "none" either.
+
+        force_recorded injects tool_choice="none" here to stop a model deep in a
+        tool loop from emitting a call with no matching role:tool successor.
+        as_recorded promises to inject no tool_choice at all, so that is dropped
+        too -- and the caller accepts dangling-call risk on this turn as the
+        documented cost. ignore_eos is not a tool_choice policy and must survive:
+        without it the turn cannot stop at its natural end.
+        """
+        api_data = self._make_api_data(self._SINGLE_TOOL, False, None, tool_choice_mode=ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+        assert payload["ignore_eos"] is False
+
+    @pytest.mark.asyncio
+    async def test_tools_still_advertised(self) -> None:
+        """Only the choice is dropped; the catalog must still be sent."""
+        api_data = self._make_api_data(self._SINGLE_TOOL, True, ["get_weather"], tool_choice_mode=ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert [t["function"]["name"] for t in payload["tools"]] == ["get_weather"]
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_override_still_applies(self) -> None:
+        """tool_choice_mode is orthogonal to override_tool_call_max_tokens.
+
+        Dropping the injection must not change the requested budget — that is a
+        separate knob, and conflating them would silently alter token accounting.
+        """
+        api_data = self._make_api_data(self._SINGLE_TOOL, True, ["get_weather"], tool_choice_mode=ToolChoiceMode.AS_RECORDED)
+        api_data.override_tool_call_max_tokens = True
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert payload["max_tokens"] == 4096
+        assert payload["ignore_eos"] is False
+        assert "tool_choice" not in payload
+
+
+class TestToolChoiceModeAnthropicMessages:
+    """The Anthropic Messages site injects {"type": "tool"|"any"} and needs the same gate."""
+
+    def _make_api_data(
+        self,
+        expected_output_tool_names: Optional[List[str]],
+        tool_choice_mode: ToolChoiceMode,
+    ) -> SessionAnthropicMessagesAPIData:
+        from inference_perf.datagen.replay.replay_graph_session_datagen import WorkerSessionTracker
+        from inference_perf.apis.chat import ChatMessage
+
+        return SessionAnthropicMessagesAPIData(
+            messages=[ChatMessage(role="user", content="What is the weather?")],
+            max_tokens=100,
+            tool_definitions=[
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                }
+            ],
+            event_id="sess:evt1",
+            registry=EventOutputRegistry(),
+            worker_tracker=WorkerSessionTracker(),
+            completion_queue=None,
+            total_events_in_session=1,
+            expected_output_is_tool_call=True,
+            expected_output_tool_names=expected_output_tool_names,
+            tool_choice_mode=tool_choice_mode,
+        )
+
+    @pytest.mark.asyncio
+    async def test_force_recorded_injects_named_tool(self) -> None:
+        api_data = self._make_api_data(["get_weather"], ToolChoiceMode.FORCE_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert payload["tool_choice"] == {"type": "tool", "name": "get_weather"}
+
+    @pytest.mark.asyncio
+    async def test_force_recorded_injects_any_for_unknown_tool(self) -> None:
+        api_data = self._make_api_data(["not_in_list"], ToolChoiceMode.FORCE_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert payload["tool_choice"] == {"type": "any"}
+
+    @pytest.mark.asyncio
+    async def test_as_recorded_injects_nothing(self) -> None:
+        api_data = self._make_api_data(["get_weather"], ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+
+    @pytest.mark.asyncio
+    async def test_as_recorded_suppresses_any(self) -> None:
+        api_data = self._make_api_data(["not_in_list"], ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert "tool_choice" not in payload
+
+    @pytest.mark.asyncio
+    async def test_as_recorded_still_sends_tools(self) -> None:
+        api_data = self._make_api_data(["get_weather"], ToolChoiceMode.AS_RECORDED)
+        payload = await api_data.to_request_body("model", 100, False, False)
+        assert [t["name"] for t in payload["tools"]] == ["get_weather"]
 
 
 class TestToolCallIdRewriting:

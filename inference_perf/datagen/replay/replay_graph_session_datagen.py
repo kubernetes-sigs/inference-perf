@@ -55,7 +55,7 @@ from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
-from inference_perf.config.datagen.replay import BadToolCallHandling
+from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
 from inference_perf.datagen.base import LazyLoadDataMixin, SessionGenerator
 from inference_perf.datagen.replay.replay_graph_types import InputSegment, ReplayGraph
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -359,6 +359,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     inject_random_session_id: bool = False
     session_random_string: Optional[str] = None
     override_tool_call_max_tokens: bool = False
+    # Whether to inject a tool_choice on recorded tool-call turns.
+    # See SessionReplayConfig.tool_choice_mode.
+    tool_choice_mode: ToolChoiceMode = ToolChoiceMode.FORCE_RECORDED
     # Seconds to wait for predecessors before failing this event. 0 waits indefinitely;
     # see SessionReplayConfig.predecessor_wait_timeout_sec.
     predecessor_wait_timeout_sec: float = 3600.0
@@ -397,6 +400,11 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 # Use a generous cap and let ignore_eos=False stop generation naturally.
                 payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
 
+            if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
+                # Send no tool_choice: the model chooses, and "required" is never
+                # sent. See ToolChoiceMode for the fidelity trade-off.
+                return payload
+
             if "tool_choice" in payload:
                 logger.warning(
                     f"Event {self.event_id}: payload already has tool_choice={payload['tool_choice']!r}; "
@@ -431,7 +439,12 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             # tool_choice="none" forbids a structured call (a text <tool_call> in
             # content is harmless -- no role:tool is expected for it), and
             # ignore_eos=False lets the answer stop at its natural end.
-            payload["tool_choice"] = "none"
+            #
+            # as_recorded suppresses the tool_choice here too, since the flag
+            # promises to inject none at all. ignore_eos=False stays: it is not a
+            # tool_choice policy, and without it this turn cannot stop.
+            if self.tool_choice_mode == ToolChoiceMode.FORCE_RECORDED:
+                payload["tool_choice"] = "none"
             payload["ignore_eos"] = False
 
         return payload
@@ -1148,6 +1161,10 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             if self.override_tool_call_max_tokens:
                 payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
 
+            if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
+                # Inject nothing, as above.
+                return payload
+
             names = self.expected_output_tool_names or []
             available = {t["name"] for t in payload.get("tools", []) if "name" in t}
             if len(names) == 1 and names[0] in available:
@@ -1859,6 +1876,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
             session_random_string=state.random_string if state else None,
             override_tool_call_max_tokens=self.replay_config.override_tool_call_max_tokens if self.replay_config else False,
+            tool_choice_mode=self.replay_config.tool_choice_mode if self.replay_config else ToolChoiceMode.FORCE_RECORDED,
             predecessor_wait_timeout_sec=self.replay_config.predecessor_wait_timeout_sec if self.replay_config else 3600.0,
             # Mitigation knob: read once per event from replay_config. Default
             # NONE keeps the wire format byte-identical to upstream main.

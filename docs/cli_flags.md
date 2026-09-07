@@ -132,6 +132,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
 | `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.otel_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
 | `--data.otel_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
@@ -156,6 +157,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.weka_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
 | `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.weka_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.weka_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.weka_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
 | `--data.weka_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
@@ -230,6 +232,7 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.synthetic_agentic.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.synthetic_agentic.default_max_tokens` | int | Default max_tokens if not specified in trace |
 | `--data.synthetic_agentic.override_tool_call_max_tokens` | boolean | Override tool-call max_tokens to 4096 instead of using the generated call's own length. Defaults False here (unlike trace replay) because the generator sizes each tool call itself, so the generated length is already correct for this model. |
+| `--data.synthetic_agentic.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.synthetic_agentic.inject_random_session_id` | boolean | Not applicable to synthetic generation (pinned False): sessions are already generated with distinct content per session index, so there is no recorded session ID to randomize. |
 | `--data.synthetic_agentic.duplicate_sessions_target` | int | Not applicable to synthetic generation (pinned None): raise num_sessions to generate more sessions instead of duplicating existing ones. |
 | `--data.synthetic_agentic.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |

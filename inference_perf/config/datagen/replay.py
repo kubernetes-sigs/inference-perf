@@ -59,6 +59,35 @@ class BadToolCallHandling(str, Enum):
     USE_RECORDED = "use_recorded"
 
 
+class ToolChoiceMode(str, Enum):
+    """Whether replay injects a `tool_choice` policy on recorded tool-call turns.
+
+    A replayed session is a graph: the successor turn already holds the
+    `role: "tool"` messages that answer this turn's calls. If the live model
+    replies in prose where the recording called a tool, those recorded results
+    answer nothing, so replay forces a call by default.
+
+    force_recorded
+        Default. Inject a tool_choice derived from the recording: the exact
+        function when the recorded turn made a single call whose name is in
+        this turn's tool list, otherwise `"required"`.
+
+        Caveat: vLLM compiles `"required"` into an unbounded array schema
+        (`minItems: 1`, no `maxItems`), so nothing forces the model to stop
+        after one call and it may repeat the same call until `max_tokens`.
+        See kubernetes-sigs/inference-perf#772 and vllm-project/vllm#50399.
+
+    as_recorded
+        Inject nothing. Traces do not carry a tool_choice, so the request goes
+        out without one, which the OpenAI spec reads as `auto` alongside
+        `tools`. The model decides, at the cost of turns where it answers in
+        prose and the recorded tool results no longer line up.
+    """
+
+    FORCE_RECORDED = "force_recorded"
+    AS_RECORDED = "as_recorded"
+
+
 class TraceConfig(StrictBaseModel):
     file: str = Field(description="Path to the trace file to replay.")
     format: TraceFormat = Field(default=TraceFormat.AZURE_PUBLIC_DATASET, description="Format of the trace file.")
@@ -111,6 +140,17 @@ class SessionReplayConfig(StrictBaseModel):
     override_tool_call_max_tokens: bool = Field(
         True,
         description="Override tool call max_tokens to 4096 instead of using trace recorded length",
+    )
+    tool_choice_mode: ToolChoiceMode = Field(
+        ToolChoiceMode.FORCE_RECORDED,
+        description=(
+            "Whether to inject a tool_choice policy on recorded tool-call turns. "
+            "'force_recorded' (default) forces the recorded function, or 'required' when "
+            "the recorded turn made several calls or named a tool absent from this turn's "
+            "list. 'as_recorded' injects nothing, leaving the choice to the model, at the "
+            "cost of turns where it answers in prose and the recorded tool results no "
+            "longer match."
+        ),
     )
 
     # KV-cache invalidation
