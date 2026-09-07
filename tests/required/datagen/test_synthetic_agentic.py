@@ -132,9 +132,9 @@ def test_config_still_frozen_against_post_construction_assignment() -> None:
 
     cfg = SyntheticAgenticConfig(**_minimal_synthetic_agentic_kwargs())
     with pytest.raises(ValueError):
-        cfg.inject_random_session_id = True
+        cfg.inject_random_session_id = True  # type: ignore[misc]
     with pytest.raises(ValueError):
-        cfg.duplicate_sessions_target = 5
+        cfg.duplicate_sessions_target = 5  # type: ignore[misc]
 
 
 def test_session_seed_stable_across_calls_and_processes() -> None:
