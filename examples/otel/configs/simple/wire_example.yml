@@ -1,28 +1,56 @@
-# OTel Trace Replay Configuration with Session-Based Load
-# This configuration uses trace_session_replay to dispatch entire trace sessions
+# Replay agent wire captures (.jsonl) as an OTel session graph.
+#
+# Point trace_files at the calls.jsonl files a recording proxy produced; each file
+# becomes one session whose events keep the recorded dependency structure. The
+# settings below are the ones that matter when replaying real captures against a
+# live endpoint -- the comments explain why each is set the way it is, so start
+# from this file rather than from the defaults.
 
 api:
   type: chat
-  streaming: false
+  # Streaming is strongly preferred for replay. It yields a real TTFT per event,
+  # and some endpoints apply an idle/time-to-first-byte deadline that a long
+  # non-streaming generation trips even though the request is healthy.
+  streaming: true
   session_id_header_key: "x-session-id"
 
 data:
   type: otel_trace_replay
   otel_trace_replay:
-    # List of specific OTel JSON trace files
+    # One session per capture file. Globs are expanded.
     trace_files:
       - "my_path/nm-output/*/*/*/*/*/calls.jsonl"
-    # Model configuration - use static model
+
     use_static_model: true
     static_model_name: "Qwen/Qwen2.5-1.5B-Instruct"
 
-    # Request settings
-    default_max_tokens: 100000
+    # Fallback for events whose capture carries no max_tokens. Keep this in the
+    # low thousands: it is a per-request output cap, and an oversized value lets a
+    # single runaway generation hold a concurrency slot for the whole request
+    # timeout.
+    default_max_tokens: 2048
 
-    # predecessor_wait_timeout_sec (default: 3600). Increase it to make the sessions wait longer.
-    # Set to 0 to wait indefinitely for predecessor events instead of failing deep chains whose cumulative ancestor
-    # latency exceeds a fixed timeout. Use with care: a genuinely stuck predecessor
-    # will then never time out, and successors will wait forever.
+    # Leave the tool_choice to the model instead of forcing the recorded function.
+    # Forcing is the default and is better for fidelity, but on some servers the
+    # "required" fallback (used when a turn made several calls, or named a tool
+    # absent from the list) compiles to an unbounded array schema, so nothing
+    # stops the model after one call and it repeats until max_tokens. Switch to
+    # force_recorded if your server handles "required" correctly.
+    tool_choice_mode: as_recorded
+
+    # Live models sometimes emit tool_call arguments that are not valid JSON; the
+    # next turn's chat template then fails to parse them and the server returns
+    # 400, which fails the event and cancels everything downstream of it.
+    # use_recorded substitutes the recorded assistant message at that slot so the
+    # session keeps its shape.
+    bad_tool_call_handling: use_recorded
+
+    # predecessor_wait_timeout_sec (default: 3600) bounds how long an event waits
+    # for its predecessors -- cumulative ancestor latency, not one request. Deep
+    # chains in a slow run can exceed it, and when they do the whole session is
+    # lost, so raise it rather than lowering it. Set to 0 to wait indefinitely,
+    # with care: a genuinely stuck predecessor then never times out.
+    # predecessor_wait_timeout_sec: 3600
 
     # Error handling
     include_errors: true
@@ -31,11 +59,27 @@ data:
 load:
   type: trace_session_replay
 
-  # Session concurrency control (moved from data config!)
   stages:
     - concurrent_sessions: 1  # Sequential execution (one session at a time)
 
+  # Events waiting on predecessors hold a concurrency slot while suspended, so
+  # this must be well above concurrent_sessions -- roughly
+  # concurrent_sessions x 50-100 for real captures. Too low and a session
+  # deadlocks against its own queued events.
   worker_max_concurrency: 10
+
+  # Per-request timeout, applied per attempt. Long agent turns with large
+  # prompts legitimately take many minutes; a value that merely looks generous
+  # will clip the tail of a real capture and report it as a timeout.
+  request_timeout: 1200
+
+  # Once load.request_retries lands (kubernetes-sigs/inference-perf#777), set it
+  # here. A session is a graph, so one transport fault cancels every event
+  # downstream of it and a sub-1% error rate can erase a double-digit percentage
+  # of the run's events; re-sending a connection that dropped before the server
+  # answered recovers those cheaply.
+  #   request_retries: 2
+  #   request_retry_backoff_sec: 0.5
 
 server:
   type: vllm
@@ -51,4 +95,10 @@ report:
     summary: true
     per_stage: true
     per_request: true
-
+    per_request_fields:
+      request: true
+      response: true
+      info: true
+      # Recorded stream chunks are very large on agent captures -- leaving this on
+      # produced multi-GB per_request_lifecycle_metrics.json files in practice.
+      response_chunks: false
