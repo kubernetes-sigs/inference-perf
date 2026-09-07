@@ -59,7 +59,6 @@ class Config(StrictBaseModel):
         default=None, description="Circuit breakers that stop the run when observed metrics cross configured thresholds."
     )
 
-
     @model_validator(mode="after")
     def validate_trace_replay_load_type(self) -> "Config":
         """Validate that trace replay data types use trace_session_replay load type."""

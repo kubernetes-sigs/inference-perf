@@ -14,6 +14,7 @@
 from inference_perf.config import (
     APIType,
     Config,
+    DataConfig,
     DataGenType,
     Distribution,
     DistributionType,
@@ -364,6 +365,26 @@ def test_use_chat_template_accepted_for_random_type() -> None:
         }
     )
     assert config.data.use_chat_template is True
+
+
+def test_synthetic_agentic_type_requires_synthetic_agentic_config() -> None:
+    with pytest.raises(Exception, match="requires 'data.synthetic_agentic' to be configured"):
+        DataConfig.model_validate({"type": DataGenType.SyntheticAgentic})
+
+
+def test_synthetic_agentic_type_accepted_with_synthetic_agentic_config() -> None:
+    data = DataConfig.model_validate(
+        {
+            "type": DataGenType.SyntheticAgentic,
+            "synthetic_agentic": {
+                "num_sessions": 10,
+                "input_tokens_per_turn": {"type": "fixed", "mean": 500},
+                "output_tokens_per_turn": {"type": "fixed", "mean": 100},
+            },
+        }
+    )
+    assert data.synthetic_agentic is not None
+    assert data.synthetic_agentic.num_sessions == 10
 
 
 def test_distribution_variance_conversion() -> None:

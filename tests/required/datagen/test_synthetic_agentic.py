@@ -88,6 +88,55 @@ def test_config_valid_minimal() -> None:
     assert cfg.bad_tool_call_handling == BadToolCallHandling.NONE
 
 
+def _minimal_synthetic_agentic_kwargs() -> Dict[str, Any]:
+    return dict(
+        num_sessions=10,
+        turns_per_session=Distribution(type="fixed", mean=1),
+        fanout_probability=0.0,
+        theme_mix={"db2_latency_incident": 1.0},
+        input_tokens_per_turn=Distribution(type="fixed", mean=500),
+        output_tokens_per_turn=Distribution(type="fixed", mean=100),
+    )
+
+
+def test_config_rejects_inject_random_session_id_true() -> None:
+    from pydantic import ValidationError
+    from inference_perf.config.datagen.replay import SyntheticAgenticConfig
+
+    with pytest.raises(ValidationError, match="inject_random_session_id is pinned to False"):
+        SyntheticAgenticConfig(**_minimal_synthetic_agentic_kwargs(), inject_random_session_id=True)
+
+
+def test_config_rejects_duplicate_sessions_target_set() -> None:
+    from pydantic import ValidationError
+    from inference_perf.config.datagen.replay import SyntheticAgenticConfig
+
+    with pytest.raises(ValidationError, match="duplicate_sessions_target is pinned to None"):
+        SyntheticAgenticConfig(**_minimal_synthetic_agentic_kwargs(), duplicate_sessions_target=10)
+
+
+def test_config_rejects_both_pinned_fields_set_together() -> None:
+    from pydantic import ValidationError
+    from inference_perf.config.datagen.replay import SyntheticAgenticConfig
+
+    with pytest.raises(ValidationError):
+        SyntheticAgenticConfig(
+            **_minimal_synthetic_agentic_kwargs(),
+            inject_random_session_id=True,
+            duplicate_sessions_target=5,
+        )
+
+
+def test_config_still_frozen_against_post_construction_assignment() -> None:
+    from inference_perf.config.datagen.replay import SyntheticAgenticConfig
+
+    cfg = SyntheticAgenticConfig(**_minimal_synthetic_agentic_kwargs())
+    with pytest.raises(ValueError):
+        cfg.inject_random_session_id = True
+    with pytest.raises(ValueError):
+        cfg.duplicate_sessions_target = 5
+
+
 def test_session_seed_stable_across_calls_and_processes() -> None:
     # Must NOT depend on PYTHONHASHSEED or process -- pure function of inputs.
     a = session_seed(42, 17)

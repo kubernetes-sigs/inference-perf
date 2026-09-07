@@ -487,6 +487,53 @@ class SyntheticAgenticConfig(SessionReplayConfig):
             "tool call itself, so the generated length is already correct for this model."
         ),
     )
+    skip_invalid_files: bool = Field(
+        False,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned False): sessions are generated "
+            "in-memory, not loaded from trace files, so there are no invalid files to skip."
+        ),
+    )
+    include_errors: bool = Field(
+        True,
+        frozen=True,
+        description=(
+            "Not applicable to synthetic generation (pinned True): this filters recorded spans "
+            "by error status when building a replay graph from a trace file; synthetic sessions "
+            "have no recorded spans to filter."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_pinned_replay_fields(self) -> "SyntheticAgenticConfig":
+        # frozen=True only blocks assignment AFTER construction; Pydantic still
+        # accepts a non-default value passed to the constructor (e.g. loaded
+        # from YAML). Reject that explicitly so these fields stay pinned to the
+        # values documented above for synthetic generation.
+        if self.inject_random_session_id is not False:
+            raise ValueError(
+                "inject_random_session_id is pinned to False for synthetic_agentic: sessions are "
+                "already generated with distinct content per session index, so there is no recorded "
+                "session ID to randomize."
+            )
+        if self.duplicate_sessions_target is not None:
+            raise ValueError(
+                "duplicate_sessions_target is pinned to None for synthetic_agentic: raise num_sessions "
+                "to generate more sessions instead of duplicating existing ones."
+            )
+        if self.skip_invalid_files is not False:
+            raise ValueError(
+                "skip_invalid_files is pinned to False for synthetic_agentic: sessions are generated "
+                "in-memory, not loaded from trace files, so there are no invalid files to skip."
+            )
+        if self.include_errors is not True:
+            raise ValueError(
+                "include_errors is pinned to True for synthetic_agentic: this filters recorded spans "
+                "by error status when building a replay graph from a trace file; synthetic sessions "
+                "have no recorded spans to filter."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_theme_mix(self) -> "SyntheticAgenticConfig":
