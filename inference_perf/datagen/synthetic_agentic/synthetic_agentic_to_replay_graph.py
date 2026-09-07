@@ -14,13 +14,26 @@
 # limitations under the License.
 
 """
-Dump a synthetic agentic replay graph JSON from a config.
+Dump a synthetic agentic workload from a config to a JSON file.
 
-This script is the synthetic counterpart to ``otel_trace_to_replay_graph``: instead
-of extracting LLM calls from an OTel trace, it builds one synthetic per-session
-replay graph procedurally from a ``synthetic_agentic`` config (config -> theme ->
-tokenizer -> build_graph_for_session) and dumps it the same way (JSON, optional DOT
-visualization, optional human-readable summary).
+Two output formats are supported via ``--format``:
+
+  replay (default)
+    The native inference-perf replay graph JSON.  This is the synthetic
+    counterpart to ``otel_trace_to_replay_graph``: instead of extracting LLM
+    calls from an OTel trace it builds one synthetic per-session replay graph
+    procedurally (config -> theme -> tokenizer -> build_graph_for_session) and
+    serialises it to the same format understood by the replay datagen.
+
+  sharegpt
+    ToolACE-ShareGPT JSONL (one record per graph event), compatible with
+    ``Beryex/ToolACE-sharegpt``.  Schema per record:
+      system       – system-prompt string (extracted from the leading system message)
+      tools        – JSON-encoded list of tool definitions
+      conversations – list of turns with roles human / gpt / function_call / observation
+      metadata – graph metadata block (event_id, predecessors, token budgets,
+                       input_segments) preserved so the file can be used for replay
+                       or fine-tuning auditing; ignored by standard ShareGPT readers.
 
 Synthetic graphs are per-session and deterministic in ``(config, session_index)``;
 use ``--session-index`` to select which session graph to build.
@@ -29,19 +42,127 @@ use ``--session-index`` to select which session graph to build.
 import argparse
 import json
 from pathlib import Path
+from typing import Any, Dict, List
 
 from inference_perf.config.config import read_config
 from inference_perf.config.datagen.config import DataGenType
-from inference_perf.datagen.replay.otel_trace_to_replay_graph import graph_to_dict, print_graph, visualize_graph
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+    graph_event_to_dict,
+    graph_to_dict,
+    print_graph,
+    visualize_graph,
+)
+from inference_perf.datagen.replay.replay_graph_types import ReplayGraph
 from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import build_graph_for_session
 from inference_perf.datagen.synthetic_agentic.synthetic_themes import GENERIC_THEME, load_theme
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
+def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert one graph-event dict to a ToolACE-ShareGPT record.
+
+    Each ``role:assistant`` message that carries ``tool_calls`` becomes one
+    ``function_call`` turn per call (value: ``{"name":…,"arguments":"…"}``
+    with arguments kept as a JSON string, matching ToolACE).  The ``role:tool``
+    result messages that immediately follow are gathered into a single
+    ``observation`` turn as a JSON-encoded list ``[{"name":…,"results":…},…]``.
+    Plain ``role:assistant`` messages become ``gpt`` turns.
+    ``call.expected_output``, when non-empty, is appended as a final ``gpt`` turn.
+    """
+    call = event["call"]
+    messages: List[Dict[str, Any]] = call["messages"]
+    expected_output: str = call.get("expected_output", "") or ""
+    tool_defs: List[Dict[str, Any]] = call.get("tool_definitions") or []
+
+    system = ""
+    conversations: List[Dict[str, str]] = []
+    i = 0
+
+    # Pull the leading system message into the top-level field.
+    if messages and messages[0].get("role") == "system":
+        system = messages[0].get("content", "")
+        i = 1
+
+    while i < len(messages):
+        msg = messages[i]
+        role = msg.get("role", "")
+
+        if role == "user":
+            conversations.append({"from": "human", "value": msg.get("content", "")})
+            i += 1
+
+        elif role == "assistant":
+            tool_calls: List[Dict[str, Any]] = msg.get("tool_calls") or []
+            if tool_calls:
+                # One function_call turn per tool call in this assistant message.
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    conversations.append(
+                        {
+                            "from": "function_call",
+                            "value": json.dumps({"name": fn.get("name", ""), "arguments": fn.get("arguments", "{}")}),
+                        }
+                    )
+                # Collect the immediately-following role:tool messages into one observation.
+                results: List[Dict[str, Any]] = []
+                j = i + 1
+                while j < len(messages) and messages[j].get("role") == "tool":
+                    tool_msg = messages[j]
+                    tc_id = tool_msg.get("tool_call_id", "")
+                    # Resolve tool name by matching tool_call_id; fall back to positional.
+                    fn_name = next(
+                        (tc["function"]["name"] for tc in tool_calls if tc.get("id") == tc_id),
+                        tool_calls[len(results)]["function"]["name"] if len(results) < len(tool_calls) else "unknown",
+                    )
+                    results.append({"name": fn_name, "results": tool_msg.get("content", "")})
+                    j += 1
+                if results:
+                    conversations.append({"from": "observation", "value": json.dumps(results)})
+                i = j
+            else:
+                conversations.append({"from": "gpt", "value": msg.get("content", "")})
+                i += 1
+
+        else:
+            # Skip stray tool messages not consumed above (should not occur).
+            i += 1
+
+    if expected_output:
+        conversations.append({"from": "gpt", "value": expected_output})
+
+    # Preserve graph metadata in a dedicated namespace so standard ShareGPT
+    # readers ignore it while inference-perf tooling can recover replay context.
+    inference_perf_meta: Dict[str, Any] = {
+        "event_id": event_id,
+        "predecessor_event_ids": event.get("predecessor_event_ids", []),
+        "predecessor_dependency_types": event.get("predecessor_dependency_types", {}),
+        "expected_output_tokens": call.get("expected_output_tokens"),
+        "input_segments": call.get("input_segments", []),
+        "temperature": call.get("temperature"),
+        "model": call.get("model", ""),
+    }
+    if call.get("expected_output_is_tool_call"):
+        inference_perf_meta["expected_output_is_tool_call"] = True
+    if call.get("expected_output_tool_names") is not None:
+        inference_perf_meta["expected_output_tool_names"] = call["expected_output_tool_names"]
+
+    return {
+        "system": system,
+        "tools": json.dumps(tool_defs),
+        "conversations": conversations,
+        "metadata": inference_perf_meta,
+    }
+
+
+def graph_to_sharegpt(graph: ReplayGraph) -> List[Dict[str, Any]]:
+    """Convert every event in *graph* to a ToolACE-ShareGPT record (one per event)."""
+    return [_event_to_toolace(eid, graph_event_to_dict(event)) for eid, event in graph.events.items()]
+
+
 def main() -> None:
     """Main entry point."""
     ap = argparse.ArgumentParser(
-        description="Dump a synthetic agentic replay graph JSON from a config",
+        description="Dump a synthetic agentic workload from a config to a JSON file",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -52,7 +173,17 @@ def main() -> None:
         default=None,
         help="Which theme to render (default: first key of cfg.theme_mix)",
     )
-    ap.add_argument("--output", required=True, help="Output replay graph JSON file")
+    ap.add_argument("--output", required=True, help="Output file path")
+    ap.add_argument(
+        "--format",
+        choices=["replay", "sharegpt"],
+        default="replay",
+        help=(
+            "Output format: 'replay' (default) writes the native inference-perf replay graph JSON; "
+            "'sharegpt' writes ToolACE-ShareGPT JSONL (one record per graph event, "
+            "compatible with Beryex/ToolACE-sharegpt)"
+        ),
+    )
     ap.add_argument("--summary", action="store_true", help="Print human-readable graph summary")
     ap.add_argument(
         "--vis_output",
@@ -79,14 +210,25 @@ def main() -> None:
     graph = build_graph_for_session(cfg, theme, tokenizer, args.session_index)
 
     out_path = Path(args.output)
-    out_path.write_text(
-        json.dumps(graph_to_dict(graph), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    print(
-        f"Wrote synthetic replay graph ({len(graph.events)} events) for session "
-        f"{args.session_index}, theme {theme_name} to {args.output}"
-    )
+    if args.format == "sharegpt":
+        records = graph_to_sharegpt(graph)
+        out_path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records),
+            encoding="utf-8",
+        )
+        print(
+            f"Wrote {len(records)} ShareGPT records ({len(graph.events)} events) for session "
+            f"{args.session_index}, theme {theme_name} to {args.output}"
+        )
+    else:
+        out_path.write_text(
+            json.dumps(graph_to_dict(graph), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(
+            f"Wrote synthetic replay graph ({len(graph.events)} events) for session "
+            f"{args.session_index}, theme {theme_name} to {args.output}"
+        )
 
     if args.summary:
         print_graph(graph)

@@ -1,4 +1,4 @@
-# Synthetic Agentic Session Replay
+# Synthetic Agentic Workload Generator
 
 Generate agentic LLM workloads procedurally, without a recorded trace. `synthetic_agentic` builds
 replay-graph sessions — multi-turn conversations, tool-calling loops, and recursive sub-agent
