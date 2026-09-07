@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 from pydantic import BaseModel
 
-_ASSETS = Path(__file__).parent.parent / "assets" / "synthetic_themes"
+_ASSETS = Path(__file__).parent.parent.parent / "assets" / "synthetic_themes"
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are an autonomous agent. Use the available tools to complete the given task, "

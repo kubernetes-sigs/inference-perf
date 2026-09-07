@@ -237,8 +237,8 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.synthetic_agentic.duplicate_sessions_target` | int | Not applicable to synthetic generation (pinned None): raise num_sessions to generate more sessions instead of duplicating existing ones. |
 | `--data.synthetic_agentic.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
 | `--data.synthetic_agentic.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely; use with care because a genuinely stuck predecessor will then never time out and successors will wait forever. |
-| `--data.synthetic_agentic.include_errors` | boolean | Include spans with error status |
-| `--data.synthetic_agentic.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--data.synthetic_agentic.include_errors` | boolean | Not applicable to synthetic generation (pinned True): this filters recorded spans by error status when building a replay graph from a trace file; synthetic sessions have no recorded spans to filter. |
+| `--data.synthetic_agentic.skip_invalid_files` | boolean | Not applicable to synthetic generation (pinned False): sessions are generated in-memory, not loaded from trace files, so there are no invalid files to skip. |
 | `--data.synthetic_agentic.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
 | `--data.synthetic_agentic.num_sessions` | int | Number of sessions (load volume) |
 | `--data.synthetic_agentic.input_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |

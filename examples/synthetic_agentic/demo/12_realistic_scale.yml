@@ -1,0 +1,39 @@
+# DEMO 12 — REALISTIC SCALE, matched to real Exgentic (~114K-token prompts, ~487-tool catalog).
+# *** REQUIRES A LARGE-CONTEXT MODEL (>=128K ctx). On SmolLM2 (8K ctx) this WILL exceed context
+# and 400 — that's expected. Swap model_name/base_url below to your big model before running. ***
+# WHAT TO LOOK FOR (on a big model): per-session input tokens ~87K-136K (real agentic scale);
+# fast graph build; 0 errors; mirrors the real Exgentic load profile.
+api: {type: chat, streaming: false}
+data:
+  type: synthetic_agentic
+  synthetic_agentic:
+    num_sessions: 20
+    seed: 42
+    theme_mix: {generic: {weight: 1.0}}
+    turns_per_session: {type: uniform, min: 1, max: 3}
+    fanout_probability: 0.3
+    sub_agents_per_spawn: {type: uniform, min: 2, max: 3}
+    max_depth: 2
+    tool_loop_depth: {type: uniform, min: 1, max: 4}
+    tool_catalog_size_per_agent: {type: fixed, mean: 487}   # real Exgentic catalog size
+    parallel_tool_calls_per_step: {type: fixed, mean: 1}    # real: ~97% single-call
+    input_tokens_per_turn:  {type: lognormal, min: 300, mean: 110000, max: 160000, std_dev: 30000}
+    output_tokens_per_turn: {type: lognormal, min: 5, mean: 210, max: 3600, std_dev: 300}
+    tool_call_latency_sec:  {type: fixed, mean: 1}
+    max_events_per_session: 512
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 4
+  worker_max_concurrency: 20
+  base_seed: 42
+
+server:
+  type: vllm
+  base_url: "http://localhost:8000"        # <-- point at your vLLM
+  model_name: "HuggingFaceTB/SmolLM2-135M-Instruct"  # <-- swap for your model later
+
+storage:
+  local_storage: {path: "reports-demo-12-realistic"}
+report:
+  request_lifecycle: {summary: true, per_stage: true}

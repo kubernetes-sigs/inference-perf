@@ -60,12 +60,6 @@ class Config(StrictBaseModel):
     )
 
     @model_validator(mode="after")
-    def synthetic_agentic_not_yet_available(self) -> "Config":
-        if self.data.type == DataGenType.SyntheticAgentic:
-            raise ValueError("synthetic_agentic is not yet available and will be enabled in a future release.")
-        return self
-
-    @model_validator(mode="after")
     def validate_trace_replay_load_type(self) -> "Config":
         """Validate that trace replay data types use trace_session_replay load type."""
         if self.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentic):

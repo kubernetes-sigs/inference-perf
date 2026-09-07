@@ -173,3 +173,9 @@ class DataConfig(StrictBaseModel):
                 f" ignored by type '{self.type.value}'. Unset it or set data.type to 'random'."
             )
         return self
+
+    @model_validator(mode="after")
+    def validate_synthetic_agentic_scope(self) -> "DataConfig":
+        if self.type == DataGenType.SyntheticAgentic and self.synthetic_agentic is None:
+            raise ValueError(f"data.type '{self.type.value}' requires 'data.synthetic_agentic' to be configured.")
+        return self

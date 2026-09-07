@@ -26,7 +26,7 @@ import json
 import logging
 import string
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -36,7 +36,7 @@ from inference_perf.config.common import Distribution
 from inference_perf.datagen.replay.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import tag_user_facing_events
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
-from inference_perf.datagen.synthetic_themes import (
+from inference_perf.datagen.synthetic_agentic.synthetic_themes import (
     GENERIC_THEME,
     ROOT_SYSTEM_PROMPTS,
     SUBAGENT_SYSTEM_PROMPTS,
@@ -154,7 +154,7 @@ def _accumulated_wire_tokens(
 # Shakespeare corpus shipped with the repo; same file/location convention
 # used by synthetic_datagen.py and weka_trace_replay_datagen.py for prompt
 # corpora. Loaded lazily (not at import time) and cached in-process.
-_SHAKESPEARE_PATH = Path(__file__).resolve().parents[1] / "assets" / "shakespeare.txt"
+_SHAKESPEARE_PATH = Path(__file__).resolve().parents[2] / "assets" / "shakespeare.txt"
 _corpus_words_cache: Optional[List[str]] = None
 
 
@@ -260,9 +260,47 @@ def _untruncated_len(tokenizer: CustomTokenizer, text: str) -> int:
     """
     try:
         hf = tokenizer.get_tokenizer()
-        return len(hf(text, truncation=False, add_special_tokens=False)["input_ids"])
+        return len(hf.encode(text, truncation=False, add_special_tokens=False))
     except Exception:
         return tokenizer.count_tokens(text)
+
+
+def _fit_padded_text(
+    tokenizer: CustomTokenizer,
+    filler_budget: int,
+    fixed_cost: int,
+    words: List[str],
+    emit: Callable[[int], str],
+) -> str:
+    """Shared sizing core for filler-padding: pick a word count so `emit(n_words)`
+    lands close to `fixed_cost + filler_budget` tokens total, then emit once more.
+
+    Analytic, not an iterative re-tokenizing loop (see fit_filler's docstring for
+    why that matters at 100K+ token targets). Tokenizes a small fixed-size word
+    SAMPLE once to get an average tokens-per-word ratio, computes
+    n_words = ceil(filler_budget / ratio), emits, then runs ONE bounded correction
+    pass: re-measure the emitted text (untruncated) and re-derive n_words from the
+    OBSERVED ratio if that would change it. Never loops, so it stays fast.
+
+    Callers own the filler_budget<=0 and empty-corpus guards, since their
+    fallback (what to return instead) differs.
+    """
+    sample = _cycled_words(words, min(_RATIO_SAMPLE_WORDS, len(words)))
+    sample_tokens = _untruncated_len(tokenizer, " ".join(sample))
+    tokens_per_word = (sample_tokens / len(sample)) if sample and sample_tokens > 0 else 1.0
+
+    n_words = max(1, int(np.ceil(filler_budget / tokens_per_word)))
+    buf = emit(n_words)
+
+    target_tokens = fixed_cost + filler_budget
+    actual = _untruncated_len(tokenizer, buf)
+    filler_actual = actual - fixed_cost
+    if actual != target_tokens and filler_actual > 0:
+        observed_ratio = filler_actual / n_words
+        corrected = max(1, int(np.ceil(filler_budget / observed_ratio)))
+        if corrected != n_words:
+            buf = emit(corrected)
+    return buf
 
 
 def fit_filler(
@@ -326,34 +364,12 @@ def fit_filler(
         # <context></context> block would signal nothing and just waste tokens).
         return fixed_content
 
-    # Average tokens-per-word from a small, un-truncated sample (measured once).
-    sample = _cycled_words(words, min(_RATIO_SAMPLE_WORDS, len(words)))
-    sample_text = " ".join(sample)
-    sample_tokens = _untruncated_len(tokenizer, sample_text)
-    tokens_per_word = (sample_tokens / len(sample)) if sample and sample_tokens > 0 else 1.0
-
     def _emit(n_words: int) -> str:
         # Wrapped filler FIRST, real content LAST.
         chunk = " ".join(_cycled_words(words, max(1, n_words)))
         return f"{FILLER_OPEN}{chunk}{FILLER_CLOSE} {fixed_content}"
 
-    # Analytic estimate: how many words to cover the remaining budget.
-    n_words = max(1, int(np.ceil(filler_budget / tokens_per_word)))
-    buf = _emit(n_words)
-
-    # One bounded correction pass: measure the real (untruncated) length of the
-    # emitted text and re-derive the word count from the OBSERVED filler ratio,
-    # correcting any systematic bias between the sample and the emitted filler.
-    # This runs at most once -- it never loops, so it stays fast.
-    actual = _untruncated_len(tokenizer, buf)
-    filler_actual = actual - fixed_cost
-    if actual != target_tokens and filler_actual > 0:
-        observed_ratio = filler_actual / n_words
-        corrected = max(1, int(np.ceil(filler_budget / observed_ratio)))
-        if corrected != n_words:
-            n_words = corrected
-            buf = _emit(n_words)
-    return buf
+    return _fit_padded_text(tokenizer, filler_budget, fixed_cost, words, _emit)
 
 
 # Header that introduces the filler padding appended AFTER a real system prompt,
@@ -406,24 +422,11 @@ def _render_system_head(
     if filler_budget <= 0 or not words:
         return prompt
 
-    sample = _cycled_words(words, min(_RATIO_SAMPLE_WORDS, len(words)))
-    sample_tokens = _untruncated_len(tokenizer, " ".join(sample))
-    tokens_per_word = (sample_tokens / len(sample)) if sample and sample_tokens > 0 else 1.0
-
     def _emit(n_words: int) -> str:
         chunk = " ".join(_cycled_words(words, max(1, n_words)))
         return f"{prompt}{_SYSTEM_HEAD_FILLER_HEADER}{chunk}"
 
-    n_words = max(1, int(np.ceil(filler_budget / tokens_per_word)))
-    buf = _emit(n_words)
-    actual = _untruncated_len(tokenizer, buf)
-    filler_actual = actual - header_cost
-    if actual != target_tokens and filler_actual > 0:
-        observed_ratio = filler_actual / n_words
-        corrected = max(1, int(np.ceil(filler_budget / observed_ratio)))
-        if corrected != n_words:
-            buf = _emit(corrected)
-    return buf
+    return _fit_padded_text(tokenizer, filler_budget, header_cost, words, _emit)
 
 
 # --- The seeded single-agent walk -----------------------------------------
@@ -1561,8 +1564,9 @@ def build_graph_for_session(
         # principal still outputs plain text and the merge follows.
         principal_is_terminal = (k == 0) and not will_spawn
         first_calls: List[Dict[str, Any]] = []  # populated only when k >= 1 (silences strict unbound check)
+        first_results: List[Dict[str, Any]] = []
         if k >= 1:
-            first_calls, _, first_names = _turn_calls_and_results(0)
+            first_calls, first_results, first_names = _turn_calls_and_results(0)
             _emit(
                 principal_id,
                 principal_msgs,
@@ -1636,10 +1640,15 @@ def build_graph_for_session(
         #                  placeholder assistant carrying those same ids (so each
         #                  tool_call is matched by exactly one role:tool result).
         #                  Empty when the prior output was plain text.
+        #   out_results -- the results for `out_calls`, already rendered by the
+        #                  `_turn_calls_and_results` call that produced `out_calls`
+        #                  (either the principal's turn-0 call above, or the prior
+        #                  loop iteration's turn-(t+1) lookahead call below).
         prev_id = principal_id
         prev_input_len = len(principal_msgs)
         prev_msgs: List[Dict[str, Any]] = list(principal_msgs)
         prev_out_calls: List[Dict[str, Any]] = first_calls if k >= 1 else []
+        prev_out_results: List[Dict[str, Any]] = first_results if k >= 1 else []
 
         # --- k tool-turn events (accumulating chain) ---
         # Event ':tN' (N = 0..k-1) re-injects the prior event's tool-call reply
@@ -1662,7 +1671,7 @@ def build_graph_for_session(
             # materializes in THIS event which we skip).
             if not _fits(1, reserved):
                 break
-            _, results, _ = _turn_calls_and_results(t)
+            results = prev_out_results
             # The output-slot placeholder assistant carries the prior event's
             # emitted calls (same ids as `results`), so exactly these calls are
             # matched by exactly these results.
@@ -1719,9 +1728,13 @@ def build_graph_for_session(
                     expected_output_tokens=ans_tokens,
                 )
                 next_out_calls: List[Dict[str, Any]] = []
+                next_out_results: List[Dict[str, Any]] = []
             else:
                 # OUTPUT is the NEXT tool call (turn t+1); force it via tool_names.
-                next_calls, _, next_names = _turn_calls_and_results(t + 1)
+                # Render turn t+1's calls+results together now so the NEXT iteration
+                # (or the spawn block below) can reuse `next_out_results` instead of
+                # calling `_turn_calls_and_results` again for the same turn.
+                next_calls, next_out_results, next_names = _turn_calls_and_results(t + 1)
                 _emit(
                     turn_id,
                     turn_msgs,
@@ -1738,6 +1751,7 @@ def build_graph_for_session(
             prev_input_len = len(turn_msgs)
             prev_msgs = turn_msgs
             prev_out_calls = next_out_calls
+            prev_out_results = next_out_results
 
         # --- optional fan-out: ONE spawn event (parallel dispatch_agent calls) +
         # the spawned children + post-dispatch ack + K sequential notification events (the LAST is this
@@ -1815,7 +1829,7 @@ def build_graph_for_session(
                 # the parent's last input with a shared-only prepend, which introduces
                 # no unmatched prior tool_call, so nothing dangles either way.
                 if prev_out_calls:
-                    _, spawn_results, _ = _turn_calls_and_results(n_turn_events)
+                    spawn_results = prev_out_results
                     spawn_output_placeholder = {"role": "assistant", "tool_calls": [dict(c) for c in prev_out_calls]}
                     spawn_msgs = [*prev_msgs, spawn_output_placeholder, *spawn_results, spawn_ctx]
                     spawn_segs = [
@@ -1860,9 +1874,7 @@ def build_graph_for_session(
                 # to be built. Children -- and, because `reserved` is threaded through
                 # `_build_agent`, their descendants -- test the budget against that total,
                 # so a greedy grandchild can no longer consume the events this agent
-                # still owes, and an early child cannot starve a later sibling. Both were
-                # ways to end the loop with `child_terminals != K`, which trips the atomic
-                # rollback below and collapses the whole session to its pre-spawn terminal.
+                # still owes, and an early child cannot starve a later sibling.
                 for c in range(K):
                     child_reserved = reserved + (K + 1) + (K - c - 1) * _MIN_AGENT_COST
                     if not _fits(_MIN_AGENT_COST, child_reserved):
@@ -2029,7 +2041,7 @@ def build_graph_for_session(
                     # pre-spawn snapshot" covers however many events were added, so it
                     # needs no adjustment for the notification chain. prev_id stays at
                     # the pre-spawn terminal; the final normalization re-emits that as a
-                    # plain answer.
+                    # plain answer. Should not be reachable, exists as a safety net.
                     for eid in list(events.keys()):
                         if eid not in events_before_spawn:
                             del events[eid]
