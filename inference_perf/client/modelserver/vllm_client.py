@@ -35,6 +35,8 @@ class vLLMModelServerClient(openAIModelServerClient):
         ignore_eos: bool = True,
         api_key: Optional[str] = None,
         timeout: Optional[float] = None,
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
         lora_config: Optional[List[MultiLoRAConfig]] = None,
@@ -53,6 +55,8 @@ class vLLMModelServerClient(openAIModelServerClient):
             cert_path,
             key_path,
             lora_config=lora_config,
+            request_retries=request_retries,
+            request_retry_backoff_sec=request_retry_backoff_sec,
         )
         self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
 

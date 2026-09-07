@@ -1155,6 +1155,40 @@ class TestFailurePropagation:
         # 3 total - 0 completed before failure - 1 (the failing event itself) = 2 cancelled
         assert data["cancelled_events"] == 2
 
+    @pytest.mark.asyncio
+    async def test_recovered_retry_does_not_fail_the_session(self) -> None:
+        """A retry that recovered must leave no trace in the session's failure state.
+
+        This is the whole point of #777: the blast radius of a transport fault is the
+        rest of the session graph, not the one request. A recovered retry never reaches
+        process_failure, so the session stays alive, downstream events are not
+        cancelled, and nothing is pushed to the completion queue. The counterpart is
+        test_cancelled_count_in_failure_notification above, which shows what an
+        unrecovered fault costs on the same 3-event session.
+        """
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+
+        notifications: List[Any] = []
+        mock_queue = MagicMock()
+        mock_queue.put_nowait = lambda data: notifications.append(data)
+
+        event_0 = self._make_node("session_1:event_0", registry, tracker, total_events=3, completion_queue=mock_queue)
+
+        response = make_mock_response("recovered after retry")
+        config = make_mock_api_config_streaming(streaming=False)
+        tokenizer = make_mock_tokenizer()
+
+        # The client retried internally and the retry answered, so the datagen sees an
+        # ordinary success -- process_failure is never called.
+        await event_0.process_response(response, config, tokenizer)
+
+        assert notifications == []
+        assert tracker.is_session_failed("session_1") is False
+        assert registry.is_event_failed("session_1:event_0") is False
+        # Downstream events see real output, so the rest of the graph still runs.
+        assert registry.get_output_by_event_id("session_1:event_0") == "recovered after retry"
+
 
 # ---------------------------------------------------------------------------
 # Random Session ID Injection tests

@@ -157,6 +157,9 @@ load:
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
+  request_timeout: 900              # Optional: per-request timeout in seconds (applies per attempt)
+  request_retries: 0                # Optional: extra attempts for pre-first-byte transport faults (default: 0, no retry)
+  request_retry_backoff_sec: 0.5    # Optional: base backoff before the first retry, doubled + jittered per attempt
   base_seed: 12345                  # Optional: base random seed for reproducibility (default: current time in ms)
   lora_traffic_split:               # Optional: MultiLoRA traffic splitting
     - name: adapter_1               # LoRA adapter name
@@ -166,6 +169,39 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Retrying Transport Faults
+
+`request_retries` re-sends a request when it fails **before the server sent any response
+byte** — a refused connection, a reset, or a connection dropped from the pool. It defaults
+to `0`, which preserves the historical behavior of failing on the first fault, so enabling
+it is always an explicit choice.
+
+The pre-first-byte boundary is what keeps the retry measurement-safe, and it is enforced
+rather than assumed:
+
+- A fault raised **before** any byte arrived measured nothing. Re-sending it changes
+  nothing about what the benchmark reports.
+- A fault raised **mid-stream** has already produced a TTFT and partial ITLs. Retrying it
+  would report the *second* attempt's latency as the request's latency and would double the
+  work the endpoint actually did, so these are never retried.
+- **Timeouts are never retried**, at either point. A timeout is a real measurement of a slow
+  server, not a lost connection.
+
+Each attempt is timed independently: `start_time` is re-stamped per attempt, so a reported
+latency never includes a failed attempt or its backoff.
+
+Two costs to weigh before enabling it:
+
+- `request_timeout` applies **per attempt**, so the worst-case wall time for one request
+  becomes `(1 + request_retries) × request_timeout`, plus backoff. With a large
+  `request_timeout`, keep `request_retries` small.
+- Backoff starts at `request_retry_backoff_sec`, then doubles and jitters per attempt so
+  retries do not resynchronize into a burst against a server that is already dropping
+  connections.
+
+Retry activity is reported and never hidden: see
+[Reports](otel_trace_replay.md#reports) for the `retries` block and the CLI columns.
 
 #### Load Sweeps
 

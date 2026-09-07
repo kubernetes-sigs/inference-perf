@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
+import random
 import pytest
 import asyncio
 import aiohttp
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
 from inference_perf.client.modelserver.metrics import Metric, CounterResult
@@ -36,6 +39,10 @@ def mock_client() -> MagicMock:
     client.metrics_collector = MagicMock()
     client.cert_path = None
     client.key_path = None
+    # Real ints, not MagicMocks: the retry loop does arithmetic on these.
+    # Defaults mirror LoadConfig, i.e. retries off.
+    client.request_retries = 0
+    client.request_retry_backoff_sec = 0.5
     return client
 
 
@@ -551,3 +558,294 @@ async def test_session_token_replayed_for_user_session_id_workloads(mock_client:
 
     await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
     assert mock_http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
+
+
+# --- Bounded retry for pre-first-byte transport faults (#777) ---
+#
+# A replay session is a graph: one dropped connection fails the whole session and
+# cancels every event downstream of it. These tests pin the boundary that makes the
+# retry measurement-safe -- only faults raised before any response byte arrived are
+# retried, because anything later has already produced a TTFT.
+
+
+def _retrying_session(mock_client: MagicMock, retries: int, backoff: float = 0.0) -> openAIModelServerClientSession:
+    """A session whose client is configured for `retries` extra attempts."""
+    mock_client.request_retries = retries
+    mock_client.request_retry_backoff_sec = backoff
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    return session
+
+
+def _post(session: openAIModelServerClientSession) -> MagicMock:
+    """The mocked ``post`` on a session built by ``_retrying_session``.
+
+    ``session.session`` is typed as a real ``ClientSession``, so reach the mock's
+    ``side_effect``/``call_count`` through a cast rather than off the typed attribute.
+    """
+    return cast(MagicMock, cast(MagicMock, session.session).post)
+
+
+def _failing_ctx(exc: BaseException) -> MagicMock:
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(side_effect=exc)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
+def _ok_ctx() -> MagicMock:
+    response = MagicMock()
+    response.status = 200
+    response.json = AsyncMock(return_value={"choices": [{"text": "ok"}]})
+    response.text = AsyncMock(return_value='{"choices": [{"text": "ok"}]}')
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
+def _error_ctx(status: int = 500) -> MagicMock:
+    """A response that completes without raising but carries a failing HTTP status."""
+    response = MagicMock()
+    response.status = status
+    response.json = AsyncMock(return_value={"error": "boom"})
+    response.text = AsyncMock(return_value='{"error": "boom"}')
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_retry_recovers_from_server_disconnect(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """A dropped connection is re-POSTed and the retry's success is what gets reported."""
+    session = _retrying_session(mock_client, retries=2)
+    # side_effect, not return_value: each attempt needs its own context manager.
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 2
+    # Exactly one lifecycle metric per logical request, however many attempts it took.
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.retries_attempted == 1
+    assert metric.info.retries_recovered is True
+
+
+@pytest.mark.asyncio
+async def test_retries_exhausted_reports_the_transport_error(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """When every attempt drops, the request fails exactly as it does today -- but still
+    reports the attempts it burned, so an exhausted retry is not invisible."""
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()) for _ in range(3)]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 3  # 1 + request_retries
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.error.error_type == "ServerDisconnectedError"
+    assert metric.info.retries_attempted == 2
+    assert metric.info.retries_recovered is False
+
+
+@pytest.mark.asyncio
+async def test_no_retry_by_default(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """request_retries defaults to 0, so existing runs' numbers are unchanged."""
+    session = _retrying_session(mock_client, retries=0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 1
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.info.retries_attempted == 0
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_never_retried(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """ServerTimeoutError inherits from BOTH ClientConnectionError and
+    asyncio.TimeoutError. Retrying it would multiply request_timeout by the attempt
+    count -- with request_timeout: 900 that turns one stalled event into 45 minutes."""
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerTimeoutError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 1
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.info.retries_attempted == 0
+
+
+@pytest.mark.asyncio
+async def test_client_os_error_is_retried(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """ClientOSError (a connection reset from the pool) was the second-largest error
+    class in the reference run, so it must fall inside the predicate."""
+    session = _retrying_session(mock_client, retries=1)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ClientOSError(104, "Connection reset by peer")), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 2
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.retries_recovered is True
+
+
+@pytest.mark.asyncio
+async def test_reported_latency_excludes_failed_attempts_and_backoff(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start_time must be re-stamped per attempt.
+
+    If the retry loop wraps the try without resetting `start`, every retried request
+    silently reports the failed attempt plus its backoff as part of its latency -- the
+    exact measurement contamination the pre-first-byte boundary exists to prevent.
+    """
+    session = _retrying_session(mock_client, retries=1, backoff=10.0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    # Attempt 1 spans 0->5s, backoff runs to 100s, attempt 2 spans 100->101s.
+    ticks = iter([0.0, 5.0, 100.0, 101.0, 101.0, 101.0])
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.time.perf_counter", lambda: next(ticks))
+    # Don't actually sleep out the backoff.
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.sleep", AsyncMock())
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    # 1s of real request, not 101s of request + failure + backoff.
+    assert metric.end_time - metric.start_time == pytest.approx(1.0)
+    assert metric.start_time == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_retry_reduces_failures_without_inflating_request_count(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Statistical guard: at a fixed pre-first-byte fault rate, raising request_retries
+    must drive failures down while the number of reported requests stays constant.
+
+    The per-request tests above pin the mechanics of one retry. This one pins the two
+    properties a run's numbers depend on, which no single-request test can observe:
+
+    1. Failures fall roughly geometrically -- each extra attempt faults independently.
+    2. Exactly one RequestLifecycleMetric is recorded per logical request in every arm.
+       If retries ever recorded a metric per attempt, throughput and every latency
+       percentile would be silently wrong, and no assertion about a single request
+       would catch it.
+
+    Deliberately loose bounds: the fault sequence is seeded so the arms are comparable,
+    but this asserts the *shape* of the improvement, not exact counts, so the test does
+    not become a tripwire on an unrelated change to attempt ordering.
+    """
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.sleep", AsyncMock())
+    n_requests = 300
+    fault_rate = 0.2
+
+    async def run_arm(retries: int) -> tuple[int, int, int]:
+        session = _retrying_session(mock_client, retries=retries)
+        mock_client.metrics_collector.record_metric.reset_mock()
+        rng = random.Random(20260907)  # same fault sequence in every arm
+
+        def post(*args: object, **kwargs: object) -> MagicMock:
+            if rng.random() < fault_rate:
+                return _failing_ctx(aiohttp.ServerDisconnectedError())
+            return _ok_ctx()
+
+        _post(session).side_effect = post
+        # A fresh InferenceInfo per call: the shared `mock_data` fixture returns one
+        # instance via return_value, so every request would otherwise write
+        # retries_recovered onto the same object and only the last write would survive.
+        mock_data.process_response.side_effect = lambda *a, **k: InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=0))
+        )
+        mock_data.process_failure.side_effect = lambda *a, **k: InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=0))
+        )
+        for _ in range(n_requests):
+            await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+        metrics = [call[0][0] for call in mock_client.metrics_collector.record_metric.call_args_list]
+        failed = sum(1 for m in metrics if m.error is not None)
+        recovered = sum(1 for m in metrics if m.info is not None and m.info.retries_recovered)
+        return len(metrics), failed, recovered
+
+    recorded_0, failed_0, recovered_0 = await run_arm(0)
+    recorded_2, failed_2, recovered_2 = await run_arm(2)
+
+    # One metric per logical request, no matter how many network attempts it took.
+    assert recorded_0 == n_requests
+    assert recorded_2 == n_requests
+
+    # Retries off: nothing is recovered and the fault rate shows up as failures.
+    assert recovered_0 == 0
+    assert failed_0 > 0
+
+    # Two extra attempts cut a 20% fault rate to roughly 20%^3, so most failures go away.
+    assert failed_2 < failed_0 / 4
+    assert recovered_2 > 0
+
+
+@pytest.mark.asyncio
+async def test_recovered_retry_does_not_log_an_error(
+    mock_client: MagicMock, mock_data: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fault that is about to be retried logs a WARNING, not an ERROR with a traceback.
+
+    The except blocks run before the retry decision is known, so logging there would
+    stamp ERROR + a full stack trace on every fault the mechanism then silently fixed --
+    making a working retry look like a failing run to anyone reading logs or alerting
+    on ERROR. The log is deferred until we know we are giving up.
+    """
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    with caplog.at_level(logging.DEBUG, logger="inference_perf.client.modelserver.openai_client"):
+        await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    client_logger = "inference_perf.client.modelserver.openai_client"
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.name == client_logger]
+    assert errors == []
+    assert any("Retrying request after ServerDisconnectedError" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_retry_still_logs_an_error(
+    mock_client: MagicMock, mock_data: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Deferring the log must not swallow it: a request that really fails still logs
+    ERROR with the exception attached, exactly as it did before retries existed."""
+    session = _retrying_session(mock_client, retries=1)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()) for _ in range(2)]
+
+    with caplog.at_level(logging.DEBUG, logger="inference_perf.client.modelserver.openai_client"):
+        await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    client_logger = "inference_perf.client.modelserver.openai_client"
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.name == client_logger]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None  # the traceback is still attached
+
+
+@pytest.mark.asyncio
+async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """A retry whose final attempt returns a failing status has not recovered anything.
+
+    The transport fault is gone, but the request still failed, so counting it as
+    recovered would overstate how many requests the retry actually rescued.
+    """
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _error_ctx(500)]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 2
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.error is not None
+    assert metric.info.retries_attempted == 1
+    assert metric.info.retries_recovered is False

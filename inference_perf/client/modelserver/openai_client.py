@@ -32,6 +32,8 @@ from .otel_instrumentation import get_otel_instrumentation
 from typing import Iterator, List, Optional, Any, Dict, Tuple
 import aiohttp
 import asyncio
+import random
+from asyncio import sleep
 import json
 import time
 import logging
@@ -91,8 +93,15 @@ class openAIModelServerClient(ModelServerClient):
         cert_path: Optional[str] = None,
         key_path: Optional[str] = None,
         lora_config: Optional[List[MultiLoRAConfig]] = None,
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
     ) -> None:
-        super().__init__(api_config, timeout)
+        super().__init__(
+            api_config,
+            timeout,
+            request_retries=request_retries,
+            request_retry_backoff_sec=request_retry_backoff_sec,
+        )
         self.uri = uri
         self.max_completion_tokens = 30  # default to use when not set at the request level
         self.ignore_eos = ignore_eos
@@ -194,6 +203,23 @@ def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, s
         for mk in matching_keys:
             del target[mk]
         target[k] = v
+
+
+def is_retryable_transport_error(exc: BaseException) -> bool:
+    """True for a connection fault raised before the server sent anything.
+
+    ``ClientConnectionError`` is exactly that family: a connection refused, reset, or
+    closed while idle in the pool. ``ClientPayloadError`` sits deliberately outside it --
+    a body that broke mid-transfer already produced tokens, so retrying it would report
+    the second attempt's latency.
+
+    Timeouts are excluded even though ``ServerTimeoutError`` inherits from
+    ``ClientConnectionError``: the request may have reached the model, and
+    ``request_timeout`` applies per attempt, so re-sending multiplies the deadline.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return False
+    return isinstance(exc, aiohttp.ClientConnectionError)
 
 
 class openAIModelServerClientSession(ModelServerClientSession):
@@ -440,6 +466,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         error = None
         response_content = ""
         caught_exception: Optional[Exception] = None
+        retries_attempted = 0
+        retries_recovered = False
 
         # Get session OTEL context if available (for OTel trace replay)
         parent_context = self._get_session_otel_context(data)
@@ -451,112 +479,159 @@ class openAIModelServerClientSession(ModelServerClientSession):
             request_data=payload,
             parent_context=parent_context,
         ) as span:
-            try:
-                async with self.session.post(self.client.uri + data.get_route(), headers=headers, data=request_data) as resp:
-                    response = resp
-                    if session_id and session_token_header:
-                        received_token = resp.headers.get(session_token_header)
-                        if received_token:
-                            self._session_tokens[session_id] = received_token
-                    try:
-                        if self.client.api_config.streaming and response.status == 200:
-                            info = await data.process_response(
-                                response=response,
-                                config=self.client.api_config,
-                                tokenizer=self.client.tokenizer,
-                                lora_adapter=lora_adapter,
-                            )
-                            # pop (not get) to release the raw SSE body from InferenceInfo immediately;
-                            # holding it in extra_info for the lifetime of the object causes unbounded
-                            # memory growth when many sessions run concurrently.
-                            response_content = info.extra_info.pop("raw_response", "") if info else ""
-                        else:
-                            # Read response body once to avoid double-read issue
-                            response_content = await response.text()
-
-                            if response.status == 200:
+            # Attempt loop for pre-first-byte transport faults (see
+            # is_retryable_transport_error). Retries stay inside the span and record one
+            # RequestLifecycleMetric, so a recovered request is not counted twice.
+            max_attempts = 1 + max(0, self.client.request_retries)
+            for attempt in range(max_attempts):
+                # Re-stamp per attempt: start_time feeds the reported request latency, so a
+                # failed attempt and its backoff must not be charged to the one that answered.
+                start = time.perf_counter()
+                response = None
+                info = None
+                error = None
+                response_content = ""
+                caught_exception = None
+                log_message = ""
+                try:
+                    async with self.session.post(
+                        self.client.uri + data.get_route(), headers=headers, data=request_data
+                    ) as resp:
+                        response = resp
+                        if session_id and session_token_header:
+                            received_token = resp.headers.get(session_token_header)
+                            if received_token:
+                                self._session_tokens[session_id] = received_token
+                        try:
+                            if self.client.api_config.streaming and response.status == 200:
                                 info = await data.process_response(
                                     response=response,
                                     config=self.client.api_config,
                                     tokenizer=self.client.tokenizer,
                                     lora_adapter=lora_adapter,
                                 )
+                                # pop (not get) to release the raw SSE body from InferenceInfo immediately;
+                                # holding it in extra_info for the lifetime of the object causes unbounded
+                                # memory growth when many sessions run concurrently.
+                                response_content = info.extra_info.pop("raw_response", "") if info else ""
+                            else:
+                                # Read response body once to avoid double-read issue
+                                response_content = await response.text()
 
-                        if response.status != 200:
-                            # Handle HTTP error responses (status != 200).
-                            #
-                            # For OTel trace replay, process_failure() is called to:
-                            # 1. Mark the session as failed in WorkerSessionTracker
-                            # 2. Call registry.record_failure() to unblock dependent events via EventFailedError
-                            # 3. Immediately notify the main process via session_completion_queue
-                            #
-                            # This ensures that if request X fails and request Y depends on X's output,
-                            # Y raises EventFailedError and skips rather than hanging indefinitely.
-                            #
-                            # Note: We call process_failure() for all data types on non-200 responses
-                            # to ensure proper state cleanup (e.g. releasing locks in multi-turn chat)
-                            # and failure propagation.
-                            if response is not None:
+                                if response.status == 200:
+                                    info = await data.process_response(
+                                        response=response,
+                                        config=self.client.api_config,
+                                        tokenizer=self.client.tokenizer,
+                                        lora_adapter=lora_adapter,
+                                    )
+
+                            if response.status != 200:
+                                # Handle HTTP error responses (status != 200).
+                                #
+                                # For OTel trace replay, process_failure() is called to:
+                                # 1. Mark the session as failed in WorkerSessionTracker
+                                # 2. Call registry.record_failure() to unblock dependent events via EventFailedError
+                                # 3. Immediately notify the main process via session_completion_queue
+                                #
+                                # This ensures that if request X fails and request Y depends on X's output,
+                                # Y raises EventFailedError and skips rather than hanging indefinitely.
+                                #
+                                # Note: We call process_failure() for all data types on non-200 responses
+                                # to ensure proper state cleanup (e.g. releasing locks in multi-turn chat)
+                                # and failure propagation.
+                                if response is not None:
+                                    error = ErrorResponseInfo(
+                                        error_msg=response_content,
+                                        error_type=f"HTTP Error {response.status}",
+                                    )
+                                    exception = Exception(f"{error.error_type}: {error.error_msg}")
+                                    info = await data.process_failure(
+                                        response=response,
+                                        config=self.client.api_config,
+                                        tokenizer=self.client.tokenizer,
+                                        exception=exception,
+                                        lora_adapter=lora_adapter,
+                                    )
+                        except Exception as read_error:
+                            # Handle errors reading response body or streaming.
+                            # For 200 responses, process_response() raised (e.g. ClientPayloadError
+                            # from a broken SSE stream). Call process_failure() here so that session
+                            # locks are released before the context manager exits. Re-raising would
+                            # run ClientResponse.__aexit__ on a broken connection, which can raise
+                            # a second exception that masks the original and bypasses the outer
+                            # aiohttp.ClientError handler.
+                            if response is not None and response.status == 200 and not info:
+                                caught_exception = read_error
+                                # If the stream broke partway, recover the bytes
+                                # received so the per-request report shows what the
+                                # server actually sent, and report the underlying
+                                # exception (e.g. ClientPayloadError) rather than the
+                                # StreamInterruptedError wrapper.
+                                original_error: Exception = read_error
+                                if isinstance(read_error, StreamInterruptedError):
+                                    original_error = read_error.original
+                                    if read_error.raw_content:
+                                        response_content = read_error.raw_content
                                 error = ErrorResponseInfo(
-                                    error_msg=response_content,
-                                    error_type=f"HTTP Error {response.status}",
+                                    error_msg=str(original_error),
+                                    error_type=type(original_error).__name__,
                                 )
-                                exception = Exception(f"{error.error_type}: {error.error_msg}")
                                 info = await data.process_failure(
-                                    response=response,
+                                    response=None,
                                     config=self.client.api_config,
                                     tokenizer=self.client.tokenizer,
-                                    exception=exception,
+                                    exception=original_error,
                                     lora_adapter=lora_adapter,
                                 )
-                    except Exception as read_error:
-                        # Handle errors reading response body or streaming.
-                        # For 200 responses, process_response() raised (e.g. ClientPayloadError
-                        # from a broken SSE stream). Call process_failure() here so that session
-                        # locks are released before the context manager exits. Re-raising would
-                        # run ClientResponse.__aexit__ on a broken connection, which can raise
-                        # a second exception that masks the original and bypasses the outer
-                        # aiohttp.ClientError handler.
-                        if response is not None and response.status == 200 and not info:
-                            caught_exception = read_error
-                            # If the stream broke partway, recover the bytes
-                            # received so the per-request report shows what the
-                            # server actually sent, and report the underlying
-                            # exception (e.g. ClientPayloadError) rather than the
-                            # StreamInterruptedError wrapper.
-                            original_error: Exception = read_error
-                            if isinstance(read_error, StreamInterruptedError):
-                                original_error = read_error.original
-                                if read_error.raw_content:
-                                    response_content = read_error.raw_content
-                            error = ErrorResponseInfo(
-                                error_msg=str(original_error),
-                                error_type=type(original_error).__name__,
-                            )
-                            info = await data.process_failure(
-                                response=None,
-                                config=self.client.api_config,
-                                tokenizer=self.client.tokenizer,
-                                exception=original_error,
-                                lora_adapter=lora_adapter,
-                            )
-                        else:
-                            if not response_content:
-                                response_content = f"Failed to read response text: {read_error}"
-                            raise
+                            else:
+                                if not response_content:
+                                    response_content = f"Failed to read response text: {read_error}"
+                                raise
 
-            except aiohttp.ClientError as e:
-                caught_exception = e
-                logger.error("Client error during request:", exc_info=True)
-                error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
-            except asyncio.TimeoutError as e:
-                caught_exception = e
-                logger.error("Request timed out:", exc_info=True)
-                error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
-            except Exception as e:
-                caught_exception = e
-                logger.error("Unexpected error during request processing:", exc_info=True)
-                error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+                except aiohttp.ClientError as e:
+                    caught_exception = e
+                    log_message = "Client error during request:"
+                    error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+                except asyncio.TimeoutError as e:
+                    caught_exception = e
+                    log_message = "Request timed out:"
+                    error = ErrorResponseInfo(error_msg="Request timed out", error_type="TimeoutError")
+                except Exception as e:
+                    caught_exception = e
+                    log_message = "Unexpected error during request processing:"
+                    error = ErrorResponseInfo(error_msg=str(e), error_type=type(e).__name__)
+
+                # Retry only a connection fault that produced no response at all. Once
+                # `response` is set the server answered, so whatever failed afterwards
+                # (a broken body, a bad status) is a real result and is reported as one.
+                if (
+                    caught_exception is not None
+                    and response is None
+                    and attempt < max_attempts - 1
+                    and is_retryable_transport_error(caught_exception)
+                ):
+                    retries_attempted += 1
+                    backoff = self.client.request_retry_backoff_sec * (2**attempt)
+                    # Jitter keeps concurrent requests from resynchronizing into a burst
+                    # against a server that is already shedding connections.
+                    await sleep(backoff * (0.5 + random.random()))
+                    logger.warning(
+                        f"Retrying request after {type(caught_exception).__name__} (attempt {attempt + 2}/{max_attempts})."
+                    )
+                    continue
+
+                # Deferred to here so a fault that is about to be retried does not log an
+                # ERROR with a stack trace: only a fault we are giving up on is an error.
+                if caught_exception is not None:
+                    logger.error(log_message, exc_info=caught_exception)
+
+                # Recovered means the request succeeded, not just that the transport fault
+                # stopped recurring: a final attempt can return a failing status without
+                # raising, and error is set on every such path.
+                if retries_attempted and caught_exception is None and error is None:
+                    retries_recovered = True
+                break
 
             end_time = time.perf_counter()
 
@@ -583,6 +658,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         if not info:
             info = InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0)))
+        # Set after the default-fill above: a request whose every attempt failed gets a
+        # fresh InferenceInfo, which still needs to report the retries it burned.
+        info.retries_attempted = retries_attempted
+        info.retries_recovered = retries_recovered
         if data.labels:
             info.labels = data.labels
         if data.graph_event_id:

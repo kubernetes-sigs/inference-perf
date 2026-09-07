@@ -20,12 +20,23 @@ from .metrics import BaseMetrics
 
 class ModelServerClient(ABC):
     @abstractmethod
-    def __init__(self, api_config: APIConfig, timeout: Optional[float] = None, *args: Tuple[int, ...]) -> None:
+    def __init__(
+        self,
+        api_config: APIConfig,
+        timeout: Optional[float] = None,
+        *args: Tuple[int, ...],
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
+    ) -> None:
         if api_config.type not in self.get_supported_apis():
             raise Exception(f"Unsupported API type {api_config}")
 
         self.api_config = api_config
         self.timeout = timeout
+        # Retries apply only to faults raised before any response byte arrives; see
+        # LoadConfig.request_retries. timeout is per attempt, not per request.
+        self.request_retries = request_retries
+        self.request_retry_backoff_sec = request_retry_backoff_sec
 
     def new_session(self) -> "ModelServerClientSession":
         return ModelServerClientSession(self)

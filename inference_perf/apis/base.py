@@ -45,6 +45,12 @@ class InferenceInfo(BaseModel):
     lora_adapter: Optional[str] = None
     graph_event_id: Optional[str] = None
     labels: dict[str, str] = {}
+    # Extra attempts spent on pre-first-byte connection faults, and whether one of
+    # them went on to succeed. 0/False on the overwhelming majority of requests; a
+    # request that exhausted its retries reports the count with retries_recovered
+    # False. See LoadConfig.request_retries.
+    retries_attempted: int = 0
+    retries_recovered: bool = False
 
     # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top
     # level for back-compat with parsers of pre-multimodal
@@ -94,6 +100,11 @@ class SessionLifecycleMetric(BaseModel):
     # but no malformed tool_calls were observed.
     n_recorded_substitutions: Optional[int] = None
     recorded_substitution_event_ids: Optional[List[str]] = None
+    # Per-session sum of extra attempts spent on pre-first-byte connection
+    # faults, and how many of those requests went on to succeed. 0/0 when the
+    # session hit no transport faults; see LoadConfig.request_retries.
+    retries_attempted: int = 0
+    retries_recovered: int = 0
     success: Optional[bool] = None
     error: Optional[ErrorResponseInfo] = None
     total_input_tokens: Optional[int] = None

@@ -53,6 +53,9 @@ def _mock_metric(
     m.tpot_slo_sec = None
     m.request_data = request_data
     m.info = Mock(spec=InferenceInfo)
+    # Real int/bool, not auto-specced Mocks: the retry rollup does arithmetic on these.
+    m.info.retries_attempted = 0
+    m.info.retries_recovered = False
     m.info.request_metrics = RequestMetrics(
         text=Text(input_tokens=input_tokens),
         image=Images(count=len(images), instances=images) if images else None,
@@ -220,6 +223,8 @@ def test_lifecycle_report_shape_with_failures() -> None:
     failure.tpot_slo_sec = None
     failure.request_data = "bad"
     failure.info = Mock(spec=InferenceInfo)
+    failure.info.retries_attempted = 0
+    failure.info.retries_recovered = False
     failure.info.request_metrics = RequestMetrics(text=Text(input_tokens=80))
     failure.info.response_metrics = None
     failure.info.extra_info = {}
@@ -232,3 +237,60 @@ def test_lifecycle_report_shape_with_failures() -> None:
     _assert_summary(report["failures"]["request_latency"])
     _assert_summary(report["failures"]["prompt_tokens"])
     assert report["failures"]["by_label"]["500 - Internal Server Error"]["count"] == 1
+
+
+# --- Retry reporting (#777) ---
+
+
+def _retry_metric(retries_attempted: int, retries_recovered: bool) -> Mock:
+    """A minimal successful request metric carrying retry counters."""
+    m = _mock_metric(
+        start_time=0.0,
+        end_time=1.0,
+        scheduled_time=0.0,
+        input_tokens=10,
+        output_tokens=5,
+        request_data="req",
+        images=[],
+        videos=[],
+        audios=[],
+        output_token_times=[0.5, 1.0],
+    )
+    m.info.retries_attempted = retries_attempted
+    m.info.retries_recovered = retries_recovered
+    return m
+
+
+def test_retries_absent_when_nothing_retried() -> None:
+    """A run with retries off must carry no retry section at all, rather than a block
+    of zeros that implies the mechanism was exercised."""
+    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(0, False)]), percentiles=[50])
+    assert summary.retries is None
+    assert "retries" in summary.model_dump()  # key present, value null
+
+
+def test_retries_partition_recovered_and_exhausted() -> None:
+    """attempts counts POSTs, requests_retried counts requests, and recovered +
+    exhausted must partition requests_retried exactly."""
+    metrics = [
+        _retry_metric(0, False),  # never retried -> excluded entirely
+        _retry_metric(1, True),  # retried once, recovered
+        _retry_metric(2, True),  # retried twice, recovered
+        _retry_metric(2, False),  # retried twice, still failed
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["requests_retried"] == 3
+    assert summary.retries["attempts"] == 5
+    assert summary.retries["recovered"] == 2
+    assert summary.retries["exhausted"] == 1
+    assert summary.retries["recovered"] + summary.retries["exhausted"] == summary.retries["requests_retried"]
+
+
+def test_retries_are_not_counted_as_errors() -> None:
+    """A retry is not an error label: a recovered retry must leave failures untouched,
+    or the run's error rate would double-count faults the retry already absorbed."""
+    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(2, True)]), percentiles=[50])
+    assert summary.failures["count"] == 0
+    assert summary.failures["by_label"] == {}
+    assert summary.successes["count"] == 1

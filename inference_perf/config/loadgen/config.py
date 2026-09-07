@@ -181,6 +181,29 @@ class LoadConfig(StrictBaseModel):
     )
     circuit_breakers: List[str] = Field(default=[], description="Names of configured circuit breakers to enable for the run.")
     request_timeout: Optional[float] = Field(default=None, description="Per-request timeout in seconds.")
+    request_retries: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "How many extra attempts to make when a request fails before it ever produced a "
+            "response, i.e. a connection was refused, reset, or dropped from the pool. Only "
+            "such pre-first-byte transport faults are retried: once any response byte has "
+            "arrived the request has already produced a TTFT, so retrying it would report the "
+            "retry's latency instead of the original's. Timeouts are never retried. Defaults "
+            "to 0, which preserves the historical behavior of failing on the first fault. "
+            "Note that request_timeout applies per attempt, so the worst-case wall time for "
+            "one request becomes (1 + request_retries) * request_timeout plus backoff."
+        ),
+    )
+    request_retry_backoff_sec: float = Field(
+        default=0.5,
+        ge=0,
+        description=(
+            "Base delay before the first retry, in seconds. Each further retry doubles it and "
+            "adds jitter, so attempts do not resynchronize into bursts against a server that "
+            "is already dropping connections. Ignored when request_retries is 0."
+        ),
+    )
     stage_teardown_grace_seconds: float = Field(
         default=120.0,
         ge=0,
