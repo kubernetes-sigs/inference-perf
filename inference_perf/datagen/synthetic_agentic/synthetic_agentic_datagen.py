@@ -36,7 +36,7 @@ from inference_perf.config.common import Distribution
 from inference_perf.datagen.replay.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import tag_user_facing_events
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
-from inference_perf.datagen.synthetic_themes import (
+from inference_perf.datagen.synthetic_agentic.synthetic_themes import (
     GENERIC_THEME,
     ROOT_SYSTEM_PROMPTS,
     SUBAGENT_SYSTEM_PROMPTS,
@@ -154,7 +154,7 @@ def _accumulated_wire_tokens(
 # Shakespeare corpus shipped with the repo; same file/location convention
 # used by synthetic_datagen.py and weka_trace_replay_datagen.py for prompt
 # corpora. Loaded lazily (not at import time) and cached in-process.
-_SHAKESPEARE_PATH = Path(__file__).resolve().parents[1] / "assets" / "shakespeare.txt"
+_SHAKESPEARE_PATH = Path(__file__).resolve().parents[2] / "assets" / "shakespeare.txt"
 _corpus_words_cache: Optional[List[str]] = None
 
 

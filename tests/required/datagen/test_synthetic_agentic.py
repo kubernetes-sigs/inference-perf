@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, cast
 
 import pytest
 from inference_perf.datagen.replay.replay_graph_types import GraphEvent, ReplayGraph, InputSegment
-from inference_perf.datagen.synthetic_themes import load_theme, Theme, GENERIC_THEME, DEFAULT_SYSTEM_PROMPT  # noqa: F401
-from inference_perf.datagen.synthetic_agentic import (
+from inference_perf.datagen.synthetic_agentic.synthetic_themes import load_theme, Theme, GENERIC_THEME, DEFAULT_SYSTEM_PROMPT  # noqa: F401
+from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
     session_seed,
     child_rng,
     fit_filler,
@@ -346,7 +346,7 @@ def test_agent_first_call_carries_role_appropriate_system_head() -> None:
     # spawned sub-agent from SUBAGENT_SYSTEM_PROMPTS -- so the root and its
     # sub-agents carry DIFFERENT heads (like a real harness), not one identical
     # head. Each head is a distinct dict (no aliasing).
-    from inference_perf.datagen.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
+    from inference_perf.datagen.synthetic_agentic.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
 
     cfg = _cfg(
         fanout_probability=1.0,
@@ -506,7 +506,7 @@ def _min_api() -> "APIConfig":
 
 def test_generator_builds_session_lazily() -> None:
     from inference_perf.config.datagen.config import DataConfig, DataGenType
-    from inference_perf.datagen.synthetic_agentic import SyntheticAgenticDataGenerator
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import SyntheticAgenticDataGenerator
 
     data = DataConfig(type=DataGenType.SyntheticAgentic, synthetic_agentic=_cfg(num_sessions=4))
     gen = SyntheticAgenticDataGenerator(api_config=_min_api(), config=data, tokenizer=_word_tok(), num_workers=1)
@@ -1127,7 +1127,7 @@ def test_theme_mix_accepts_both_shapes_equivalently() -> None:
     )
     # identical weighted draws across sessions (same seed -> same theme choices)
     from inference_perf.config.datagen.config import DataConfig, DataGenType
-    from inference_perf.datagen.synthetic_agentic import SyntheticAgenticDataGenerator
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import SyntheticAgenticDataGenerator
 
     gb = SyntheticAgenticDataGenerator(
         api_config=_min_api(),
@@ -1389,8 +1389,8 @@ def test_render_system_head_fits_truncates_and_is_deterministic() -> None:
     # (no filler header) when the prompt alone exceeds the target, and is
     # deterministic given the rng.
     import numpy as np
-    from inference_perf.datagen.synthetic_agentic import _render_system_head
-    from inference_perf.datagen.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _render_system_head
+    from inference_perf.datagen.synthetic_agentic.synthetic_themes import ROOT_SYSTEM_PROMPTS, SUBAGENT_SYSTEM_PROMPTS
 
     tok = _word_tok()
     # _WordTok counts words; the real prompts are ~430-540 words, so a target
@@ -2592,7 +2592,7 @@ def test_notifications_reconstruct_single_assistant_with_matched_stub_results() 
     # (inv #3). Those results are now STATIC launch acks -- the child reports arrive
     # separately as user-role notifications -- so each ack carries ASYNC_DISPATCH_STUB
     # rather than a child's report.
-    from inference_perf.datagen.synthetic_agentic import ASYNC_DISPATCH_STUB
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import ASYNC_DISPATCH_STUB
 
     K = 3
     cfg = _cfg(
@@ -2650,7 +2650,10 @@ def test_subagent_terminal_ends_with_report_directive() -> None:
     # message; cursor math stays exact. Non-terminal child tool-turns and non-terminal
     # notifications must NOT end with it. (The ROOT's last notification ends with the
     # ANSWER directive, not this one -- covered separately.)
-    from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE, ROOT_ANSWER_DIRECTIVE
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
+        SUBAGENT_REPORT_DIRECTIVE,
+        ROOT_ANSWER_DIRECTIVE,
+    )
 
     # depth 2 so there are BOTH leaf-child terminals AND sub-agent (non-root) merges.
     cfg = _cfg(
@@ -2725,7 +2728,7 @@ def test_root_terminal_ends_with_answer_directive() -> None:
     # Applies to both a k>=1 tool loop's terminal and a k=0 answer-directly turn --
     # as long as the agent has a tool catalog (a no-tools agent can't emit tool-call
     # text, so it gets NO nudge). Non-terminal (tool-call) turns must NOT end with it.
-    from inference_perf.datagen.synthetic_agentic import ROOT_ANSWER_DIRECTIVE
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import ROOT_ANSWER_DIRECTIVE
 
     frag = ROOT_ANSWER_DIRECTIVE
 
@@ -2781,7 +2784,7 @@ def test_nonroot_last_notification_ends_with_report_directive() -> None:
     # non-leaf level); the ROOT's last notification must NOT (its output is the
     # orchestrator's final answer). Earlier links in either chain are ack turns and
     # carry NO directive. Cursor math must stay exact after the appended message.
-    from inference_perf.datagen.synthetic_agentic import SUBAGENT_REPORT_DIRECTIVE
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import SUBAGENT_REPORT_DIRECTIVE
 
     cfg = _cfg(
         theme_mix={"generic": 1.0},
@@ -3087,7 +3090,7 @@ def test_percentile_and_heap_render_no_placeholder_leak() -> None:
 
 
 def test_connective_lowercases_common_first_word() -> None:
-    from inference_perf.datagen.synthetic_agentic import _join_connective_case
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _join_connective_case
 
     out = _join_connective_case("Following up, ", "Are other services in us-east-1 showing the same 5xx?", GENERIC_THEME)
     assert out.startswith("are other services"), f"common-word seam not fixed: {out!r}"
@@ -3097,7 +3100,7 @@ def test_connective_lowercases_common_first_word() -> None:
 
 
 def test_connective_preserves_entity_and_acronym_first_word() -> None:
-    from inference_perf.datagen.synthetic_agentic import _join_connective_case
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _join_connective_case
 
     # An entity value (service name) as the first word is a proper noun -> preserved.
     entity = GENERIC_THEME.entities["service"][2]  # "cart-service"
@@ -3180,7 +3183,7 @@ def test_region_is_pinned_across_a_multi_round_session() -> None:
 def test_region_in_primary_categories_and_pinned() -> None:
     # region is now a pinned primary-subject category, and _pinned_primary_entities
     # only pins categories the theme declares (a theme without `region` is unaffected).
-    from inference_perf.datagen.synthetic_agentic import (
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
         _PRIMARY_ENTITY_CATEGORIES,
         _pinned_primary_entities,
     )
@@ -3313,7 +3316,7 @@ def test_code_change_task_result_shapes_render_realistically() -> None:
     # run_tests -> traceback marker + pass/fail summary; git_diff -> unified diff
     # markers; read_file -> line-number formatting. Rendered directly so the test
     # does not depend on which tools a given session happens to schedule.
-    from inference_perf.datagen.synthetic_agentic import _render_tool_result
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _render_tool_result
 
     t = load_theme("code_change_task")
     seed = 4242
@@ -3475,7 +3478,7 @@ def test_code_change_focus_and_payload_deterministic() -> None:
 def test_payload_arg_size_from_schema_hint() -> None:
     # A payload arg's word count = its `x-payload-tokens` schema hint; a payload arg
     # without the hint falls back to _DEFAULT_PAYLOAD_WORDS. (_WordTok: 1 word == 1 token.)
-    from inference_perf.datagen.synthetic_agentic import (
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
         _render_tool_arguments,
         theme_payload_words,
         _DEFAULT_PAYLOAD_WORDS,
@@ -3495,7 +3498,7 @@ def test_payload_arg_size_from_schema_hint() -> None:
 def test_payload_pool_falls_back_to_filler_when_no_payload_templates() -> None:
     # theme_payload_words returns the payload_templates pool when present, else the
     # filler_templates pool (so themes without payload_templates behave as before).
-    from inference_perf.datagen.synthetic_agentic import theme_payload_words, theme_filler_words
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import theme_payload_words, theme_filler_words
 
     # a theme WITH payload_templates -> its payload pool differs from its filler pool
     coding = load_theme("code_change_task")
@@ -3520,7 +3523,7 @@ def test_all_themes_payloads_render_domain_shaped_no_leak() -> None:
     # Every theme with a payload tool renders that payload from its payload pool with
     # NO unresolved {placeholder} leak, and long enough to be a real payload.
     import re
-    from inference_perf.datagen.synthetic_agentic import _render_tool_arguments, theme_payload_words
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _render_tool_arguments, theme_payload_words
 
     cases = [
         (load_theme("code_change_task"), "write_file", "content"),
@@ -3541,7 +3544,7 @@ def test_all_themes_payloads_render_domain_shaped_no_leak() -> None:
 
 
 def test_payload_render_deterministic() -> None:
-    from inference_perf.datagen.synthetic_agentic import _render_tool_arguments, theme_payload_words
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _render_tool_arguments, theme_payload_words
 
     t = load_theme("db2_latency_incident")
     pool = theme_payload_words(t, 9, (68,))
@@ -3847,7 +3850,7 @@ def test_only_last_notification_is_the_terminal() -> None:
     # (b) Only the LAST notification produces the answer/report; the earlier ones are
     # short ack turns. The last link is also the event the agent chain hands upward,
     # so for a root spawn it must be a graph terminal (nothing depends on it).
-    from inference_perf.datagen.synthetic_agentic import ROOT_ANSWER_DIRECTIVE
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import ROOT_ANSWER_DIRECTIVE
 
     K = 3
     # Pin output_tokens_per_turn well above _FB_ACK_TOKENS so "the terminal answer is
@@ -4012,7 +4015,7 @@ def test_ack_text_is_short_form_and_distinct_from_the_terminal_answer() -> None:
     # this module behaves (including _answer_text) -- so the meaningful invariant is
     # that an ack is short-form and clearly distinct from the terminal ANSWER, not
     # that the acks differ from each other.
-    from inference_perf.datagen.synthetic_agentic import _FB_ACK_TOKENS
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import _FB_ACK_TOKENS
 
     ack_target = _FB_ACK_TOKENS.mean
     g = build_graph_for_session(
@@ -4051,7 +4054,7 @@ def test_orchestrator_flow_is_dispatch_ack_then_k_reports() -> None:
     BEFORE any child report -- the property that distinguishes a genuinely async
     dispatch from one that only appears async.
     """
-    from inference_perf.datagen.synthetic_agentic import ASYNC_DISPATCH_STUB
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import ASYNC_DISPATCH_STUB
 
     K = 3
     g = build_graph_for_session(_async_fanout_cfg(K), GENERIC_THEME, _word_tok(), session_index=0)
@@ -4102,7 +4105,7 @@ def test_dispatch_ack_turn_is_the_short_prefill_shape() -> None:
 def test_k1_spawn_degenerates_to_ack_then_single_terminal() -> None:
     """With K=1 there is no non-terminal report turn: the flow is spawn ->
     dispatch_ack -> notify0(TERMINAL). Guards the degenerate case."""
-    from inference_perf.datagen.synthetic_agentic import ROOT_ANSWER_DIRECTIVE
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import ROOT_ANSWER_DIRECTIVE
 
     g = build_graph_for_session(_async_fanout_cfg(1), GENERIC_THEME, _word_tok(), session_index=0)
     chains = _notify_chains(g)
@@ -4509,7 +4512,7 @@ def test_notification_envelope_survives_multiline_and_markup_reports() -> None:
 
 def test_dispatch_description_documents_the_envelope_and_ordering() -> None:
     """The dispatch tool definition must document the envelope shape and completion-order delivery."""
-    from inference_perf.datagen.synthetic_agentic import (
+    from inference_perf.datagen.synthetic_agentic.synthetic_agentic_datagen import (
         DISPATCH_AGENT_DESCRIPTION,
         DISPATCH_AGENT_TOOL_DEF,
     )

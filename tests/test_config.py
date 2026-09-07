@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from pydantic import ValidationError
 from inference_perf.config import (
     APIType,
     Config,
@@ -368,7 +369,7 @@ def test_use_chat_template_accepted_for_random_type() -> None:
 
 
 def test_synthetic_agentic_type_requires_synthetic_agentic_config() -> None:
-    with pytest.raises(Exception, match="requires 'data.synthetic_agentic' to be configured"):
+    with pytest.raises(ValidationError, match="requires 'data.synthetic_agentic' to be configured"):
         DataConfig.model_validate({"type": DataGenType.SyntheticAgentic})
 
 
