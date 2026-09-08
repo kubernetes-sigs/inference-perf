@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import base64
+from collections.abc import AsyncGenerator
 import logging
-from typing import Any, AsyncGenerator, Iterator, List, cast
+from typing import Any, Iterator, List, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis import UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import (
     ImageRepresentation,
     MultimodalSpec,
@@ -372,3 +373,55 @@ async def test_materialize_pre_encoded_image_webp_mime() -> None:
     payload = await data.to_request_body(effective_model_name="gpt-vlm", max_tokens=10, ignore_eos=False, streaming=False)
     image_blocks = [c for c in payload["messages"][0]["content"] if c.get("type") == "image_url"]
     assert image_blocks[0]["image_url"]["url"].startswith("data:image/webp;base64,")
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_process_response_streaming_request_id() -> None:
+    """Verifies that streaming chat responses extract server_request_id from SSE chunk payload."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
+    mock_resp = MagicMock()
+    mock_resp.headers = {}
+    mock_resp.content = MagicMock()
+
+    async def iter_any() -> AsyncGenerator[bytes, None]:
+        yield b'data: {"id": "chatcmpl-stream-789", "choices": [{"delta": {"content": "world"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    mock_resp.content.iter_any = iter_any
+    tok = MagicMock()
+    tok.count_tokens = lambda s, **kw: len((s or "").split())
+
+    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=True), tok)
+    assert info.server_request_id == "chatcmpl-stream-789"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_payload", "response_headers", "expected_id"),
+    [
+        (
+            {"id": "chatcmpl-unary-789", "choices": [{"message": {"content": "world"}}]},
+            {},
+            "chatcmpl-unary-789",
+        ),
+        (
+            {"choices": [{"message": {"content": "world"}}]},
+            {"x-request-id": "req-unary-hdr-789"},
+            "req-unary-hdr-789",
+        ),
+    ],
+)
+async def test_chat_completion_process_response_unary_request_id(
+    response_payload: dict[str, Any], response_headers: dict[str, str], expected_id: str
+) -> None:
+    """Verifies unary chat response extracts server_request_id from JSON payload or header fallback."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hello")])
+    mock_resp = MagicMock()
+    mock_resp.headers = response_headers
+    mock_resp.json = AsyncMock(return_value=response_payload)
+    tok = MagicMock()
+    tok.count_tokens = lambda s, **kw: len((s or "").split())
+
+    info = await data.process_response(mock_resp, APIConfig(type=APIType.Chat, streaming=False), tok)
+    assert info.server_request_id == expected_id
+

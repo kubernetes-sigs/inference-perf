@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import AsyncGenerator, List, cast
+from collections.abc import AsyncGenerator
+from typing import Any, List, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +20,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, UnaryResponseMetrics
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 
 def _make_tokenizer() -> MagicMock:
@@ -235,3 +236,62 @@ async def test_process_response_streaming_falls_back_without_server_usage() -> N
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_completion_process_response_streaming_request_id() -> None:
+    """Verifies that streaming completion responses extract server_request_id from SSE chunk payload."""
+    data = CompletionAPIData(prompt="hello")
+    mock_resp = MagicMock()
+    mock_resp.headers = {}
+    mock_resp.content = MagicMock()
+
+    async def iter_any() -> AsyncGenerator[bytes, None]:
+        yield b'data: {"id": "cmpl-stream-123", "choices": [{"text": " world"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    mock_resp.content.iter_any = iter_any
+    tok = MagicMock()
+    tok.count_tokens = lambda s, **kw: len((s or "").split())
+
+    info = await data.process_response(mock_resp, APIConfig(type=APIType.Completion, streaming=True), tok)
+    assert info.server_request_id == "cmpl-stream-123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response_payload", "response_headers", "expected_id"),
+    [
+        (
+            {
+                "id": "cmpl-unary-123",
+                "choices": [{"text": " world"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+            {},
+            "cmpl-unary-123",
+        ),
+        (
+            {
+                "choices": [{"text": " world"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+            {"x-request-id": "req-cmpl-hdr-123"},
+            "req-cmpl-hdr-123",
+        ),
+    ],
+)
+async def test_completion_process_response_unary_request_id(
+    response_payload: dict[str, Any], response_headers: dict[str, str], expected_id: str
+) -> None:
+    """Verifies unary completion responses extract server_request_id from JSON response body or header fallback."""
+    data = CompletionAPIData(prompt="hello")
+    mock_resp = MagicMock()
+    mock_resp.headers = response_headers
+    mock_resp.json = AsyncMock(return_value=response_payload)
+    tok = MagicMock()
+    tok.count_tokens = lambda s, **kw: len((s or "").split())
+
+    info = await data.process_response(mock_resp, APIConfig(type=APIType.Completion, streaming=False), tok)
+    assert info.server_request_id == expected_id
+

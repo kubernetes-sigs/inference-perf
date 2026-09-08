@@ -14,8 +14,11 @@
 
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
-from inference_perf.apis.streaming_parser import parse_sse_stream, StreamInterruptedError
+
 import pytest
+
+from inference_perf.apis.base import extract_server_request_id
+from inference_perf.apis.streaming_parser import StreamInterruptedError, parse_sse_stream
 
 
 @pytest.mark.asyncio
@@ -39,7 +42,7 @@ async def test_parse_sse_stream() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    output_text, chunk_times, raw_content, response_chunks, server_usage, server_request_id = await parse_sse_stream(
         mock_response, extract_content
     )
 
@@ -54,6 +57,7 @@ async def test_parse_sse_stream() -> None:
     # response_chunks and chunk_times must stay in lockstep — reportgen zips them with strict=True.
     assert len(chunk_times) == len(response_chunks)
     assert server_usage is None
+    assert server_request_id is None
 
 
 @pytest.mark.asyncio
@@ -87,7 +91,7 @@ async def test_parse_sse_stream_timestamps_only_content_events() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, _, response_chunks, server_usage = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, _, response_chunks, server_usage, _ = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "Hello world"
     assert len(chunk_times) == 2, (
@@ -136,3 +140,111 @@ async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
     # The bytes received before the break are retained, not discarded.
     assert "Hello" in err.raw_content
     assert "world" in err.raw_content
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_openai_request_id() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"id": "cmpl-a1b2c3d4", "choices": [{"delta": {"content": "Hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(
+        mock_response, lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
+    )
+    assert request_id == "cmpl-a1b2c3d4"
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_anthropic_request_id() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    chunks = [
+        b'data: {"type": "message_start", "message": {"id": "msg_013Zva2ReBxHYRvM", "usage": {"input_tokens": 5}}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(mock_response, lambda d: None)
+    assert request_id == "msg_013Zva2ReBxHYRvM"
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_header_fallback() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+    mock_response.headers = {"x-request-id": "req-hdr-12345"}
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    _, _, _, _, _, request_id = await parse_sse_stream(
+        mock_response, lambda d: d.get("choices", [{}])[0].get("delta", {}).get("content")
+    )
+    assert request_id == "req-hdr-12345"
+
+
+def test_extract_server_request_id_direct() -> None:
+    """Verifies extract_server_request_id helper across string, integer, nested message, and header fallback."""
+    # Direct ID string
+    assert extract_server_request_id({"id": "chatcmpl-123"}) == "chatcmpl-123"
+
+    # Direct ID integer converted to str
+    assert extract_server_request_id({"id": 12345}) == "12345"
+
+    # Boolean ID rejection (bool is subclass of int in Python)
+    assert extract_server_request_id({"id": True}) is None
+    assert extract_server_request_id({"id": False}) is None
+    assert extract_server_request_id({"message": {"id": True}}) is None
+
+    # Empty and whitespace string ID rejection
+    assert extract_server_request_id({"id": ""}) is None
+    assert extract_server_request_id({"id": "   "}) is None
+    assert extract_server_request_id({"message": {"id": ""}}) is None
+
+    # Nested message ID (Anthropic message_start)
+    assert extract_server_request_id({"message": {"id": "msg-456"}}) == "msg-456"
+    assert extract_server_request_id({"message": {"id": 7890}}) == "7890"
+
+    # Invalid / non-dict message field ignored
+    assert extract_server_request_id({"message": "non-dict string"}) is None
+
+    # Header fallback (exact casing)
+    mock_resp = Mock()
+    mock_resp.headers = {"x-request-id": "hdr-999"}
+    assert extract_server_request_id({}, response=mock_resp) == "hdr-999"
+
+    # Header fallback (case-insensitivity on dict headers)
+    mock_resp_mixed = Mock()
+    mock_resp_mixed.headers = {"X-Request-Id": "hdr-mixed-case-999"}
+    assert extract_server_request_id({}, response=mock_resp_mixed) == "hdr-mixed-case-999"
+
+    mock_resp_upper = Mock()
+    mock_resp_upper.headers = {"X-REQUEST-ID": "hdr-upper-case-999"}
+    assert extract_server_request_id({}, response=mock_resp_upper) == "hdr-upper-case-999"
+
+    # None input handles safely
+    assert extract_server_request_id(None, None) is None
