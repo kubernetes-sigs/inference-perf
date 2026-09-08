@@ -242,7 +242,11 @@ def test_lifecycle_report_shape_with_failures() -> None:
 # --- Retry reporting (#777) ---
 
 
-def _retry_metric(retries_attempted: int, retries_recovered: bool) -> Mock:
+def _retry_metric(
+    retries_attempted: int,
+    retries_recovered: bool,
+    retry_wasted_sec: typing.Optional[float] = None,
+) -> Mock:
     """A minimal successful request metric carrying retry counters."""
     m = _mock_metric(
         start_time=0.0,
@@ -258,6 +262,9 @@ def _retry_metric(retries_attempted: int, retries_recovered: bool) -> Mock:
     )
     m.info.retries_attempted = retries_attempted
     m.info.retries_recovered = retries_recovered
+    # Real float or None, never an auto-specced Mock: the retry rollup feeds this
+    # straight into summarize().
+    m.info.retry_wasted_sec = retry_wasted_sec
     return m
 
 
@@ -299,3 +306,57 @@ def test_retries_are_not_counted_as_errors() -> None:
     assert summary.failures["count"] == 0
     assert summary.failures["by_label"] == {}
     assert summary.successes["count"] == 1
+
+
+def test_retries_report_wasted_time() -> None:
+    """The window's retry cost is reported as wasted wall time -- the number a reader of
+    this block actually wants -- alongside the counters.
+
+    Reported as waste rather than as a competing latency because every latency in the
+    report already counts retry time: start_time stays at dispatch.
+    """
+    metrics = [
+        _retry_metric(0, False),  # never retried -> contributes nothing
+        _retry_metric(1, True, retry_wasted_sec=2.0),
+        _retry_metric(1, True, retry_wasted_sec=4.0),
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["wasted_sec_total"] == 6.0
+    wasted = summary.retries["wasted_sec"]
+    # Distributed over the two retried requests, not all three: a third entry for the
+    # never-retried request would drag the mean to 2.0.
+    assert wasted["mean"] == 3.0
+    assert wasted["min"] == 2.0
+    assert wasted["max"] == 4.0
+
+
+def test_retries_count_exhausted_requests_as_wasted() -> None:
+    """A request that burned every attempt and failed anyway wasted ALL of its time, so it
+    must be counted -- it is the most expensive waste in a run, not an exclusion.
+
+    This is the opposite of a latency statistic, where a failed attempt's duration would
+    be meaningless. Waste is waste regardless of how the request ended.
+    """
+    metrics = [
+        _retry_metric(2, True, retry_wasted_sec=5.0),  # recovered
+        _retry_metric(2, False, retry_wasted_sec=95.0),  # exhausted -- still wasted
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["exhausted"] == 1
+    assert summary.retries["wasted_sec_total"] == 100.0, "exhausted request's waste was dropped"
+    assert summary.retries["wasted_sec"]["max"] == 95.0
+
+
+def test_retries_report_waste_when_nothing_recovered() -> None:
+    """Attempts spent with no recovery still report their waste: a run where every retry
+    failed has paid the full cost for nothing, which the block must show rather than omit.
+    """
+    summary = summarize_requests(
+        typing.cast(typing.Any, [_retry_metric(2, False, retry_wasted_sec=7.0)]),
+        percentiles=[50],
+    )
+    assert summary.retries is not None
+    assert summary.retries["recovered"] == 0
+    assert summary.retries["wasted_sec_total"] == 7.0

@@ -51,23 +51,24 @@ class InferenceInfo(BaseModel):
     # the count with retries_recovered False. See LoadConfig.request_retries.
     retries_attempted: int = 0
     retries_recovered: bool = False
-    # Latency of the attempt that answered, excluding earlier attempts and backoff.
-    # None unless a retry actually moved the answering attempt off dispatch, so the
-    # serving-side view is available without redefining RequestLifecycleMetric.
-    # start_time, which remains the logical request's dispatch time.
-    final_attempt_latency: Optional[float] = None
+    # Time this request spent on attempts that failed, plus the backoff waited between
+    # them: the share of its end-to-end latency that bought nothing. Counted on
+    # exhausted requests too, where every attempt was wasted. None unless a retry
+    # happened, so RequestLifecycleMetric.start_time stays the single definition of
+    # when the request was dispatched.
+    retry_wasted_sec: Optional[float] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_final_attempt_latency(self, handler: Any) -> dict[str, Any]:
-        """Drop `final_attempt_latency` entirely when it is None.
+    def _omit_absent_retry_wasted_sec(self, handler: Any) -> dict[str, Any]:
+        """Drop `retry_wasted_sec` entirely when it is None.
 
         A request that never retried must serialize exactly as it did before retries
         existed, so the field appears only on the requests it describes rather than as
         a `null` on every entry of per_request_lifecycle_metrics.json.
         """
         dumped: dict[str, Any] = handler(self)
-        if dumped.get("final_attempt_latency") is None:
-            dumped.pop("final_attempt_latency", None)
+        if dumped.get("retry_wasted_sec") is None:
+            dumped.pop("retry_wasted_sec", None)
         return dumped
 
     # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top

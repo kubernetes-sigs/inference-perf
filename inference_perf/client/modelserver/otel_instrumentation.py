@@ -327,10 +327,10 @@ class OTelInstrumentation:
                 if "total_latency" in response_info:
                     span.set_attribute("gen_ai.response.total_latency", response_info["total_latency"])
                 # Present only on a retried request. total_latency above matches this span's
-                # own wall duration -- the span wraps every attempt -- so the answering
-                # attempt's latency is a separate attribute rather than a redefinition.
-                if "final_attempt_latency" in response_info:
-                    span.set_attribute("gen_ai.response.final_attempt_latency", response_info["final_attempt_latency"])
+                # own wall duration -- the span wraps every attempt -- and this is the share
+                # of it lost to attempts that failed, rather than a competing definition.
+                if "retry_wasted_sec" in response_info:
+                    span.set_attribute("gen_ai.response.retry_wasted_sec", response_info["retry_wasted_sec"])
 
                 # Finish reason
                 if "finish_reason" in response_info:

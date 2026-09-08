@@ -289,10 +289,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 "total_latency": end_time - start_time,
             }
 
-            # Only meaningful when a retry moved the answering attempt off dispatch; the
-            # caller passes None otherwise.
+            # Time lost to failed attempts and backoff. total_latency above still counts
+            # it; this says how much of it was waste. The caller passes None when the
+            # request never retried.
             if attempt_start_time is not None:
-                otel_response_info["final_attempt_latency"] = end_time - attempt_start_time
+                otel_response_info["retry_wasted_sec"] = attempt_start_time - start_time
 
             # Calculate TTFT if token times are available (streaming only)
             if isinstance(inner, StreamedResponseMetrics) and inner.output_token_times:
@@ -690,13 +691,14 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # fresh InferenceInfo, which still needs to report the retries it burned.
         info.retries_attempted = retries_attempted
         info.retries_recovered = retries_recovered
-        # Only meaningful when a retry moved the answering attempt off dispatch. Gated on
-        # retries_attempted rather than on `attempt_start != start`, which is always true:
-        # the loop re-stamps the attempt clock on the first attempt too. start_time on the
-        # metric below stays at dispatch, so this is the serving-side view of the same
-        # request rather than a redefinition of its latency.
+        # Time burned on failed attempts plus the backoff between them: everything between
+        # dispatch and the attempt that ended the request. Gated on retries_attempted
+        # rather than on `attempt_start != start`, which is always true -- the loop
+        # re-stamps the attempt clock on the first attempt too. start_time on the metric
+        # below stays at dispatch, so the request's own latency still counts this time;
+        # the field says how much of it was waste.
         if retries_attempted:
-            info.final_attempt_latency = end_time - attempt_start
+            info.retry_wasted_sec = attempt_start - start
         if data.labels:
             info.labels = data.labels
         if data.graph_event_id:

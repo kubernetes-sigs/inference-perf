@@ -335,7 +335,7 @@ def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_ser
     return response_metrics.output_tokens
 
 
-def summarize_retries(metrics: List[RequestLifecycleMetric]) -> Optional[dict[str, Any]]:
+def summarize_retries(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> Optional[dict[str, Any]]:
     """Roll up retry activity across a window of requests.
 
     Returns None when nothing retried, so a report from a run with
@@ -343,17 +343,28 @@ def summarize_retries(metrics: List[RequestLifecycleMetric]) -> Optional[dict[st
     of zeros. ``requests_retried`` counts requests, ``attempts`` counts the
     extra POSTs those requests cost; the two differ when one request retried
     more than once. ``recovered``/``exhausted`` partition ``requests_retried``.
+
+    Every latency in the report counts retry time -- ``start_time`` stays at dispatch --
+    so the cost is reported here as waste rather than by splitting the latency
+    definition. ``wasted_sec_total`` is the wall time this window lost to attempts that
+    failed and the backoff between them; ``wasted_sec`` distributes it per retried
+    request. Both include exhausted requests, whose every attempt was wasted.
     """
     retried = [m for m in metrics if m.info.retries_attempted > 0]
     if not retried:
         return None
-    recovered = sum(1 for m in retried if m.info.retries_recovered)
-    return {
+    recovered = [m for m in retried if m.info.retries_recovered]
+    wasted = [m.info.retry_wasted_sec for m in retried if m.info.retry_wasted_sec is not None]
+    summary: dict[str, Any] = {
         "requests_retried": len(retried),
         "attempts": sum(m.info.retries_attempted for m in retried),
-        "recovered": recovered,
-        "exhausted": len(retried) - recovered,
+        "recovered": len(recovered),
+        "exhausted": len(retried) - len(recovered),
+        "wasted_sec_total": float(sum(wasted)),
     }
+    if distribution := summarize(wasted, percentiles):
+        summary["wasted_sec"] = distribution
+    return summary
 
 
 class ResponsesSummary(BaseModel):
@@ -818,7 +829,7 @@ def summarize_requests(
         successes_dict["goodput_metrics"] = goodput_metrics
 
     return ResponsesSummary(
-        retries=summarize_retries(all_successful + all_failed),
+        retries=summarize_retries(all_successful + all_failed, percentiles),
         benchmark_time_seconds=total_time,
         load_summary=load_summary,
         successes=successes_dict,

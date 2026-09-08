@@ -708,7 +708,7 @@ async def test_reported_latency_includes_failed_attempts_and_backoff(
     it on each attempt would make a retried request report only its final attempt, hiding
     time the workload genuinely spent waiting -- and, worse, it would charge the retry's
     backoff to *scheduling* instead (see the schedule-delay test below). The serving-side
-    view is reported separately as `info.final_attempt_latency`.
+    view is reported separately as `info.retry_wasted_sec`.
     """
     session = _retrying_session(mock_client, retries=1, backoff=10.0)
     _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
@@ -725,9 +725,9 @@ async def test_reported_latency_includes_failed_attempts_and_backoff(
     # The whole 101s: dispatch -> failed attempt -> backoff -> answering attempt.
     assert metric.start_time == pytest.approx(0.0)
     assert metric.end_time - metric.start_time == pytest.approx(101.0)
-    # ...and the answering attempt's own 1s, kept as a separate number rather than
-    # redefining the one above.
-    assert metric.info.final_attempt_latency == pytest.approx(1.0)
+    # ...of which 100s was waste: the 5s failed attempt plus the 95s of backoff after it.
+    # Reported alongside the full latency above rather than carved out of it.
+    assert metric.info.retry_wasted_sec == pytest.approx(100.0)
 
 
 @pytest.mark.asyncio
@@ -757,21 +757,21 @@ async def test_retry_backoff_is_not_charged_to_schedule_delay(
 
 
 @pytest.mark.asyncio
-async def test_final_attempt_latency_absent_without_retry(
+async def test_retry_wasted_sec_absent_without_retry(
     mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request that never retried carries no attempt-scoped latency, and serializes
-    without the key -- so a default-config run's per-request JSON is unchanged."""
+    """A request that never retried wasted nothing, and serializes without the key -- so a
+    default-config run's per-request JSON is unchanged."""
     session = _retrying_session(mock_client, retries=2)
     _post(session).side_effect = [_ok_ctx()]
 
     await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
 
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
-    assert metric.info.final_attempt_latency is None
+    assert metric.info.retry_wasted_sec is None
     # Serialized shape checked on a clean InferenceInfo: the fixture's info carries
     # MagicMock labels/graph_event_id, which make model_dump warn about unrelated fields.
-    assert "final_attempt_latency" not in InferenceInfo(request_metrics=RequestMetrics(text=Text())).model_dump()
+    assert "retry_wasted_sec" not in InferenceInfo(request_metrics=RequestMetrics(text=Text())).model_dump()
 
 
 @pytest.mark.asyncio

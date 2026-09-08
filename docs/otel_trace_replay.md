@@ -765,14 +765,17 @@ Retries are reported separately from errors, in three places:
 
 - **Report JSON** — a `retries` block alongside `successes`/`failures`, with
   `requests_retried`, `attempts`, `recovered`, and `exhausted`. Absent when nothing retried.
+  Plus `wasted_sec_total`, the wall time the window lost to failed attempts and backoff,
+  and `wasted_sec`, the usual mean/min/max/percentile spread of that waste per retried
+  request. Both count exhausted requests, whose every attempt was wasted.
 - **Request Error Summary** — a `Retried (recovered)` column, shown only when something
   retried. A retry is not an error label, so it never enters `failures.count`.
 - **Session Summary** — a `Retries (recovered)` column, plus `sessions_with_retries`,
   `total_retry_attempts`, and `total_retries_recovered` in the session report. Like the
   `retries` block, these keys are absent when nothing retried.
-- **Per-request JSON and OTel** — a retried request carries `info.final_attempt_latency`
-  (the answering attempt's latency, excluding earlier attempts and backoff) and a matching
-  span attribute. Absent on requests that did not retry.
+- **Per-request JSON and OTel** — a retried request carries `info.retry_wasted_sec` (time
+  lost to failed attempts and backoff) and a `gen_ai.response.retry_wasted_sec` span
+  attribute. Absent on requests that did not retry.
 
 Both *attempted* and *recovered* are reported: a retry that was spent and failed anyway is
 the more interesting number, and reporting recovery alone would overstate the mechanism.

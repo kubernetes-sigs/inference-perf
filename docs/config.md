@@ -199,8 +199,10 @@ Timing is deliberately *not* re-stamped per attempt. `start_time` stays at the l
 request's dispatch, so the reported end-to-end latency counts the failed attempt and its
 backoff — the workload really did wait for them — and the derived scheduling metrics
 (`schedule_delay`, `send_duration`, `achieved_rate`) stay correct. The serving-side view is
-reported separately: a retried request carries `info.final_attempt_latency`, the latency of
-the attempt that answered, and its OTel span gains a `final_attempt_latency` attribute.
+reported as waste instead: a retried request carries `info.retry_wasted_sec` — the time it
+lost to failed attempts and backoff — and its OTel span gains a matching attribute. The
+`retries` block totals that across the run, so the cost of retrying is a number you can
+read off the report rather than a shift in the latency numbers you already track.
 
 Two costs to weigh before enabling it:
 
