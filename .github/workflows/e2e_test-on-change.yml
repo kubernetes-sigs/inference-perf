@@ -218,8 +218,8 @@ jobs:
       # download inside the job, which the green run measured at 14s for the
       # VLM and 29s for the speech model, 43s of a 25 minute job. Caching it
       # would put a ~6GB entry into a 10GB repo-wide budget and evict the nix
-      # and venv caches (#670, #720) that stand to save the 4m36s of `pdm
-      # sync` below, which is the part of this job actually worth caching.
+      # and venv caches below, which save most of the 4m36s of `pdm sync`
+      # that is the part of this job actually worth caching.
       - name: Prefetch vLLM images
         run: |
           for v in $VLLM_VERSIONS; do
@@ -231,6 +231,22 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The same two caches as the job above, under the same keys: this job
+      # runs on the same runner image with the same flake and pdm.lock, so
+      # it restores whatever that job or an earlier run saved.
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      - name: Restore pdm venv
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .venv
+          key: venv-nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'pdm.lock') }}
+
+      # Kept on cache hits for the reason the job above gives.
       - name: Install dependencies
         run: |
           nix develop -c pdm sync -d
