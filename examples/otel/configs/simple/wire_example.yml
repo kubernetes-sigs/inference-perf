@@ -14,6 +14,11 @@ api:
   streaming: true
   session_id_header_key: "x-session-id"
 
+# Required for token metrics. Any small tokenizer will do unless you need exact
+# counts for the served model, in which case name that model here.
+tokenizer:
+  pretrained_model_name_or_path: HuggingFaceTB/SmolLM2-135M-Instruct
+
 data:
   type: otel_trace_replay
   otel_trace_replay:
@@ -52,7 +57,8 @@ data:
     # with care: a genuinely stuck predecessor then never times out.
     # predecessor_wait_timeout_sec: 3600
 
-    # Error handling
+    # Recorded error turns replay as failures that are not your endpoint's. Keep
+    # true for fidelity; set false when measuring endpoint reliability.
     include_errors: true
     skip_invalid_files: true
 
@@ -60,13 +66,13 @@ load:
   type: trace_session_replay
 
   stages:
-    - concurrent_sessions: 1  # Sequential execution (one session at a time)
+    - concurrent_sessions: 8
 
   # Events waiting on predecessors hold a concurrency slot while suspended, so
-  # this must be well above concurrent_sessions -- roughly
-  # concurrent_sessions x 50-100 for real captures. Too low and a session
-  # deadlocks against its own queued events.
-  worker_max_concurrency: 10
+  # this must be far above concurrent_sessions -- roughly x50-100 for real
+  # captures. Too low and a session deadlocks against its own queued events, so
+  # it is set high enough here that raising concurrent_sessions stays safe.
+  worker_max_concurrency: 4096
 
   # Per-request timeout, applied per attempt. Long agent turns with large
   # prompts legitimately take many minutes; a value that merely looks generous
