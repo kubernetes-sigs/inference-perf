@@ -111,12 +111,16 @@ class TraceSessionReplayLoadStage(LoadStage):
             "None = all remaining sessions."
         ),
     )
-    timeout: Optional[float] = Field(
+    max_stage_duration: Optional[float] = Field(
         None,
         gt=0,
         description=(
-            "Wall-clock safety limit in seconds. If exceeded, in-flight sessions are "
-            "cancelled and stage exits as FAILED. Optional."
+            "Wall-clock cap in seconds on how long the stage may run. Omit to run until "
+            "all sessions in the stage complete. If exceeded, in-flight sessions are "
+            "cancelled, any sessions that had not yet started are dropped, and the stage "
+            "exits as FAILED. Sessions left incomplete this way are counted in the stage's "
+            "session report as sessions_not_completed_active and "
+            "sessions_not_completed_pending."
         ),
     )
 

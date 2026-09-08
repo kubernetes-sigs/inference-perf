@@ -261,6 +261,7 @@ The `load.trace_session_replay` section controls how sessions are executed. Unli
 | `concurrent_sessions` | integer | Yes | Max sessions running simultaneously. Set to `0` for unlimited (stress mode) |
 | `num_sessions` | integer | No | Total sessions to run in this stage. Omit to run all remaining sessions (entire corpus if single stage) |
 | `session_rate` | float | No | Optional rate limit for starting new sessions (sessions/sec) |
+| `max_stage_duration` | float | No | Wall-clock cap in seconds on how long the stage may run. Omit to run until all sessions complete. See [Stage Timing](#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds) below |
 
 **Example:**
 
@@ -285,6 +286,41 @@ load:
   worker_max_concurrency: 200
 ```
 
+### Stage Timing: `max_stage_duration` and `stage_teardown_grace_seconds`
+
+Two independent settings bound how long a `trace_session_replay` stage — and the run overall — can take. They apply at different points and are reported separately.
+
+**`max_stage_duration`** (per stage, `load.stages[].max_stage_duration`)
+
+An optional wall-clock cap on the stage's session-dispatch loop. Omit it to run until every session in the stage completes naturally. If it's exceeded:
+
+- Any sessions still active (dispatched but not yet finished) are cancelled.
+- Any sessions that were never dispatched (still pending in the queue) are dropped.
+- The stage is marked `FAILED` (surfaced as `TIMED_OUT` in the session report, see below).
+- The stranded sessions show up in the stage's session report as `sessions_not_completed_active` and `sessions_not_completed_pending`.
+
+**`stage_teardown_grace_seconds`** (global, `load.stage_teardown_grace_seconds`, default `120.0`)
+
+After *any* stage ends — whether it completed normally, hit `max_stage_duration`, or was interrupted — in-flight requests are given this many seconds to finish before being force-cancelled. This grace period is a separate, later phase: it starts only once the stage's dispatch loop has already stopped, and it applies uniformly to every load type, not just session replay.
+
+**How they interact — a worked timeline:**
+
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 4
+      num_sessions: 50
+      max_stage_duration: 300   # stage may run for up to 5 minutes
+  stage_teardown_grace_seconds: 30  # then up to 30s more to drain in-flight work
+```
+
+1. `t=0s` — the stage starts dispatching sessions, up to `concurrent_sessions` at a time.
+2. `t=300s` — if sessions are still running, `max_stage_duration` is hit: no new sessions are dispatched, active sessions are cancelled, and pending sessions are dropped. The stage's `end_time` is recorded here — this window is what stage-level metrics (throughput, latency) are computed over.
+3. `t=300s`–`t=330s` — the teardown grace: any request still in flight when the stage ended gets up to 30 more seconds to finish rather than being cut off mid-response. This window is reported separately as `teardown_duration` and is **excluded** from the stage's metrics window.
+4. `t=330s` (or sooner, once everything drains) — the stage boundary is forced and the next stage begins.
+
+If `max_stage_duration` is omitted, step 2 only happens once all sessions finish on their own; teardown still applies at that point (typically finding nothing left to drain).
 
 ### Complete Configuration Example
 
@@ -349,7 +385,7 @@ After a run, three session report files are generated:
   - `total_events`, `total_events_completed`, `total_events_cancelled`
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   
-- **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage
+- **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage, prefixed with a `stage_metadata` block describing the stage's configuration and outcome.
 
 - **`per_session_lifecycle_metrics.json`** — One entry per session with all fields (for detailed analysis)
 

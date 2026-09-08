@@ -1294,10 +1294,23 @@ class ReportGenerator:
             return reports
 
         if report_config.summary:
+            summary = self.summarize_sessions(session_metrics, percentiles, max_error_messages)
+            # Stranded sessions (max_stage_duration exceeded) never produce a
+            # SessionLifecycleMetric, so summarize_sessions can't see them; add the
+            # run-wide totals from StageRuntimeInfo alongside it.
+            summary["sessions_not_completed_active"] = sum(
+                s.sessions_not_completed_active for s in runtime_parameters.stages.values()
+            )
+            summary["sessions_not_completed_pending"] = sum(
+                s.sessions_not_completed_pending for s in runtime_parameters.stages.values()
+            )
+            summary["sessions_not_completed"] = (
+                summary["sessions_not_completed_active"] + summary["sessions_not_completed_pending"]
+            )
             reports.append(
                 ReportFile(
                     name="summary_session_lifecycle_metrics",
-                    contents=self.summarize_sessions(session_metrics, percentiles, max_error_messages),
+                    contents=summary,
                 )
             )
 
@@ -1315,20 +1328,27 @@ class ReportGenerator:
                     if stage_info.status == StageStatus.COMPLETED:
                         status_str = "COMPLETED"
                     elif stage_info.status == StageStatus.FAILED:
-                        # Check if failure was due to timeout by comparing actual duration
+                        # Check if failure was due to exceeding max_stage_duration by comparing actual duration
                         actual_duration = stage_info.end_time - stage_info.start_time
-                        if stage_info.timeout is not None and actual_duration >= stage_info.timeout:
+                        if stage_info.max_stage_duration is not None and actual_duration >= stage_info.max_stage_duration:
                             status_str = "TIMED_OUT"
                         else:
                             status_str = "FAILED"
                     else:
                         status_str = "FAILED"
 
+                    sessions_not_completed_active = stage_info.sessions_not_completed_active
+                    sessions_not_completed_pending = stage_info.sessions_not_completed_pending
+                    sessions_not_completed = sessions_not_completed_active + sessions_not_completed_pending
+                    stage_summary["sessions_not_completed"] = sessions_not_completed
+                    stage_summary["sessions_not_completed_active"] = sessions_not_completed_active
+                    stage_summary["sessions_not_completed_pending"] = sessions_not_completed_pending
+
                     # Build stage metadata
                     stage_metadata = {
                         "stage_id": stage_id,
                         "status": status_str,
-                        "timeout_configured": stage_info.timeout,
+                        "max_stage_duration_configured": stage_info.max_stage_duration,
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,

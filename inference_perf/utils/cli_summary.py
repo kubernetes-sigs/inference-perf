@@ -397,6 +397,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     session_summary_table.add_column("Total Sessions", justify="right")
     session_summary_table.add_column("Succeeded", justify="right")
     session_summary_table.add_column("Failed", justify="right")
+    session_summary_table.add_column("Timed-out", justify="right")
     session_summary_table.add_column("Error %", justify="right")
     session_summary_table.add_column("Total Events", justify="right")
     session_summary_table.add_column("Events Completed", justify="right")
@@ -405,7 +406,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 2: Session Duration & Events
     session_duration_table = Table(
-        title="[bold magenta]Session Duration & Events[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Duration & Events[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_duration_table.add_column("Stage", justify="right")
     session_duration_table.add_column("Duration Mean (s)", justify="right")
@@ -417,7 +421,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 3: Session Token Totals
     session_tokens_table = Table(
-        title="[bold magenta]Session Token Totals (per session)[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Token Totals (per session)[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_tokens_table.add_column("Stage", justify="right")
     session_tokens_table.add_column("In Tok/Sess Mean", justify="right")
@@ -430,6 +437,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     # Table 4: TFUT (Time to First User Token)
     tfut_table = Table(
         title="[bold magenta]Session TFUT (Time to First User Token)[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
         show_header=True,
         header_style="bold cyan",
     )
@@ -444,8 +452,8 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     for stage_id in sorted_stages:
         contents = session_reports[stage_id]
 
-        # Extract session summary metrics
-        num_sessions = contents.get("num_sessions", 0)
+        num_sessions_not_completed = contents.get("sessions_not_completed", 0)
+        num_sessions = contents.get("num_sessions", 0) + num_sessions_not_completed
         num_sessions_succeeded = contents.get("num_sessions_succeeded", 0)
         num_sessions_failed = contents.get("num_sessions_failed", 0)
         total_events = contents.get("total_events", 0)
@@ -463,6 +471,9 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         succeeded_str = f"[green]{num_sessions_succeeded}[/]"
         failed_color = "red" if num_sessions_failed > 0 else "green"
         failed_str = f"[{failed_color}]{num_sessions_failed}[/]"
+
+        not_completed_color = "red" if num_sessions_not_completed > 0 else "green"
+        not_completed_str = f"[{not_completed_color}]{num_sessions_not_completed}[/]"
 
         # Session error rate
         session_error_rate = num_sessions_failed / num_sessions if num_sessions > 0 else 0.0
@@ -483,6 +494,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             str(num_sessions),
             succeeded_str,
             failed_str,
+            not_completed_str,
             error_str,
             str(total_events),
             str(total_events_completed),
@@ -567,7 +579,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     cache_table: Optional[Table] = None
     if has_cache_info:
         cache_table = Table(
-            title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]", show_header=True, header_style="bold cyan"
+            title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]",
+            caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+            show_header=True,
+            header_style="bold cyan",
         )
         cache_table.add_column("Stage", justify="right")
         cache_table.add_column("Hit % (pooled)", justify="right")

@@ -113,7 +113,7 @@ def _stage_info(
     start_time: float = 0.0,
     end_time: float = 10.0,
     rate: float = 2.0,
-    timeout: Optional[float] = None,
+    max_stage_duration: Optional[float] = None,
     concurrency_level: Optional[int] = None,
 ) -> StageRuntimeInfo:
     return StageRuntimeInfo(
@@ -122,7 +122,7 @@ def _stage_info(
         start_time=start_time,
         end_time=end_time,
         status=status,
-        timeout=timeout,
+        max_stage_duration=max_stage_duration,
         concurrency_level=concurrency_level,
     )
 
@@ -281,7 +281,9 @@ class TestGenerateSessionReports:
         """`stage_metadata` is prepended so the report reads as configuration first,
         measurements second."""
         gen = _make_generator()
-        runtime = _runtime({0: _stage_info(0, start_time=1.0, end_time=7.0, rate=2.0, timeout=30.0, concurrency_level=4)})
+        runtime = _runtime(
+            {0: _stage_info(0, start_time=1.0, end_time=7.0, rate=2.0, max_stage_duration=30.0, concurrency_level=4)}
+        )
 
         reports = gen.generate_session_reports(
             [_sess(stage_id=0)],
@@ -296,7 +298,7 @@ class TestGenerateSessionReports:
         assert contents["stage_metadata"] == {
             "stage_id": 0,
             "status": "COMPLETED",
-            "timeout_configured": 30.0,
+            "max_stage_duration_configured": 30.0,
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
@@ -337,15 +339,15 @@ class TestGenerateSessionReports:
         assert reports[0].contents["stage_metadata"]["concurrent_sessions"] == 8
 
     @pytest.mark.parametrize(
-        ("status", "start_time", "end_time", "timeout", "expected"),
+        ("status", "start_time", "end_time", "max_stage_duration", "expected"),
         [
             (StageStatus.COMPLETED, 0.0, 10.0, 30.0, "COMPLETED"),
-            # A failed stage that ran at least as long as its timeout is reported as a
-            # timeout; one that failed early keeps the generic label.
+            # A failed stage that ran at least as long as its max_stage_duration is reported
+            # as timed out; one that failed early keeps the generic label.
             (StageStatus.FAILED, 0.0, 30.0, 30.0, "TIMED_OUT"),
             (StageStatus.FAILED, 0.0, 31.0, 30.0, "TIMED_OUT"),
             (StageStatus.FAILED, 0.0, 12.0, 30.0, "FAILED"),
-            # No timeout configured: nothing to have timed out against.
+            # No max_stage_duration configured: nothing to have timed out against.
             (StageStatus.FAILED, 0.0, 90.0, None, "FAILED"),
             # Neither terminal state should be published as a success.
             (StageStatus.RUNNING, 0.0, 10.0, 30.0, "FAILED"),
@@ -353,12 +355,14 @@ class TestGenerateSessionReports:
         ],
     )
     def test_stage_status_label(
-        self, status: StageStatus, start_time: float, end_time: float, timeout: Optional[float], expected: str
+        self, status: StageStatus, start_time: float, end_time: float, max_stage_duration: Optional[float], expected: str
     ) -> None:
         """The status string is derived, not stored, so it is the piece most able to
         mislabel a stage without anything else going wrong."""
         gen = _make_generator()
-        runtime = _runtime({0: _stage_info(0, status=status, start_time=start_time, end_time=end_time, timeout=timeout)})
+        runtime = _runtime(
+            {0: _stage_info(0, status=status, start_time=start_time, end_time=end_time, max_stage_duration=max_stage_duration)}
+        )
 
         reports = gen.generate_session_reports(
             [_sess(stage_id=0)],

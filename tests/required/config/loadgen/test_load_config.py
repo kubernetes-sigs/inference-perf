@@ -103,6 +103,21 @@ def test_trace_session_replay_stage_forbids_extra_fields() -> None:
         TraceSessionReplayLoadStage(concurrent_sessions=2, bogus_field=1)  # type: ignore[call-arg]
 
 
+def test_trace_session_replay_stage_max_stage_duration_valid() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=2, max_stage_duration=30.0)
+    assert stage.max_stage_duration == 30.0
+
+
+def test_trace_session_replay_stage_max_stage_duration_defaults_to_none() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=2)
+    assert stage.max_stage_duration is None
+
+
+def test_trace_session_replay_stage_max_stage_duration_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        TraceSessionReplayLoadStage(concurrent_sessions=2, max_stage_duration=0)
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 
