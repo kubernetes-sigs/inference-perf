@@ -560,12 +560,14 @@ async def test_session_token_replayed_for_user_session_id_workloads(mock_client:
     assert mock_http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
 
 
-# --- Bounded retry for pre-first-byte transport faults (#777) ---
+# --- Bounded retry for transport faults raised before response headers (#777) ---
 #
 # A replay session is a graph: one dropped connection fails the whole session and
 # cancels every event downstream of it. These tests pin the boundary that makes the
-# retry measurement-safe -- only faults raised before any response byte arrived are
-# retried, because anything later has already produced a TTFT.
+# retry measurement-safe -- only faults raised before a response was established are
+# retried, because anything later has already produced a TTFT. Note the boundary is the
+# client's view: no TTFT exists to contaminate, but the server may already have received
+# the failed attempt, which is why the retry is bounded and backed off.
 
 
 def _retrying_session(mock_client: MagicMock, retries: int, backoff: float = 0.0) -> openAIModelServerClientSession:
@@ -697,14 +699,16 @@ async def test_client_os_error_is_retried(mock_client: MagicMock, mock_data: Mag
 
 
 @pytest.mark.asyncio
-async def test_reported_latency_excludes_failed_attempts_and_backoff(
+async def test_reported_latency_includes_failed_attempts_and_backoff(
     mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """start_time must be re-stamped per attempt.
+    """start_time must NOT be re-stamped per attempt.
 
-    If the retry loop wraps the try without resetting `start`, every retried request
-    silently reports the failed attempt plus its backoff as part of its latency -- the
-    exact measurement contamination the pre-first-byte boundary exists to prevent.
+    `start_time` is the logical request's dispatch time, not a latency origin. Re-stamping
+    it on each attempt would make a retried request report only its final attempt, hiding
+    time the workload genuinely spent waiting -- and, worse, it would charge the retry's
+    backoff to *scheduling* instead (see the schedule-delay test below). The serving-side
+    view is reported separately as `info.final_attempt_latency`.
     """
     session = _retrying_session(mock_client, retries=1, backoff=10.0)
     _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
@@ -718,16 +722,63 @@ async def test_reported_latency_excludes_failed_attempts_and_backoff(
     await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
 
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
-    # 1s of real request, not 101s of request + failure + backoff.
-    assert metric.end_time - metric.start_time == pytest.approx(1.0)
-    assert metric.start_time == pytest.approx(100.0)
+    # The whole 101s: dispatch -> failed attempt -> backoff -> answering attempt.
+    assert metric.start_time == pytest.approx(0.0)
+    assert metric.end_time - metric.start_time == pytest.approx(101.0)
+    # ...and the answering attempt's own 1s, kept as a separate number rather than
+    # redefining the one above.
+    assert metric.info.final_attempt_latency == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_is_not_charged_to_schedule_delay(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry must not inflate `schedule_delay`.
+
+    The report derives schedule_delay (`start_time - scheduled_time`), send_duration and
+    achieved_rate from `start_time`, so re-stamping it per attempt would report a request
+    dispatched on time as having waited out its own retry backoff in the queue -- an easy
+    regression to miss, because every latency assertion still passes.
+    """
+    session = _retrying_session(mock_client, retries=1, backoff=10.0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()), _ok_ctx()]
+
+    ticks = iter([0.0, 5.0, 100.0, 101.0, 101.0, 101.0])
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.sleep", AsyncMock())
+
+    # Dispatched exactly when it was scheduled; the 100s of failure + backoff that follow
+    # are the request's latency, not queue delay.
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.start_time - metric.scheduled_time == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_final_attempt_latency_absent_without_retry(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request that never retried carries no attempt-scoped latency, and serializes
+    without the key -- so a default-config run's per-request JSON is unchanged."""
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.info.final_attempt_latency is None
+    # Serialized shape checked on a clean InferenceInfo: the fixture's info carries
+    # MagicMock labels/graph_event_id, which make model_dump warn about unrelated fields.
+    assert "final_attempt_latency" not in InferenceInfo(request_metrics=RequestMetrics(text=Text())).model_dump()
 
 
 @pytest.mark.asyncio
 async def test_retry_reduces_failures_without_inflating_request_count(
     mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Statistical guard: at a fixed pre-first-byte fault rate, raising request_retries
+    """Statistical guard: at a fixed pre-header fault rate, raising request_retries
     must drive failures down while the number of reported requests stays constant.
 
     The per-request tests above pin the mechanics of one retry. This one pins the two

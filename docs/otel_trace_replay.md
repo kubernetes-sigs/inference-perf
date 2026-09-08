@@ -742,8 +742,8 @@ request — it is every event downstream of the failed one. A request error rate
 1% can therefore cancel a double-digit percentage of the events in a run: the cost depends
 on *where* in the graph the fault landed, not on how serious it was.
 
-Set `load.request_retries` to re-send requests that fail before the server sent any
-response byte, which is the dominant class of these faults (a connection refused, reset, or
+Set `load.request_retries` to re-send requests that fail before response headers were
+obtained, which is the dominant class of these faults (a connection refused, reset, or
 dropped from the pool while the endpoint itself stays up and keeps answering):
 
 ```yaml
@@ -753,9 +753,12 @@ load:
   request_retry_backoff_sec: 0.5
 ```
 
-Only pre-first-byte faults are retried. A mid-stream drop has already produced a TTFT, so
-retrying it would report the retry's latency instead of the original's; timeouts are never
-retried at all. `request_timeout` applies per attempt — see
+Only faults raised before a response was established are retried. A mid-stream drop has
+already produced a TTFT, so retrying it would report the retry's latency instead of the
+original's; timeouts are never retried at all. Note that "no response headers" does not mean
+the server did no work — the attempt may already have reached it — so retries are bounded
+and backed off. `request_timeout` applies per attempt, and a retried request's reported
+latency deliberately still includes the failed attempt and its backoff. See
 [Retrying Transport Faults](config.md#retrying-transport-faults) for the full trade-off.
 
 Retries are reported separately from errors, in three places:
@@ -765,7 +768,11 @@ Retries are reported separately from errors, in three places:
 - **Request Error Summary** — a `Retried (recovered)` column, shown only when something
   retried. A retry is not an error label, so it never enters `failures.count`.
 - **Session Summary** — a `Retries (recovered)` column, plus `sessions_with_retries`,
-  `total_retry_attempts`, and `total_retries_recovered` in the session report.
+  `total_retry_attempts`, and `total_retries_recovered` in the session report. Like the
+  `retries` block, these keys are absent when nothing retried.
+- **Per-request JSON and OTel** — a retried request carries `info.final_attempt_latency`
+  (the answering attempt's latency, excluding earlier attempts and backoff) and a matching
+  span attribute. Absent on requests that did not retry.
 
 Both *attempted* and *recovered* are reported: a retry that was spent and failed anyway is
 the more interesting number, and reporting recovery alone would overstate the mechanism.

@@ -15,7 +15,7 @@
 from abc import abstractmethod
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
-from pydantic import BaseModel, Field, SerializeAsAny, computed_field
+from pydantic import BaseModel, Field, SerializeAsAny, computed_field, model_serializer
 from inference_perf.payloads import RequestBody, RequestMetrics
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
@@ -45,12 +45,30 @@ class InferenceInfo(BaseModel):
     lora_adapter: Optional[str] = None
     graph_event_id: Optional[str] = None
     labels: dict[str, str] = {}
-    # Extra attempts spent on pre-first-byte connection faults, and whether one of
-    # them went on to succeed. 0/False on the overwhelming majority of requests; a
-    # request that exhausted its retries reports the count with retries_recovered
-    # False. See LoadConfig.request_retries.
+    # Extra attempts spent on connection faults raised before a response was
+    # established, and whether one of them went on to succeed. 0/False on the
+    # overwhelming majority of requests; a request that exhausted its retries reports
+    # the count with retries_recovered False. See LoadConfig.request_retries.
     retries_attempted: int = 0
     retries_recovered: bool = False
+    # Latency of the attempt that answered, excluding earlier attempts and backoff.
+    # None unless a retry actually moved the answering attempt off dispatch, so the
+    # serving-side view is available without redefining RequestLifecycleMetric.
+    # start_time, which remains the logical request's dispatch time.
+    final_attempt_latency: Optional[float] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_final_attempt_latency(self, handler: Any) -> dict[str, Any]:
+        """Drop `final_attempt_latency` entirely when it is None.
+
+        A request that never retried must serialize exactly as it did before retries
+        existed, so the field appears only on the requests it describes rather than as
+        a `null` on every entry of per_request_lifecycle_metrics.json.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if dumped.get("final_attempt_latency") is None:
+            dumped.pop("final_attempt_latency", None)
+        return dumped
 
     # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top
     # level for back-compat with parsers of pre-multimodal
@@ -100,9 +118,10 @@ class SessionLifecycleMetric(BaseModel):
     # but no malformed tool_calls were observed.
     n_recorded_substitutions: Optional[int] = None
     recorded_substitution_event_ids: Optional[List[str]] = None
-    # Per-session sum of extra attempts spent on pre-first-byte connection
-    # faults, and how many of those requests went on to succeed. 0/0 when the
-    # session hit no transport faults; see LoadConfig.request_retries.
+    # Per-session sum of extra attempts spent on connection faults raised before
+    # response headers were obtained, and how many of those requests went on to
+    # succeed. 0/0 when the session hit no transport faults; see
+    # LoadConfig.request_retries.
     retries_attempted: int = 0
     retries_recovered: int = 0
     success: Optional[bool] = None

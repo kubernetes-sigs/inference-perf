@@ -206,12 +206,19 @@ def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, s
 
 
 def is_retryable_transport_error(exc: BaseException) -> bool:
-    """True for a connection fault raised before the server sent anything.
+    """True for a connection fault raised before response headers were obtained.
 
     ``ClientConnectionError`` is exactly that family: a connection refused, reset, or
     closed while idle in the pool. ``ClientPayloadError`` sits deliberately outside it --
     a body that broke mid-transfer already produced tokens, so retrying it would report
     the second attempt's latency.
+
+    The boundary is the *client's* view, and it is narrower than "the server did no
+    work". No response was established, so no TTFT or partial ITLs exist to be
+    contaminated -- but the request bytes may already have been sent, and the server may
+    have received or begun processing the attempt. A retry is therefore measurement-safe
+    for the client while still capable of duplicating work on the endpoint, which is why
+    it is bounded (``request_retries``) and backed off rather than unconditional.
 
     Timeouts are excluded even though ``ServerTimeoutError`` inherits from
     ``ClientConnectionError``: the request may have reached the model, and
@@ -261,8 +268,16 @@ class openAIModelServerClientSession(ModelServerClientSession):
         error: Optional[ErrorResponseInfo],
         start_time: float,
         end_time: float,
+        attempt_start_time: Optional[float] = None,
     ) -> None:
-        """Record OTEL metrics for the request."""
+        """Record OTEL metrics for the request.
+
+        ``start_time`` is the logical request's dispatch time, so ``total_latency`` matches
+        the span's own wall duration -- the span opens outside the attempt loop and
+        therefore already covers every attempt plus backoff. ``attempt_start_time`` is when
+        the answering attempt began; it differs only on a retried request and is reported
+        separately so the serving-side view stays available without redefining the other.
+        """
         if not self.client.otel.enabled or span is None:
             return
 
@@ -273,6 +288,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 "completion_tokens": inner.output_tokens if inner else 0,
                 "total_latency": end_time - start_time,
             }
+
+            # Only meaningful when a retry moved the answering attempt off dispatch; the
+            # caller passes None otherwise.
+            if attempt_start_time is not None:
+                otel_response_info["final_attempt_latency"] = end_time - attempt_start_time
 
             # Calculate TTFT if token times are available (streaming only)
             if isinstance(inner, StreamedResponseMetrics) and inner.output_token_times:
@@ -460,7 +480,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
         else:
             operation_name = "completions"
 
+        # Two clocks, deliberately. `start` is the logical request's dispatch time and
+        # never moves: the report derives schedule_delay, send_duration, achieved_rate and
+        # request latency from it, so re-stamping it would charge a retry's backoff to
+        # scheduling and hide time the workload genuinely spent waiting. `attempt_start`
+        # tracks the attempt that answered, for the serving-side view of the same request.
         start = time.perf_counter()
+        attempt_start = start
         response: Optional[aiohttp.ClientResponse] = None
         info = None
         error = None
@@ -479,14 +505,15 @@ class openAIModelServerClientSession(ModelServerClientSession):
             request_data=payload,
             parent_context=parent_context,
         ) as span:
-            # Attempt loop for pre-first-byte transport faults (see
-            # is_retryable_transport_error). Retries stay inside the span and record one
-            # RequestLifecycleMetric, so a recovered request is not counted twice.
+            # Attempt loop for transport faults raised before response headers were
+            # obtained (see is_retryable_transport_error). Retries stay inside the span and
+            # record one RequestLifecycleMetric, so a recovered request is not counted twice.
             max_attempts = 1 + max(0, self.client.request_retries)
             for attempt in range(max_attempts):
-                # Re-stamp per attempt: start_time feeds the reported request latency, so a
-                # failed attempt and its backoff must not be charged to the one that answered.
-                start = time.perf_counter()
+                # Only the attempt clock is re-stamped. `start` stays at logical dispatch
+                # so end-to-end latency, TTFT and the scheduling metrics keep counting the
+                # failed attempt and its backoff -- the workload really did wait for them.
+                attempt_start = time.perf_counter()
                 response = None
                 info = None
                 error = None
@@ -645,6 +672,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 error=error,
                 start_time=start,
                 end_time=end_time,
+                attempt_start_time=attempt_start if retries_attempted else None,
             )
 
         if caught_exception is not None and not info:
@@ -662,6 +690,13 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # fresh InferenceInfo, which still needs to report the retries it burned.
         info.retries_attempted = retries_attempted
         info.retries_recovered = retries_recovered
+        # Only meaningful when a retry moved the answering attempt off dispatch. Gated on
+        # retries_attempted rather than on `attempt_start != start`, which is always true:
+        # the loop re-stamps the attempt clock on the first attempt too. start_time on the
+        # metric below stays at dispatch, so this is the serving-side view of the same
+        # request rather than a redefinition of its latency.
+        if retries_attempted:
+            info.final_attempt_latency = end_time - attempt_start
         if data.labels:
             info.labels = data.labels
         if data.graph_event_id:

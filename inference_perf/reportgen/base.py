@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
@@ -336,7 +336,7 @@ def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_ser
 
 
 def summarize_retries(metrics: List[RequestLifecycleMetric]) -> Optional[dict[str, Any]]:
-    """Roll up pre-first-byte retry activity across a window of requests.
+    """Roll up retry activity across a window of requests.
 
     Returns None when nothing retried, so a report from a run with
     ``request_retries: 0`` carries no retry section at all rather than a block
@@ -365,6 +365,20 @@ class ResponsesSummary(BaseModel):
     # request ever retried. A sibling of successes/failures rather than a key
     # inside either, because retried requests land on both sides.
     retries: Optional[dict[str, Any]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_retries(self, handler: Any) -> dict[str, Any]:
+        """Drop `retries` entirely when it is None.
+
+        A run that never retried must serialize byte-identically to one built before
+        retries existed, so the default config's report gains no key at all -- not a
+        `"retries": null`. Enforced on the model rather than at the ~6 model_dump()
+        call sites so a new caller cannot reintroduce the key by omission.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if dumped.get("retries") is None:
+            dumped.pop("retries", None)
+        return dumped
 
 
 def calculate_goodput_metrics(
@@ -1102,12 +1116,16 @@ class ReportGenerator:
         # contribute None and are skipped, so a default-config run
         # surfaces 0 sessions and a `null` total in the report.
         # Sessions that hit at least one retryable transport fault, and the totals
-        # behind them. Reported unconditionally (0 when retries are off) because
-        # this is the session table's denominator, unlike the request-level
-        # `retries` block which is None when nothing retried.
-        sessions_with_retries = sum(1 for m in metrics if m.retries_attempted > 0)
-        total_retry_attempts = sum(m.retries_attempted for m in metrics)
-        total_retries_recovered = sum(m.retries_recovered for m in metrics)
+        # behind them. Omitted entirely when nothing retried, so a run with
+        # request_retries at its default serializes byte-identically to one built
+        # before retries existed; both readers in cli_summary default to 0.
+        retry_summary: dict[str, Any] = {}
+        if any(m.retries_attempted for m in metrics):
+            retry_summary = {
+                "sessions_with_retries": sum(1 for m in metrics if m.retries_attempted > 0),
+                "total_retry_attempts": sum(m.retries_attempted for m in metrics),
+                "total_retries_recovered": sum(m.retries_recovered for m in metrics),
+            }
 
         sessions_with_recorded_substitution = sum(
             1 for m in metrics if m.n_recorded_substitutions is not None and m.n_recorded_substitutions > 0
@@ -1172,9 +1190,7 @@ class ReportGenerator:
             "total_events_cancelled": total_events_cancelled,
             "sessions_with_recorded_substitution": sessions_with_recorded_substitution,
             "total_recorded_substitutions": total_recorded_substitutions,
-            "sessions_with_retries": sessions_with_retries,
-            "total_retry_attempts": total_retry_attempts,
-            "total_retries_recovered": total_retries_recovered,
+            **retry_summary,
             "sessions_per_second": sessions_per_second,
             "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
             "num_events": summarize([float(m.num_events) for m in metrics], percentiles),

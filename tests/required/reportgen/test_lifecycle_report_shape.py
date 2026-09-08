@@ -262,11 +262,16 @@ def _retry_metric(retries_attempted: int, retries_recovered: bool) -> Mock:
 
 
 def test_retries_absent_when_nothing_retried() -> None:
-    """A run with retries off must carry no retry section at all, rather than a block
-    of zeros that implies the mechanism was exercised."""
+    """A run with retries off must carry no retry section at all -- not a block of zeros
+    implying the mechanism was exercised, and not a `"retries": null` either.
+
+    The serialized shape is the load-bearing half: a default-config report must be
+    byte-identical to one produced before retries existed, or every downstream consumer
+    sees a schema change from a feature nobody enabled.
+    """
     summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(0, False)]), percentiles=[50])
     assert summary.retries is None
-    assert "retries" in summary.model_dump()  # key present, value null
+    assert "retries" not in summary.model_dump()
 
 
 def test_retries_partition_recovered_and_exhausted() -> None:

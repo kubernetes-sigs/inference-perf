@@ -326,6 +326,11 @@ class OTelInstrumentation:
                     span.set_attribute("gen_ai.response.time_per_output_token", response_info["time_per_output_token"])
                 if "total_latency" in response_info:
                     span.set_attribute("gen_ai.response.total_latency", response_info["total_latency"])
+                # Present only on a retried request. total_latency above matches this span's
+                # own wall duration -- the span wraps every attempt -- so the answering
+                # attempt's latency is a separate attribute rather than a redefinition.
+                if "final_attempt_latency" in response_info:
+                    span.set_attribute("gen_ai.response.final_attempt_latency", response_info["final_attempt_latency"])
 
                 # Finish reason
                 if "finish_reason" in response_info:

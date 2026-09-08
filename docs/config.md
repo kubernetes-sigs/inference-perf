@@ -158,7 +158,7 @@ load:
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
   request_timeout: 900              # Optional: per-request timeout in seconds (applies per attempt)
-  request_retries: 0                # Optional: extra attempts for pre-first-byte transport faults (default: 0, no retry)
+  request_retries: 0                # Optional: extra attempts for faults before response headers (default: 0, no retry)
   request_retry_backoff_sec: 0.5    # Optional: base backoff before the first retry, doubled + jittered per attempt
   base_seed: 12345                  # Optional: base random seed for reproducibility (default: current time in ms)
   lora_traffic_split:               # Optional: MultiLoRA traffic splitting
@@ -172,24 +172,35 @@ load:
 
 #### Retrying Transport Faults
 
-`request_retries` re-sends a request when it fails **before the server sent any response
-byte** — a refused connection, a reset, or a connection dropped from the pool. It defaults
-to `0`, which preserves the historical behavior of failing on the first fault, so enabling
-it is always an explicit choice.
+`request_retries` re-sends a request when it fails **before response headers were
+obtained** — a refused connection, a reset, or a connection dropped from the pool. It
+defaults to `0`, which preserves the historical behavior of failing on the first fault, so
+enabling it is always an explicit choice.
 
-The pre-first-byte boundary is what keeps the retry measurement-safe, and it is enforced
-rather than assumed:
+That boundary is what keeps the retry measurement-safe, and it is enforced rather than
+assumed:
 
-- A fault raised **before** any byte arrived measured nothing. Re-sending it changes
-  nothing about what the benchmark reports.
+- A fault raised **before a response was established** measured nothing on the client side:
+  there is no TTFT and no partial ITL to contaminate, so re-sending changes nothing about
+  what the benchmark reports.
 - A fault raised **mid-stream** has already produced a TTFT and partial ITLs. Retrying it
   would report the *second* attempt's latency as the request's latency and would double the
   work the endpoint actually did, so these are never retried.
 - **Timeouts are never retried**, at either point. A timeout is a real measurement of a slow
   server, not a lost connection.
 
-Each attempt is timed independently: `start_time` is re-stamped per attempt, so a reported
-latency never includes a failed attempt or its backoff.
+One caveat the client cannot see: "no response headers" is not the same as "the server did
+no work". The request bytes may already have been sent, and the server may have received or
+begun processing the failed attempt, so a retry can duplicate work on the endpoint even
+though it is free of measurement contamination on the client. That is why retries are
+bounded and backed off rather than unconditional.
+
+Timing is deliberately *not* re-stamped per attempt. `start_time` stays at the logical
+request's dispatch, so the reported end-to-end latency counts the failed attempt and its
+backoff — the workload really did wait for them — and the derived scheduling metrics
+(`schedule_delay`, `send_duration`, `achieved_rate`) stay correct. The serving-side view is
+reported separately: a retried request carries `info.final_attempt_latency`, the latency of
+the attempt that answered, and its OTel span gains a `final_attempt_latency` attribute.
 
 Two costs to weigh before enabling it:
 
