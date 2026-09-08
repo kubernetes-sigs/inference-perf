@@ -172,55 +172,40 @@ load:
 
 #### Retrying Transport Faults
 
-`request_retries` re-sends a request when it fails **before response headers were
-obtained** — a refused connection, a reset, or a connection dropped from the pool. It
-defaults to `0`, which preserves the historical behavior of failing on the first fault, so
-enabling it is always an explicit choice.
+`request_retries` re-sends a request that fails **before response headers were obtained** —
+a refused connection, a reset, or a connection dropped from the pool. It defaults to `0`,
+preserving the historical behavior of failing on the first fault.
 
-That boundary is what stops a retry from mixing partial client-side response measurements
-across attempts, and it is enforced rather than assumed:
+What is retried:
 
-- A fault raised **before a response was established** measured nothing on the client side:
-  there is no TTFT and no partial ITL to contaminate, so re-sending changes nothing about
-  what the benchmark reports.
-- A fault raised **mid-stream** has already produced a TTFT and partial ITLs. Retrying it
-  would report the *second* attempt's latency as the request's latency and would double the
-  work the endpoint actually did, so these are never retried.
-- **Timeouts are never retried**, at either point. A timeout is a real measurement of a slow
-  server, not a lost connection.
+| Fault | Retried | Why |
+|---|---|---|
+| Connection refused, reset, dropped from pool | Yes | Nothing was measured on the client side; these recover |
+| Anything after a response was established | No | Re-sending could mix or discard token-level measurements and duplicate server work |
+| Timeout | No | A real measurement of a slow server, and `request_timeout` applies per attempt |
+| Rejected certificate, fingerprint mismatch | No | Configuration errors — every attempt fails identically |
 
-One caveat the client cannot see: "no response headers" is not the same as "the server did
-no work". The request bytes may already have been sent, and the server may have received or
-begun processing the failed attempt, so a retry can duplicate work on the endpoint even
-though no partial client-side measurement was mixed across attempts. That is why retries
-are bounded and backed off rather than unconditional.
+"No response headers" is not "the server did no work": the request bytes may already have
+been sent. A retry is therefore bounded and backed off rather than unconditional.
 
-Timing is deliberately *not* re-stamped per attempt. `start_time` stays at the logical
-request's dispatch, so the reported end-to-end latency counts the failed attempt and its
-backoff — the workload really did wait for them — and the derived scheduling metrics
-(`schedule_delay`, `send_duration`, `achieved_rate`) stay correct. The serving-side view is
-reported as waste instead: a retried request carries `info.retry_wasted_sec` — the time it
-lost to failed attempts and backoff — and its OTel span gains a matching attribute. The
-`retries` block totals that across the run, so the cost of retrying is a number you can
-read off the report rather than a shift in the latency numbers you already track. A request
-that never succeeded counts its whole life as waste — no attempt answered, so there is no
-answering attempt to stop the clock at.
+**Timing.** `start_time` stays at the logical request's dispatch and is never re-stamped per
+attempt, so end-to-end latency counts the failed attempt and its backoff — the workload
+really did wait — and `schedule_delay`, `send_duration` and `achieved_rate` stay correct.
+The cost is reported beside those numbers instead: a retried request carries
+`info.retry_wasted_sec` plus a matching OTel span attribute, and the `retries` block totals
+it across the run. A request that never succeeded counts its whole life as waste, since no
+attempt answered.
 
-Every retry field is omitted, not zeroed, on anything that never retried: a run with
-`request_retries: 0`, or with the knob on but no transport faults, produces the same
-per-request and per-session JSON it produced before retries existed.
+Retry fields are omitted rather than zeroed on anything that never retried, so a run with
+`request_retries: 0` — or with the knob on but no faults — produces the report JSON it
+produced before retries existed.
 
-Two costs to weigh before enabling it:
+**Costs.** `request_timeout` applies per attempt, so worst-case wall time per request
+becomes `(1 + request_retries) × request_timeout` plus backoff; keep `request_retries` small
+when `request_timeout` is large. Backoff starts at `request_retry_backoff_sec`, then doubles
+and jitters so retries do not resynchronize into a burst.
 
-- `request_timeout` applies **per attempt**, so the worst-case wall time for one request
-  becomes `(1 + request_retries) × request_timeout`, plus backoff. With a large
-  `request_timeout`, keep `request_retries` small.
-- Backoff starts at `request_retry_backoff_sec`, then doubles and jitters per attempt so
-  retries do not resynchronize into a burst against a server that is already dropping
-  connections.
-
-Retry activity is reported and never hidden: see
-[Reports](otel_trace_replay.md#reports) for the `retries` block and the CLI columns.
+See [Reports](otel_trace_replay.md#reports) for the `retries` block and the CLI columns.
 
 #### Load Sweeps
 

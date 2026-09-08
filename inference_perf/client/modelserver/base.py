@@ -33,8 +33,9 @@ class ModelServerClient(ABC):
 
         self.api_config = api_config
         self.timeout = timeout
-        # Retries apply only to faults raised before any response byte arrives; see
-        # LoadConfig.request_retries. timeout is per attempt, not per request.
+        # Retries apply only to eligible faults raised before response headers are
+        # obtained; see LoadConfig.request_retries. timeout stays per attempt, not per
+        # request.
         self.request_retries = request_retries
         self.request_retry_backoff_sec = request_retry_backoff_sec
 

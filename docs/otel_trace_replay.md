@@ -753,33 +753,26 @@ load:
   request_retry_backoff_sec: 0.5
 ```
 
-Only faults raised before a response was established are retried. A mid-stream drop has
-already produced a TTFT, so retrying it would report the retry's latency instead of the
-original's; timeouts are never retried at all. Note that "no response headers" does not mean
-the server did no work — the attempt may already have reached it — so retries are bounded
-and backed off. `request_timeout` applies per attempt, and a retried request's reported
-latency deliberately still includes the failed attempt and its backoff. See
-[Retrying Transport Faults](config.md#retrying-transport-faults) for the full trade-off.
+Only faults raised before a response was established are retried; timeouts and TLS
+configuration errors never are. `request_timeout` applies per attempt, and a retried
+request's reported latency deliberately still includes the failed attempt and its backoff.
+See [Retrying Transport Faults](config.md#retrying-transport-faults) for the boundary and
+the trade-offs.
 
-Retries are reported separately from errors, in three places:
+Retries are reported separately from errors, and every surface is absent when nothing
+retried:
 
-- **Report JSON** — a `retries` block alongside `successes`/`failures`, with
-  `requests_retried`, `attempts`, `recovered`, and `failed_after_retry`. Absent when nothing
-  retried. Plus `wasted_sec_total`, the wall time the window lost to failed attempts and
-  backoff, and `wasted_sec`, the usual mean/min/max/percentile spread of that waste per
-  retried request. Both count requests that never succeeded — every attempt they made was
-  wasted, which is the most expensive waste in a run.
-- **Request Error Summary** — a `Retried (recovered)` column, shown only when something
-  retried. A retry is not an error label, so it never enters `failures.count`.
-- **Session Summary** — a `Retries (recovered)` column, plus `sessions_with_retries`,
-  `total_retry_attempts`, and `total_retries_recovered` in the session report. Like the
-  `retries` block, these keys are absent when nothing retried.
-- **Per-request JSON and OTel** — a retried request carries `info.retry_wasted_sec` (time
-  lost to failed attempts and backoff) and a `gen_ai.response.retry_wasted_sec` span
-  attribute. Absent on requests that did not retry.
+| Surface | Shape |
+|---|---|
+| Report JSON | `retries` block beside `successes`/`failures`: `requests_retried`, `attempts`, `recovered`, `failed_after_retry`, `wasted_sec_total`, and `wasted_sec` (mean/min/max/percentiles) |
+| Request Error Summary | `Retried (recovered)` column |
+| Session Summary | `Retries (recovered)` column, plus `sessions_with_retries`, `total_retry_attempts`, `total_retries_recovered` |
+| Per-request JSON and OTel | `info.retry_wasted_sec` and a `gen_ai.response.retry_wasted_sec` span attribute |
 
-Both *attempted* and *recovered* are reported: a retry that was spent and failed anyway is
-the more interesting number, and reporting recovery alone would overstate the mechanism.
+Attempts and recoveries are both reported, since a retry that was spent and failed anyway
+is the more interesting number. The waste figures include requests that never succeeded —
+every attempt they made was wasted. A retry is not an error label and never enters
+`failures.count`.
 
 ### Load Generator: run_stage vs run_session_stage
 

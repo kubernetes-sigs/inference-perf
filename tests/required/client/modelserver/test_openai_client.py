@@ -14,12 +14,20 @@
 import json
 import logging
 import random
+import ssl
+from types import SimpleNamespace
+
+from aiohttp.client_reqrep import ConnectionKey
 import pytest
 import asyncio
 import aiohttp
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
-from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
+from inference_perf.client.modelserver.openai_client import (
+    is_retryable_transport_error,
+    openAIModelServerClientSession,
+    OpenAIMetrics,
+)
 from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
@@ -571,8 +579,9 @@ async def test_session_token_replayed_for_user_session_id_workloads(mock_client:
 # A replay session is a graph: one dropped connection fails the whole session and
 # cancels every event downstream of it. These tests pin the boundary that keeps a retry
 # from mixing partial client-side measurements across attempts -- only faults raised
-# before a response was established are retried, because anything later has already
-# produced a TTFT. The boundary is the client's view: no TTFT exists to contaminate, but
+# before a response was established are retried, because anything after a response has
+# been established is outside the conservative retry boundary, whether or not a token has
+# arrived yet. The boundary is the client's view: nothing was measured on this side, but
 # the server may already have received the failed attempt, which is why the retry is
 # bounded and backed off.
 
@@ -681,6 +690,86 @@ async def test_timeout_is_never_retried(mock_client: MagicMock, mock_data: Magic
     count -- with request_timeout: 900 that turns one stalled event into 45 minutes."""
     session = _retrying_session(mock_client, retries=2)
     _post(session).side_effect = [_failing_ctx(aiohttp.ServerTimeoutError()), _ok_ctx()]
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert _post(session).call_count == 1
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.info.retries_attempted == 0
+
+
+def _conn_key(is_ssl: bool) -> ConnectionKey:
+    """Just enough of aiohttp's connection key for its exception `__str__` to render.
+
+    Cast rather than constructed: the real ConnectionKey gains fields across aiohttp
+    versions, and these doubles only ever reach the host/port/is_ssl reads in the error
+    formatting path.
+    """
+    return cast(
+        ConnectionKey,
+        SimpleNamespace(host="model.invalid", port=443, is_ssl=is_ssl),
+    )
+
+
+def _cert_error() -> aiohttp.ClientConnectorCertificateError:
+    """A rejected server certificate.
+
+    Built through a subclass rather than aiohttp's own constructor, which needs the private
+    `ConnectionKey` type: the predicate dispatches on isinstance, so the real class's
+    identity is what matters, not how it was raised.
+    """
+
+    class _CertError(aiohttp.ClientConnectorCertificateError):
+        def __init__(self) -> None:  # noqa: D107 - test double
+            # aiohttp's __str__ reads host/port off the connection key, so the error path
+            # under test needs more than a bare None here.
+            self._conn_key = _conn_key(is_ssl=True)
+            self._certificate_error = ssl.SSLCertVerificationError("self-signed certificate")
+
+    return _CertError()
+
+
+def test_rejected_certificate_is_not_retried() -> None:
+    """A rejected certificate is a configuration error: every attempt fails identically, so
+    retrying only spends the backoff.
+
+    It reaches the predicate through `ClientOSError` -- the class retried for connection
+    resets -- so the family check alone would let it through.
+    """
+    exc = _cert_error()
+    assert isinstance(exc, aiohttp.ClientOSError), "the trap this exclusion exists for"
+    assert is_retryable_transport_error(exc) is False
+
+
+def test_fingerprint_mismatch_is_not_retried() -> None:
+    """A pinned-fingerprint mismatch is equally deterministic, and reaches the predicate by
+    a different route (ServerConnectionError, not ClientOSError)."""
+    exc = aiohttp.ServerFingerprintMismatch(b"\x01", b"\x02", "host", 443)
+    assert is_retryable_transport_error(exc) is False
+
+
+def test_connection_refused_is_still_retried() -> None:
+    """The TLS exclusion must not widen into connectivity failures.
+
+    `ClientConnectorError` covers connection-refused and DNS failures, which do recover --
+    excluding `ClientConnectorError` broadly would throw away the cases retry exists for.
+    """
+
+    class _Refused(aiohttp.ClientConnectorError):
+        def __init__(self) -> None:  # noqa: D107 - test double
+            self._conn_key = _conn_key(is_ssl=False)
+            self._os_error = OSError(111, "Connection refused")
+
+    assert is_retryable_transport_error(_Refused()) is True
+
+
+@pytest.mark.asyncio
+async def test_certificate_error_is_not_retried_end_to_end(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    """The exclusion holds through the client: a cert failure POSTs exactly once even with
+    retries enabled."""
+    session = _retrying_session(mock_client, retries=2)
+    _post(session).side_effect = [_failing_ctx(_cert_error()), _ok_ctx(), _ok_ctx()]
 
     await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
 

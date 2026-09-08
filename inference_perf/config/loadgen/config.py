@@ -186,16 +186,15 @@ class LoadConfig(StrictBaseModel):
         ge=0,
         description=(
             "How many extra attempts to make when a request fails before response headers "
-            "were obtained, i.e. a connection was refused, reset, or dropped from the pool. "
-            "Only faults raised before any response was established are retried: once "
-            "headers have arrived the request may already have produced a TTFT, so retrying "
-            "it would report the retry's latency instead of the original's. Timeouts are "
-            "never retried. Note that a failed attempt can still have reached the server, "
-            "which may have received or begun processing it, so a retry is cheap for the "
-            "client but not necessarily free for the endpoint. Defaults to 0, which "
-            "preserves the historical behavior of failing on the first fault. Note that "
-            "request_timeout applies per attempt, so the worst-case wall time for one "
-            "request becomes (1 + request_retries) * request_timeout plus backoff."
+            "were obtained -- a connection refused, reset, or dropped from the pool. "
+            "Faults raised once a response was established are never retried, since "
+            "re-sending could mix or discard token-level measurements; neither are timeouts "
+            "or TLS configuration errors, which fail identically on every attempt. A failed "
+            "attempt can still have reached the server, so a retry is cheap for the client "
+            "but not free for the endpoint. Defaults to 0, preserving the historical "
+            "behavior of failing on the first fault. request_timeout applies per attempt, "
+            "so worst-case wall time per request becomes "
+            "(1 + request_retries) * request_timeout plus backoff."
         ),
     )
     request_retry_backoff_sec: float = Field(

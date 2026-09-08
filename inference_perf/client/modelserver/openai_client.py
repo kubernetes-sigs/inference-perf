@@ -210,8 +210,9 @@ def is_retryable_transport_error(exc: BaseException) -> bool:
 
     ``ClientConnectionError`` is exactly that family: a connection refused, reset, or
     closed while idle in the pool. ``ClientPayloadError`` sits deliberately outside it --
-    a body that broke mid-transfer already produced tokens, so retrying it would report
-    the second attempt's latency.
+    a body that broke mid-transfer is past the point where a response was established, so
+    retrying it could mix or discard token-level measurements and duplicate work the server
+    already did.
 
     The boundary is the *client's* view, and it is narrower than "the server did no
     work". No response was established, so no TTFT or partial ITLs exist to be
@@ -221,11 +222,23 @@ def is_retryable_transport_error(exc: BaseException) -> bool:
     duplicating work on the endpoint -- which is why it is bounded (``request_retries``)
     and backed off rather than unconditional.
 
-    Timeouts are excluded even though ``ServerTimeoutError`` inherits from
-    ``ClientConnectionError``: the request may have reached the model, and
-    ``request_timeout`` applies per attempt, so re-sending multiplies the deadline.
+    Two families are excluded despite inheriting from ``ClientConnectionError``:
+
+    - Timeouts (``ServerTimeoutError``, ``SocketTimeoutError``). The request may have
+      reached the model, and ``request_timeout`` applies per attempt, so re-sending
+      multiplies the deadline.
+    - Deterministic TLS failures. A rejected certificate or a mismatched fingerprint is a
+      configuration error, not a transient one: every attempt fails identically, so
+      retrying only spends the backoff. ``ClientSSLError`` covers both connector variants,
+      and ``ClientConnectorCertificateError`` in particular also inherits from
+      ``ClientOSError`` -- the class we retry for connection resets -- so it has to be
+      excluded by name rather than left to the family check.
+
+    Note this excludes TLS *verification* failures, not connectivity ones:
+    ``ClientConnectorError`` (connection refused, DNS failure) stays retryable, since those
+    do recover.
     """
-    if isinstance(exc, asyncio.TimeoutError):
+    if isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientSSLError, aiohttp.ServerFingerprintMismatch)):
         return False
     return isinstance(exc, aiohttp.ClientConnectionError)
 

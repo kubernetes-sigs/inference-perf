@@ -345,9 +345,10 @@ class BackendClientSuite:
         assert metric.error is not None
         assert metric.error.error_type == "ConnectionResetError"
         assert "Paris," in metric.response_data
-        # A mid-stream drop has already produced a TTFT, so it must never be retried
-        # even when retries are enabled: the retry's latency would be reported as the
-        # original's. Guarded here so every backend inherits the check (#777).
+        # A mid-stream drop is past the point where a response was established, so it is
+        # outside the retry boundary even when retries are enabled: re-sending could mix or
+        # discard token-level measurements. Guarded here so every backend inherits the
+        # check (#777).
         assert cast(MagicMock, session.session).post.call_count == 1
 
     # --- Client construction against recorded /v1/models responses ---
