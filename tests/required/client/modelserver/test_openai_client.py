@@ -17,11 +17,17 @@ import random
 import pytest
 import asyncio
 import aiohttp
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import openAIModelServerClientSession, OpenAIMetrics
 from inference_perf.client.modelserver.metrics import Metric, CounterResult
-from inference_perf.apis import AnthropicMessagesAPIData, ChatMessage, ErrorResponseInfo, InferenceInfo
+from inference_perf.apis import (
+    AnthropicMessagesAPIData,
+    ChatMessage,
+    ErrorResponseInfo,
+    InferenceInfo,
+    SessionLifecycleMetric,
+)
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
 from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
@@ -563,11 +569,12 @@ async def test_session_token_replayed_for_user_session_id_workloads(mock_client:
 # --- Bounded retry for transport faults raised before response headers (#777) ---
 #
 # A replay session is a graph: one dropped connection fails the whole session and
-# cancels every event downstream of it. These tests pin the boundary that makes the
-# retry measurement-safe -- only faults raised before a response was established are
-# retried, because anything later has already produced a TTFT. Note the boundary is the
-# client's view: no TTFT exists to contaminate, but the server may already have received
-# the failed attempt, which is why the retry is bounded and backed off.
+# cancels every event downstream of it. These tests pin the boundary that keeps a retry
+# from mixing partial client-side measurements across attempts -- only faults raised
+# before a response was established are retried, because anything later has already
+# produced a TTFT. The boundary is the client's view: no TTFT exists to contaminate, but
+# the server may already have received the failed attempt, which is why the retry is
+# bounded and backed off.
 
 
 def _retrying_session(mock_client: MagicMock, retries: int, backoff: float = 0.0) -> openAIModelServerClientSession:
@@ -757,11 +764,77 @@ async def test_retry_backoff_is_not_charged_to_schedule_delay(
 
 
 @pytest.mark.asyncio
+async def test_wasted_sec_covers_every_attempt_when_none_recover(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request that never succeeded wasted its ENTIRE life, not just the part before its
+    last attempt.
+
+    No attempt answered, so there is no answering attempt to stop the waste clock at and
+    the boundary has to be the end of the request. Stopping at the final attempt's start
+    under-reports exactly the requests that cost the most, and the smaller number it
+    reports reads as plausible rather than as wrong.
+    """
+    session = _retrying_session(mock_client, retries=1, backoff=5.0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()) for _ in range(2)]
+
+    # Attempt 1 spans 0->5s, backoff runs to 10s, attempt 2 spans 10->20s and also fails.
+    ticks = iter([0.0, 5.0, 10.0, 20.0, 20.0, 20.0, 20.0])
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.sleep", AsyncMock())
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.info.retries_recovered is False
+    # The whole 20s, not the 10s that preceded the final attempt.
+    assert metric.info.retry_wasted_sec == pytest.approx(20.0)
+    assert metric.info.retry_wasted_sec == pytest.approx(metric.end_time - metric.start_time)
+
+
+@pytest.mark.asyncio
+async def test_otel_reports_wasted_time_when_every_attempt_failed(
+    mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The span must carry the retry waste on the failure path too.
+
+    `info` is still None at the OTel call site when every attempt failed, since
+    process_failure runs afterwards. Sourcing the attribute from `info` would therefore drop
+    it on precisely the requests whose waste is largest, leaving the trace view disagreeing
+    with the report.
+    """
+    session = _retrying_session(mock_client, retries=1, backoff=5.0)
+    _post(session).side_effect = [_failing_ctx(aiohttp.ServerDisconnectedError()) for _ in range(2)]
+
+    mock_client.otel.enabled = True
+    recorded: dict[str, Any] = {}
+    mock_client.otel.record_response_metrics = MagicMock(
+        side_effect=lambda **kwargs: recorded.update(kwargs),
+    )
+
+    ticks = iter([0.0, 5.0, 10.0, 20.0, 20.0, 20.0, 20.0])
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr("inference_perf.client.modelserver.openai_client.sleep", AsyncMock())
+
+    await session.process_request(mock_data, stage_id=0, scheduled_time=0.0)
+
+    assert recorded.get("error") is not None, "the failure branch should still record the error"
+    response_info = recorded.get("response_info")
+    assert response_info is not None, "waste was dropped on the failure path"
+    # The same number the request metric carries: one calculation, two surfaces.
+    assert response_info["retry_wasted_sec"] == pytest.approx(20.0)
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert response_info["retry_wasted_sec"] == pytest.approx(metric.info.retry_wasted_sec)
+
+
+@pytest.mark.asyncio
 async def test_retry_wasted_sec_absent_without_retry(
     mock_client: MagicMock, mock_data: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request that never retried wasted nothing, and serializes without the key -- so a
-    default-config run's per-request JSON is unchanged."""
+    """A request that never retried wasted nothing, and serializes without ANY retry key --
+    so a default-config run's per-request JSON is byte-identical to one produced before
+    retries existed, rather than gaining a pair of zeros on every entry."""
     session = _retrying_session(mock_client, retries=2)
     _post(session).side_effect = [_ok_ctx()]
 
@@ -769,9 +842,59 @@ async def test_retry_wasted_sec_absent_without_retry(
 
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert metric.info.retry_wasted_sec is None
+    assert metric.info.retries_attempted == 0
     # Serialized shape checked on a clean InferenceInfo: the fixture's info carries
     # MagicMock labels/graph_event_id, which make model_dump warn about unrelated fields.
-    assert "retry_wasted_sec" not in InferenceInfo(request_metrics=RequestMetrics(text=Text())).model_dump()
+    dumped = InferenceInfo(request_metrics=RequestMetrics(text=Text())).model_dump()
+    for key in ("retry_wasted_sec", "retries_attempted", "retries_recovered"):
+        assert key not in dumped, f"{key} leaked into a request that never retried"
+
+
+def test_retry_fields_present_once_a_request_retried() -> None:
+    """Omission is keyed on retries_attempted, so a request that DID retry carries all three
+    keys. Without this, a serializer that dropped them unconditionally would look correct."""
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text()),
+        retries_attempted=2,
+        retries_recovered=False,
+        retry_wasted_sec=20.0,
+    )
+    dumped = info.model_dump()
+    assert dumped["retries_attempted"] == 2
+    assert dumped["retries_recovered"] is False
+    assert dumped["retry_wasted_sec"] == 20.0
+
+
+def test_session_omits_retry_fields_when_nothing_retried() -> None:
+    """Same rule on the session rollup: per_session_lifecycle_metrics.json must not gain a
+    pair of zeros on every session of a run that hit no transport faults."""
+    clean = SessionLifecycleMetric(
+        session_id="s1",
+        stage_id=0,
+        file_path="trace.jsonl",
+        start_time=0.0,
+        end_time=1.0,
+        duration_sec=1.0,
+        num_events=1,
+        num_events_completed=1,
+    ).model_dump()
+    assert "retries_attempted" not in clean
+    assert "retries_recovered" not in clean
+
+    retried = SessionLifecycleMetric(
+        session_id="s2",
+        stage_id=0,
+        file_path="trace.jsonl",
+        start_time=0.0,
+        end_time=1.0,
+        duration_sec=1.0,
+        num_events=1,
+        num_events_completed=1,
+        retries_attempted=3,
+        retries_recovered=1,
+    ).model_dump()
+    assert retried["retries_attempted"] == 3
+    assert retried["retries_recovered"] == 1
 
 
 @pytest.mark.asyncio

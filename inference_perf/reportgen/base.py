@@ -342,13 +342,16 @@ def summarize_retries(metrics: List[RequestLifecycleMetric], percentiles: List[f
     ``request_retries: 0`` carries no retry section at all rather than a block
     of zeros. ``requests_retried`` counts requests, ``attempts`` counts the
     extra POSTs those requests cost; the two differ when one request retried
-    more than once. ``recovered``/``exhausted`` partition ``requests_retried``.
+    more than once. ``recovered``/``failed_after_retry`` partition ``requests_retried``.
+    A request lands in ``failed_after_retry`` either because it ran out of attempts or
+    because a retry reached the endpoint and came back with a non-retryable failure,
+    which stops the loop with attempts still in the budget; the key counts both.
 
     Every latency in the report counts retry time -- ``start_time`` stays at dispatch --
     so the cost is reported here as waste rather than by splitting the latency
     definition. ``wasted_sec_total`` is the wall time this window lost to attempts that
     failed and the backoff between them; ``wasted_sec`` distributes it per retried
-    request. Both include exhausted requests, whose every attempt was wasted.
+    request. Both include requests that never succeeded, whose every attempt was wasted.
     """
     retried = [m for m in metrics if m.info.retries_attempted > 0]
     if not retried:
@@ -359,7 +362,7 @@ def summarize_retries(metrics: List[RequestLifecycleMetric], percentiles: List[f
         "requests_retried": len(retried),
         "attempts": sum(m.info.retries_attempted for m in retried),
         "recovered": len(recovered),
-        "exhausted": len(retried) - len(recovered),
+        "failed_after_retry": len(retried) - len(recovered),
         "wasted_sec_total": float(sum(wasted)),
     }
     if distribution := summarize(wasted, percentiles):

@@ -177,8 +177,8 @@ obtained** — a refused connection, a reset, or a connection dropped from the p
 defaults to `0`, which preserves the historical behavior of failing on the first fault, so
 enabling it is always an explicit choice.
 
-That boundary is what keeps the retry measurement-safe, and it is enforced rather than
-assumed:
+That boundary is what stops a retry from mixing partial client-side response measurements
+across attempts, and it is enforced rather than assumed:
 
 - A fault raised **before a response was established** measured nothing on the client side:
   there is no TTFT and no partial ITL to contaminate, so re-sending changes nothing about
@@ -192,8 +192,8 @@ assumed:
 One caveat the client cannot see: "no response headers" is not the same as "the server did
 no work". The request bytes may already have been sent, and the server may have received or
 begun processing the failed attempt, so a retry can duplicate work on the endpoint even
-though it is free of measurement contamination on the client. That is why retries are
-bounded and backed off rather than unconditional.
+though no partial client-side measurement was mixed across attempts. That is why retries
+are bounded and backed off rather than unconditional.
 
 Timing is deliberately *not* re-stamped per attempt. `start_time` stays at the logical
 request's dispatch, so the reported end-to-end latency counts the failed attempt and its
@@ -202,7 +202,13 @@ backoff — the workload really did wait for them — and the derived scheduling
 reported as waste instead: a retried request carries `info.retry_wasted_sec` — the time it
 lost to failed attempts and backoff — and its OTel span gains a matching attribute. The
 `retries` block totals that across the run, so the cost of retrying is a number you can
-read off the report rather than a shift in the latency numbers you already track.
+read off the report rather than a shift in the latency numbers you already track. A request
+that never succeeded counts its whole life as waste — no attempt answered, so there is no
+answering attempt to stop the clock at.
+
+Every retry field is omitted, not zeroed, on anything that never retried: a run with
+`request_retries: 0`, or with the knob on but no transport faults, produces the same
+per-request and per-session JSON it produced before retries existed.
 
 Two costs to weigh before enabling it:
 

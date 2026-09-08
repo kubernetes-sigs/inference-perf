@@ -47,27 +47,32 @@ class InferenceInfo(BaseModel):
     labels: dict[str, str] = {}
     # Extra attempts spent on connection faults raised before a response was
     # established, and whether one of them went on to succeed. 0/False on the
-    # overwhelming majority of requests; a request that exhausted its retries reports
+    # overwhelming majority of requests; a request that used up its attempts reports
     # the count with retries_recovered False. See LoadConfig.request_retries.
     retries_attempted: int = 0
     retries_recovered: bool = False
     # Time this request spent on attempts that failed, plus the backoff waited between
     # them: the share of its end-to-end latency that bought nothing. Counted on
-    # exhausted requests too, where every attempt was wasted. None unless a retry
-    # happened, so RequestLifecycleMetric.start_time stays the single definition of
-    # when the request was dispatched.
+    # requests that never succeeded too, where every attempt was wasted. None unless a
+    # retry happened, so RequestLifecycleMetric.start_time stays the single definition
+    # of when the request was dispatched.
     retry_wasted_sec: Optional[float] = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_retry_wasted_sec(self, handler: Any) -> dict[str, Any]:
-        """Drop `retry_wasted_sec` entirely when it is None.
+    def _omit_retry_fields_when_absent(self, handler: Any) -> dict[str, Any]:
+        """Drop every retry field from a request that never retried.
 
-        A request that never retried must serialize exactly as it did before retries
-        existed, so the field appears only on the requests it describes rather than as
-        a `null` on every entry of per_request_lifecycle_metrics.json.
+        Keeps per_request_lifecycle_metrics.json free of `retries_attempted: 0`,
+        `retries_recovered: false` and `retry_wasted_sec: null` on every entry of a run
+        that hit no transport faults. `retries_attempted` is the discriminator: the
+        client always sets it, and it is non-zero on exactly the requests the other two
+        fields describe.
         """
         dumped: dict[str, Any] = handler(self)
-        if dumped.get("retry_wasted_sec") is None:
+        if not dumped.get("retries_attempted"):
+            for key in ("retries_attempted", "retries_recovered", "retry_wasted_sec"):
+                dumped.pop(key, None)
+        elif dumped.get("retry_wasted_sec") is None:
             dumped.pop("retry_wasted_sec", None)
         return dumped
 
@@ -121,8 +126,9 @@ class SessionLifecycleMetric(BaseModel):
     recorded_substitution_event_ids: Optional[List[str]] = None
     # Per-session sum of extra attempts spent on connection faults raised before
     # response headers were obtained, and how many of those requests went on to
-    # succeed. 0/0 when the session hit no transport faults; see
-    # LoadConfig.request_retries.
+    # succeed. Omitted from the serialized session when the session hit no transport
+    # faults, so per_session_lifecycle_metrics.json is unchanged for a run that never
+    # retried. See LoadConfig.request_retries.
     retries_attempted: int = 0
     retries_recovered: int = 0
     success: Optional[bool] = None
@@ -151,6 +157,19 @@ class SessionLifecycleMetric(BaseModel):
     tfut_sec: Optional[float] = None
     tfut_none_reason: Optional[str] = None
     dispatch_perf_counter: Optional[float] = Field(default=None, exclude=True)
+
+    @model_serializer(mode="wrap")
+    def _omit_retry_fields_when_absent(self, handler: Any) -> dict[str, Any]:
+        """Drop both retry counters from a session that never retried.
+
+        Mirrors InferenceInfo, so per_session_lifecycle_metrics.json does not carry a
+        pair of zeros on every session of a run that hit no transport faults.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if not dumped.get("retries_attempted"):
+            dumped.pop("retries_attempted", None)
+            dumped.pop("retries_recovered", None)
+        return dumped
 
 
 class InferenceAPIData(BaseModel):

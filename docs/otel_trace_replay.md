@@ -764,10 +764,11 @@ latency deliberately still includes the failed attempt and its backoff. See
 Retries are reported separately from errors, in three places:
 
 - **Report JSON** — a `retries` block alongside `successes`/`failures`, with
-  `requests_retried`, `attempts`, `recovered`, and `exhausted`. Absent when nothing retried.
-  Plus `wasted_sec_total`, the wall time the window lost to failed attempts and backoff,
-  and `wasted_sec`, the usual mean/min/max/percentile spread of that waste per retried
-  request. Both count exhausted requests, whose every attempt was wasted.
+  `requests_retried`, `attempts`, `recovered`, and `failed_after_retry`. Absent when nothing
+  retried. Plus `wasted_sec_total`, the wall time the window lost to failed attempts and
+  backoff, and `wasted_sec`, the usual mean/min/max/percentile spread of that waste per
+  retried request. Both count requests that never succeeded — every attempt they made was
+  wasted, which is the most expensive waste in a run.
 - **Request Error Summary** — a `Retried (recovered)` column, shown only when something
   retried. A retry is not an error label, so it never enters `failures.count`.
 - **Session Summary** — a `Retries (recovered)` column, plus `sessions_with_retries`,

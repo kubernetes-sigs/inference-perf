@@ -281,9 +281,13 @@ def test_retries_absent_when_nothing_retried() -> None:
     assert "retries" not in summary.model_dump()
 
 
-def test_retries_partition_recovered_and_exhausted() -> None:
+def test_retries_partition_recovered_and_failed() -> None:
     """attempts counts POSTs, requests_retried counts requests, and recovered +
-    exhausted must partition requests_retried exactly."""
+    failed_after_retry must partition requests_retried exactly.
+
+    `failed_after_retry`, not `exhausted`: a retried request also lands here when a retry
+    reached the endpoint and came back with a non-retryable failure, which stops the loop
+    with attempts still in the budget."""
     metrics = [
         _retry_metric(0, False),  # never retried -> excluded entirely
         _retry_metric(1, True),  # retried once, recovered
@@ -295,8 +299,8 @@ def test_retries_partition_recovered_and_exhausted() -> None:
     assert summary.retries["requests_retried"] == 3
     assert summary.retries["attempts"] == 5
     assert summary.retries["recovered"] == 2
-    assert summary.retries["exhausted"] == 1
-    assert summary.retries["recovered"] + summary.retries["exhausted"] == summary.retries["requests_retried"]
+    assert summary.retries["failed_after_retry"] == 1
+    assert summary.retries["recovered"] + summary.retries["failed_after_retry"] == summary.retries["requests_retried"]
 
 
 def test_retries_are_not_counted_as_errors() -> None:
@@ -312,8 +316,8 @@ def test_retries_report_wasted_time() -> None:
     """The window's retry cost is reported as wasted wall time -- the number a reader of
     this block actually wants -- alongside the counters.
 
-    Reported as waste rather than as a competing latency because every latency in the
-    report already counts retry time: start_time stays at dispatch.
+    Reported as waste rather than as a competing latency because every latency in the report
+    already counts retry time: start_time stays at dispatch.
     """
     metrics = [
         _retry_metric(0, False),  # never retried -> contributes nothing
@@ -331,21 +335,21 @@ def test_retries_report_wasted_time() -> None:
     assert wasted["max"] == 4.0
 
 
-def test_retries_count_exhausted_requests_as_wasted() -> None:
-    """A request that burned every attempt and failed anyway wasted ALL of its time, so it
-    must be counted -- it is the most expensive waste in a run, not an exclusion.
+def test_retries_count_failed_requests_as_wasted() -> None:
+    """A request that retried and failed anyway wasted ALL of its time, so it is counted --
+    it is the most expensive waste in a run, not an exclusion.
 
-    This is the opposite of a latency statistic, where a failed attempt's duration would
-    be meaningless. Waste is waste regardless of how the request ended.
+    This is the opposite of a latency statistic, where a failed attempt's duration would be
+    meaningless. Waste is waste regardless of how the request ended.
     """
     metrics = [
         _retry_metric(2, True, retry_wasted_sec=5.0),  # recovered
-        _retry_metric(2, False, retry_wasted_sec=95.0),  # exhausted -- still wasted
+        _retry_metric(2, False, retry_wasted_sec=95.0),  # never succeeded -- still wasted
     ]
     summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
     assert summary.retries is not None
-    assert summary.retries["exhausted"] == 1
-    assert summary.retries["wasted_sec_total"] == 100.0, "exhausted request's waste was dropped"
+    assert summary.retries["failed_after_retry"] == 1
+    assert summary.retries["wasted_sec_total"] == 100.0, "failed request's waste was dropped"
     assert summary.retries["wasted_sec"]["max"] == 95.0
 
 

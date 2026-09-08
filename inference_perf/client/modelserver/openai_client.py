@@ -216,9 +216,10 @@ def is_retryable_transport_error(exc: BaseException) -> bool:
     The boundary is the *client's* view, and it is narrower than "the server did no
     work". No response was established, so no TTFT or partial ITLs exist to be
     contaminated -- but the request bytes may already have been sent, and the server may
-    have received or begun processing the attempt. A retry is therefore measurement-safe
-    for the client while still capable of duplicating work on the endpoint, which is why
-    it is bounded (``request_retries``) and backed off rather than unconditional.
+    have received or begun processing the attempt. A retry therefore avoids mixing partial
+    client-side response measurements across attempts, while still being capable of
+    duplicating work on the endpoint -- which is why it is bounded (``request_retries``)
+    and backed off rather than unconditional.
 
     Timeouts are excluded even though ``ServerTimeoutError`` inherits from
     ``ClientConnectionError``: the request may have reached the model, and
@@ -268,15 +269,16 @@ class openAIModelServerClientSession(ModelServerClientSession):
         error: Optional[ErrorResponseInfo],
         start_time: float,
         end_time: float,
-        attempt_start_time: Optional[float] = None,
+        retry_wasted_sec: Optional[float] = None,
     ) -> None:
         """Record OTEL metrics for the request.
 
         ``start_time`` is the logical request's dispatch time, so ``total_latency`` matches
         the span's own wall duration -- the span opens outside the attempt loop and
-        therefore already covers every attempt plus backoff. ``attempt_start_time`` is when
-        the answering attempt began; it differs only on a retried request and is reported
-        separately so the serving-side view stays available without redefining the other.
+        therefore already covers every attempt plus backoff. ``retry_wasted_sec`` is the
+        share of that duration lost to attempts that failed, computed by the caller so this
+        span and the request metric report one number rather than two derivations of it;
+        it is None on a request that never retried.
         """
         if not self.client.otel.enabled or span is None:
             return
@@ -290,10 +292,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
             }
 
             # Time lost to failed attempts and backoff. total_latency above still counts
-            # it; this says how much of it was waste. The caller passes None when the
-            # request never retried.
-            if attempt_start_time is not None:
-                otel_response_info["retry_wasted_sec"] = attempt_start_time - start_time
+            # it; this says how much of it was waste.
+            if retry_wasted_sec is not None:
+                otel_response_info["retry_wasted_sec"] = retry_wasted_sec
 
             # Calculate TTFT if token times are available (streaming only)
             if isinstance(inner, StreamedResponseMetrics) and inner.output_token_times:
@@ -422,8 +423,14 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 error=error.error_msg if error else None,
             )
         elif error:
+            # No `info` to draw response metrics from, but the retry cost is known -- and
+            # this is the request that wasted the most, since no attempt answered.
+            failed_info: Dict[str, Any] = {}
+            if retry_wasted_sec is not None:
+                failed_info["retry_wasted_sec"] = retry_wasted_sec
             self.client.otel.record_response_metrics(
                 span=span,
+                response_info=failed_info or None,
                 error=error.error_msg,
             )
 
@@ -495,6 +502,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
         caught_exception: Optional[Exception] = None
         retries_attempted = 0
         retries_recovered = False
+        # Set once the attempt loop exits; read again after the span closes.
+        retry_wasted_sec: Optional[float] = None
 
         # Get session OTEL context if available (for OTel trace replay)
         parent_context = self._get_session_otel_context(data)
@@ -663,6 +672,19 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
             end_time = time.perf_counter()
 
+            # Time this request lost to attempts that bought nothing. Computed once here
+            # and handed to both the span below and the request metric further down, which
+            # cannot derive it from a shared source: `info` is still None at this point on
+            # the failure path, since process_failure runs after the span is recorded.
+            #
+            # A recovered request wasted everything before the attempt that answered. A
+            # request that never answered has no answering attempt to stop the clock at, so
+            # its whole life was waste. Gated on retries_attempted rather than on
+            # `attempt_start != start`, which is always true -- the loop re-stamps the
+            # attempt clock on the first attempt too.
+            if retries_attempted:
+                retry_wasted_sec = (attempt_start - start) if retries_recovered else (end_time - start)
+
             # Record OTEL metrics
             self._record_otel_metrics(
                 span=span,
@@ -673,7 +695,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
                 error=error,
                 start_time=start,
                 end_time=end_time,
-                attempt_start_time=attempt_start if retries_attempted else None,
+                retry_wasted_sec=retry_wasted_sec,
             )
 
         if caught_exception is not None and not info:
@@ -691,14 +713,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         # fresh InferenceInfo, which still needs to report the retries it burned.
         info.retries_attempted = retries_attempted
         info.retries_recovered = retries_recovered
-        # Time burned on failed attempts plus the backoff between them: everything between
-        # dispatch and the attempt that ended the request. Gated on retries_attempted
-        # rather than on `attempt_start != start`, which is always true -- the loop
-        # re-stamps the attempt clock on the first attempt too. start_time on the metric
-        # below stays at dispatch, so the request's own latency still counts this time;
-        # the field says how much of it was waste.
-        if retries_attempted:
-            info.retry_wasted_sec = attempt_start - start
+        # The same value the span carries. start_time on the metric below stays at
+        # dispatch, so the request's own latency still counts this time; the field says how
+        # much of it was waste.
+        info.retry_wasted_sec = retry_wasted_sec
         if data.labels:
             info.labels = data.labels
         if data.graph_event_id:
