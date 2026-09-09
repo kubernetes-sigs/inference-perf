@@ -70,9 +70,3 @@ cherry-picked onto `release-vX.Y.Z` when `main` carries unreleased features.
 
 Semantic versioning, `vX.Y.Z`, with the `v` prefix on tags and image tags and no prefix on PyPI
 and chart versions.
-
-- Minor: new features, config fields, report fields, or metrics, and dependency bumps that change
-  behaviour. Anything a user must read the release notes to adopt.
-- Patch: bug fixes, doc fixes, CI changes, and dependency bumps with no behaviour change.
-- Major: reserved for v1.0.0 (#321). Before then, minor releases may change config and report
-  formats, and the release notes must call out every such change.
