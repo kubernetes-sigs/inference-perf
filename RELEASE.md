@@ -14,10 +14,12 @@ pertains to how maintainers cut releases.
    [`.github/changelog-config.json`](.github/changelog-config.json).
 1. Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
    coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
+1. Run [`test-release.yml`](.github/workflows/test-release.yml) by `workflow_dispatch` on `main`.
+   It builds the package and uploads it to TestPyPI under a dev version. Fix any failure before
+   tagging: the release is created before the package is published, so a build failure after the
+   tag leaves a release with missing artifacts and needs a new version to correct.
 1. Optional: Draft the summary of features, fixes, and improvements that goes above the generated
    changelog.
-1. Optional: run [`test-release.yml`](.github/workflows/test-release.yml) by
-   `workflow_dispatch` to build the package against TestPyPI.
 
 ## 2. Cut
 
