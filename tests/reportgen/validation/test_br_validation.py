@@ -94,12 +94,30 @@ def test_count_disagreement_with_stage_lifecycle_is_an_error() -> None:
     assert _errors_for_check(result, "br_partial.lifecycle_agreement")
 
 
-def test_run_time_disagreement_is_an_error() -> None:
+# Stage 0's partial claims a 99s run while its own run.time.start and
+# run.time.end sit 2.05s apart. Expected: one br_partial.run_time error.
+def test_run_time_duration_contradicting_start_and_end_is_an_error() -> None:
     reports, contents = tampered(make_report_set(), PARTIAL_0_FILE)
     contents["run"]["time"]["duration"] = "PT99.000S"
 
     result = _validate(reports)
     assert _errors_for_check(result, "br_partial.run_time")
+
+
+# Stage 0 untouched: its offered-load window is 2.05s (load opens 0.25s before
+# the first request and closes 0.4s before the last one drains) while the
+# stage lifecycle report's request window is 2.2s. Expected: no run_time
+# finding, because the two are different measurements and only agree by
+# accident.
+def test_load_window_shorter_than_the_request_window_is_clean() -> None:
+    reports = make_report_set()
+    partial = next(r for r in reports if r.get_filename() == PARTIAL_0_FILE).get_contents()
+    stage = next(r for r in reports if r.get_filename() == "stage_0_lifecycle_metrics.json").get_contents()
+    assert partial["run"]["time"]["duration"] == "PT2.050S"
+    assert stage["benchmark_time_seconds"] == 2.2
+
+    result = _validate(reports)
+    assert not _errors_for_check(result, "br_partial.run_time")
 
 
 def test_agreement_is_skipped_without_the_stage_lifecycle_report() -> None:

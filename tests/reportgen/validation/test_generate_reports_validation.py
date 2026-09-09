@@ -33,9 +33,12 @@ from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import ReportFile
 
-from .helpers import make_stage_metrics
+from .helpers import STAGE_DISPATCH_LEAD, STAGE_TEARDOWN_OVERHANG, make_stage_metrics
 
 
+# Drives the real generate_reports over two stages of synthesized requests
+# (stage 0: 3 successes + 1 failure, stage 1: 2 successes) and returns the
+# emitted report files, validation.json included.
 def _generate_reports() -> List[ReportFile]:
     stage_metrics = make_stage_metrics()
     all_metrics = [m for metrics in stage_metrics.values() for m in metrics]
@@ -49,12 +52,15 @@ def _generate_reports() -> List[ReportFile]:
 
     generator = ReportGenerator(metrics_client=None, metrics_collector=collector, config=cast(Config, config))
 
+    # The offered-load window, not the request window: it opens before the
+    # first request is dispatched and closes while the last requests are still
+    # draining through teardown, which is what a real stage records.
     stages = {
         stage_id: StageRuntimeInfo(
             stage_id=stage_id,
             rate=1.0,
-            start_time=min(m.start_time for m in metrics),
-            end_time=max(m.end_time for m in metrics),
+            start_time=min(m.start_time for m in metrics) - STAGE_DISPATCH_LEAD,
+            end_time=max(m.end_time for m in metrics) - STAGE_TEARDOWN_OVERHANG,
             status=StageStatus.COMPLETED,
         )
         for stage_id, metrics in stage_metrics.items()

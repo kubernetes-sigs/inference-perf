@@ -34,9 +34,16 @@ PERCENTILES = [50.0, 90.0]
 
 # Request timestamps in these fixtures are small monotonic-clock values (0.0,
 # 1.5, 10.0, ...). run.time needs a real epoch window, so the stage window is
-# these same offsets shifted onto a fixed wall-clock base. Shifting preserves
-# the span, so run.time.duration still equals the stage's benchmark window.
+# these same offsets shifted onto a fixed wall-clock base.
 STAGE_EPOCH_BASE = 1750000000.0
+
+# A stage's offered-load window is not its request window, and these fixtures
+# say so on both sides: load opens before the first request is dispatched, and
+# closes before the last request finishes because in-flight requests drain
+# during teardown. Keeping the two spans unequal stops a check from passing
+# here only because a fixture made them the same number.
+STAGE_DISPATCH_LEAD = 0.25
+STAGE_TEARDOWN_OVERHANG = 0.4
 
 SUMMARY_NAME = "summary_lifecycle_metrics"
 PER_REQUEST_NAME = "per_request_lifecycle_metrics"
@@ -144,8 +151,8 @@ def make_report_set(
                         metrics,
                         tokenizer=None,
                         run_uid=f"test-uid-{stage_id}",
-                        stage_start=STAGE_EPOCH_BASE + min(m.start_time for m in metrics),
-                        stage_end=STAGE_EPOCH_BASE + max(m.end_time for m in metrics),
+                        stage_start=STAGE_EPOCH_BASE + min(m.start_time for m in metrics) - STAGE_DISPATCH_LEAD,
+                        stage_end=STAGE_EPOCH_BASE + max(m.end_time for m in metrics) - STAGE_TEARDOWN_OVERHANG,
                     ),
                 )
             )

@@ -13,7 +13,7 @@
 # limitations under the License.
 """Validation of the emitted BR0.2 partial reports.
 
-Three contracts are enforced per ``inference-perf.partial.stage_<n>.yaml``:
+Four contracts are enforced per ``inference-perf.partial.stage_<n>.yaml``:
 
 1. **Schema**: the partial must validate as a ``BenchmarkReportV021`` document
    on its own (required fields populated, optional sections absent).
@@ -23,10 +23,15 @@ Three contracts are enforced per ``inference-perf.partial.stage_<n>.yaml``:
    are two projections of the same request metrics through two code paths
    (``br/v0_2/adapter.py`` vs ``reportgen/base.py``). Any disagreement is
    #564-family drift: one of the paths changed and the other did not.
+4. **Self-consistency**: ``run.time.duration`` must match the window its own
+   ``start`` and ``end`` describe. It is deliberately not checked against the
+   lifecycle report's ``benchmark_time_seconds``, which measures a different
+   window; see :meth:`BrPartialValidator._check_run_time`.
 """
 
 from __future__ import annotations
 
+import datetime
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -47,9 +52,10 @@ from .schema import VERSION, BenchmarkReportV021
 
 _ISO_DURATION_RE = re.compile(r"^PT(\d+(?:\.\d+)?)S$")
 
-# run.time.duration is serialized with millisecond precision, so a wall-clock
-# comparison against the float benchmark window needs millisecond slack.
-_DURATION_ABS_TOL = 2e-3
+# run.time.duration is serialized as PT<seconds>S rounded to milliseconds, so
+# it can sit up to half a millisecond off the start/end span it was derived
+# from. This tolerance covers that rounding and nothing else.
+_DURATION_ABS_TOL = 1e-3
 
 # (path into the BR aggregate, path into the stage lifecycle file)
 _AGREEMENT_PATHS: List[tuple[tuple[str, ...], tuple[str, ...]]] = [
@@ -179,21 +185,35 @@ class BrPartialValidator(ReportSetValidator):
         return findings
 
     def _check_run_time(self, reports: ReportSet) -> List[Finding]:
-        """run.time.duration must match the stage's benchmark window."""
+        """run.time must be internally consistent: end - start == duration.
+
+        Deliberately not a comparison against the stage lifecycle report's
+        ``benchmark_time_seconds``. The two are different windows: ``run.time``
+        is the stage's offered-load window from ``StageRuntimeInfo``, which
+        closes before teardown, while ``benchmark_time_seconds`` runs from the
+        earliest request start to the latest request end and so includes the
+        requests that drain during teardown. They differ by the dispatch lead
+        at the front and the teardown overhang at the back, routinely by far
+        more than the serialization tolerance, so equality is not an invariant
+        and asserting it would fail ordinary runs. Comparing the two windows
+        like-for-like needs the stage window in the lifecycle report, which it
+        does not carry today.
+        """
         findings: List[Finding] = []
         for stage_id, contents in sorted(self._schema_valid(reports).items()):
-            duration = _parse_iso_duration(get_path(contents, "run", "time", "duration"))
-            stage = reports.stage_lifecycle_files().get(stage_id)
-            benchmark_time = get_path(stage, "benchmark_time_seconds") if isinstance(stage, dict) else None
-            if duration is None or not is_number(benchmark_time):
+            run_time = get_path(contents, "run", "time")
+            if not isinstance(run_time, dict):
                 continue
-            if abs(duration - benchmark_time) > _DURATION_ABS_TOL:
+            duration = _parse_iso_duration(run_time.get("duration"))
+            span = _timestamp_span(run_time.get("start"), run_time.get("end"))
+            if duration is None or span is None:
+                continue
+            if abs(duration - span) > _DURATION_ABS_TOL:
                 findings.append(
                     Finding(
                         check=f"{self.name}.run_time",
                         severity=Severity.ERROR,
-                        message=f"run.time.duration ({duration}s) disagrees with the stage lifecycle "
-                        f"benchmark_time_seconds ({benchmark_time}s)",
+                        message=f"run.time.duration ({duration}s) disagrees with its own start/end window ({span}s)",
                         report=_partial_filename(stage_id),
                     )
                 )
@@ -234,3 +254,30 @@ def _parse_iso_duration(value: Any) -> Optional[float]:
         return None
     match = _ISO_DURATION_RE.match(value)
     return float(match.group(1)) if match else None
+
+
+def _timestamp_span(start: Any, end: Any) -> Optional[float]:
+    """Seconds from ``start`` to ``end``, or ``None`` if either is unusable."""
+    start_dt = _parse_timestamp(start)
+    end_dt = _parse_timestamp(end)
+    if start_dt is None or end_dt is None:
+        return None
+    return (end_dt - start_dt).total_seconds()
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime.datetime]:
+    """One ISO-8601 timestamp as a timezone-aware UTC datetime.
+
+    YAML resolves an unquoted timestamp to a ``datetime`` on its own, so a
+    partial read back from disk can carry either shape.
+    """
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=datetime.timezone.utc)
