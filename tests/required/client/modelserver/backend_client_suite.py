@@ -370,6 +370,10 @@ class BackendClientSuite:
                 additional_filters=[],
             )
         assert client.model_name == MODEL
+        metadata = client.get_prometheus_metric_metadata()
+        assert metadata.filters == ",".join(self.backend.expected_metric_filters)
+        for _, metric in metadata:
+            assert "None" not in " ".join(metric.get_queries(60, metadata.filters))
         mock_get.assert_called_once_with(f"{BASE_URI}/v1/models")
 
     def test_supported_apis_and_metric_metadata(self) -> None:
