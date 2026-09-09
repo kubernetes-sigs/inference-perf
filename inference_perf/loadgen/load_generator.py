@@ -150,10 +150,15 @@ class WorkerFailure(NamedTuple):
         else:
             cause = f"exited with code {self.exitcode}"
         if self.crash is not None:
+            # stage_id is None when the worker died before it pulled its first request,
+            # which is the usual shape for a failure during startup.
+            where = "before serving any stage" if self.crash.stage_id is None else f"during stage {self.crash.stage_id}"
+            # in_flight is read from a counter shared by every worker, so it is the
+            # run-wide figure at the moment of the crash, not this worker's own share.
             return (
                 f"Worker {self.worker_id} {cause} after an unhandled "
-                f"{self.crash.exc_type} during stage {self.crash.stage_id} "
-                f"with {self.crash.in_flight} request(s) in flight: {self.crash.message}\n"
+                f"{self.crash.exc_type} {where} "
+                f"with {self.crash.in_flight} request(s) in flight run-wide: {self.crash.message}\n"
                 f"{self.crash.traceback_text.rstrip()}"
             )
         return (
@@ -511,10 +516,10 @@ class Worker(mp.Process):
             in_flight=in_flight,
         )
         logger.error(
-            "[Worker %d] unhandled %s during stage %s with %d request(s) in flight: %s\n%s",
+            "[Worker %d] unhandled %s %s with %d request(s) in flight run-wide: %s\n%s",
             record.worker_id,
             record.exc_type,
-            record.stage_id,
+            "before serving any stage" if record.stage_id is None else f"during stage {record.stage_id}",
             record.in_flight,
             record.message,
             record.traceback_text.rstrip(),
@@ -1502,13 +1507,6 @@ class LoadGenerator:
 
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
-                    break
-                if self.worker_failures:
-                    logger.error(
-                        "Stopping the run after %d worker failure(s): the load actually offered no longer "
-                        "matches the configuration, so the remaining stages would not be comparable",
-                        len(self.worker_failures),
-                    )
                     break
                 progress.update(overall_task, advance=1)
                 if self.stageInterval:

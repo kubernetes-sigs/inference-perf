@@ -43,6 +43,7 @@ from inference_perf.loadgen.load_generator import (
     WorkerFailure,
     collect_worker_failures,
 )
+from inference_perf.client.server_metrics.base import StageStatus
 from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -128,9 +129,31 @@ class TestWorkerFailureDescription(unittest.TestCase):
         self.assertIn("exited with code 1", described)
         self.assertIn("TypeError", described)
         self.assertIn("stage 2", described)
-        self.assertIn("3 request(s) in flight", described)
+        # The counter behind in_flight is shared by every worker, so the text has to
+        # say run-wide rather than imply the count belongs to the crashing worker.
+        self.assertIn("3 request(s) in flight run-wide", described)
         self.assertIn("cannot pickle 'generator' object", described)
         self.assertIn("Traceback (most recent call last):", described)
+
+    def test_crash_before_the_first_request_says_so_instead_of_stage_none(self) -> None:
+        # A worker that dies during startup has pulled no request yet, so stage_id is
+        # None. The description must read "before serving any stage" rather than the
+        # bare "during stage None".
+        failure = WorkerFailure(
+            worker_id=0,
+            exitcode=1,
+            crash=WorkerCrash(
+                worker_id=0,
+                stage_id=None,
+                exc_type="RuntimeError",
+                message="induced worker crash",
+                traceback_text="Traceback (most recent call last):\n  ...\n",
+                in_flight=0,
+            ),
+        )
+        described = failure.describe()
+        self.assertIn("before serving any stage", described)
+        self.assertNotIn("stage None", described)
 
     def test_signal_death_reports_the_signal_by_name(self) -> None:
         # A worker killed by SIGKILL has exitcode -9 and can never send a record,
@@ -198,20 +221,21 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         # object is inherited so the crash lands inside the worker. Python 3.14
         # defaults to forkserver on Linux, where the same object is pickled and
         # the failure moves into process startup instead (see #526).
-        self._previous_start_method = mp.get_start_method(allow_none=True)
+        self._previous_start_method = mp.get_start_method()
         try:
             mp.set_start_method("fork", force=True)
         except RuntimeError:
             self.skipTest("fork start method unavailable on this platform")
 
     def tearDown(self) -> None:
-        if self._previous_start_method is not None:
-            mp.set_start_method(self._previous_start_method, force=True)
+        mp.set_start_method(self._previous_start_method, force=True)
 
-    async def test_crash_is_attributed_and_the_run_terminates(self) -> None:
+    async def test_crash_is_attributed_and_the_stage_is_failed(self) -> None:
         # One worker, two stages, and a datagen that raises as soon as the worker
-        # starts. mp_run must return instead of hanging on the stage barrier, and
-        # must record worker 0 with exit code 1 and the RuntimeError traceback.
+        # starts. mp_run must return instead of hanging, must record worker 0 with
+        # exit code 1 and the RuntimeError traceback, and must mark the stage FAILED.
+        # The worker is respawned between stages and the run continues, so the
+        # second stage runs and fails the same way: two failures, two failed stages.
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
@@ -234,18 +258,21 @@ class TestWorkerCrashEndToEnd(unittest.IsolatedAsyncioTestCase):
         async with collector.start():
             await load_gen.mp_run(client)
 
-        self.assertEqual(len(load_gen.worker_failures), 1, "the dead worker must be recorded exactly once")
-        failure = load_gen.worker_failures[0]
-        self.assertEqual(failure.worker_id, 0)
-        self.assertEqual(failure.exitcode, 1)
-        self.assertIsNotNone(failure.crash, "the worker must report its traceback before dying")
-        assert failure.crash is not None
-        self.assertEqual(failure.crash.exc_type, "RuntimeError")
-        self.assertIn("induced worker crash", failure.crash.traceback_text)
+        self.assertEqual(len(load_gen.worker_failures), 2, "each stage must record the worker it lost")
+        for failure in load_gen.worker_failures:
+            self.assertEqual(failure.worker_id, 0)
+            self.assertEqual(failure.exitcode, 1)
+            self.assertIsNotNone(failure.crash, "the worker must report its traceback before dying")
+            assert failure.crash is not None
+            self.assertEqual(failure.crash.exc_type, "RuntimeError")
+            self.assertIn("induced worker crash", failure.crash.traceback_text)
+            self.assertIn("Worker 0", failure.describe())
 
-        # The second stage must be skipped: a run that lost a worker never offered
-        # the configured load, so later stages are not comparable.
-        self.assertEqual(len(load_gen.stage_runtime_info), 1, "stages after the failure must not run")
+        # Losing a worker fails the stage it happened in. The run itself continues,
+        # because main respawns the dead worker at the stage boundary.
+        self.assertEqual(len(load_gen.stage_runtime_info), 2, "both stages must run")
+        for info in load_gen.stage_runtime_info.values():
+            self.assertEqual(info.status, StageStatus.FAILED)
 
 
 if __name__ == "__main__":
