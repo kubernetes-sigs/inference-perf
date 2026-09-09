@@ -7,13 +7,11 @@ document is what a maintainer does around that automation.
 
 ## 1. Before the cut
 
-- Close the milestone. Every open item is merged, moved to the next milestone, or closed
-      with a reason.
+- Close the milestone. Every open item is merged, deferred, or closed with reason.
 - Merge a PR bumping `version` in `pyproject.toml` and `version` and `appVersion` in
       `deploy/inference-perf/Chart.yaml` to `X.Y.Z`.
 - Label every PR that belongs in the changelog with one of the categories in
-      [`.github/changelog-config.json`](.github/changelog-config.json). Unlabelled PRs are
-      dropped from the generated changelog.
+      [`.github/changelog-config.json`](.github/changelog-config.json).
 - Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
       coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
 - Draft the summary of features, fixes, and improvements that goes above the generated
@@ -56,7 +54,7 @@ fix and re-run any failed job before announcing.
       `helm show chart oci://quay.io/inference-perf/charts/inference-perf --version X.Y.Z`.
 - Announce in [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
       on Kubernetes Slack and link the release page.
-- Open the next milestone.
+- (optional) Open the next milestone.
 
 ## Cadence
 
