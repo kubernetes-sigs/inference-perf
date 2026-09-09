@@ -157,3 +157,40 @@ class TestBuildSessionMetricFailureReason:
         assert metric.error is None
         assert metric.num_events_completed == 1
         assert metric.num_events_cancelled == 0
+
+
+class TestAzureTimestampPrecision:
+    def test_submillisecond_replay_timing(self, tmp_path: Path) -> None:
+        import pytest
+        from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+        from inference_perf.loadgen.load_timer import TraceReplayLoadTimer
+
+        trace = tmp_path / "trace.csv"
+        trace.write_text(
+            "TIMESTAMP,ContextTokens,GeneratedTokens\n"
+            "2023-01-01 00:00:00.001,150,200\n"
+            "2023-01-01 00:00:00.002,300,150\n"
+            "2023-01-01 00:00:00.009,250,100\n"
+            "2023-01-01 00:00:00.011,200,300\n"
+            "2023-01-01 00:00:00.011123,200,300\n"
+            "2023-01-01 00:00:01.001,200,300\n"
+        )
+        timer = TraceReplayLoadTimer(AzurePublicDatasetReader(), trace)
+        actual = list(timer.start_timer(initial=0.0))
+        assert actual == pytest.approx([0, 0.001, 0.008, 0.010, 0.010123, 1], abs=5e-7)
+
+    def test_timestamp_format_compatibility(self) -> None:
+        from datetime import datetime, timezone
+        from inference_perf.utils.trace_reader import AzurePublicDatasetReader
+
+        reader = AzurePublicDatasetReader()
+        base = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        for timestamp, microseconds in [
+            ("2023-01-01 00:00:00", 0),
+            (' "2023-01-01T00:00:00.1Z" ', 100000),
+            ("2023-01-01 00:00:00.12", 120000),
+            ("2023-01-01T00:00:00.123Z", 123000),
+            ("2023-01-01 00:00:00.123456", 123456),
+            ("2023-01-01 00:00:00.123456789", 123456),
+        ]:
+            assert reader.parse_timestamp(timestamp) == base.replace(microsecond=microseconds).timestamp()

@@ -107,16 +107,16 @@ class AzurePublicDatasetReader(TraceReader):
         """Parse timestamp from string to float."""
 
         raw_ts = timestamp.strip().strip('"')
-        # Normalize to "YYYY-MM-DD HH:MM:SS.ff" in UTC
+        # Normalize to "YYYY-MM-DD HH:MM:SS.ffffff" in UTC
         ts = raw_ts.replace("T", " ").rstrip("Z").strip()
         if "." in ts:
             head, frac = ts.split(".", 1)
-            # Keep only digits in fractional seconds and coerce to 2 digits
+            # Keep only digits in fractional seconds and retain up to microsecond precision
             frac_digits = "".join(ch for ch in frac if ch.isdigit())
-            frac2 = (frac_digits[:2]).ljust(2, "0")
-            ts_clean = f"{head}.{frac2}"
+            frac6 = frac_digits[:6].ljust(6, "0")
+            ts_clean = f"{head}.{frac6}"
         else:
-            ts_clean = f"{ts}.00"
+            ts_clean = f"{ts}.000000"
         return datetime.strptime(ts_clean, self.timestamp_format).replace(tzinfo=timezone.utc).timestamp()
 
     def has_header(self, file_path: Path) -> bool:
