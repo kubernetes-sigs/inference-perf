@@ -233,7 +233,7 @@ def main() -> None:
     if args.format == "sharegpt":
         records = graph_to_sharegpt(graph)
         out_path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False) for r in records),
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
             encoding="utf-8",
         )
         print(
