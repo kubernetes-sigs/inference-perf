@@ -97,6 +97,11 @@ def _count_output_tokens(counter: Counter, metric: RequestLifecycleMetric) -> No
         counter.labels(stage_label(metric)).inc(output_tokens(metric.info.response_metrics))
 
 
+def _count_workers_lost(counter: Counter, context: StageContext) -> None:
+    for cause in context.workers_lost():
+        counter.labels(context.stage_label, cause).inc()
+
+
 STAGES = MetricSpec[Gauge](
     name="inference_perf_stages",
     documentation="Number of load stages configured for the run.",
@@ -149,6 +154,19 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         metric_type=Counter,
         labelnames=("stage", "status"),
         on_request=_count_request,
+    ),
+    MetricSpec(
+        name="inference_perf_workers_lost",
+        documentation=(
+            "Worker processes that died during the stage, by stage and cause "
+            "(the exception class the worker reported, else the signal that killed it, else its exit code). "
+            "The run replaces a dead worker and carries on, so a non-zero value marks a stage that did not "
+            "offer the load it was configured for: its results are not comparable with a stage that kept "
+            "every worker."
+        ),
+        metric_type=Counter,
+        labelnames=("stage", "cause"),
+        on_stage_end=_count_workers_lost,
     ),
     MetricSpec(
         name="inference_perf_request_errors",
