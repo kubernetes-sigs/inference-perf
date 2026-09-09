@@ -2,8 +2,7 @@
 
 Releases are tag-driven. Pushing a `vX.Y.Z` tag runs
 [`publish-on-release.yml`](.github/workflows/publish-on-release.yml), which creates the GitHub
-Release, publishes to PyPI, pushes the image to quay.io, and packages the Helm chart. This
-pertains to how maintainers cut releases.
+Release, publishes to PyPI, pushes the image to quay.io, and packages the Helm chart.
 
 ## 1. Before the cut
 
@@ -16,8 +15,7 @@ pertains to how maintainers cut releases.
    coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
 1. Run [`test-release.yml`](.github/workflows/test-release.yml) by `workflow_dispatch` on `main`.
    It builds the package and uploads it to TestPyPI under a dev version. Fix any failure before
-   tagging: the release is created before the package is published, so a build failure after the
-   tag leaves a release with missing artifacts and needs a new version to correct.
+   tagging.
 1. Optional: Draft the summary of features, fixes, and improvements that goes above the generated
    changelog.
 
@@ -51,20 +49,8 @@ fix and re-run any failed job before announcing.
 
 - Put the written summary above the generated changelog in the release body.
 - Verify each artifact:
-      `pip install inference-perf==X.Y.Z`,
-      `docker pull quay.io/inference-perf/inference-perf:vX.Y.Z`,
-      `helm show chart oci://quay.io/inference-perf/charts/inference-perf --version X.Y.Z`.
+  `pip install inference-perf==X.Y.Z`,
+  `docker pull quay.io/inference-perf/inference-perf:vX.Y.Z`,
+  `helm show chart oci://quay.io/inference-perf/charts/inference-perf --version X.Y.Z`.
 - Announce in [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
-      on Kubernetes Slack and link the release page.
-
-## Cadence
-
-Minor releases are milestone-driven. The cut happens when the milestone's release-blocking items
-are done, and everything else moves to the next milestone with one line of why. Patch releases
-ship fixes only, cut from the tip of `main`, or cherry-picked onto `release-vX.Y.Z` when `main` 
-carries unreleased features.
-
-## Versioning
-
-Semantic versioning, `vX.Y.Z`, with the `v` prefix on tags and image tags and no prefix on PyPI
-and chart versions. Suffixes are heavily discouraged.
+  on Kubernetes Slack and link the release page.
