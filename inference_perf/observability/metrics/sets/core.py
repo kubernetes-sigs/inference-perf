@@ -27,7 +27,7 @@ classes and HTTP status codes); nothing per-request goes on a label.
 import time
 from typing import Any, Optional
 
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec's metric_type)
 
 from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics
 from inference_perf.observability.context import RunContext, StageContext
