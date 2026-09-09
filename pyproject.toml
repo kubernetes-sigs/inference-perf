@@ -90,7 +90,7 @@ lint = {cmd = "ruff check", help = "Lint code with ruff"}
 type-check = {cmd = "mypy --strict ./inference_perf ./tests", help = "Strict mypy over inference_perf and tests"}
 "check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
 "update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
-"check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify the runtime metrics doc is in sync with the registry"}
+"check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify every exported runtime metric is documented and the doc is in sync with the registry"}
 "update:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py", help = "Regenerate the runtime metrics doc from the registry"}
 check = {composite = ["format", "lint"], help = "Fast check: format + lint"}
 validate = {composite = ["format", "lint", "type-check", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format, lint, type-check, cli-flags and runtime-metrics doc sync"}
@@ -140,8 +140,24 @@ unfixable = []
 # the one module that renders them; everywhere else asks it for a declared
 # BarSpec. Banning the module here is what keeps that true without relying on
 # a reviewer noticing a second import.
+#
+# Every metric the /metrics endpoint exposes has to be declared as a MetricSpec,
+# because docs/runtime_metrics.md is generated from those specs and
+# `pdm run check:runtime-metrics` compares it against the real exposition. A
+# metric constructed straight from prometheus_client would be exported with no
+# row in that doc, so the constructors are banned. The places that legitimately
+# name them mark the import with an inline `# noqa: TID251`: registry.py, which
+# instantiates specs, the sets/ modules, which declare a spec's metric_type,
+# and the tests that build throwaway metrics to exercise the registry itself.
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "rich.progress".msg = "Import ProgressBars from inference_perf.observability.progress instead: every bar must read exported metrics (see that module's docstring)."
+"prometheus_client.Counter".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Gauge".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Histogram".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Summary".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Info".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.Enum".msg = "Declare a MetricSpec in inference_perf/observability/metrics/sets/ instead: every exported metric must be documented in docs/runtime_metrics.md, which is generated from the specs."
+"prometheus_client.REGISTRY".msg = "Serve the CollectorRegistry from build_metrics instead: metrics on the global default registry belong to no run and appear in no doc."
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
