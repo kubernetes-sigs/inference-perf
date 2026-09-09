@@ -197,6 +197,9 @@ def main_cli() -> None:
     # Define Model Server Client
     model_server_client: ModelServerClient
     if config.server:
+        # Resolved once here, at the boundary between the config and the clients:
+        # the config holds the key as a secret, the client sends it as a header.
+        api_key = config.server.api_key.get_secret_value() if config.server.api_key else None
         if config.server.type == ModelServerType.VLLM:
             model_server_client = vLLMModelServerClient(
                 reportgen.get_metrics_collector(),
@@ -207,7 +210,7 @@ def main_cli() -> None:
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
-                api_key=config.server.api_key,
+                api_key=api_key,
                 timeout=config.load.request_timeout,
                 request_retries=config.load.request_retries,
                 request_retry_backoff_sec=config.load.request_retry_backoff_sec,
@@ -227,7 +230,7 @@ def main_cli() -> None:
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
-                api_key=config.server.api_key,
+                api_key=api_key,
                 timeout=config.load.request_timeout,
                 request_retries=config.load.request_retries,
                 request_retry_backoff_sec=config.load.request_retry_backoff_sec,
@@ -245,7 +248,7 @@ def main_cli() -> None:
                 ignore_eos=config.server.ignore_eos,
                 max_tcp_connections=config.load.worker_max_tcp_connections,
                 additional_filters=config.metrics.prometheus.filters if config.metrics and config.metrics.prometheus else [],
-                api_key=config.server.api_key,
+                api_key=api_key,
                 timeout=config.load.request_timeout,
                 request_retries=config.load.request_retries,
                 request_retry_backoff_sec=config.load.request_retry_backoff_sec,

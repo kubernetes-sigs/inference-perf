@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 
 class ModelServerType(Enum):
@@ -35,6 +35,9 @@ class ModelServerClientConfig(StrictBaseModel):
         default=True,
         description="Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length.",
     )
-    api_key: Optional[str] = Field(default=None, description="API key sent as a bearer token with each request.")
+    api_key: Optional[SecretStr] = Field(
+        default=None,
+        description="API key sent as a bearer token with each request. Redacted in the logged and saved config.",
+    )
     cert_path: Optional[str] = Field(default=None, description="Path to a client TLS certificate file.")
     key_path: Optional[str] = Field(default=None, description="Path to the private key for the client TLS certificate.")

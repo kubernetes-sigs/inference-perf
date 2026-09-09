@@ -9,7 +9,7 @@ By default, reports are saved in a directory named `reports-YYYYMMDD-HHMMSS/`. T
 - **`summary_lifecycle_metrics.json`**: Aggregated metrics for the entire benchmark run.
 - **`stage_N_lifecycle_metrics.json`**: Metrics for a specific load stage (where N is the stage index).
 - **`per_request_lifecycle_metrics.json`**: Raw data for every single request, including timestamps and token counts.
-- **`config.yaml`**: A copy of the configuration used for the run.
+- **`config.yaml`**: A copy of the configuration used for the run, with credentials redacted (see [Credentials](config.md#credentials)).
 
 ## Understanding the Report Structure
 

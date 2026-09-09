@@ -397,11 +397,11 @@ Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--server.model_name` | str | Model name sent in each request. Auto-detected from the server if unset. |
 | `--server.base_url` | str | Base URL of the model server, e.g. 'http://localhost:8000'. |
 | `--server.ignore_eos` | boolean | Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. |
-| `--server.api_key` | str | API key sent as a bearer token with each request. |
+| `--server.api_key` | str | API key sent as a bearer token with each request. Redacted in the logged and saved config. |
 | `--server.cert_path` | str | Path to a client TLS certificate file. |
 | `--server.key_path` | str | Path to the private key for the client TLS certificate. |
 | `--tokenizer.pretrained_model_name_or_path` | str | HuggingFace model name or local path of the tokenizer to load. |
 | `--tokenizer.trust_remote_code` | boolean | Allow the tokenizer to execute code from its repository when loading. |
-| `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. |
+| `--tokenizer.token` | str | HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config. |
 | `--tokenizer.load_timeout` | float | Deadline in seconds for loading the tokenizer, including any download from Hugging Face Hub. Null disables the deadline. |
 | `--circuit_breakers` | JSON | Circuit breakers that stop the run when observed metrics cross configured thresholds. |

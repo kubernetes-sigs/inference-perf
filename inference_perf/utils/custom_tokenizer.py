@@ -73,10 +73,12 @@ def _load_tokenizer_with_deadline(config: CustomTokenizerConfig) -> PreTrainedTo
     result: dict[str, PreTrainedTokenizerBase] = {}
     error: dict[str, Exception] = {}
 
+    token = config.token.get_secret_value() if config.token else None
+
     def load() -> None:
         try:
             result["tokenizer"] = AutoTokenizer.from_pretrained(
-                config.pretrained_model_name_or_path, token=config.token, trust_remote_code=config.trust_remote_code
+                config.pretrained_model_name_or_path, token=token, trust_remote_code=config.trust_remote_code
             )
         except Exception as e:
             error["error"] = e

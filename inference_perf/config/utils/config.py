@@ -14,7 +14,7 @@
 from typing import Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 
 class CustomTokenizerConfig(StrictBaseModel):
@@ -24,7 +24,10 @@ class CustomTokenizerConfig(StrictBaseModel):
     trust_remote_code: Optional[bool] = Field(
         default=None, description="Allow the tokenizer to execute code from its repository when loading."
     )
-    token: Optional[str] = Field(default=None, description="HuggingFace access token used to download the tokenizer.")
+    token: Optional[SecretStr] = Field(
+        default=None,
+        description="HuggingFace access token used to download the tokenizer. Redacted in the logged and saved config.",
+    )
     load_timeout: Optional[float] = Field(
         default=300.0,
         gt=0,
