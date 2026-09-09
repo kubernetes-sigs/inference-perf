@@ -146,7 +146,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=5.0, end_time=20.0),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         # span = 20.0 - 0.0, so 2 sessions / 20s.
         assert summary["sessions_per_second"] == pytest.approx(0.1)
@@ -160,7 +160,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=3.0, end_time=3.0, duration_sec=0.0),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["sessions_per_second"] == 0.0
 
@@ -171,9 +171,9 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", num_events=6, num_events_completed=5, num_events_cancelled=1),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
-        assert summary["num_sessions"] == 2
+        assert summary["num_sessions_completed"] == 2
         assert summary["total_events"] == 10
         assert summary["total_events_completed"] == 9
         assert summary["total_events_cancelled"] == 1
@@ -185,7 +185,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=0.0, end_time=20.0, num_events=6),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["session_duration_sec"]["mean"] == pytest.approx(15.0)
         assert summary["session_duration_sec"]["min"] == pytest.approx(10.0)
@@ -204,7 +204,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", total_input_tokens=None, total_output_tokens=None, num_events_cancelled=None),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["total_input_tokens"]["mean"] == pytest.approx(100.0)
         assert summary["total_output_tokens"]["mean"] == pytest.approx(10.0)
@@ -216,7 +216,7 @@ class TestSummarizeSessionsRollups:
         gen = _make_generator()
         sessions = [_sess(session_id="s1"), _sess(session_id="s2")]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["num_events_cancelled"] is None
         assert summary["total_input_tokens"] is None
@@ -274,8 +274,8 @@ class TestGenerateSessionReports:
         )
 
         by_name = {r.name: r.contents for r in reports}
-        assert by_name["stage_0_session_lifecycle_metrics"]["num_sessions"] == 1
-        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions"] == 2
+        assert by_name["stage_0_session_lifecycle_metrics"]["num_sessions_completed"] == 1
+        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions_completed"] == 2
 
     def test_stage_metadata_leads_the_report_and_carries_the_run_shape(self) -> None:
         """`stage_metadata` is prepended so the report reads as configuration first,
@@ -319,7 +319,7 @@ class TestGenerateSessionReports:
 
         assert _report_names(reports) == ["stage_7_session_lifecycle_metrics"]
         assert "stage_metadata" not in reports[0].contents
-        assert reports[0].contents["num_sessions"] == 1
+        assert reports[0].contents["num_sessions_completed"] == 1
 
     def test_a_concurrency_driven_stage_reports_no_session_rate(self) -> None:
         """rate is 0 for a concurrency-driven stage; the report must say `null` rather
@@ -388,6 +388,63 @@ class TestGenerateSessionReports:
 
         records = reports[0].contents
         assert [r["session_id"] for r in records] == ["s1", "s2"]
+
+    def test_stranded_sessions_are_reported_even_if_none_completed(self) -> None:
+        """A stage whose max_stage_duration fires before any session finishes has no
+        SessionLifecycleMetric at all; the stranded counts must still be surfaced."""
+        gen = _make_generator()
+        runtime = _runtime(
+            {
+                0: StageRuntimeInfo(
+                    stage_id=0,
+                    rate=2.0,
+                    start_time=0.0,
+                    end_time=30.0,
+                    status=StageStatus.FAILED,
+                    max_stage_duration=30.0,
+                    sessions_not_completed_active=3,
+                    sessions_not_completed_pending=5,
+                )
+            }
+        )
+
+        reports = gen.generate_session_reports([], SessionLifecycleReportConfig(), PERCENTILES, runtime, 100)
+
+        assert reports != []
+        by_name = {r.name: r.contents for r in reports}
+        summary = by_name["summary_session_lifecycle_metrics"]
+        assert summary["num_sessions_not_completed_active"] == 3
+        assert summary["num_sessions_not_completed_pending"] == 5
+        assert summary["num_sessions_not_completed"] == 8
+
+    def test_per_stage_reports_a_stage_with_zero_completed_sessions(self) -> None:
+        """Stage 1 timed out with nothing completed while stage 0 finished normally;
+        bucketing session_metrics by stage_id must not drop stage 1's report."""
+        gen = _make_generator()
+        sessions = [_sess(session_id="s1", stage_id=0)]
+        runtime = _runtime(
+            {
+                0: _stage_info(0),
+                1: StageRuntimeInfo(
+                    stage_id=1,
+                    rate=2.0,
+                    start_time=0.0,
+                    end_time=30.0,
+                    status=StageStatus.FAILED,
+                    max_stage_duration=30.0,
+                    sessions_not_completed_active=1,
+                    sessions_not_completed_pending=2,
+                ),
+            }
+        )
+
+        reports = gen.generate_session_reports(
+            sessions, SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False), PERCENTILES, runtime, 100
+        )
+
+        by_name = {r.name: r.contents for r in reports}
+        assert "stage_1_session_lifecycle_metrics" in by_name
+        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions_not_completed"] == 3
 
 
 # ---------------------------------------------------------------------------

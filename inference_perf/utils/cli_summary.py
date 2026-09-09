@@ -452,10 +452,11 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     for stage_id in sorted_stages:
         contents = session_reports[stage_id]
 
-        num_sessions_not_completed = contents.get("sessions_not_completed", 0)
-        num_sessions = contents.get("num_sessions", 0) + num_sessions_not_completed
+        num_sessions = contents.get("num_sessions", 0)
+        num_sessions_completed = contents.get("num_sessions_completed", 0)
         num_sessions_succeeded = contents.get("num_sessions_succeeded", 0)
         num_sessions_failed = contents.get("num_sessions_failed", 0)
+        num_sessions_not_completed = contents.get("num_sessions_not_completed", 0)
         total_events = contents.get("total_events", 0)
         total_events_completed = contents.get("total_events_completed", 0)
         total_events_cancelled = contents.get("total_events_cancelled", 0)
@@ -475,8 +476,8 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         not_completed_color = "red" if num_sessions_not_completed > 0 else "green"
         not_completed_str = f"[{not_completed_color}]{num_sessions_not_completed}[/]"
 
-        # Session error rate
-        session_error_rate = num_sessions_failed / num_sessions if num_sessions > 0 else 0.0
+        # Session error rate of sessions that actually completed (succeeded or failed)
+        session_error_rate = num_sessions_failed / num_sessions_completed if num_sessions_completed > 0 else 0.0
         session_error_pct = session_error_rate * 100.0
         error_color = "red" if session_error_rate > 0.05 else ("yellow" if session_error_rate > 0 else "green")
         error_str = f"[{error_color}]{session_error_pct:.1f}%[/]"
@@ -501,6 +502,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             str(total_events_cancelled),
             substitution_str,
         )
+
+        # num_sessions_completed == 0 indicates all sessions timed-out, printing only summary table
+        if num_sessions_completed == 0:
+            continue
 
         # Extract session duration metrics
         session_duration = contents.get("session_duration_sec", {})
@@ -608,8 +613,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Print all session tables
     console.print(session_summary_table)
-    console.print(session_duration_table)
-    console.print(session_tokens_table)
+    if session_duration_table.row_count > 0:
+        console.print(session_duration_table)
+    if session_tokens_table.row_count > 0:
+        console.print(session_tokens_table)
     if cache_table is not None:
         console.print(cache_table)
     if has_any_tfut:

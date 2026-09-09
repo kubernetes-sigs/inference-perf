@@ -184,7 +184,7 @@ class TestSummarizeSessionsTfut:
         ]
         sessions[0].tfut_sec = 0.5
         sessions[1].tfut_sec = 1.0
-        summary = ReportGenerator.summarize_sessions(None, sessions, [50, 99], max_error_messages=5)  # type: ignore[arg-type]
+        summary = ReportGenerator.summarize_sessions(None, sessions, [], [50, 99], max_error_messages=5)  # type: ignore[arg-type]
         assert summary["sessions_with_tfut"] == 2
         assert summary["tfut_sec"]["mean"] == pytest.approx(0.75)
         assert summary["tfut_none_reasons"] is None
@@ -196,7 +196,7 @@ class TestSummarizeSessionsTfut:
         ]
         sessions[0].tfut_none_reason = "no_user_facing"
         sessions[1].tfut_none_reason = "non_streaming"
-        summary = ReportGenerator.summarize_sessions(None, sessions, [50], max_error_messages=5)  # type: ignore[arg-type]
+        summary = ReportGenerator.summarize_sessions(None, sessions, [], [50], max_error_messages=5)  # type: ignore[arg-type]
         assert summary["sessions_with_tfut"] == 0
         assert summary["tfut_none_reasons"] == {"no_user_facing": 1, "non_streaming": 1}
 
@@ -205,6 +205,6 @@ class TestSummarizeSessionsTfut:
             _make_session(session_id="s1", user_facing_event_ids=["e1", "e2"], num_structured_output_excluded=1),
             _make_session(session_id="s2", user_facing_event_ids=["e3"], num_structured_output_excluded=0),
         ]
-        summary = ReportGenerator.summarize_sessions(None, sessions, [50], max_error_messages=5)  # type: ignore[arg-type]
+        summary = ReportGenerator.summarize_sessions(None, sessions, [], [50], max_error_messages=5)  # type: ignore[arg-type]
         assert summary["num_user_facing_events"]["mean"] == pytest.approx(1.5)
         assert summary["num_structured_output_excluded"]["mean"] == pytest.approx(0.5)

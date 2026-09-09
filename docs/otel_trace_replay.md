@@ -381,7 +381,9 @@ Each session (one trace file) produces a metric with:
 After a run, three session report files are generated:
 
 - **`summary_session_lifecycle_metrics.json`** — Aggregate statistics across all sessions:
-  - `num_sessions`, `num_sessions_succeeded`, `num_sessions_failed`
+  - `num_sessions` (total, including sessions never completed), `num_sessions_completed` (succeeded + failed)
+  - `num_sessions_succeeded`, `num_sessions_failed`
+  - `num_sessions_not_completed`, `num_sessions_not_completed_active`, `num_sessions_not_completed_pending` — sessions stranded when `max_stage_duration` fired before they finished
   - `total_events`, `total_events_completed`, `total_events_cancelled`
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   

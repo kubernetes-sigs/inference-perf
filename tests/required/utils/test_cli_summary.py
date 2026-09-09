@@ -64,6 +64,7 @@ class TestCliSummary(unittest.TestCase):
     def test_print_session_summary_tables_with_data(self, mock_console_print: MagicMock) -> None:
         contents = {
             "num_sessions": 5,
+            "num_sessions_completed": 5,
             "num_sessions_succeeded": 4,
             "num_sessions_failed": 1,
             "total_events": 149,
@@ -84,6 +85,7 @@ class TestCliSummary(unittest.TestCase):
     def test_print_session_summary_tables_with_tfut(self, mock_console_print: MagicMock) -> None:
         contents = {
             "num_sessions": 5,
+            "num_sessions_completed": 5,
             "num_sessions_succeeded": 5,
             "num_sessions_failed": 0,
             "total_events": 30,
@@ -126,6 +128,7 @@ class TestCliSummary(unittest.TestCase):
         }
         session_contents = {
             "num_sessions": 5,
+            "num_sessions_completed": 5,
             "num_sessions_succeeded": 4,
             "num_sessions_failed": 1,
             "total_events": 149,
@@ -144,6 +147,33 @@ class TestCliSummary(unittest.TestCase):
         print_summary_table(reports)
         # 5 request tables (including error table) + 3 session tables = 8
         self.assertEqual(mock_console_print.call_count, 8)
+
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    @patch("inference_perf.utils.cli_summary.Table.add_row")
+    def test_session_error_rate_is_relative_to_completed_sessions(
+        self, mock_add_row: MagicMock, mock_console_print: MagicMock
+    ) -> None:
+        """A stranded session (not yet succeeded or failed) must not dilute the error
+        rate: 1 failure out of 2 completed is 50%, even though 4 sessions were dispatched."""
+        contents = {
+            "num_sessions": 4,
+            "num_sessions_completed": 2,
+            "num_sessions_succeeded": 1,
+            "num_sessions_failed": 1,
+            "num_sessions_not_completed": 2,
+            "num_sessions_not_completed_active": 1,
+            "num_sessions_not_completed_pending": 1,
+            "total_events": 10,
+            "total_events_completed": 5,
+            "total_events_cancelled": 0,
+            "sessions_per_second": 0.1,
+        }
+        report = ReportFile(name="stage_0_session_lifecycle_metrics", contents=contents)
+        print_session_summary_tables([report])
+
+        session_summary_row = mock_add_row.call_args_list[0].args
+        assert session_summary_row[2] == "4"  # num_sessions (total)
+        assert "50.0%" in session_summary_row[6]  # 1 failed / 2 completed
 
 
 if __name__ == "__main__":
