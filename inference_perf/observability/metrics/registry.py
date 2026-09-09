@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram  # noqa: TID251 (instantiates the declared specs)
 
 from inference_perf.apis.base import RequestLifecycleMetric
 from inference_perf.config import Config

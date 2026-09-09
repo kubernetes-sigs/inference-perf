@@ -4,6 +4,8 @@ These are the Prometheus metrics inference-perf can export about its own runtime
 
 This document is automatically generated from the metric specs under `inference_perf/observability/metrics/sets/`. Do not edit it by hand; run `pdm run update:runtime-metrics` after changing the specs.
 
+Every metric the endpoint can expose has a row below, and nothing else can be exposed: `pdm run check:runtime-metrics` scrapes a registry built with all config gating bypassed and fails if that exposition and this table disagree in either direction. It runs inside `pdm run validate`, which is merge-blocking.
+
 ## Stability
 
 Every metric declares a stability level, and that level is prepended to the metric's HELP text, so a scrape says what is promised without anyone having to find this file:

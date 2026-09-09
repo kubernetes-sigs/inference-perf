@@ -24,7 +24,7 @@ number under the same name.
 
 from typing import Any
 
-from prometheus_client import Histogram
+from prometheus_client import Histogram  # noqa: TID251 (declares each spec's metric_type)
 
 from inference_perf.apis.base import RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.config import Config

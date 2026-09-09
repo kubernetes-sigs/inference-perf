@@ -17,7 +17,7 @@ import io
 from typing import Any, Tuple
 
 import pytest
-from prometheus_client import CollectorRegistry, Counter, Gauge
+from prometheus_client import CollectorRegistry, Counter, Gauge  # noqa: TID251 (throwaway metrics for these tests)
 from rich.console import Console
 
 from inference_perf.config import APIConfig, APIType, Config, LoadConfig, StandardLoadStage

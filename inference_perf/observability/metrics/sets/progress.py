@@ -32,7 +32,7 @@ is not a question anyone asks. The pairs are meant to be read as ratios, and
 
 from typing import Any, Callable
 
-from prometheus_client import Gauge
+from prometheus_client import Gauge  # noqa: TID251 (declares each spec's metric_type)
 
 from inference_perf.observability.context import RunContext, StageContext
 from inference_perf.observability.metrics.registry import MetricSpec
