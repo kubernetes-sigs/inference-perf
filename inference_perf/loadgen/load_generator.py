@@ -177,6 +177,24 @@ class WorkerFailure(NamedTuple):
             f"Worker {self.worker_id} {cause} without reporting a Python traceback (segfault, OOM kill, or forced termination)"
         )
 
+    def cause_label(self) -> str:
+        """Why this worker died, as a bounded string fit for a metric label.
+
+        Prefers the exception class the worker reported; falls back to the
+        signal name, and then to the exit code, which are the only things a
+        worker killed without warning leaves behind.
+        """
+        if self.crash is not None:
+            return self.crash.exc_type
+        if self.exitcode is not None and self.exitcode < 0:
+            try:
+                return signal.Signals(-self.exitcode).name
+            except ValueError:
+                return f"signal_{-self.exitcode}"
+        if self.exitcode == 0:
+            return "clean_exit"
+        return f"exit_{self.exitcode}"
+
 
 def collect_worker_failures(
     workers: List["Worker"],
@@ -767,11 +785,15 @@ class LoadGenerator:
 
         # Reported from here, not from the driver loop, because the planned
         # count the progress metrics need is only known once it is computed.
+        # worker_failures accumulates across the whole run, so remember where this
+        # stage starts and report only what it loses.
+        failures_before_stage = len(self.worker_failures)
         stage_context = StageContext(
             stage_id=stage_id,
             planned_sessions=effective_num_sessions,
             sessions_finished=lambda: len(completed_session_ids),
             sessions_skipped=lambda: skipped_session_count,
+            workers_lost=lambda: tuple(f.cause_label() for f in self.worker_failures[failures_before_stage:]),
         )
         self._stage_started(stage_context)
 
@@ -1254,11 +1276,15 @@ class LoadGenerator:
         stage_status = StageStatus.RUNNING
         # Reported from here, not from the driver loop, because the planned
         # count the progress metrics need is only known once it is computed.
+        # worker_failures accumulates across the whole run, so remember where this
+        # stage starts and report only what it loses.
+        failures_before_stage = len(self.worker_failures)
         stage_context = StageContext(
             stage_id=stage_id,
             planned_requests=num_requests,
             requests_finished=lambda: int(finished_requests_counter.value),
             requests_skipped=lambda: int(skipped_requests_counter.value),
+            workers_lost=lambda: tuple(f.cause_label() for f in self.worker_failures[failures_before_stage:]),
         )
         if report_stage:
             self._stage_started(stage_context)
