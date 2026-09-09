@@ -7,18 +7,18 @@ document is what a maintainer does around that automation.
 
 ## 1. Before the cut
 
-- [ ] Close the milestone. Every open item is merged, moved to the next milestone, or closed
+- Close the milestone. Every open item is merged, moved to the next milestone, or closed
       with a reason.
-- [ ] Merge a PR bumping `version` in `pyproject.toml` and `version` and `appVersion` in
+- Merge a PR bumping `version` in `pyproject.toml` and `version` and `appVersion` in
       `deploy/inference-perf/Chart.yaml` to `X.Y.Z`.
-- [ ] Label every PR that belongs in the changelog with one of the categories in
+- Label every PR that belongs in the changelog with one of the categories in
       [`.github/changelog-config.json`](.github/changelog-config.json). Unlabelled PRs are
       dropped from the generated changelog.
-- [ ] Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
+- Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
       coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
-- [ ] Draft the summary of features, fixes, and improvements that goes above the generated
+- Draft the summary of features, fixes, and improvements that goes above the generated
       changelog.
-- [ ] Optional: run [`test-release.yml`](.github/workflows/test-release.yml) by
+- Optional: run [`test-release.yml`](.github/workflows/test-release.yml) by
       `workflow_dispatch` to build the package against TestPyPI.
 
 ## 2. Cut
@@ -49,14 +49,14 @@ fix and re-run any failed job before announcing.
 
 ## 4. After the cut
 
-- [ ] Put the written summary above the generated changelog in the release body.
-- [ ] Verify each artifact:
+- Put the written summary above the generated changelog in the release body.
+- Verify each artifact:
       `pip install inference-perf==X.Y.Z`,
       `docker pull quay.io/inference-perf/inference-perf:vX.Y.Z`,
       `helm show chart oci://quay.io/inference-perf/charts/inference-perf --version X.Y.Z`.
-- [ ] Announce in [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
+- Announce in [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
       on Kubernetes Slack and link the release page.
-- [ ] Open the next milestone.
+- Open the next milestone.
 
 ## Cadence
 
