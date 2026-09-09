@@ -38,6 +38,10 @@ def _zero() -> int:
     return 0
 
 
+def _no_workers_lost() -> tuple[str, ...]:
+    return ()
+
+
 @dataclass(frozen=True)
 class RunContext:
     """What ``on_run_start`` hooks may read: the static run config plus live
@@ -65,6 +69,10 @@ class StageContext:
     abandoned before it reached the server and so produced no lifecycle
     metric. They are what makes the two metric families reconcilable: at stage
     end, ``finished`` equals ``skipped`` plus the outcome counters.
+
+    ``workers_lost`` reports one cause string per worker process that died
+    during this stage, so it is only meaningful once the stage has ended. It
+    stays empty for a run with no worker processes.
     """
 
     stage_id: int
@@ -74,6 +82,7 @@ class StageContext:
     sessions_finished: Callable[[], int] = _zero
     requests_skipped: Callable[[], int] = _zero
     sessions_skipped: Callable[[], int] = _zero
+    workers_lost: Callable[[], "tuple[str, ...]"] = _no_workers_lost
 
     @property
     def stage_label(self) -> str:

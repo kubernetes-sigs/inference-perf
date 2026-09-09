@@ -125,6 +125,30 @@ def test_stage_count_and_in_flight_come_from_run_context() -> None:
     assert _sample(hub, "inference_perf_requests_in_flight") == 0.0
 
 
+# Ends stage 0 having lost two workers (a RuntimeError crash and a SIGKILL) and
+# stage 1 having lost none. Expects one series per cause on stage 0, each at 1.0,
+# and no series at all for stage 1: a stage that kept its workers must not create
+# a zero sample that looks like a measured absence of failure.
+def test_workers_lost_counts_one_series_per_cause() -> None:
+    hub = _streaming_hub()
+    assert _sample(hub, "inference_perf_workers_lost_total", stage="0", cause="RuntimeError") is None
+
+    hub.on_stage_end(StageContext(stage_id=0, workers_lost=lambda: ("RuntimeError", "SIGKILL")))
+    assert _sample(hub, "inference_perf_workers_lost_total", stage="0", cause="RuntimeError") == 1.0
+    assert _sample(hub, "inference_perf_workers_lost_total", stage="0", cause="SIGKILL") == 1.0
+
+    hub.on_stage_end(StageContext(stage_id=1))
+    assert _sample(hub, "inference_perf_workers_lost_total", stage="1", cause="RuntimeError") is None
+
+
+# Ends one stage that lost two workers to the same cause. Expects the two deaths
+# to add up on a single series rather than overwrite each other.
+def test_workers_lost_accumulates_repeats_of_one_cause() -> None:
+    hub = _streaming_hub()
+    hub.on_stage_end(StageContext(stage_id=0, workers_lost=lambda: ("RuntimeError", "RuntimeError")))
+    assert _sample(hub, "inference_perf_workers_lost_total", stage="0", cause="RuntimeError") == 2.0
+
+
 # Starts stage 0, ends it, then starts stage 1. Expects no stage="0" series at all
 # before it starts, then running=1 with a start timestamp, then running=0 with an
 # end timestamp at or after it, and stage 0 staying at 0 once stage 1 is running.
@@ -251,7 +275,9 @@ def test_ttft_and_tpot_absent_on_unary_runs() -> None:
 
 # --- conventions (the checkable half of #628) -----------------------------------
 
-ALLOWED_LABELS = {"stage", "status", "error_type"}
+# "cause" is bounded the same way "error_type" is: an exception class name, a
+# signal name, or an exit code, never a message or an id.
+ALLOWED_LABELS = {"stage", "status", "error_type", "cause"}
 
 
 # Walks every spec in ALL_SPECS. Expects unique inference_perf_-prefixed names with
