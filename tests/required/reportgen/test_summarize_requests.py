@@ -499,7 +499,7 @@ def test_summarize_sessions_omits_retry_keys_when_nothing_retried() -> None:
     byte-identical to one produced before retries existed. Both readers in cli_summary
     default to 0, so omission is safe rather than merely tidy.
     """
-    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert "sessions_with_retries" not in summary
     assert "total_retry_attempts" not in summary
@@ -514,7 +514,7 @@ def test_summarize_sessions_reports_retry_keys_when_something_retried() -> None:
     retried.retries_recovered = 0  # spent both attempts and failed anyway
     quiet = _cache_session("s2")
 
-    summary = ReportGenerator.summarize_sessions(None, [retried, quiet], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [retried, quiet], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["sessions_with_retries"] == 1
     assert summary["total_retry_attempts"] == 2
