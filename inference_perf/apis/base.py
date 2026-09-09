@@ -15,7 +15,7 @@
 from abc import abstractmethod
 from typing import Any, List, Optional
 from aiohttp import ClientResponse
-from pydantic import BaseModel, Field, SerializeAsAny, computed_field
+from pydantic import BaseModel, Field, SerializeAsAny, computed_field, model_serializer
 from inference_perf.payloads import RequestBody, RequestMetrics
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
@@ -45,6 +45,36 @@ class InferenceInfo(BaseModel):
     lora_adapter: Optional[str] = None
     graph_event_id: Optional[str] = None
     labels: dict[str, str] = {}
+    # Extra attempts spent on connection faults raised before a response was
+    # established, and whether one of them went on to succeed. 0/False on the
+    # overwhelming majority of requests; a request that used up its attempts reports
+    # the count with retries_recovered False. See LoadConfig.request_retries.
+    retries_attempted: int = 0
+    retries_recovered: bool = False
+    # Time this request spent on attempts that failed, plus the backoff waited between
+    # them: the share of its end-to-end latency that bought nothing. Counted on
+    # requests that never succeeded too, where every attempt was wasted. None unless a
+    # retry happened, so RequestLifecycleMetric.start_time stays the single definition
+    # of when the request was dispatched.
+    retry_wasted_sec: Optional[float] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_retry_fields_when_absent(self, handler: Any) -> dict[str, Any]:
+        """Drop every retry field from a request that never retried.
+
+        Keeps per_request_lifecycle_metrics.json free of `retries_attempted: 0`,
+        `retries_recovered: false` and `retry_wasted_sec: null` on every entry of a run
+        that hit no transport faults. `retries_attempted` is the discriminator: the
+        client always sets it, and it is non-zero on exactly the requests the other two
+        fields describe.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if not dumped.get("retries_attempted"):
+            for key in ("retries_attempted", "retries_recovered", "retry_wasted_sec"):
+                dumped.pop(key, None)
+        elif dumped.get("retry_wasted_sec") is None:
+            dumped.pop("retry_wasted_sec", None)
+        return dumped
 
     # DEPRECATED: mirror of request_metrics.text.input_tokens kept at the top
     # level for back-compat with parsers of pre-multimodal
@@ -94,6 +124,13 @@ class SessionLifecycleMetric(BaseModel):
     # but no malformed tool_calls were observed.
     n_recorded_substitutions: Optional[int] = None
     recorded_substitution_event_ids: Optional[List[str]] = None
+    # Per-session sum of extra attempts spent on connection faults raised before
+    # response headers were obtained, and how many of those requests went on to
+    # succeed. Omitted from the serialized session when the session hit no transport
+    # faults, so per_session_lifecycle_metrics.json is unchanged for a run that never
+    # retried. See LoadConfig.request_retries.
+    retries_attempted: int = 0
+    retries_recovered: int = 0
     success: Optional[bool] = None
     error: Optional[ErrorResponseInfo] = None
     total_input_tokens: Optional[int] = None
@@ -120,6 +157,19 @@ class SessionLifecycleMetric(BaseModel):
     tfut_sec: Optional[float] = None
     tfut_none_reason: Optional[str] = None
     dispatch_perf_counter: Optional[float] = Field(default=None, exclude=True)
+
+    @model_serializer(mode="wrap")
+    def _omit_retry_fields_when_absent(self, handler: Any) -> dict[str, Any]:
+        """Drop both retry counters from a session that never retried.
+
+        Mirrors InferenceInfo, so per_session_lifecycle_metrics.json does not carry a
+        pair of zeros on every session of a run that hit no transport faults.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if not dumped.get("retries_attempted"):
+            dumped.pop("retries_attempted", None)
+            dumped.pop("retries_recovered", None)
+        return dumped
 
 
 class InferenceAPIData(BaseModel):

@@ -53,6 +53,9 @@ def _mock_metric(
     m.tpot_slo_sec = None
     m.request_data = request_data
     m.info = Mock(spec=InferenceInfo)
+    # Real int/bool, not auto-specced Mocks: the retry rollup does arithmetic on these.
+    m.info.retries_attempted = 0
+    m.info.retries_recovered = False
     m.info.request_metrics = RequestMetrics(
         text=Text(input_tokens=input_tokens),
         image=Images(count=len(images), instances=images) if images else None,
@@ -220,6 +223,8 @@ def test_lifecycle_report_shape_with_failures() -> None:
     failure.tpot_slo_sec = None
     failure.request_data = "bad"
     failure.info = Mock(spec=InferenceInfo)
+    failure.info.retries_attempted = 0
+    failure.info.retries_recovered = False
     failure.info.request_metrics = RequestMetrics(text=Text(input_tokens=80))
     failure.info.response_metrics = None
     failure.info.extra_info = {}
@@ -232,3 +237,130 @@ def test_lifecycle_report_shape_with_failures() -> None:
     _assert_summary(report["failures"]["request_latency"])
     _assert_summary(report["failures"]["prompt_tokens"])
     assert report["failures"]["by_label"]["500 - Internal Server Error"]["count"] == 1
+
+
+# --- Retry reporting (#777) ---
+
+
+def _retry_metric(
+    retries_attempted: int,
+    retries_recovered: bool,
+    retry_wasted_sec: typing.Optional[float] = None,
+) -> Mock:
+    """A minimal successful request metric carrying retry counters."""
+    m = _mock_metric(
+        start_time=0.0,
+        end_time=1.0,
+        scheduled_time=0.0,
+        input_tokens=10,
+        output_tokens=5,
+        request_data="req",
+        images=[],
+        videos=[],
+        audios=[],
+        output_token_times=[0.5, 1.0],
+    )
+    m.info.retries_attempted = retries_attempted
+    m.info.retries_recovered = retries_recovered
+    # Real float or None, never an auto-specced Mock: the retry rollup feeds this
+    # straight into summarize().
+    m.info.retry_wasted_sec = retry_wasted_sec
+    return m
+
+
+def test_retries_absent_when_nothing_retried() -> None:
+    """A run with retries off must carry no retry section at all -- not a block of zeros
+    implying the mechanism was exercised, and not a `"retries": null` either.
+
+    The serialized shape is the load-bearing half: a default-config report must be
+    byte-identical to one produced before retries existed, or every downstream consumer
+    sees a schema change from a feature nobody enabled.
+    """
+    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(0, False)]), percentiles=[50])
+    assert summary.retries is None
+    assert "retries" not in summary.model_dump()
+
+
+def test_retries_partition_recovered_and_failed() -> None:
+    """attempts counts POSTs, requests_retried counts requests, and recovered +
+    failed_after_retry must partition requests_retried exactly.
+
+    `failed_after_retry`, not `exhausted`: a retried request also lands here when a retry
+    reached the endpoint and came back with a non-retryable failure, which stops the loop
+    with attempts still in the budget."""
+    metrics = [
+        _retry_metric(0, False),  # never retried -> excluded entirely
+        _retry_metric(1, True),  # retried once, recovered
+        _retry_metric(2, True),  # retried twice, recovered
+        _retry_metric(2, False),  # retried twice, still failed
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["requests_retried"] == 3
+    assert summary.retries["attempts"] == 5
+    assert summary.retries["recovered"] == 2
+    assert summary.retries["failed_after_retry"] == 1
+    assert summary.retries["recovered"] + summary.retries["failed_after_retry"] == summary.retries["requests_retried"]
+
+
+def test_retries_are_not_counted_as_errors() -> None:
+    """A retry is not an error label: a recovered retry must leave failures untouched,
+    or the run's error rate would double-count faults the retry already absorbed."""
+    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(2, True)]), percentiles=[50])
+    assert summary.failures["count"] == 0
+    assert summary.failures["by_label"] == {}
+    assert summary.successes["count"] == 1
+
+
+def test_retries_report_wasted_time() -> None:
+    """The window's retry cost is reported as wasted wall time -- the number a reader of
+    this block actually wants -- alongside the counters.
+
+    Reported as waste rather than as a competing latency because every latency in the report
+    already counts retry time: start_time stays at dispatch.
+    """
+    metrics = [
+        _retry_metric(0, False),  # never retried -> contributes nothing
+        _retry_metric(1, True, retry_wasted_sec=2.0),
+        _retry_metric(1, True, retry_wasted_sec=4.0),
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["wasted_sec_total"] == 6.0
+    wasted = summary.retries["wasted_sec"]
+    # Distributed over the two retried requests, not all three: a third entry for the
+    # never-retried request would drag the mean to 2.0.
+    assert wasted["mean"] == 3.0
+    assert wasted["min"] == 2.0
+    assert wasted["max"] == 4.0
+
+
+def test_retries_count_failed_requests_as_wasted() -> None:
+    """A request that retried and failed anyway wasted ALL of its time, so it is counted --
+    it is the most expensive waste in a run, not an exclusion.
+
+    This is the opposite of a latency statistic, where a failed attempt's duration would be
+    meaningless. Waste is waste regardless of how the request ended.
+    """
+    metrics = [
+        _retry_metric(2, True, retry_wasted_sec=5.0),  # recovered
+        _retry_metric(2, False, retry_wasted_sec=95.0),  # never succeeded -- still wasted
+    ]
+    summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
+    assert summary.retries is not None
+    assert summary.retries["failed_after_retry"] == 1
+    assert summary.retries["wasted_sec_total"] == 100.0, "failed request's waste was dropped"
+    assert summary.retries["wasted_sec"]["max"] == 95.0
+
+
+def test_retries_report_waste_when_nothing_recovered() -> None:
+    """Attempts spent with no recovery still report their waste: a run where every retry
+    failed has paid the full cost for nothing, which the block must show rather than omit.
+    """
+    summary = summarize_requests(
+        typing.cast(typing.Any, [_retry_metric(2, False, retry_wasted_sec=7.0)]),
+        percentiles=[50],
+    )
+    assert summary.retries is not None
+    assert summary.retries["recovered"] == 0
+    assert summary.retries["wasted_sec_total"] == 7.0

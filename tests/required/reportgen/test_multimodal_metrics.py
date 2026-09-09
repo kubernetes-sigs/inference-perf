@@ -37,6 +37,8 @@ def test_summarize_requests_multimodal_metrics() -> None:
     metric1.tpot_slo_sec = None
     metric1.request_data = "short request"
     metric1.info = Mock(spec=InferenceInfo)
+    metric1.info.retries_attempted = 0
+    metric1.info.retries_recovered = False
     metric1.info.request_metrics = RequestMetrics(
         text=Text(input_tokens=10),
         image=Images(
@@ -64,6 +66,8 @@ def test_summarize_requests_multimodal_metrics() -> None:
     metric2.tpot_slo_sec = None
     metric2.request_data = "a much longer request with more data"
     metric2.info = Mock(spec=InferenceInfo)
+    metric2.info.retries_attempted = 0
+    metric2.info.retries_recovered = False
     metric2.info.request_metrics = RequestMetrics(
         text=Text(input_tokens=15),
         video=Videos(

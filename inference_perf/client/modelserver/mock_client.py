@@ -39,8 +39,17 @@ class MockModelServerClient(ModelServerClient):
         api_config: APIConfig,
         timeout: Optional[float] = None,
         mock_latency: float = 1,
+        request_retries: int = 0,
+        request_retry_backoff_sec: float = 0.5,
     ) -> None:
-        super().__init__(api_config, timeout)
+        # Accepted for signature parity with the real clients; the mock never makes a
+        # network call, so there is no transport fault to retry.
+        super().__init__(
+            api_config,
+            timeout,
+            request_retries=request_retries,
+            request_retry_backoff_sec=request_retry_backoff_sec,
+        )
         self.metrics_collector = metrics_collector
         self.mock_latency = mock_latency
         self.tokenizer = None
