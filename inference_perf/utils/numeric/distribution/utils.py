@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from math import log, sqrt
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Literal, Optional, cast, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -109,12 +109,34 @@ def _sample_skew_normal(rng: np.random.Generator, mean: float, std_dev: float, s
     return mean + std_dev * z
 
 
+@overload
 def sample_from_distribution(
     config: "Distribution",
     count: int,
     rng: Optional[np.random.Generator] = None,
-) -> NDArray[np.int_]:
-    """Sample integer values from a Distribution config.
+    *,
+    integer: Literal[True] = True,
+) -> NDArray[np.int_]: ...
+
+
+@overload
+def sample_from_distribution(
+    config: "Distribution",
+    count: int,
+    rng: Optional[np.random.Generator] = None,
+    *,
+    integer: Literal[False],
+) -> NDArray[np.float64]: ...
+
+
+def sample_from_distribution(
+    config: "Distribution",
+    count: int,
+    rng: Optional[np.random.Generator] = None,
+    *,
+    integer: bool = True,
+) -> NDArray[np.int_] | NDArray[np.float64]:
+    """Sample values from a Distribution config.
 
     Dispatches on config.type to support normal, skew_normal, lognormal,
     uniform, and poisson distributions. Falls back to normal when type is
@@ -124,9 +146,12 @@ def sample_from_distribution(
         config: A Distribution specifying the distribution type and parameters.
         count: Number of samples to generate.
         rng: Optional numpy Generator for deterministic seeding. If None, creates a default one.
+        integer: Preserve integer count sampling by default. When False, retain fractional
+            values and sample uniform distributions over [min, max] without the count-specific +1.
 
     Returns:
-        A numpy array of integers clamped to [config.min, config.max].
+        A numpy array of sampled values. Non-fixed distributions and continuous
+        fixed values are clamped to [config.min, config.max].
     """
     from inference_perf.config import DistributionType
 
@@ -139,7 +164,9 @@ def sample_from_distribution(
         rng = np.random.default_rng()
 
     if config.type == DistributionType.FIXED:
-        return cast(NDArray[np.int_], np.full(count, int(config.mean), dtype=int))
+        if integer:
+            return cast(NDArray[np.int_], np.full(count, int(config.mean), dtype=int))
+        return cast(NDArray[np.float64], np.full(count, np.clip(config.mean, config.min, config.max), dtype=np.float64))
 
     if config.type == DistributionType.NORMAL:
         samples = rng.normal(loc=config.mean, scale=config.std_dev, size=count)
@@ -163,7 +190,7 @@ def sample_from_distribution(
             samples = rng.lognormal(mean=mu, sigma=sigma, size=count)
 
     elif config.type == DistributionType.UNIFORM:
-        samples = rng.uniform(low=config.min, high=config.max + 1, size=count)
+        samples = rng.uniform(low=config.min, high=config.max + int(integer), size=count)
 
     elif config.type == DistributionType.POISSON:
         lam = config.mean if config.mean > 0 else 1.0
@@ -172,8 +199,10 @@ def sample_from_distribution(
     else:
         raise ValueError(f"Unsupported distribution type: {config.type}")
 
-    # Clip to bounds and round to integers
+    # Clip to bounds, retaining fractions only when requested.
     clipped = np.clip(samples, config.min, config.max)
+    if not integer:
+        return clipped
     result = np.round(clipped).astype(int)
     result = np.clip(result, config.min, config.max)
     return cast(NDArray[np.int_], result)
