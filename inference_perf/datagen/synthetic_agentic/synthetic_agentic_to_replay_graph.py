@@ -58,16 +58,25 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import GENERIC_TH
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
+def _tool_names_to_fc_value(names: List[str]) -> str:
+    """Encode tool name(s) as a ``function_call`` turn value (always a JSON list)."""
+    return json.dumps([{"name": n, "arguments": "{}"} for n in names])
+
+
 def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     """Convert one graph-event dict to a ToolACE-ShareGPT record.
 
-    Each ``role:assistant`` message that carries ``tool_calls`` becomes one
-    ``function_call`` turn per call (value: ``{"name":…,"arguments":"…"}``
-    with arguments kept as a JSON string, matching ToolACE).  The ``role:tool``
-    result messages that immediately follow are gathered into a single
-    ``observation`` turn as a JSON-encoded list ``[{"name":…,"results":…},…]``.
+    Each ``role:assistant`` message with tool calls becomes one ``function_call``
+    turn whose value is always a JSON list ``[{"name":…,"arguments":"…"},…]``,
+    keeping arguments as a JSON string.  The ``role:tool`` result messages that
+    immediately follow are gathered into a single ``observation`` turn as a
+    JSON-encoded list ``[{"name":…,"results":…},…]``.
     Plain ``role:assistant`` messages become ``gpt`` turns.
     ``call.expected_output``, when non-empty, is appended as a final ``gpt`` turn.
+
+    When ``expected_output_is_tool_call`` is set, a ``function_call`` turn is
+    emitted from ``expected_output_tool_names`` (always a list) instead of a
+    ``gpt`` turn.
     """
     call = event["call"]
     messages: List[Dict[str, Any]] = call["messages"]
@@ -94,15 +103,11 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         elif role == "assistant":
             tool_calls: List[Dict[str, Any]] = msg.get("tool_calls") or []
             if tool_calls:
-                # One function_call turn per tool call in this assistant message.
-                for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    conversations.append(
-                        {
-                            "from": "function_call",
-                            "value": json.dumps({"name": fn.get("name", ""), "arguments": fn.get("arguments", "{}")}),
-                        }
-                    )
+                # Always a list, even for a single call.
+                fc_value = json.dumps(
+                    [{"name": tc.get("function", {}).get("name", ""), "arguments": tc.get("function", {}).get("arguments", "{}")} for tc in tool_calls]
+                )
+                conversations.append({"from": "function_call", "value": fc_value})
                 # Collect the immediately-following role:tool messages into one observation.
                 results: List[Dict[str, Any]] = []
                 j = i + 1
@@ -128,7 +133,15 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             i += 1
 
     if expected_output:
-        conversations.append({"from": "gpt", "value": expected_output})
+        if call.get("expected_output_is_tool_call"):
+            tool_names: List[str] = call.get("expected_output_tool_names") or []
+            conversations.append({"from": "function_call", "value": _tool_names_to_fc_value(tool_names)})
+        else:
+            conversations.append({"from": "gpt", "value": expected_output})
+    elif call.get("expected_output_is_tool_call"):
+        # expected_output is blank but the graph records it will be a tool call.
+        tool_names = call.get("expected_output_tool_names") or []
+        conversations.append({"from": "function_call", "value": _tool_names_to_fc_value(tool_names)})
 
     # Preserve graph metadata in a dedicated namespace so standard ShareGPT
     # readers ignore it while inference-perf tooling can recover replay context.
