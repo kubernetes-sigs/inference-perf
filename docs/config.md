@@ -157,6 +157,9 @@ load:
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
+  request_timeout: 900              # Optional: per-request timeout in seconds (applies per attempt)
+  request_retries: 0                # Optional: extra attempts for faults before response headers (default: 0, no retry)
+  request_retry_backoff_sec: 0.5    # Optional: base backoff before the first retry, doubled + jittered per attempt
   base_seed: 12345                  # Optional: base random seed for reproducibility (default: current time in ms)
   lora_traffic_split:               # Optional: MultiLoRA traffic splitting
     - name: adapter_1               # LoRA adapter name
@@ -166,6 +169,43 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Retrying Transport Faults
+
+`request_retries` re-sends a request that fails **before response headers were obtained** —
+a refused connection, a reset, or a connection dropped from the pool. It defaults to `0`,
+preserving the historical behavior of failing on the first fault.
+
+What is retried:
+
+| Fault | Retried | Why |
+|---|---|---|
+| Connection refused, reset, dropped from pool | Yes | Nothing was measured on the client side; these recover |
+| Anything after a response was established | No | Re-sending could mix or discard token-level measurements and duplicate server work |
+| Timeout | No | A real measurement of a slow server, and `request_timeout` applies per attempt |
+| Rejected certificate, fingerprint mismatch | No | Configuration errors — every attempt fails identically |
+
+"No response headers" is not "the server did no work": the request bytes may already have
+been sent. A retry is therefore bounded and backed off rather than unconditional.
+
+**Timing.** `start_time` stays at the logical request's dispatch and is never re-stamped per
+attempt, so end-to-end latency counts the failed attempt and its backoff — the workload
+really did wait — and `schedule_delay`, `send_duration` and `achieved_rate` stay correct.
+The cost is reported beside those numbers instead: a retried request carries
+`info.retry_wasted_sec` plus a matching OTel span attribute, and the `retries` block totals
+it across the run. A request that never succeeded counts its whole life as waste, since no
+attempt answered.
+
+Retry fields are omitted rather than zeroed on anything that never retried, so a run with
+`request_retries: 0` — or with the knob on but no faults — produces the report JSON it
+produced before retries existed.
+
+**Costs.** `request_timeout` applies per attempt, so worst-case wall time per request
+becomes `(1 + request_retries) × request_timeout` plus backoff; keep `request_retries` small
+when `request_timeout` is large. Backoff starts at `request_retry_backoff_sec`, then doubles
+and jitters so retries do not resynchronize into a burst.
+
+See [Reports](otel_trace_replay.md#reports) for the `retries` block and the CLI columns.
 
 #### Load Sweeps
 

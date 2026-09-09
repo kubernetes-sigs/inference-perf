@@ -492,6 +492,35 @@ def _cache_session(session_id: str = "s1") -> SessionLifecycleMetric:
     )
 
 
+def test_summarize_sessions_omits_retry_keys_when_nothing_retried() -> None:
+    """The session report gains no retry keys on a run that never retried.
+
+    Same contract as the request-level `retries` block: a default-config report must be
+    byte-identical to one produced before retries existed. Both readers in cli_summary
+    default to 0, so omission is safe rather than merely tidy.
+    """
+    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert "sessions_with_retries" not in summary
+    assert "total_retry_attempts" not in summary
+    assert "total_retries_recovered" not in summary
+
+
+def test_summarize_sessions_reports_retry_keys_when_something_retried() -> None:
+    """Once any session retried, all three keys appear -- including the zero-valued ones,
+    so the table's denominator is never silently missing."""
+    retried = _cache_session("s1")
+    retried.retries_attempted = 2
+    retried.retries_recovered = 0  # spent both attempts and failed anyway
+    quiet = _cache_session("s2")
+
+    summary = ReportGenerator.summarize_sessions(None, [retried, quiet], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["sessions_with_retries"] == 1
+    assert summary["total_retry_attempts"] == 2
+    assert summary["total_retries_recovered"] == 0
+
+
 def test_enrich_sessions_sums_cached_tokens_across_requests() -> None:
     """total_cached_tokens sums prompt_tokens_details.cached_tokens over a session's requests."""
     requests = [

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
@@ -335,11 +335,64 @@ def effective_output_tokens(response_metrics: Optional[ResponseMetrics], use_ser
     return response_metrics.output_tokens
 
 
+def summarize_retries(metrics: List[RequestLifecycleMetric], percentiles: List[float]) -> Optional[dict[str, Any]]:
+    """Roll up retry activity across a window of requests.
+
+    Returns None when nothing retried, so a report from a run with
+    ``request_retries: 0`` carries no retry section at all rather than a block
+    of zeros. ``requests_retried`` counts requests, ``attempts`` counts the
+    extra POSTs those requests cost; the two differ when one request retried
+    more than once. ``recovered``/``failed_after_retry`` partition ``requests_retried``.
+    A request lands in ``failed_after_retry`` either because it ran out of attempts or
+    because a retry reached the endpoint and came back with a non-retryable failure,
+    which stops the loop with attempts still in the budget; the key counts both.
+
+    Every latency in the report counts retry time -- ``start_time`` stays at dispatch --
+    so the cost is reported here as waste rather than by splitting the latency
+    definition. ``wasted_sec_total`` is the wall time this window lost to attempts that
+    failed and the backoff between them; ``wasted_sec`` distributes it per retried
+    request. Both include requests that never succeeded, whose every attempt was wasted.
+    """
+    retried = [m for m in metrics if m.info.retries_attempted > 0]
+    if not retried:
+        return None
+    recovered = [m for m in retried if m.info.retries_recovered]
+    wasted = [m.info.retry_wasted_sec for m in retried if m.info.retry_wasted_sec is not None]
+    summary: dict[str, Any] = {
+        "requests_retried": len(retried),
+        "attempts": sum(m.info.retries_attempted for m in retried),
+        "recovered": len(recovered),
+        "failed_after_retry": len(retried) - len(recovered),
+        "wasted_sec_total": float(sum(wasted)),
+    }
+    if distribution := summarize(wasted, percentiles):
+        summary["wasted_sec"] = distribution
+    return summary
+
+
 class ResponsesSummary(BaseModel):
     benchmark_time_seconds: float
     load_summary: dict[str, Any]
     successes: dict[str, Any]
     failures: dict[str, Any]
+    # Retry activity for the window, or None when request_retries is 0 and no
+    # request ever retried. A sibling of successes/failures rather than a key
+    # inside either, because retried requests land on both sides.
+    retries: Optional[dict[str, Any]] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_retries(self, handler: Any) -> dict[str, Any]:
+        """Drop `retries` entirely when it is None.
+
+        A run that never retried must serialize byte-identically to one built before
+        retries existed, so the default config's report gains no key at all -- not a
+        `"retries": null`. Enforced on the model rather than at the ~6 model_dump()
+        call sites so a new caller cannot reintroduce the key by omission.
+        """
+        dumped: dict[str, Any] = handler(self)
+        if dumped.get("retries") is None:
+            dumped.pop("retries", None)
+        return dumped
 
 
 def calculate_goodput_metrics(
@@ -779,6 +832,7 @@ def summarize_requests(
         successes_dict["goodput_metrics"] = goodput_metrics
 
     return ResponsesSummary(
+        retries=summarize_retries(all_successful + all_failed, percentiles),
         benchmark_time_seconds=total_time,
         load_summary=load_summary,
         successes=successes_dict,
@@ -1082,6 +1136,18 @@ class ReportGenerator:
         # exercised the substitution path. Sessions with handling=none
         # contribute None and are skipped, so a default-config run
         # surfaces 0 sessions and a `null` total in the report.
+        # Sessions that hit at least one retryable transport fault, and the totals
+        # behind them. Omitted entirely when nothing retried, so a run with
+        # request_retries at its default serializes byte-identically to one built
+        # before retries existed; both readers in cli_summary default to 0.
+        retry_summary: dict[str, Any] = {}
+        if any(m.retries_attempted for m in metrics):
+            retry_summary = {
+                "sessions_with_retries": sum(1 for m in metrics if m.retries_attempted > 0),
+                "total_retry_attempts": sum(m.retries_attempted for m in metrics),
+                "total_retries_recovered": sum(m.retries_recovered for m in metrics),
+            }
+
         sessions_with_recorded_substitution = sum(
             1 for m in metrics if m.n_recorded_substitutions is not None and m.n_recorded_substitutions > 0
         )
@@ -1149,6 +1215,7 @@ class ReportGenerator:
             "total_events_cancelled": total_events_cancelled,
             "sessions_with_recorded_substitution": sessions_with_recorded_substitution,
             "total_recorded_substitutions": total_recorded_substitutions,
+            **retry_summary,
             "sessions_per_second": sessions_per_second,
             "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
             "num_events": summarize([float(m.num_events) for m in metrics], percentiles),
@@ -1195,6 +1262,8 @@ class ReportGenerator:
         """
         token_by_session: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
         error_by_session: dict[str, Any] = {}
+        # session_id -> (extra attempts spent, requests that recovered via retry)
+        retry_by_session: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
         # session_id -> (summed cached prompt tokens, summed server prompt tokens),
         # or absent when no request in the session reported cache info. Absence is
         # preserved as None on the session (not coerced to 0) so a session with no
@@ -1214,6 +1283,12 @@ class ReportGenerator:
                 )
                 if m.session_id not in error_by_session and m.error is not None:
                     error_by_session[m.session_id] = m.error
+                if m.info.retries_attempted:
+                    prev_attempted, prev_recovered = retry_by_session[m.session_id]
+                    retry_by_session[m.session_id] = (
+                        prev_attempted + m.info.retries_attempted,
+                        prev_recovered + (1 if m.info.retries_recovered else 0),
+                    )
                 event_id = m.info.graph_event_id
                 if event_id:
                     requests_by_session_event[m.session_id][event_id] = m
@@ -1234,6 +1309,7 @@ class ReportGenerator:
             cache_usage = cache_by_session.get(sm.session_id)
             sm.total_cached_tokens = cache_usage[0] if cache_usage else None
             sm.total_cacheable_input_tokens = cache_usage[1] if cache_usage else None
+            sm.retries_attempted, sm.retries_recovered = retry_by_session.get(sm.session_id, (0, 0))
             request_error = error_by_session.get(sm.session_id)
             if request_error is not None:
                 sm.error = request_error

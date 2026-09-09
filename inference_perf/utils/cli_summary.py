@@ -403,6 +403,11 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     session_summary_table.add_column("Events Completed", justify="right")
     session_summary_table.add_column("Events Cancelled", justify="right")
     session_summary_table.add_column("Bad Tool Calls Substitutions", justify="right")
+    # Only when something actually retried: this table already runs 10 columns wide
+    # and squeezes headers, so a permanent all-zero column costs real legibility.
+    has_retries = any(session_reports[sid].get("total_retry_attempts", 0) for sid in sorted_stages)
+    if has_retries:
+        session_summary_table.add_column("Retries (recovered)", justify="right")
 
     # Table 2: Session Duration & Events
     session_duration_table = Table(
@@ -468,6 +473,9 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             substitutions_entry.get("count", 0) if isinstance(substitutions_entry, dict) else substitutions_entry
         )
 
+        total_retry_attempts = contents.get("total_retry_attempts", 0)
+        total_retries_recovered = contents.get("total_retries_recovered", 0)
+
         # Color code succeeded/failed sessions
         succeeded_str = f"[green]{num_sessions_succeeded}[/]"
         failed_color = "red" if num_sessions_failed > 0 else "green"
@@ -489,7 +497,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         )
 
         # Populate Table 1
-        session_summary_table.add_row(
+        session_row = [
             str(stage_id),
             f"{sessions_per_second:.2f}",
             str(num_sessions),
@@ -501,7 +509,14 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             str(total_events_completed),
             str(total_events_cancelled),
             substitution_str,
-        )
+        ]
+        if has_retries:
+            # Recovered is the useful half, so colour on it rather than on the
+            # attempt count: retries that saved a session are green, retries that
+            # were spent and still failed are yellow.
+            retry_color = "green" if total_retries_recovered else "yellow"
+            session_row.append(f"[{retry_color}]{total_retry_attempts} ({total_retries_recovered})[/]")
+        session_summary_table.add_row(*session_row)
 
         # num_sessions_completed == 0 indicates all sessions timed-out, printing only summary table
         if num_sessions_completed == 0:
@@ -638,15 +653,22 @@ def _build_error_table(
     successes_by_stage: Dict[int, int],
     failures_by_stage: Dict[int, Dict[str, Any]],
     substitutions_by_stage: Dict[int, int],
+    retries_by_stage: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Table:
     """Build the per-stage error summary table."""
     labels = _collect_error_labels(failures_by_stage)
     has_substitutions = any(substitutions_by_stage.get(s, 0) > 0 for s in sorted_stages)
+    retries_by_stage = retries_by_stage or {}
+    has_retries = any(retries_by_stage.get(s) for s in sorted_stages)
     table = Table(title="[bold magenta]Request Error Summary[/bold magenta]", show_header=True, header_style="bold cyan")
     table.add_column("Stage", justify="right")
     table.add_column("Successes", justify="right")
     if has_substitutions:
         table.add_column("Bad Tool Calls Substitutions", justify="right")
+    if has_retries:
+        # Retries are not an error label: they never go through build_error_counts,
+        # so they stay out of failures.count and out of the red error columns.
+        table.add_column("Retried (recovered)", justify="right")
     for label in labels:
         table.add_column(label, justify="right")
 
@@ -657,6 +679,14 @@ def _build_error_table(
             sub_count = substitutions_by_stage.get(stage_id, 0)
             color = "yellow" if sub_count > 0 else "green"
             row.append(f"[{color}]{sub_count}[/]")
+        if has_retries:
+            retry_entry = retries_by_stage.get(stage_id) or {}
+            retried = retry_entry.get("requests_retried", 0)
+            recovered = retry_entry.get("recovered", 0)
+            # Green once a retry actually rescued a request; yellow when attempts
+            # were spent and every one of them still failed.
+            color = "green" if recovered else ("yellow" if retried else "green")
+            row.append(f"[{color}]{retried} ({recovered})[/]")
         by_label = failures_by_stage.get(stage_id, {})
         for label in labels:
             entry = by_label.get(label)
@@ -677,6 +707,7 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
     successes_by_stage: Dict[int, int] = {}
     failures_by_stage: Dict[int, Dict[str, Any]] = {}
     substitutions_by_stage: Dict[int, int] = {}
+    retries_by_stage: Dict[int, Dict[str, Any]] = {}
 
     for report in reports:
         stage_id = extract_stage_id(report.name)
@@ -685,6 +716,10 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
             successes_by_stage[stage_id] = successes.get("count", 0) if isinstance(successes, dict) else 0
             failures = report.contents.get("failures", {})
             failures_by_stage[stage_id] = failures.get("by_label", {}) if isinstance(failures, dict) else {}
+            # Absent (older reports) or null (nothing retried) both mean no column.
+            retries = report.contents.get("retries")
+            if isinstance(retries, dict):
+                retries_by_stage[stage_id] = retries
             continue
         session_stage_id = extract_session_stage_id(report.name)
         if session_stage_id is not None:
@@ -696,4 +731,6 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
 
     sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
     console = Console()
-    console.print(_build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage))
+    console.print(
+        _build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage, retries_by_stage)
+    )

@@ -773,6 +773,45 @@ This design ensures:
 
 **Note:** OTel trace replay always runs in multiprocess mode (requires `num_workers > 0`) because it uses `SessionGenerator`, which is not supported in single-process mode.
 
+#### Retrying Transport Faults
+
+Because a replayed session is a dependency graph, the cost of a single failure is not one
+request — it is every event downstream of the failed one. A request error rate well under
+1% can therefore cancel a double-digit percentage of the events in a run: the cost depends
+on *where* in the graph the fault landed, not on how serious it was.
+
+Set `load.request_retries` to re-send requests that fail before response headers were
+obtained, which is the dominant class of these faults (a connection refused, reset, or
+dropped from the pool while the endpoint itself stays up and keeps answering):
+
+```yaml
+load:
+  request_timeout: 900
+  request_retries: 2            # up to 2 extra attempts per request
+  request_retry_backoff_sec: 0.5
+```
+
+Only faults raised before a response was established are retried; timeouts and TLS
+configuration errors never are. `request_timeout` applies per attempt, and a retried
+request's reported latency deliberately still includes the failed attempt and its backoff.
+See [Retrying Transport Faults](config.md#retrying-transport-faults) for the boundary and
+the trade-offs.
+
+Retries are reported separately from errors, and every surface is absent when nothing
+retried:
+
+| Surface | Shape |
+|---|---|
+| Report JSON | `retries` block beside `successes`/`failures`: `requests_retried`, `attempts`, `recovered`, `failed_after_retry`, `wasted_sec_total`, and `wasted_sec` (mean/min/max/percentiles) |
+| Request Error Summary | `Retried (recovered)` column |
+| Session Summary | `Retries (recovered)` column, plus `sessions_with_retries`, `total_retry_attempts`, `total_retries_recovered` |
+| Per-request JSON and OTel | `info.retry_wasted_sec` and a `gen_ai.response.retry_wasted_sec` span attribute |
+
+Attempts and recoveries are both reported, since a retry that was spent and failed anyway
+is the more interesting number. The waste figures include requests that never succeeded —
+every attempt they made was wasted. A retry is not an error label and never enters
+`failures.count`.
+
 ### Load Generator: run_stage vs run_session_stage
 
 **`run_stage`** is the standard path used by every other load type:
