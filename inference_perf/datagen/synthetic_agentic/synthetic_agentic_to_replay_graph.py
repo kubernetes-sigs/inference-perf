@@ -105,23 +105,30 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             if tool_calls:
                 # Always a list, even for a single call.
                 fc_value = json.dumps(
-                    [{"name": tc.get("function", {}).get("name", ""), "arguments": tc.get("function", {}).get("arguments", "{}")} for tc in tool_calls]
+                    [
+                        {
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": tc.get("function", {}).get("arguments", "{}"),
+                        }
+                        for tc in tool_calls
+                    ]
                 )
                 conversations.append({"from": "function_call", "value": fc_value})
                 # Collect the immediately-following role:tool messages into one observation.
-                results: List[Dict[str, Any]] = []
+                # Collect tool results keyed by tool_call_id, then emit in
+                # tool_calls order so function_call[i] aligns with observation[i]
+                # even when results arrive out of order (e.g. OTel graphs).
+                result_by_id: Dict[str, str] = {}
                 j = i + 1
                 while j < len(messages) and messages[j].get("role") == "tool":
                     tool_msg = messages[j]
-                    tc_id = tool_msg.get("tool_call_id", "")
-                    # Resolve tool name by matching tool_call_id; fall back to positional.
-                    fn_name = next(
-                        (tc["function"]["name"] for tc in tool_calls if tc.get("id") == tc_id),
-                        tool_calls[len(results)]["function"]["name"] if len(results) < len(tool_calls) else "unknown",
-                    )
-                    results.append({"name": fn_name, "results": tool_msg.get("content", "")})
+                    result_by_id[tool_msg.get("tool_call_id", "")] = tool_msg.get("content", "")
                     j += 1
-                if results:
+                if result_by_id:
+                    results = [
+                        {"name": tc.get("function", {}).get("name", ""), "results": result_by_id.get(tc.get("id", ""), "")}
+                        for tc in tool_calls
+                    ]
                     conversations.append({"from": "observation", "value": json.dumps(results)})
                 i = j
             else:
@@ -135,13 +142,13 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     if expected_output:
         if call.get("expected_output_is_tool_call"):
             tool_names: List[str] = call.get("expected_output_tool_names") or []
-            conversations.append({"from": "function_call", "value": _tool_names_to_fc_value(tool_names)})
+            conversations.append({"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])})
         else:
             conversations.append({"from": "gpt", "value": expected_output})
     elif call.get("expected_output_is_tool_call"):
         # expected_output is blank but the graph records it will be a tool call.
         tool_names = call.get("expected_output_tool_names") or []
-        conversations.append({"from": "function_call", "value": _tool_names_to_fc_value(tool_names)})
+        conversations.append({"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])})
 
     # Preserve graph metadata in a dedicated namespace so standard ShareGPT
     # readers ignore it while inference-perf tooling can recover replay context.
