@@ -27,7 +27,7 @@ import unittest
 from typing import Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge  # noqa: TID251 (throwaway metrics for these tests)
 
 from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric

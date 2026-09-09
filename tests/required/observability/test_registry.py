@@ -17,7 +17,7 @@ import time
 from typing import Optional
 
 import pytest
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import Counter, Gauge, Histogram  # noqa: TID251 (throwaway metrics for these tests)
 from prometheus_client.exposition import generate_latest
 
 from inference_perf.apis.base import ErrorResponseInfo, InferenceInfo, RequestLifecycleMetric

@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from inference_perf.observability.metrics.coverage import coverage_problems, emitted_metric_names
 from inference_perf.observability.metrics.registry import MetricSpec, MetricStability, always, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 
@@ -11,6 +12,8 @@ HEADER = """# Inference-Perf Runtime Metrics
 These are the Prometheus metrics inference-perf can export about its own runtime over an HTTP `/metrics` endpoint. They are distinct from the metrics inference-perf scrapes from the model server under test and from the benchmark result definitions in [metrics.md](./metrics.md).
 
 This document is automatically generated from the metric specs under `inference_perf/observability/metrics/sets/`. Do not edit it by hand; run `pdm run update:runtime-metrics` after changing the specs.
+
+Every metric the endpoint can expose has a row below, and nothing else can be exposed: `pdm run check:runtime-metrics` scrapes a registry built with all config gating bypassed and fails if that exposition and this table disagree in either direction. It runs inside `pdm run validate`, which is merge-blocking.
 
 ## Stability
 
@@ -52,6 +55,20 @@ def generate_doc() -> str:
     return HEADER + "\n".join(rows) + "\n"
 
 
+def check_every_emitted_metric_is_documented() -> None:
+    """Fail unless the doc's metrics are exactly the ones a scrape can show.
+
+    This is what makes a row in the table mean "actually exported" rather than
+    "someone remembered to declare it".
+    """
+    problems = coverage_problems()
+    if problems:
+        for problem in problems:
+            print(f"Error: {problem}")
+        sys.exit(1)
+    print(f"All {len(emitted_metric_names())} exported runtime metrics are documented.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync runtime metrics documentation.")
     parser.add_argument("--check", action="store_true", help="Fail if doc is out of sync.")
@@ -62,6 +79,7 @@ def main() -> None:
     expected_content = generate_doc()
 
     if args.check:
+        check_every_emitted_metric_is_documented()
         if not doc_path.exists():
             print(f"Error: {doc_path} does not exist. Run `pdm run update:runtime-metrics` to create it.")
             sys.exit(1)
