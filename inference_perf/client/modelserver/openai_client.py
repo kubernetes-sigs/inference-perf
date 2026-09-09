@@ -184,7 +184,7 @@ class openAIModelServerClient(ModelServerClient):
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
-            response = requests.get(f"{self.uri}/v1/models")
+            response = requests.get(f"{self.uri}/v1/models", headers=_build_request_headers(self.api_config, self.api_key))
             response.raise_for_status()
             data = response.json()
             if "data" in data and isinstance(data["data"], list):
@@ -203,6 +203,19 @@ def _update_headers_case_insensitive(target: dict[str, str], source: dict[str, s
         for mk in matching_keys:
             del target[mk]
         target[k] = v
+
+
+def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        if api_config.type == APIType.AnthropicMessages:
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = ANTHROPIC_VERSION
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+    if api_config.headers:
+        _update_headers_case_insensitive(headers, api_config.headers)
+    return headers
 
 
 def is_retryable_transport_error(exc: BaseException) -> bool:
@@ -463,17 +476,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
             payload["response_format"] = self.client.api_config.response_format.to_api_format()
 
-        headers = {"Content-Type": "application/json"}
-
-        if self.client.api_key:
-            if self.client.api_config.type == APIType.AnthropicMessages:
-                headers["x-api-key"] = self.client.api_key
-                headers["anthropic-version"] = ANTHROPIC_VERSION
-            else:
-                headers["Authorization"] = f"Bearer {self.client.api_key}"
-
-        if self.client.api_config.headers:
-            _update_headers_case_insensitive(headers, self.client.api_config.headers)
+        headers = _build_request_headers(self.client.api_config, self.client.api_key)
 
         if data.headers:
             _update_headers_case_insensitive(headers, data.headers)
