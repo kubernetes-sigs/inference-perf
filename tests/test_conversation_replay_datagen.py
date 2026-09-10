@@ -15,6 +15,7 @@
 
 from typing import Any, Generator
 
+import asyncio
 import pytest
 from unittest.mock import MagicMock
 import numpy as np
@@ -534,3 +535,195 @@ class TestSlidingWindowTruncation:
         session.update_context(session.context + " Turn4")
         assert session.history == ["Turn2", "Turn3", "Turn4"]
         assert session.context == "System Instruction Turn2 Turn3 Turn4"
+
+
+class TestRolloverDoesNotOrphanWaiters:
+    """A session id must map to exactly one object.
+
+    `load_lazy_data` runs per request at dispatch time, so it is called
+    repeatedly for the same slot and `convo_num` and asks `_new_session` for an
+    id that already exists. Requests resolve their session by id late
+    (`UserSessionCompletionAPIData.user_session`), so replacing the object for a
+    live id splits a request across two of them: it reads context from the old
+    object and writes its response to the new one.
+
+    Two consequences, both covered below. A turn parked on the old object's
+    `asyncio.Future` is never woken, because every later release targets the new
+    object — the stage's finished-request counter never reaches `num_requests`
+    and the run hangs silently with no traceback (the failure reported in
+    llm-d-benchmark#1688 with the `interactive-chat` workload). And a straggler
+    that does complete writes its response into the wrong conversation's
+    history.
+    """
+
+    @staticmethod
+    def _rollover_index(gen: ConversationReplayDataGenerator, conv_idx: int = 0) -> int:
+        """Smallest data_index for `conv_idx` hitting `turn_idx == 0 and round_num > 0`."""
+        n_conv = len(gen.blueprints)
+        # round_num = data_index // n_conv; turn_idx = round_num % num_turns
+        return gen.blueprints[conv_idx].num_turns * n_conv + conv_idx
+
+    def _fixed_turn_gen(self, num_conversations: int = 2, turns: int = 3) -> ConversationReplayDataGenerator:
+        api_config, data_config = _make_config(
+            num_conversations=num_conversations, turns_min=turns, turns_max=turns, turns_mean=turns
+        )
+        return ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+    async def test_rollover_does_not_orphan_queued_waiter(self) -> None:
+        """A turn parked in get_context() must still complete across a rollover.
+
+        Turn A holds the session lock, turn B queues behind it, then another
+        dispatch for the same slot rebuilds the session id. B must not hang.
+        """
+        gen = self._fixed_turn_gen()
+        idx = self._rollover_index(gen)
+
+        # First dispatch performs the rollover and registers slot_0_convo_1.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        live = gen.user_sessions[0]
+        sid = live.user_session_id
+        assert sid == "slot_0_convo_1"
+
+        # Turn A acquires the session; turn B queues behind it.
+        await live.get_context(0)
+        waiter = asyncio.ensure_future(live.get_context(1))
+        await asyncio.sleep(0)
+        assert live._waiting_rounds is not None and live._waiting_rounds.qsize() == 1
+
+        # A later dispatch for the same slot/conversation rebuilds the same id
+        # while A and B are still in flight.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+
+        # Turn A completes and releases through the registered session, which is
+        # how the client path resolves it (`data.user_session`).
+        LocalUserSession.get_instance(sid).update_context("A done")
+
+        try:
+            await asyncio.wait_for(waiter, timeout=0.5)
+        except asyncio.TimeoutError:
+            waiter.cancel()
+            pytest.fail(
+                f"turn parked in get_context() was orphaned by the rollover of {sid!r}: "
+                "its future belongs to the replaced session object, so no later "
+                "update_context() can resolve it. The request never completes and the "
+                "stage hangs forever (llm-d-benchmark#1688)."
+            )
+
+    async def test_repeated_dispatch_keeps_one_object_per_session_id(self) -> None:
+        """Re-dispatching the same data_index must not rebuild the session.
+
+        This is the invariant the other two tests depend on: a request resolves
+        its session by id late, so two objects for one id split it in half.
+        """
+        gen = self._fixed_turn_gen()
+        idx = self._rollover_index(gen)
+
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        live = gen.user_sessions[0]
+        sid = live.user_session_id
+
+        await live.get_context(0)  # an in-flight turn holds the session
+
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+
+        assert gen.user_sessions[0] is live, (
+            f"repeated dispatch for data_index={idx} rebuilt session {sid!r}. A request "
+            "already holding the previous object would read its context from that object "
+            "and write its response to the new one."
+        )
+        assert LocalUserSession.get_instance(sid) is live, (
+            f"registry entry for {sid!r} no longer points at the live session, so "
+            "update_context() would resolve to a different object than get_context() did."
+        )
+
+    async def test_rollover_does_not_leak_turn_into_other_conversation(self) -> None:
+        """A straggler's response must not land in another conversation's history.
+
+        A turn parked across a rollover reads its context from the session it was
+        dispatched against. If the id has since been rebound to a fresh
+        conversation, that response is appended to the wrong history — polluting
+        the prefix distribution this generator exists to control.
+        """
+        gen = self._fixed_turn_gen()
+        idx = self._rollover_index(gen)
+
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+        session = gen.user_sessions[0]
+        sid = session.user_session_id
+
+        # Give the conversation some accumulated history.
+        session.history = ["first turn", "second turn"]
+        session.context = f"{session.system_prompt} {' '.join(session.history)}"
+
+        # One turn in flight, a straggler queued behind it.
+        await session.get_context(2)
+        straggler = asyncio.ensure_future(session.get_context(3))
+        await asyncio.sleep(0)
+
+        # Another dispatch for the same slot arrives mid-flight.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0))
+
+        # The in-flight turn completes, resolving through the registry.
+        registered = LocalUserSession.get_instance(sid)
+        registered.update_context(f"{registered.context} third turn")
+
+        context_sent = await asyncio.wait_for(straggler, timeout=1.0)
+        assert context_sent.startswith(session.system_prompt), (
+            f"straggler was handed a context built from a different conversation's system prompt: {context_sent[:80]!r}"
+        )
+
+        # The straggler must still be talking to the object it was dispatched
+        # against, so its response extends that conversation and nothing else.
+        after = LocalUserSession.get_instance(sid)
+        assert after is session, (
+            "the straggler's context came from one object but its response would be "
+            "written to another, so the two halves of the request disagree."
+        )
+
+        history_before = list(after.history)
+        after.update_context(f"{context_sent} fourth turn")
+        assert after.history[: len(history_before)] == history_before, (
+            f"straggler's response rewrote earlier history: {history_before} -> {after.history}"
+        )
+        # Exactly one turn is appended, and it is the straggler's own.
+        assert after.history == history_before + ["fourth turn"], (
+            "straggler's response was not appended cleanly as a single new turn — the "
+            "system-prompt prefix strip in update_context() was computed against a "
+            f"different conversation: {after.history}"
+        )
+
+    def test_rolled_over_slot_keeps_system_prompt_across_stages(self) -> None:
+        """Re-priming a rolled-over slot in a later stage must set system_prompt.
+
+        `LoadGenerator` calls `clear_instances()` between stages, so the next
+        dispatch re-primes the slot under its rolled-over id. If that session is
+        built without a `system_prompt`, `update_context` takes its
+        `else` branch (`user_session.py:85`) and assigns the raw response to
+        `context` — silently disabling history tracking and the
+        `max_model_len` sliding window for the rest of the run.
+        """
+        gen = self._fixed_turn_gen()
+        idx = self._rollover_index(gen)
+
+        # Stage 0: roll slot 0 over onto a fresh conversation.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=0))
+        rolled_over_id = gen.user_sessions[0].user_session_id
+        assert rolled_over_id == "slot_0_convo_1"
+
+        # LoadGenerator clears the registry between stages.
+        LocalUserSession.clear_instances()
+
+        # Stage 1: the same slot is re-primed under its rolled-over id.
+        gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=idx, preferred_worker_id=0, stage_id=1))
+        session = LocalUserSession.get_instance(rolled_over_id)
+
+        assert session.system_prompt, (
+            f"session {rolled_over_id!r} was re-primed for stage 1 without a system_prompt, "
+            "so update_context() falls back to assigning the raw response and stops "
+            "tracking history or enforcing max_model_len."
+        )
+        assert session.context.startswith(session.system_prompt)
+
+        # History tracking is live: a response is split into a new turn.
+        session.update_context(f"{session.system_prompt} a new turn")
+        assert session.history == ["a new turn"], f"history tracking is disabled after the stage boundary: {session.history}"
