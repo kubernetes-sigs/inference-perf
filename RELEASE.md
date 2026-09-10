@@ -9,7 +9,7 @@ Release, publishes to PyPI, pushes the image to quay.io, and packages the Helm c
 1. Close the milestone. Every open item is either merged, deferred, or closed with reason.
 1. Merge a PR bumping `version` in `pyproject.toml` and `version` and `appVersion` in
    `deploy/inference-perf/Chart.yaml` to `X.Y.Z`.
-1. Label every PR that belongs in the changelog with one of the categories in
+1. Optional: Label every PR that belongs in the changelog with one of the categories in
    [`.github/changelog-config.json`](.github/changelog-config.json).
 1. Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
    coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
