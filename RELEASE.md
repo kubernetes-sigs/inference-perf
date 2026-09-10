@@ -1,9 +1,56 @@
 # Release Process
 
-The Kubernetes Template Project is released on an as-needed basis. The process is as follows:
+Releases are tag-driven. Pushing a `vX.Y.Z` tag runs
+[`publish-on-release.yml`](.github/workflows/publish-on-release.yml), which creates the GitHub
+Release, publishes to PyPI, pushes the image to quay.io, and packages the Helm chart.
 
-1. An issue is proposing a new release with a changelog since the last release
-1. All [OWNERS](OWNERS) must LGTM this release
-1. An OWNER runs `git tag -s $VERSION` and inserts the changelog and pushes the tag with `git push $VERSION`
-1. The release issue is closed
-1. An announcement email is sent to `dev@kubernetes.io` with the subject `[ANNOUNCE] kubernetes-template-project $VERSION is released`
+## 1. Before the cut
+
+1. Close the milestone. Every open item is either merged, deferred, or closed with reason.
+1. Merge a PR bumping `version` in `pyproject.toml` and `version` and `appVersion` in
+   `deploy/inference-perf/Chart.yaml` to `X.Y.Z`.
+1. Optional: Label every PR that belongs in the changelog with one of the categories in
+   [`.github/changelog-config.json`](.github/changelog-config.json).
+1. Confirm the commit you will tag is green on `main`: linting and type checks, unit tests,
+   coverage, and `E2E Test on change`. Tag only a merged commit on `main`.
+1. Run [`test-release.yml`](.github/workflows/test-release.yml) by `workflow_dispatch` on `main`.
+   It builds the package and uploads it to TestPyPI under a dev version. Fix any failure before
+   tagging.
+1. Optional: Draft the summary of features, fixes, and improvements that goes above the generated
+   changelog.
+
+## 2. Cut
+
+A maintainer with write access pushes the tag. There is no release PR.
+
+```sh
+git fetch upstream
+git tag vX.Y.Z upstream/main
+git push upstream vX.Y.Z
+git push upstream upstream/main:refs/heads/release-vX.Y.Z   # one branch per release, at the tag
+```
+
+Drafting and publishing a release in the GitHub UI creates the same tag and triggers the same
+workflow.
+
+## 3. What the automation does
+
+- `build-and-publish` builds the changelog from labelled PRs since the previous tag and creates
+  the GitHub Release.
+- `python-package` sets `version` from the tag, builds the package, and uploads it to PyPI.
+- `docker` builds `linux/amd64` and tags it `vX.Y.Z` and `latest`.
+- `helm-chart` packages `deploy/inference-perf` and pushes it to
+  `oci://quay.io/inference-perf/charts/inference-perf`.
+
+Watch the run under Actions, "Release Processing". The release notes advertise every artifact, so
+fix and re-run any failed job before announcing.
+
+## 4. After the cut
+
+- Put the written summary above the generated changelog in the release body.
+- Verify each artifact:
+  `pip install inference-perf==X.Y.Z`,
+  `docker pull quay.io/inference-perf/inference-perf:vX.Y.Z`,
+  `helm show chart oci://quay.io/inference-perf/charts/inference-perf --version X.Y.Z`.
+- Announce in [#inference-perf](https://kubernetes.slack.com/?redir=%2Fmessages%2Finference-perf)
+  on Kubernetes Slack and link the release page.
