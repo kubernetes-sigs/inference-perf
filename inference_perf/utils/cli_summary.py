@@ -390,14 +390,17 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 1: Session Summary
     session_summary_table = Table(
-        title="[bold magenta]Session Summary[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Summary[/bold magenta]",
+        caption="Not Completed sessions due to SIGINT or connection errors, or exceeding max_stage_duration",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_summary_table.add_column("Stage", justify="right")
     session_summary_table.add_column("Sessions/s", justify="right")
     session_summary_table.add_column("Total Sessions", justify="right")
     session_summary_table.add_column("Succeeded", justify="right")
     session_summary_table.add_column("Failed", justify="right")
-    session_summary_table.add_column("Timed-out", justify="right")
+    session_summary_table.add_column("Not Completed", justify="right")
     session_summary_table.add_column("Error %", justify="right")
     session_summary_table.add_column("Total Events", justify="right")
     session_summary_table.add_column("Events Completed", justify="right")

@@ -551,7 +551,10 @@ class LoadGenerator:
         # Session pool management
         concurrent_sessions = stage.concurrent_sessions
         session_rate = stage.session_rate
-        max_stage_duration = stage.max_stage_duration
+
+        max_stage_duration = (
+            stage.max_stage_duration if stage.max_stage_duration else stage.timeout
+        )  # timeout is deprecated, kept for legacy
 
         # Compute this stage's session slice from the cursor
         available_sessions = total_sessions - self._session_cursor
