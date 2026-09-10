@@ -50,12 +50,13 @@ data:
     # session keeps its shape.
     bad_tool_call_handling: use_recorded
 
-    # predecessor_wait_timeout_sec (default: 3600) bounds how long an event waits
-    # for its predecessors -- cumulative ancestor latency, not one request. Deep
-    # chains in a slow run can exceed it, and when they do the whole session is
-    # lost, so raise it rather than lowering it. Set to 0 to wait indefinitely,
-    # with care: a genuinely stuck predecessor then never times out.
-    # predecessor_wait_timeout_sec: 3600
+    # predecessor_wait_timeout_sec bounds how long an event waits for its
+    # predecessors -- cumulative ancestor latency, not one request. Deep chains in
+    # a slow run can exceed it, and when they do the whole session is lost, so
+    # raise it rather than lowering it. Raised to 3h (default 3600) because long
+    # replays hit the 1h bound. Set to 0 to wait indefinitely, with care: a
+    # genuinely stuck predecessor then never times out.
+    predecessor_wait_timeout_sec: 10800
 
     # Recorded error turns replay as failures that are not your endpoint's. Keep
     # true for fidelity; set false when measuring endpoint reliability.
