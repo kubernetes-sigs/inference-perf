@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
 import multiprocessing as mp
 import sys
 from argparse import ArgumentParser
@@ -30,6 +31,7 @@ from inference_perf.config import (
     MetricsClientType,
     ModelServerType,
     ReportConfig,
+    RuntimeMetricsConfig,
     StandardLoadStage,
     ConcurrentLoadStage,
     read_config,
@@ -72,13 +74,37 @@ from inference_perf.metrics.request_collector import (
     LocalRequestMetricCollector,
     MultiprocessRequestMetricCollector,
 )
-from inference_perf.circuit_breaker import init_circuit_breakers
+from inference_perf.circuit_breaker import feed_breakers, init_circuit_breakers
+from inference_perf.observability.metrics import PrometheusMetricsServer, RunContext, build_metrics
 from inference_perf.reportgen import ReportGenerator
 from inference_perf.utils import CustomTokenizer, ReportFile, add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.cli_summary import print_summary_table
 from inference_perf.observability.logging import setup_logging
 import asyncio
 import time
+
+logger = logging.getLogger(__name__)
+
+
+def log_metrics_endpoint_failure(metrics_config: RuntimeMetricsConfig, error: OSError) -> None:
+    """Report a metrics endpoint that would not bind, without failing the run.
+
+    Observability must not fail the run it observes: the benchmark and its
+    reports are unaffected, only the scrape endpoint is missing. Now that the
+    endpoint is on by default, losing the *default* port is the expected
+    outcome of two benchmarks sharing a host, so it is a warning. A non-default
+    port is an error: nothing puts a run on one except a user asking for it,
+    and something else has it.
+    """
+    if metrics_config.port != RuntimeMetricsConfig.model_fields["port"].default:
+        logger.error("Could not start the runtime metrics endpoint on requested port: %s", error)
+    else:
+        logger.warning(
+            "Runtime metrics endpoint not started (default port %d unavailable): %s. "
+            "Set observability.metrics.port to choose another, or enabled: false to skip it.",
+            metrics_config.port,
+            error,
+        )
 
 
 class InferencePerfRunner:
@@ -184,7 +210,15 @@ def main_cli() -> None:
         collector = MultiprocessRequestMetricCollector()
     else:
         collector = LocalRequestMetricCollector()
+    if config.circuit_breakers:
+        collector.add_observer(feed_breakers)
     reportgen = ReportGenerator(metrics_client, collector, config=config)
+
+    # Runtime metrics inference-perf exports about itself. The hub always runs
+    # in-process (it feeds the collector observer and stage hooks); the HTTP
+    # exposition endpoint is on by default, via observability.metrics.enabled.
+    metrics_hub = build_metrics(config)
+    collector.add_observer(metrics_hub.observe_request)
 
     # Create tokenizer based on tokenizer config
     tokenizer: Optional[CustomTokenizer] = None
@@ -397,7 +431,13 @@ def main_cli() -> None:
     # Define LoadGenerator with session metrics collector
     if isinstance(metrics_client, PrometheusMetricsClient) and config.report.prometheus and config.report.prometheus.per_stage:
         config.load.interval = max(config.load.interval, metrics_client.scrape_interval)
-    loadgen = LoadGenerator(datagen, config.load, session_metrics_collector)
+    loadgen = LoadGenerator(
+        datagen,
+        config.load,
+        session_metrics_collector,
+        stage_observer=metrics_hub,
+        metrics_registry=metrics_hub.registry,
+    )
 
     # Wire session metrics collector into reportgen if it exists
     if session_metrics_collector:
@@ -406,13 +446,33 @@ def main_cli() -> None:
     # Setup Perf Test Runner
     perfrunner = InferencePerfRunner(model_server_client, loadgen, reportgen, storage_clients)
 
+    metrics_server: Optional[PrometheusMetricsServer] = None
+    if config.observability.metrics.enabled:
+        metrics_server = PrometheusMetricsServer(
+            metrics_hub.registry, port=config.observability.metrics.port, addr=config.observability.metrics.host
+        )
+        try:
+            metrics_server.start()
+            logger.info(
+                "Runtime metrics served at http://%s:%d/metrics",
+                config.observability.metrics.host,
+                metrics_server.bound_port,
+            )
+        except OSError as e:
+            log_metrics_endpoint_failure(config.observability.metrics, e)
+            metrics_server = None
+
     start_time = time.time()
+    metrics_hub.on_run_start(RunContext(config=config, in_flight_requests=loadgen.in_flight_requests))
 
     # Run Perf Test
     try:
         perfrunner.run()
     except KeyboardInterrupt:
         pass
+    finally:
+        if metrics_server is not None:
+            metrics_server.stop()
 
     end_time = time.time()
     duration = end_time - start_time  # Calculate the duration of the test

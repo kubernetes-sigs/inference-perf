@@ -3,9 +3,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from prometheus_client import Counter
-
-from inference_perf.observability.metrics.registry import MetricSpec, always
+from inference_perf.observability.metrics.coverage import coverage_problems, emitted_metric_names
+from inference_perf.observability.metrics.registry import MetricSpec, MetricStability, always, exposition_name
 from inference_perf.observability.metrics.sets import ALL_SPECS
 
 HEADER = """# Inference-Perf Runtime Metrics
@@ -14,16 +13,21 @@ These are the Prometheus metrics inference-perf can export about its own runtime
 
 This document is automatically generated from the metric specs under `inference_perf/observability/metrics/sets/`. Do not edit it by hand; run `pdm run update:runtime-metrics` after changing the specs.
 
-| Metric | Type | Labels | Exported | Description |
-| --- | --- | --- | --- | --- |
-"""
+Every metric the endpoint can expose has a row below, and nothing else can be exposed: `pdm run check:runtime-metrics` scrapes a registry built with all config gating bypassed and fails if that exposition and this table disagree in either direction. It runs inside `pdm run validate`, which is merge-blocking.
 
+## Stability
 
-def exposition_name(spec: MetricSpec[Any]) -> str:
-    # prometheus_client appends _total to Counter sample names.
-    if spec.metric_type is Counter:
-        return f"{spec.name}_total"
-    return spec.name
+Every metric declares a stability level, and that level is prepended to the metric's HELP text, so a scrape says what is promised without anyone having to find this file:
+
+{levels}
+
+**Every metric below is `ALPHA` today, and the whole set stays `ALPHA` through v0.7.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; nothing is promoted before v1.0.0, and promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+
+## Metrics
+
+| Metric | Type | Stability | Labels | Exported | Description |
+| --- | --- | --- | --- | --- | --- |
+""".format(levels="\n".join(f"- `{level.value}`: {level.promise}" for level in MetricStability))
 
 
 def exported_when(spec: MetricSpec[Any]) -> str:
@@ -45,10 +49,24 @@ def generate_doc() -> str:
     for spec in ALL_SPECS:
         labels = ", ".join(f"`{label}`" for label in spec.labelnames) or "none"
         rows.append(
-            f"| `{exposition_name(spec)}` | {spec.metric_type.__name__} | {labels} "
+            f"| `{exposition_name(spec)}` | {spec.metric_type.__name__} | `{spec.stability.value}` | {labels} "
             f"| {exported_when(spec)} | {spec.documentation} |"
         )
     return HEADER + "\n".join(rows) + "\n"
+
+
+def check_every_emitted_metric_is_documented() -> None:
+    """Fail unless the doc's metrics are exactly the ones a scrape can show.
+
+    This is what makes a row in the table mean "actually exported" rather than
+    "someone remembered to declare it".
+    """
+    problems = coverage_problems()
+    if problems:
+        for problem in problems:
+            print(f"Error: {problem}")
+        sys.exit(1)
+    print(f"All {len(emitted_metric_names())} exported runtime metrics are documented.")
 
 
 def main() -> None:
@@ -61,6 +79,7 @@ def main() -> None:
     expected_content = generate_doc()
 
     if args.check:
+        check_every_emitted_metric_is_documented()
         if not doc_path.exists():
             print(f"Error: {doc_path} does not exist. Run `pdm run update:runtime-metrics` to create it.")
             sys.exit(1)

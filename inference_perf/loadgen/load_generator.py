@@ -56,10 +56,11 @@ else:
     # Runtime usage will still require Python 3.11+.
     TaskGroup = object
 
-from typing import List, Tuple, Optional, NamedTuple, Union, Set, Dict, cast
+from typing import Awaitable, List, Tuple, Optional, NamedTuple, Protocol, Union, Set, Dict, cast
 from types import FrameType
 import ctypes
 import time
+import traceback
 import multiprocessing as mp
 from queue import Empty
 from multiprocessing.synchronize import Event as SyncEvent
@@ -69,18 +70,18 @@ from functools import partial
 import logging
 import uvloop
 import numpy as np
-from rich.progress import (
-    Progress,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-    MofNCompleteColumn,
-)
+from prometheus_client import CollectorRegistry
 import signal
 
+from inference_perf.observability.context import StageContext
 from inference_perf.observability.logging import get_console
+from inference_perf.observability.progress import (
+    OVERALL_BAR,
+    STAGE_REQUESTS_BAR,
+    STAGE_SESSIONS_BAR,
+    BarHandle,
+    ProgressBars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,114 @@ class TeardownResult(NamedTuple):
     dropped_requests: int
 
 
+class StageLifecycleObserver(Protocol):
+    """Receives stage transitions from the load generator.
+
+    Satisfied structurally by ``inference_perf.observability.metrics.MetricsHub``;
+    kept as a Protocol so the load generator does not import the metrics package.
+    """
+
+    def on_stage_start(self, context: StageContext) -> None: ...
+
+    def on_stage_end(self, context: StageContext) -> None: ...
+
+
 class RequestQueueData(NamedTuple):
     stage_id: int
     request_data: InferenceAPIData
     request_time: float
     lora_adapter: Optional[str]
+
+
+class WorkerCrash(NamedTuple):
+    """What a worker managed to record about its own unhandled exception before dying."""
+
+    worker_id: int
+    stage_id: Optional[int]
+    exc_type: str
+    message: str
+    traceback_text: str
+    in_flight: int
+
+
+class WorkerFailure(NamedTuple):
+    """A worker that is no longer alive, with whatever the parent can say about why."""
+
+    worker_id: int
+    exitcode: Optional[int]
+    crash: Optional[WorkerCrash]
+
+    def describe(self) -> str:
+        if self.exitcode is not None and self.exitcode < 0:
+            try:
+                signame = signal.Signals(-self.exitcode).name
+            except ValueError:
+                signame = f"signal {-self.exitcode}"
+            cause = f"was killed by {signame}"
+        elif self.exitcode == 0:
+            cause = "exited cleanly before the stage finished"
+        else:
+            cause = f"exited with code {self.exitcode}"
+        if self.crash is not None:
+            # stage_id is None when the worker died before it pulled its first request,
+            # which is the usual shape for a failure during startup.
+            where = "before serving any stage" if self.crash.stage_id is None else f"during stage {self.crash.stage_id}"
+            # in_flight is read from a counter shared by every worker, so it is the
+            # run-wide figure at the moment of the crash, not this worker's own share.
+            return (
+                f"Worker {self.worker_id} {cause} after an unhandled "
+                f"{self.crash.exc_type} {where} "
+                f"with {self.crash.in_flight} request(s) in flight run-wide: {self.crash.message}\n"
+                f"{self.crash.traceback_text.rstrip()}"
+            )
+        return (
+            f"Worker {self.worker_id} {cause} without reporting a Python traceback (segfault, OOM kill, or forced termination)"
+        )
+
+    def cause_label(self) -> str:
+        """Why this worker died, as a bounded string fit for a metric label.
+
+        Prefers the exception class the worker reported; falls back to the
+        signal name, and then to the exit code, which are the only things a
+        worker killed without warning leaves behind.
+        """
+        if self.crash is not None:
+            return self.crash.exc_type
+        if self.exitcode is not None and self.exitcode < 0:
+            try:
+                return signal.Signals(-self.exitcode).name
+            except ValueError:
+                return f"signal_{-self.exitcode}"
+        if self.exitcode == 0:
+            return "clean_exit"
+        return f"exit_{self.exitcode}"
+
+
+def collect_worker_failures(
+    workers: List["Worker"],
+    crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"],
+) -> List[WorkerFailure]:
+    """Pair every dead worker with its crash record, if the worker lived long enough to send one.
+
+    A worker killed by a signal never reports, so exitcode is the only evidence
+    available for that case and the record is None.
+    """
+    crashes: Dict[int, WorkerCrash] = {}
+    if crash_queue is not None:
+        while True:
+            try:
+                if crash_queue.empty():
+                    break
+                record = crash_queue.get()
+            except (OSError, EOFError, ValueError):
+                break
+            crashes[record.worker_id] = record
+    failures = []
+    for worker in workers:
+        if worker.is_alive() or worker.exitcode is None:
+            continue
+        failures.append(WorkerFailure(worker_id=worker.id, exitcode=worker.exitcode, crash=crashes.get(worker.id)))
+    return failures
 
 
 class Worker(mp.Process):
@@ -132,12 +236,14 @@ class Worker(mp.Process):
         request_phase: SyncEvent,
         finished_requests_counter: "Synchronized[int]",
         active_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         shared_max_concurrency: Optional["Synchronized[int]"],
         base_seed: int,
         force_stop_signal: Optional[SyncEvent] = None,
         stage_done_counter: Optional["Synchronized[int]"] = None,
         stage_boundary_seq: Optional["Synchronized[int]"] = None,
         teardown_grace_seconds: float = 120.0,
+        crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None,
     ):
         super().__init__(daemon=True)  # kill worker process if main process exit unexpected
         self.id = id
@@ -150,6 +256,7 @@ class Worker(mp.Process):
         self.request_phase = request_phase
         self.finished_requests_counter = finished_requests_counter
         self.active_requests_counter = active_requests_counter
+        self.skipped_requests_counter = skipped_requests_counter
         self.shared_max_concurrency = shared_max_concurrency
         self.skip = False
         self.base_seed = base_seed
@@ -160,6 +267,10 @@ class Worker(mp.Process):
         # True while the stage is winding down: in-flight requests may finish,
         # but no new requests are dispatched to the model server.
         self.draining = False
+        self.crash_queue = crash_queue
+        # Stage this worker is currently serving, reported alongside a crash so the
+        # failure can be attributed to a stage rather than to the run as a whole.
+        self._current_stage_id: Optional[int] = None
         # Snapshot the parent's effective root log level so the worker
         # interpreter (which under forkserver/spawn does not inherit the
         # parent's basicConfig) can configure its own handler to surface
@@ -219,6 +330,8 @@ class Worker(mp.Process):
                     # including its own respawned replacement. get_nowait
                     # holds the lock only while actually transferring an item.
                     item = await event_loop.run_in_executor(None, self.request_queue.get_nowait)
+                    if item is not None:
+                        self._current_stage_id = item.stage_id
                     if item is None:
                         semaphore.release()
                         continue
@@ -258,6 +371,12 @@ class Worker(mp.Process):
                             logger.debug(
                                 f"Skipping request - session failure detected: {getattr(request_data, 'event_id', 'unknown')}"
                             )
+                            # Retired without being sent, so no lifecycle metric will
+                            # exist for it. Counted here so the finished total the
+                            # progress bar reads can still be reconciled against the
+                            # outcome counters the report is built from.
+                            with self.skipped_requests_counter.get_lock():
+                                self.skipped_requests_counter.value += 1
                             return  # Exit this task, finally block will clean up
 
                         # Stage is winding down: in-flight requests may finish,
@@ -292,6 +411,8 @@ class Worker(mp.Process):
                     request_data = LazyLoadDataMixin.get_request(self.datagen, request)
                 except Exception as e:
                     logger.error(f"[Worker {self.id}] Failed to get request: {e}", exc_info=True)
+                    with self.skipped_requests_counter.get_lock():
+                        self.skipped_requests_counter.value += 1
                     with self.finished_requests_counter.get_lock():
                         self.finished_requests_counter.value += 1
                     semaphore.release()
@@ -386,6 +507,17 @@ class Worker(mp.Process):
             self.draining = False
 
     def run(self) -> None:
+        """Entry point in the worker process. Nothing below may escape unexplained."""
+        try:
+            self._run()
+        except BaseException as exc:
+            # Without this the process dies with the traceback on its own stderr,
+            # which races the parent's terminate() and is attributed to no worker.
+            # Record it first, then re-raise so the exit code still reflects the failure.
+            self._report_crash(exc)
+            raise
+
+    def _run(self) -> None:
         # forkserver/spawn workers start from a fresh interpreter without the
         # parent's logging.basicConfig, so logger.info() calls are silently
         # dropped by the lastResort handler (WARNING+). Install a minimal
@@ -409,6 +541,38 @@ class Worker(mp.Process):
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
+    def _report_crash(self, exc: BaseException) -> None:
+        """Log the failure locally and hand a structured copy to the parent before exiting."""
+        try:
+            in_flight = int(self.active_requests_counter.value)
+        except (AttributeError, OSError, ValueError):
+            in_flight = -1
+        record = WorkerCrash(
+            worker_id=self.id,
+            stage_id=self._current_stage_id,
+            exc_type=type(exc).__name__,
+            message=str(exc),
+            traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            in_flight=in_flight,
+        )
+        logger.error(
+            "[Worker %d] unhandled %s %s with %d request(s) in flight run-wide: %s\n%s",
+            record.worker_id,
+            record.exc_type,
+            "before serving any stage" if record.stage_id is None else f"during stage {record.stage_id}",
+            record.in_flight,
+            record.message,
+            record.traceback_text.rstrip(),
+        )
+        if self.crash_queue is None:
+            return
+        try:
+            # SimpleQueue writes straight to the pipe, so the record is not lost to an
+            # unflushed feeder thread when the process exits immediately after this.
+            self.crash_queue.put(record)
+        except Exception:
+            logger.error("[Worker %d] could not report its crash to the parent process", self.id)
+
 
 class LoadGenerator:
     def __init__(
@@ -416,8 +580,21 @@ class LoadGenerator:
         datagen: BaseGenerator,
         load_config: LoadConfig,
         session_metrics_collector: Optional[SessionMetricsCollector] = None,
+        stage_observer: Optional[StageLifecycleObserver] = None,
+        metrics_registry: Optional[CollectorRegistry] = None,
     ) -> None:
         self.datagen = datagen
+        self.stage_observer = stage_observer
+        # The registry the progress bars read. Without one the run is silent
+        # rather than showing bars built from some second set of counters.
+        self.metrics_registry = metrics_registry
+        # Requests sent and not yet finished. Multiprocess runs read the shared
+        # counter the workers maintain; the in-process run() path counts locally.
+        self._active_requests_counter: Optional["Synchronized[int]"] = None
+        self._local_in_flight = 0
+        # The in-process run() path has no worker counters to sample, so it
+        # keeps its own. Reset per stage, like the shared ones.
+        self._local_finished = 0
         self.stageInterval = load_config.interval
         self.load_type = load_config.type
         self.stages = load_config.stages
@@ -439,6 +616,8 @@ class LoadGenerator:
         # (not increment) their counter at the boundary.
         self._expected_stage_done = 0
         self._stage_boundary_seq: Optional["Synchronized[int]"] = None
+        self.worker_crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None
+        self.worker_failures: List[WorkerFailure] = []
         signal.signal(signal.SIGINT, self._sigint_handler)
 
         # Validate that datagen type matches load_type
@@ -473,6 +652,28 @@ class LoadGenerator:
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
         self.base_seed: int = load_config.base_seed
         self._session_cursor: int = 0
+
+    def in_flight_requests(self) -> int:
+        """Requests sent to the server and not yet finished, sampled live."""
+        if self._active_requests_counter is not None:
+            return int(self._active_requests_counter.value)
+        return self._local_in_flight
+
+    async def _track_in_flight(self, request: Awaitable[None]) -> None:
+        self._local_in_flight += 1
+        try:
+            await request
+        finally:
+            self._local_in_flight -= 1
+            self._local_finished += 1
+
+    def _stage_started(self, context: StageContext) -> None:
+        if self.stage_observer is not None:
+            self.stage_observer.on_stage_start(context)
+
+    def _stage_ended(self, context: StageContext) -> None:
+        if self.stage_observer is not None:
+            self.stage_observer.on_stage_end(context)
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -516,7 +717,7 @@ class LoadGenerator:
         finished_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
-        progress_ctx: Optional[Progress] = None,
+        progress_ctx: Optional[ProgressBars] = None,
     ) -> None:
         """Run a session-based trace replay stage.
 
@@ -578,8 +779,23 @@ class LoadGenerator:
             range(stage_start_cursor, stage_start_cursor + effective_num_sessions)
         )  # Sessions waiting to start
         completed_session_ids: Set[str] = set()  # Session IDs that have completed
+        skipped_session_count = 0  # Sessions counted complete that dispatched nothing
         session_dispatch_times: Dict[str, float] = {}  # session_id → wall-clock dispatch time
         session_dispatch_perf_counters: Dict[str, float] = {}  # session_id → perf_counter dispatch time
+
+        # Reported from here, not from the driver loop, because the planned
+        # count the progress metrics need is only known once it is computed.
+        # worker_failures accumulates across the whole run, so remember where this
+        # stage starts and report only what it loses.
+        failures_before_stage = len(self.worker_failures)
+        stage_context = StageContext(
+            stage_id=stage_id,
+            planned_sessions=effective_num_sessions,
+            sessions_finished=lambda: len(completed_session_ids),
+            sessions_skipped=lambda: skipped_session_count,
+            workers_lost=lambda: tuple(f.cause_label() for f in self.worker_failures[failures_before_stage:]),
+        )
+        self._stage_started(stage_context)
 
         # Cache OTEL instrumentation to avoid redundant calls
         otel_instr = get_otel_instrumentation()
@@ -638,6 +854,8 @@ class LoadGenerator:
             # NOT appear in the session lifecycle metrics. To surface them later, record a
             # skipped/failed session metric here instead of only marking them complete.
             if hasattr(self.datagen, "is_session_buildable") and not self.datagen.is_session_buildable(session_idx):
+                nonlocal skipped_session_count
+                skipped_session_count += 1
                 completed_session_ids.add(self.datagen._session_ids[session_idx])  # type: ignore[attr-defined]
                 return 0
 
@@ -699,15 +917,15 @@ class LoadGenerator:
             return dispatched_count
 
         # Main dispatch and wait loop
-        stage_task = None
+        stage_task: Optional[BarHandle] = None
         if progress_ctx:
-            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Sessions", total=effective_num_sessions)
+            stage_task = progress_ctx.open(STAGE_SESSIONS_BAR, stage=str(stage_id))
 
         while True:
             # Check for interrupts
             if self.interrupt_sig:
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.info("Loadgen encountered SIGINT")
                 stage_status = StageStatus.FAILED
@@ -718,8 +936,8 @@ class LoadGenerator:
                 break
 
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
                 stage_status = StageStatus.FAILED
@@ -730,8 +948,8 @@ class LoadGenerator:
                 break
 
             if timeout is not None and time.perf_counter() - start_time >= timeout:
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
                 logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
                 stage_status = StageStatus.FAILED
@@ -744,10 +962,16 @@ class LoadGenerator:
             # Fail fast on worker death instead of waiting out the stage
             # timeout: sessions assigned to a dead worker can never complete.
             if self.workers and any(not w.is_alive() for w in self.workers):
-                if progress_ctx and stage_task:
-                    progress_ctx.remove_task(stage_task)
+                if stage_task:
+                    stage_task.close()
                     stage_task = None
-                logger.error(f"Stage {stage_id}: a worker process died unexpectedly; failing stage")
+                failures = collect_worker_failures(self.workers, self.worker_crash_queue)
+                for failure in failures:
+                    logger.error("%s", failure.describe())
+                self.worker_failures.extend(failures)
+                if not failures:
+                    logger.error(f"Stage {stage_id}: a worker process died unexpectedly and left no exit status behind")
+                logger.error(f"Stage {stage_id}: failing stage after worker death")
                 stage_status = StageStatus.FAILED
                 for sid in list(session_spans.keys()):
                     otel_instr.end_session_span(session_spans[sid], "Worker process died")
@@ -829,13 +1053,15 @@ class LoadGenerator:
             # Sleep and update progress
             await sleep(0)
 
-            # Update progress
-            if progress_ctx and stage_task:
-                progress_ctx.update(stage_task, completed=len(completed_session_ids))
+            # Refresh is throttled internally, so driving it from this hot loop
+            # costs a clock read per iteration rather than a registry collect.
+            if progress_ctx:
+                progress_ctx.refresh()
 
         # Clean up progress task
-        if progress_ctx and stage_task:
-            progress_ctx.remove_task(stage_task)
+        if stage_task:
+            stage_task.close()
+            stage_task = None
 
         # Mark stage as completed if we finished normally
         if stage_status == StageStatus.RUNNING:
@@ -874,6 +1100,7 @@ class LoadGenerator:
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
         )
+        self._stage_ended(stage_context)
 
     async def _teardown_stage(
         self,
@@ -998,12 +1225,14 @@ class LoadGenerator:
             dead.request_phase,
             dead.finished_requests_counter,
             dead.active_requests_counter,
+            dead.skipped_requests_counter,
             dead.shared_max_concurrency,
             dead.base_seed,
             force_stop_signal=dead.force_stop_signal,
             stage_done_counter=stage_done_counter,
             stage_boundary_seq=dead.stage_boundary_seq,
             teardown_grace_seconds=dead.teardown_grace_seconds,
+            crash_queue=dead.crash_queue,
         )
 
     async def run_stage(
@@ -1014,11 +1243,13 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
         concurrency_level: Optional[int] = None,
-        progress_ctx: Optional[Progress] = None,
+        progress_ctx: Optional[ProgressBars] = None,
+        report_stage: bool = True,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
 
@@ -1028,6 +1259,8 @@ class LoadGenerator:
         request_phase.set()
         with finished_requests_counter.get_lock():
             finished_requests_counter.value = 0
+        with skipped_requests_counter.get_lock():
+            skipped_requests_counter.value = 0
         timer = self.get_timer(rate, duration)
 
         # Allow generation a second to begin populating the queue so the workers
@@ -1041,6 +1274,20 @@ class LoadGenerator:
             num_requests = int(rate * duration)
 
         stage_status = StageStatus.RUNNING
+        # Reported from here, not from the driver loop, because the planned
+        # count the progress metrics need is only known once it is computed.
+        # worker_failures accumulates across the whole run, so remember where this
+        # stage starts and report only what it loses.
+        failures_before_stage = len(self.worker_failures)
+        stage_context = StageContext(
+            stage_id=stage_id,
+            planned_requests=num_requests,
+            requests_finished=lambda: int(finished_requests_counter.value),
+            requests_skipped=lambda: int(skipped_requests_counter.value),
+            workers_lost=lambda: tuple(f.cause_label() for f in self.worker_failures[failures_before_stage:]),
+        )
+        if report_stage:
+            self._stage_started(stage_context)
 
         time_generator = timer.start_timer(start_time)
         if isinstance(self.datagen, DataGenerator):
@@ -1067,7 +1314,7 @@ class LoadGenerator:
         # Wait until all requests are finished processing
         stage_task = None
         if progress_ctx:
-            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Requests", total=num_requests)
+            stage_task = progress_ctx.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
         timed_out = False
         while finished_requests_counter.value < num_requests:
@@ -1083,15 +1330,20 @@ class LoadGenerator:
                 timed_out = True
                 break
             if self.workers and len([w for w in self.workers if w.is_alive()]) < self.num_workers:
-                logger.error("A worker process died unexpectedly!")
+                failures = collect_worker_failures(self.workers, self.worker_crash_queue)
+                for failure in failures:
+                    logger.error("%s", failure.describe())
+                self.worker_failures.extend(failures)
+                if not failures:
+                    logger.error("A worker process died unexpectedly and left no exit status behind!")
                 timed_out = True  # Trigger cleanup
                 break
             await sleep(1)
-            if progress_ctx and stage_task:
-                progress_ctx.update(stage_task, completed=finished_requests_counter.value)
+            if progress_ctx:
+                progress_ctx.refresh()
 
-        if progress_ctx and stage_task:
-            progress_ctx.remove_task(stage_task)
+        if stage_task:
+            stage_task.close()
 
         stage_status = StageStatus.FAILED if (timed_out or self.interrupt_sig) else StageStatus.COMPLETED
 
@@ -1119,6 +1371,8 @@ class LoadGenerator:
             dropped_requests=teardown.dropped_requests,
         )
         logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
+        if report_stage:
+            self._stage_ended(stage_context)
 
     async def preprocess(
         self,
@@ -1126,6 +1380,7 @@ class LoadGenerator:
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
+        skipped_requests_counter: "Synchronized[int]",
         request_phase: SyncEvent,
         cancel_signal: SyncEvent,
     ) -> None:
@@ -1163,9 +1418,11 @@ class LoadGenerator:
             request_queue,
             active_requests_counter,
             finished_requests_counter,
+            skipped_requests_counter,
             request_phase,
             timeout=timeout,
             cancel_signal=cancel_signal,
+            report_stage=False,
         )
 
         aggregator_task.cancel()
@@ -1211,6 +1468,8 @@ class LoadGenerator:
         )
         finished_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
         active_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
+        skipped_requests_counter: "Synchronized[int]" = mp.Value("i", 0)
+        self._active_requests_counter = active_requests_counter
         request_phase: SyncEvent = mp.Event()
         stop_signal: SyncEvent = mp.Event()
         cancel_signal: SyncEvent = mp.Event()
@@ -1223,6 +1482,8 @@ class LoadGenerator:
         # (see _teardown_stage).
         stage_boundary_seq: "Synchronized[int]" = mp.Value("i", 0)
         self._stage_boundary_seq = stage_boundary_seq
+        # Channel a dying worker uses to hand its traceback to the parent.
+        self.worker_crash_queue = mp.SimpleQueue()
         # start workers in the request phase
         request_phase.set()
 
@@ -1251,12 +1512,14 @@ class LoadGenerator:
                     request_phase,
                     finished_requests_counter,
                     active_requests_counter,
+                    skipped_requests_counter,
                     shared_max_concurrency,
                     self.base_seed,
                     force_stop_signal=force_stop_signal,
                     stage_done_counter=stage_done_counter,
                     stage_boundary_seq=stage_boundary_seq,
                     teardown_grace_seconds=self.teardown_grace_seconds,
+                    crash_queue=self.worker_crash_queue,
                 )
             )
             self.workers[-1].start()
@@ -1268,6 +1531,7 @@ class LoadGenerator:
                     request_queue,
                     active_requests_counter,
                     finished_requests_counter,
+                    skipped_requests_counter,
                     request_phase,
                     cancel_signal,
                 )
@@ -1296,18 +1560,8 @@ class LoadGenerator:
                     )
 
         # Create progress context for all stages
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-            console=get_console(),
-            redirect_stdout=True,
-            redirect_stderr=True,
-        ) as progress:
-            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        with ProgressBars(self.metrics_registry, console=get_console()) as progress:
+            progress.open(OVERALL_BAR)
             for stage_id, stage in enumerate(self.stages):
                 # Handle session-based trace replay
                 if self.load_type == LoadType.TRACE_SESSION_REPLAY and isinstance(stage, TraceSessionReplayLoadStage):
@@ -1337,6 +1591,7 @@ class LoadGenerator:
                         request_queue,
                         active_requests_counter,
                         finished_requests_counter,
+                        skipped_requests_counter,
                         request_phase,
                         cancel_signal,
                         concurrency_level=concurrency_level,
@@ -1353,6 +1608,7 @@ class LoadGenerator:
                         request_queue,
                         active_requests_counter,
                         finished_requests_counter,
+                        skipped_requests_counter,
                         request_phase,
                         cancel_signal,
                         concurrency_level=concurrency_level,
@@ -1367,7 +1623,7 @@ class LoadGenerator:
                 # If we encountered a SIGINT, we can break out of run stages loop
                 if self.interrupt_sig:
                     break
-                progress.update(overall_task, advance=1)
+                progress.refresh(force=True)
                 if self.stageInterval:
                     await sleep(self.stageInterval)
 
@@ -1380,18 +1636,8 @@ class LoadGenerator:
             return await self.mp_run(client)
 
         # Create progress context
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            TimeElapsedColumn(),
-            console=get_console(),
-            redirect_stdout=True,
-            redirect_stderr=True,
-        ) as progress:
-            overall_task = progress.add_task(description="Overall Progress", total=len(self.stages))
+        with ProgressBars(self.metrics_registry, console=get_console()) as progress:
+            progress.open(OVERALL_BAR)
 
             for stage_id, stage in enumerate(self.stages):
                 if not isinstance(stage, StandardLoadStage):
@@ -1405,16 +1651,24 @@ class LoadGenerator:
                 logger.info("Stage %d - run started", stage_id)
 
                 num_requests = int(stage.rate * stage.duration)
-                stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
+                # This path has no worker processes to sample, so it counts its
+                # own completions; reset per stage like the shared counters are.
+                self._local_finished = 0
+                stage_context = StageContext(
+                    stage_id=stage_id,
+                    planned_requests=num_requests,
+                    requests_finished=lambda: self._local_finished,
+                )
+                self._stage_started(stage_context)
+                stage_task = progress.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
 
                 if not isinstance(self.datagen, DataGenerator):
                     raise TypeError("Non-multiprocessing run() requires DataGenerator")
 
                 async with TaskGroup() as tg:
                     time_generator = timer.start_timer(start_time)
-                    for count, (data, time_index) in enumerate(zip(self.datagen.get_data(), time_generator, strict=False)):
-                        if progress and stage_task:
-                            progress.update(stage_task, completed=count + 1)
+                    for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
+                        progress.refresh()
                         data.stage_id = stage_id
                         request_data = LazyLoadDataMixin.get_request(self.datagen, data)
                         lora_adapter = self._get_lora_adapter()
@@ -1434,13 +1688,15 @@ class LoadGenerator:
                                 break
                             if time_index > now:
                                 await sleep(time_index - time.perf_counter())
-                            tg.create_task(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                            tg.create_task(
+                                self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                            )
                             continue
                         else:
                             break
 
-                progress.update(stage_task, completed=1.0)
-                progress.remove_task(stage_task)  # Clean up after completion
+                progress.refresh(force=True)
+                stage_task.close()  # Clean up after completion
 
                 if stage_status == StageStatus.RUNNING:
                     stage_status = StageStatus.COMPLETED
@@ -1455,7 +1711,8 @@ class LoadGenerator:
                     status=stage_status,
                     concurrency_level=None,
                 )
-                progress.update(overall_task, advance=1)
+                self._stage_ended(stage_context)
+                progress.refresh(force=True)
                 LocalUserSession.clear_instances()
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
