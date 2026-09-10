@@ -23,7 +23,7 @@ import pytest
 import requests
 import textwrap
 
-from utils.benchmark import run_benchmark_minimal
+from utils.benchmark import pythonpath_env, run_benchmark_minimal
 from utils.llm_d_inference_sim import LLMDInferenceSimRunner
 from utils.testdata import extract_tarball
 
@@ -101,7 +101,7 @@ async def test_prometheus_metrics_collection(prometheus_server):
                 },
             },
             executable=[sys.executable, str(MAIN_PY_PATH)],
-            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
+            extra_env=pythonpath_env(PROJECT_ROOT),
         )
 
         # Verify benchmark succeeded before proceeding
@@ -212,7 +212,7 @@ async def test_prometheus_metrics_collection_chat(prometheus_server):
                 },
             },
             executable=[sys.executable, str(MAIN_PY_PATH)],
-            extra_env={"PYTHONPATH": str(PROJECT_ROOT)},
+            extra_env=pythonpath_env(PROJECT_ROOT),
         )
 
         # Verify benchmark succeeded before proceeding

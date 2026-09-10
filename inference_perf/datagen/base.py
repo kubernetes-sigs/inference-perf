@@ -114,6 +114,37 @@ class DataGenerator(BaseGenerator):
         raise NotImplementedError
 
 
+class StreamingDatasetMixin:
+    """Mixin for datagens backed by a live HuggingFace streaming iterator.
+
+    The iterator (``iter``/``itertools.cycle`` over ``load_dataset(..., streaming=True)``)
+    is backed by a generator and cannot be pickled. forkserver/spawn load-generator
+    workers pickle the Worker process and its datagen at start, so a datagen holding
+    such an iterator fails with ``TypeError: cannot pickle 'generator' object``.
+
+    Subclasses keep the iterator under the attribute named by ``_streaming_dataset_attr``
+    and build it in ``_initialize_dataset`` (reading ``self.config``). This mixin drops the
+    iterator when pickling and rebuilds it from ``self.config`` in the worker, so the
+    parent-side construction can stay eager.
+    """
+
+    config: DataConfig
+    _streaming_dataset_attr: str
+
+    def _initialize_dataset(self) -> None:
+        """Build the streaming iterator from ``self.config``. Subclasses must override."""
+        raise NotImplementedError
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop(self._streaming_dataset_attr, None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._initialize_dataset()
+
+
 class SessionGenerator(BaseGenerator):
     """Session-based trace replay for agentic workloads (TRACE_SESSION_REPLAY load type).
 
