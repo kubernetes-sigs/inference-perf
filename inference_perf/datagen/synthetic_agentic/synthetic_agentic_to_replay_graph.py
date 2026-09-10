@@ -58,11 +58,6 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import GENERIC_TH
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
-def _tool_names_to_fc_value(names: List[str]) -> str:
-    """Encode tool name(s) as a ``function_call`` turn value (always a JSON list)."""
-    return json.dumps([{"name": n, "arguments": "{}"} for n in names])
-
-
 def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     """Convert one graph-event dict to a ToolACE-ShareGPT record.
 
@@ -129,6 +124,8 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                         {"name": tc.get("function", {}).get("name", ""), "results": result_by_id.get(tc.get("id", ""), "")}
                         for tc in tool_calls
                     ]
+                    if any(not res["results"] for res in results):  # results not matched by id fall back to positional
+                        results = [{"name": "", "results": res} for id, res in result_by_id.items()]
                     conversations.append({"from": "observation", "value": json.dumps(results)})
                 i = j
             else:
@@ -142,13 +139,17 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     if expected_output:
         if call.get("expected_output_is_tool_call"):
             tool_names: List[str] = call.get("expected_output_tool_names") or []
-            conversations.append({"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])})
+            conversations.append(
+                {"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])}
+            )
         else:
             conversations.append({"from": "gpt", "value": expected_output})
     elif call.get("expected_output_is_tool_call"):
         # expected_output is blank but the graph records it will be a tool call.
         tool_names = call.get("expected_output_tool_names") or []
-        conversations.append({"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])})
+        conversations.append(
+            {"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])}
+        )
 
     # Preserve graph metadata in a dedicated namespace so standard ShareGPT
     # readers ignore it while inference-perf tooling can recover replay context.
