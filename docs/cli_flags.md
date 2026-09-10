@@ -171,7 +171,8 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
 | `--data.weka_trace_replay.filter` | str | Lambda expression to filter traces. Applied uniformly to all data sources.
 Receives the trace dict plus derived aggregates: max_tokens (largest
-single-request input+output), total_tokens, num_turns.
+single-request input+output), total_tokens, and num_turns, which counts
+flattened requests, so a subagent making three calls contributes three.
 Example: "lambda x: x['max_tokens'] < 262144"
 Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between turns in seconds |
