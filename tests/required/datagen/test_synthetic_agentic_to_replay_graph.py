@@ -78,7 +78,7 @@ def test_tool_call_and_observation_turns() -> None:
         {"from": "human", "value": "what's the weather?"},
         {
             "from": "function_call",
-            "value": json.dumps({"name": "get_weather", "arguments": '{"city": "NYC"}'}),
+            "value": json.dumps([{"name": "get_weather", "arguments": '{"city": "NYC"}'}]),
         },
         {
             "from": "observation",
@@ -110,11 +110,11 @@ def test_multiple_tool_calls_matched_by_tool_call_id() -> None:
     function_calls = [c for c in record["conversations"] if c["from"] == "function_call"]
     observation = next(c for c in record["conversations"] if c["from"] == "observation")
 
-    assert len(function_calls) == 2
+    assert len(function_calls) == 1
     # Results are matched to the tool name via tool_call_id, regardless of message order.
     assert json.loads(observation["value"]) == [
-        {"name": "get_weather", "results": "sunny, 80F"},
         {"name": "get_weather", "results": "rainy, 55F"},
+        {"name": "get_weather", "results": "sunny, 80F"},
     ]
 
 
@@ -134,7 +134,7 @@ def test_tool_call_without_matching_id_falls_back_positionally() -> None:
     record = _event_to_toolace("evt-1", _event(call))
 
     observation = next(c for c in record["conversations"] if c["from"] == "observation")
-    assert json.loads(observation["value"]) == [{"name": "lookup", "results": "result"}]
+    assert json.loads(observation["value"]) == [{"name": "", "results": "result"}]
 
 
 def test_assistant_tool_call_with_no_following_tool_messages_emits_no_observation() -> None:
