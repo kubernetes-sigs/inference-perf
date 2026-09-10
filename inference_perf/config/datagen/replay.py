@@ -309,6 +309,17 @@ class WekaTraceReplayConfig(SessionReplayConfig):
             "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
         ),
     )
+    filter: Optional[str] = Field(
+        None,
+        description=(
+            "Lambda expression to filter traces. Applied uniformly to all data sources.\n"
+            "Receives the trace dict plus derived aggregates: max_tokens (largest\n"
+            "single-request input+output), total_tokens, and num_turns, which counts\n"
+            "flattened requests, so a subagent making three calls contributes three.\n"
+            "Example: \"lambda x: x['max_tokens'] < 262144\"\n"
+            "Security: Filter expressions use eval() and should only contain trusted input."
+        ),
+    )
     trace_idle_gap_cap_seconds: float = Field(60.0, description="Cap idle timing gaps between turns in seconds")
     ignore_trace_delays: bool = Field(False, description="Ignore delays/delays from original trace and run back-to-back")
     use_think_time_only: bool = Field(False, description="Only use think_time attribute instead of timestamps")
