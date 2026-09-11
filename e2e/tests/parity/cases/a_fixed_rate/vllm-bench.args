@@ -1,0 +1,40 @@
+# Case a, vllm side: 600 requests at an average of 40 per second with random
+# (Poisson) spacing, every prompt 128 tokens, every request asking for 64
+# output tokens. Same workload as inference-perf.yaml next to this file.
+#
+# These flags are for the vllm version pinned in e2e/utils/vllm_bench.py
+# (VLLM_PINNED_REF). Each was checked against that version's
+# vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py, because what the
+# flags mean has changed between vllm versions. Notes on the non-obvious ones:
+#   --endpoint-type openai picks the code path that sends requests. (There is
+#     also a --backend flag at this version but it does not affect this case.)
+#   --random-range-ratio 0 means "every prompt exactly the requested length".
+#     At this version the length is drawn from [len*(1-r), len*(1+r)], so r=0
+#     pins both ends to len. Older versions read 0 as "anywhere from 0 to len",
+#     which is the mix-up that motivated #481. Re-check on every pin bump.
+#   --random-input-len 128 does not quite give 128 tokens: vllm first subtracts
+#     the tokenizer's special tokens (1 for a BOS-adding tokenizer), so the
+#     prompt is 127. That is why expected.yaml has prompt_tokens_rel_tol.
+#   --request-rate 40 spaces requests randomly with an average of 40/s (the
+#     default --burstiness 1.0 is what makes it Poisson).
+#   --ignore-eos is the only way to set ignore_eos in the request body. stream
+#     is always true on this endpoint and cannot be changed from the CLI.
+# The parity test adds --base-url/--model/--tokenizer/--save-result/
+# --result-filename at the end.
+--endpoint-type
+openai
+--endpoint
+/v1/completions
+--dataset-name
+random
+--num-prompts
+600
+--random-input-len
+128
+--random-output-len
+64
+--random-range-ratio
+0
+--request-rate
+40
+--ignore-eos

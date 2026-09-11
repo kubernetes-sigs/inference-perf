@@ -1,0 +1,41 @@
+# Case a: send 40 requests per second, evenly spaced, for 15 seconds = 600
+# requests. Every prompt is 128 tokens and every request asks for 64 output
+# tokens. The parity test replaces server.base_url and the tokenizer path.
+# 600 is the smallest count at which the randomly spaced vllm side can be held
+# to a useful rate tolerance (see expected.yaml), same as the load-shape
+# accuracy test in e2e/tests/test_load_shape_accuracy_sim.py.
+api:
+  type: completion
+  streaming: true
+data:
+  type: random
+  input_distribution:
+    type: fixed
+    min: 128
+    max: 128
+    mean: 128
+    total_count: 64
+  output_distribution:
+    type: fixed
+    min: 64
+    max: 64
+    mean: 64
+    total_count: 64
+load:
+  type: constant
+  stages:
+    - rate: 40
+      duration: 15
+  num_workers: 8
+server:
+  type: vllm
+  model_name: google/gemma-3-270m
+  base_url: http://127.0.0.1:8000
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: google/gemma-3-270m
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: false
+    per_request: false

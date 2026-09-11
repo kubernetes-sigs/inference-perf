@@ -1,0 +1,34 @@
+absorber:
+  ttft_ms: 40
+  itl_ms: 3
+workload:
+  num_requests: 600
+  prompt_tokens: 128
+  prompt_tokens_rel_tol: 0.15
+  max_tokens: 64
+  stream: true
+  ignore_eos: true
+load:
+  mode: rate
+  rate: 40.0
+  # There is no rate tolerance number here on purpose. How far each tool's
+  # measured rate may sit from 40/s comes from rate_tolerance(num_requests,
+  # arrival) in e2e/utils/load_shape.py, using the spacing pattern each tool
+  # declares under tools.<tool>.arrival below. At 600 requests that is 5% for
+  # even spacing (38.0 to 42.0/s) and about 16% for random spacing (33.5 to
+  # 46.5/s, four standard deviations, so a correct tool fails by bad luck less
+  # than once in 10,000 runs). To tighten it, raise num_requests: the random
+  # spacing's wobble shrinks with the square root of the request count. There
+  # is no number to loosen.
+tools:
+  inference-perf:
+    # inference-perf's `constant` load spaces requests evenly.
+    arrival: constant
+  vllm-bench:
+    # vllm bench spaces requests randomly (Poisson) at any --request-rate.
+    arrival: poisson
+    # vllm bench always sends one test request before the real run (there is
+    # no flag to turn it off at the pinned version; see benchmark() in its
+    # vllm/benchmarks/serve.py), then sends all --num-prompts requests. So the
+    # absorber records num_requests + 1, and the first one is ignored.
+    leading_extra_requests: 1
