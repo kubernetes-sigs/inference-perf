@@ -31,7 +31,8 @@ can catch its failure mode:
    release, which is the deliberate state of ``latest``: a floating tag
    would guarantee golden rot, so it never gets one.
 3. ``test_declared_metric_names_exist`` (live, every release in the table):
-   declared names present in the real exposition, the end-invariant itself.
+   declared names present in the real exposition under the type their query
+   assumes, the end-invariant itself.
    On ``latest`` this is the early warning that an upstream rename is
    coming, red on live PRs before, not at, the next pin bump.
 
@@ -45,6 +46,8 @@ what the check would have accepted.
 """
 
 import os
+from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
@@ -56,14 +59,15 @@ from utils.metric_families import (
     exposed_vllm_families,
     format_golden,
     golden_path,
-    in_golden,
     is_exposed,
+    resolves,
     load_golden,
 )
 from utils.net import get_free_port
 from utils.testdata import extract_tarball
 from utils.vllm_server import DEFAULT_MODEL, VLLMServerRunner
 
+from inference_perf.client.modelserver.metrics.base import Metric
 from inference_perf.client.modelserver.vllm_client import vLLMModelServerClient
 from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
@@ -79,26 +83,45 @@ ENV_UPDATE_GOLDENS = "E2E_UPDATE_METRIC_GOLDENS"
 # name declarations are read from it, never the tokenizer itself.
 GEMMA_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
 
-# Declared names that a STOCK vLLM does not expose. All five arrived in #348
+# Declared names that a STOCK vLLM does not expose. All four arrived in #348
 # ("vLLM latest (0.15.0) production metrics") and are absent from a default
-# v0.26.0 server, seemingly gated on optional features (KV offloading and
-# similar) whose components never register their metric families on a stock
-# configuration. Kept out of the strict checks rather than deleted so the
+# v0.26.0 server, gated on optional features (VLLM_COMPUTE_NANS_IN_LOGITS and
+# --kv-cache-metrics) whose components never register their metric families on
+# a stock configuration. Kept out of the strict checks rather than deleted so the
 # declarations can be triaged: each is either config-gated (then this list
 # documents the gate) or stale (then it should be removed from vllm_client).
+#
+# Guarded by test_conditionally_exposed_still_apply. A fifth entry,
+# vllm:prompt_tokens_recomputed, outlived its declaration and sat here shrinking
+# the strict checks for nothing; it is registered nowhere in vLLM v0.26.0-v0.28.0.
 CONDITIONALLY_EXPOSED = {
     "vllm:corrupted_requests",
     "vllm:kv_block_idle_before_evict_seconds",
     "vllm:kv_block_lifetime_seconds",
     "vllm:kv_block_reuse_gap_seconds",
-    "vllm:prompt_tokens_recomputed",
 }
+
+# Declarations whose queries select nothing, with a fix already in flight. Kept
+# apart from CONDITIONALLY_EXPOSED because the reason is different: those names
+# are gated off on a stock server, these are simply queried under a name the
+# server does not use. Found by this check once it started asking what the
+# queries select rather than whether the declared name is findable (#669).
+#
+# The list cannot rot: test_known_unresolved_still_do_not_resolve fails the
+# moment an entry starts resolving, which forces it to be deleted.
+# Empty: #568 landed and made counters span both name forms, so vllm:prompt_tokens and
+# vllm:generation_tokens resolve again and the strict check covers them directly. The
+# mechanism stays for the next declaration whose fix is still in flight.
+KNOWN_UNRESOLVED: dict[str, str] = {}
+
+# Names excluded from the strict checks for either reason.
+SKIPPED = CONDITIONALLY_EXPOSED | set(KNOWN_UNRESOLVED)
 
 GOLDEN_FILES = sorted(GOLDEN_DIR.glob("*.txt"))
 
 
-def _declared(base_url: str, model_name: str) -> dict[str, str]:
-    """Metric base names -> metric type, as declared by the vLLM client."""
+def _declared(base_url: str, model_name: str) -> dict[str, Metric[Any]]:
+    """Declared metric name -> the metric object, as declared by the vLLM client."""
     client = vLLMModelServerClient(
         metrics_collector=LocalRequestMetricCollector(),
         api_config=APIConfig(type=APIType.Completion),
@@ -128,26 +151,64 @@ def test_goldens_are_committed() -> None:
 
 
 @pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
-def test_declared_names_resolve_against_goldens(golden_file) -> None:
+def test_declared_names_resolve_against_goldens(golden_file: Path) -> None:
     golden = load_golden(golden_file)
     assert golden, f"golden {golden_file} is empty"
     declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
     assert declared, "vLLM client declared no metric names"
 
-    missing = sorted(
-        name
-        for name, metric_type in declared.items()
-        if name not in CONDITIONALLY_EXPOSED and not in_golden(name, metric_type, golden)
-    )
+    missing = sorted(name for name, metric in declared.items() if name not in SKIPPED and not resolves(metric, golden))
     assert not missing, (
         f"{len(missing)}/{len(declared)} declared metric names do not resolve against {golden_file.name} "
         f"(stale names produce silently empty report fields): {missing}"
     )
 
 
+@pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
+def test_known_unresolved_still_do_not_resolve(golden_file: Path) -> None:
+    # Guards the allowlist above. Each KNOWN_UNRESOLVED name must still be declared
+    # and must still fail to resolve; the moment #568 lands and vllm:prompt_tokens
+    # starts selecting vllm:prompt_tokens_total, this goes red and the entry has to
+    # be deleted. An allowlist that quietly stops applying is how a gate rots.
+    golden = load_golden(golden_file)
+    declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
+
+    undeclared = sorted(name for name in KNOWN_UNRESOLVED if name not in declared)
+    assert not undeclared, f"no longer declared, drop the KNOWN_UNRESOLVED entries: {undeclared}"
+
+    now_resolving = sorted(name for name in KNOWN_UNRESOLVED if resolves(declared[name], golden))
+    assert not now_resolving, (
+        f"{now_resolving} now resolve against {golden_file.name}; drop their KNOWN_UNRESOLVED "
+        f"entries so the strict check covers them again"
+    )
+
+
+@pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
+def test_conditionally_exposed_still_apply(golden_file: Path) -> None:
+    # Guards the other allowlist the same way. CONDITIONALLY_EXPOSED shrinks the
+    # strict checks, so each entry has to still be earning that: still declared by
+    # vllm_client, and still absent from a stock server's golden. Feeding it
+    # {"vllm:corrupted_requests"} against v0.26.0.txt passes, because the client
+    # declares it and the golden (captured from a stock server, which does not run
+    # with VLLM_COMPUTE_NANS_IN_LOGITS) does not list it. Dropping the declaration
+    # or a release starting to expose it both fail here, which is what stops the
+    # list quietly widening the hole it opens.
+    golden = load_golden(golden_file)
+    declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
+
+    undeclared = sorted(name for name in CONDITIONALLY_EXPOSED if name not in declared)
+    assert not undeclared, f"no longer declared, drop the CONDITIONALLY_EXPOSED entries: {undeclared}"
+
+    now_resolving = sorted(name for name in CONDITIONALLY_EXPOSED if resolves(declared[name], golden))
+    assert not now_resolving, (
+        f"{now_resolving} resolve against {golden_file.name}, so they are not gated off on a stock "
+        f"server; drop their CONDITIONALLY_EXPOSED entries so the strict check covers them again"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(not VLLMServerRunner.is_available(), reason="no vLLM server or executable available")
-async def test_exposed_families_match_golden():
+async def test_exposed_families_match_golden() -> None:
     release_tag = os.environ.get(ENV_VLLM_VERSION)
     if not release_tag:
         pytest.skip(f"{ENV_VLLM_VERSION} not set; cannot tell which release the server runs")
@@ -176,18 +237,30 @@ async def test_exposed_families_match_golden():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not VLLMServerRunner.is_available(), reason="no vLLM server or executable available")
-async def test_declared_metric_names_exist():
+async def test_declared_metric_names_exist() -> None:
+    # Two oracles over one exposition, both driven by the metric's own
+    # candidate_names(): every series a query selects must be present
+    # (is_exposed, over sample and family names), and the family behind it must
+    # carry the type the query assumes (resolves, over the `# TYPE` map).
+    # Presence alone is not enough, and that gap is the same shape as the bug
+    # this module exists for. Given `# TYPE vllm:prefix_cache_hits gauge` and a
+    # sample line `vllm:prefix_cache_hits{...} 3`, a declared
+    # CounterMetric("vllm:prefix_cache_hits") is_exposed -> True on the bare-name
+    # candidate group, while the query it emits, increase(...[60s]), is nonsense
+    # over a gauge and reports no error. resolves -> False catches it.
     async with VLLMServerRunner(port=get_free_port()) as server:
-        names = exposed_names(await _warmed_up_exposition(server))
+        exposition = await _warmed_up_exposition(server)
         declared = _declared(server.base_url, server.model)
 
     assert declared, "vLLM client declared no metric names"
-    missing = sorted(
-        name
-        for name, metric_type in declared.items()
-        if name not in CONDITIONALLY_EXPOSED and not is_exposed(name, metric_type, names)
-    )
-    assert not missing, (
-        f"{len(missing)}/{len(declared)} declared metric names absent from a real vLLM /metrics exposition "
-        f"(stale names produce silently empty report fields): {missing}"
+    names = exposed_names(exposition)
+    families = exposed_vllm_families(exposition)
+    checked = {name: metric for name, metric in declared.items() if name not in SKIPPED}
+
+    absent = {name for name, metric in checked.items() if not is_exposed(metric, names)}
+    mistyped = sorted(name for name, metric in checked.items() if name not in absent and not resolves(metric, families))
+    assert not (absent or mistyped), (
+        f"{len(absent) + len(mistyped)}/{len(checked)} declared metric names unusable against a real vLLM "
+        f"/metrics exposition (a stale name reports an empty field, a retyped family reports a nonsense one, "
+        f"and neither raises): absent={sorted(absent)}, wrong_type={mistyped}"
     )

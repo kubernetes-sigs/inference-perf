@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Sequence, Tuple
 import pytest
 from pydantic import ValidationError
 from unittest.mock import patch
@@ -128,6 +128,9 @@ def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
 
         def get_queries(self, duration: float, filters: str) -> List[str]:
             return ["q"]
+
+        def candidate_names(self) -> Sequence[FrozenSet[str]]:
+            return (frozenset({self.metric_name}),)
 
         def parse(self, results: List[float]) -> CounterResult:
             return CounterResult(total=1.0)
