@@ -38,6 +38,7 @@ from inference_perf.config import (
     GoodputConfig,
     PerRequestFieldsConfig,
 )
+from inference_perf.config.redaction import redact
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.utils import ReportFile
 
@@ -923,11 +924,14 @@ class ReportGenerator:
     def generate_config_report(self) -> ReportFile:
         """
         Generates a report file containing the config.
+
+        Credentials are masked: the report bundle is uploaded to object storage and
+        passed around, so it carries the shape of the run and not the keys it used.
         """
         return ReportFile(
             name="config",
             file_type="yaml",
-            contents=self.config.model_dump(mode="json", by_alias=True),
+            contents=redact(self.config.model_dump(mode="json", by_alias=True), Config),
         )
 
     async def generate_reports(

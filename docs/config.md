@@ -12,6 +12,7 @@
    - [Reporting](#reporting)
    - [Storage](#storage)
    - [Tokenizer](#tokenizer)
+   - [Credentials](#credentials)
 3. [Full Configuration Examples](#full-configuration-examples)
 4. [Advanced Use Cases](#advanced-use-cases)
    - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
@@ -367,6 +368,16 @@ tokenizer:
 ```
 
 `load_timeout: null` can only be set in a YAML config file; the `--tokenizer.load_timeout` CLI flag parses a float and rejects `null`. The deadline applies to each tokenizer construction independently; a run constructs a tokenizer in several stages (data generation, the model server client, report generation), so the worst-case total wait is a small multiple of `load_timeout`.
+
+### Credentials
+
+A config can carry a credential in three places: `server.api_key`, `tokenizer.token`, and an authentication header under `api.headers`.
+
+A run renders its config twice, to the log at startup and to `config.yaml` in the report bundle. Both copies replace these values with `[REDACTED]`, so pod logs and reports uploaded to GCS or S3 do not carry keys. The requests themselves still use the real values.
+
+Headers are matched by name, ignoring case: `authorization`, `proxy-authorization`, `api-key`, `x-api-key`, `x-goog-api-key`, `x-goog-iam-authorization-token` and `cookie`. Every other header is left as it is, so a rendered config still shows the routing setup the run used.
+
+Because the saved `config.yaml` is redacted, re-running from it needs the credential supplied again.
 
 ## Full Configuration Examples
 

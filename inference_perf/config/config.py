@@ -32,6 +32,7 @@ from inference_perf.config.loadgen import (
     TraceSessionReplayLoadStage,
 )
 from inference_perf.config.metrics import MetricsClientConfig
+from inference_perf.config.redaction import redact
 from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
 
@@ -133,7 +134,11 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
                 standard_stages.append(StandardLoadStage(**stage))
             merged_cfg["load"]["stages"] = standard_stages
 
+    # The echoed config is the copy people paste into bug reports, so it goes out
+    # with its credentials masked. merged_cfg itself keeps them, since the run
+    # needs them.
     logger.info(
-        "Benchmarking with the following config:\n\n%s\n", yaml.dump(merged_cfg, sort_keys=False, default_flow_style=False)
+        "Benchmarking with the following config:\n\n%s\n",
+        yaml.dump(redact(merged_cfg, Config), sort_keys=False, default_flow_style=False),
     )
     return Config(**merged_cfg)

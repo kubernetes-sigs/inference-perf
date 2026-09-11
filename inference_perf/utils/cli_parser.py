@@ -2,7 +2,7 @@ import argparse
 import json
 import typing
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 
 def unwrap_type(annotation: typing.Any) -> typing.Tuple[typing.Any, bool]:
@@ -87,6 +87,11 @@ def add_pydantic_args(
             choices = [e.value for e in annotation]
             parser.add_argument(arg_name, type=str, choices=choices, help=help_text, default=argparse.SUPPRESS)
             docs.append(f"| `{arg_name}` | Enum ({', '.join(choices)}) | {help_text} |")
+        elif annotation is SecretStr:
+            # A credential. Taken on the command line as a plain string, and masked
+            # by inference_perf.config.redaction wherever the config is rendered.
+            parser.add_argument(arg_name, type=str, help=help_text, default=argparse.SUPPRESS)
+            docs.append(f"| `{arg_name}` | str | {help_text} |")
         elif annotation is bool:
             # We accept "true", "1", "yes" as true, anything else as false
             parser.add_argument(
