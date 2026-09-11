@@ -353,7 +353,21 @@ class BackendClientSuite:
 
     # --- Client construction against recorded /v1/models responses ---
 
-    def test_model_name_inferred_from_models_endpoint(self) -> None:
+    @pytest.mark.parametrize(
+        "api_key,extra_headers,expected_headers",
+        [
+            (None, None, {"Content-Type": "application/json"}),
+            ("test-key", None, {"Content-Type": "application/json", "Authorization": "Bearer test-key"}),
+            (
+                "test-key",
+                {"authorization": "Bearer override", "X-Tenant": "tenant-a"},
+                {"Content-Type": "application/json", "authorization": "Bearer override", "X-Tenant": "tenant-a"},
+            ),
+        ],
+    )
+    def test_model_name_inferred_from_models_endpoint(
+        self, api_key: Optional[str], extra_headers: Optional[Dict[str, str]], expected_headers: Dict[str, str]
+    ) -> None:
         mock_get = MagicMock()
         mock_get.return_value.json.return_value = self.backend.models_response
         with (
@@ -362,15 +376,16 @@ class BackendClientSuite:
         ):
             client = self.backend.client_cls(
                 metrics_collector=MagicMock(),
-                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                api_config=APIConfig(type=APIType.Completion, streaming=False, headers=extra_headers),
                 uri=BASE_URI,
                 model_name=None,
+                api_key=api_key,
                 tokenizer_config=None,
                 max_tcp_connections=4,
                 additional_filters=[],
             )
         assert client.model_name == MODEL
-        mock_get.assert_called_once_with(f"{BASE_URI}/v1/models")
+        mock_get.assert_called_once_with(f"{BASE_URI}/v1/models", headers=expected_headers)
 
     def test_supported_apis_and_metric_metadata(self) -> None:
         client = make_client(self.backend, APIConfig(type=APIType.Completion, streaming=False))
