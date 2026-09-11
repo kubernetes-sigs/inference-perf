@@ -118,7 +118,7 @@ read from.
 | Generate to the length cap | `server.ignore_eos: true` | `--ignore-eos` | `--extra-inputs ignore_eos:true` |
 | Streaming | `api.streaming` | fixed by the endpoint, no flag | `--streaming` |
 | Tokenizer | `tokenizer.pretrained_model_name_or_path` | `--tokenizer` | `--tokenizer` |
-| Reproducible prompts | `data.seed` | `--seed` (default `0`) | `--random-seed` |
+| Reproducible prompts | `load.base_seed` (default current time) | `--seed` (default `0`) | `--random-seed` |
 | Excluded warmup | no equivalent | no equivalent | `--warmup-request-count`, `--warmup-duration` |
 | Sampling parameters | no equivalent for synthetic data | `--temperature`, `--top-p`, `--top-k`, `--min-p` | `--extra-inputs temperature:0` and similar |
 
