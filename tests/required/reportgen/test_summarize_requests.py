@@ -499,7 +499,7 @@ def test_summarize_sessions_omits_retry_keys_when_nothing_retried() -> None:
     byte-identical to one produced before retries existed. Both readers in cli_summary
     default to 0, so omission is safe rather than merely tidy.
     """
-    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert "sessions_with_retries" not in summary
     assert "total_retry_attempts" not in summary
@@ -514,7 +514,7 @@ def test_summarize_sessions_reports_retry_keys_when_something_retried() -> None:
     retried.retries_recovered = 0  # spent both attempts and failed anyway
     quiet = _cache_session("s2")
 
-    summary = ReportGenerator.summarize_sessions(None, [retried, quiet], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [retried, quiet], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["sessions_with_retries"] == 1
     assert summary["total_retry_attempts"] == 2
@@ -578,7 +578,7 @@ def test_enrich_sessions_cache_denominator_uses_server_prompt_tokens() -> None:
     assert session.total_input_tokens == 100  # client count, unchanged
     assert session.total_cacheable_input_tokens == 120  # server count drives the ratio
 
-    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [session], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
     assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(100.0 * 110 / 120)
     assert summary["kv_cache_hit_per_session_percent"]["max"] <= 100.0
 
@@ -599,7 +599,7 @@ def test_enrich_sessions_cache_matches_stage_level_prompt_token_usage() -> None:
     ReportGenerator._enrich_sessions(None, [session], requests)  # type: ignore[arg-type]
 
     stage = summarize_prompt_token_usage(requests, DEFAULT_PERCENTILES)
-    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [session], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * stage["cached"] / stage["total"])
 
@@ -612,7 +612,7 @@ def test_enrich_sessions_cache_clamps_cached_above_prompt_tokens() -> None:
 
     assert session.total_cached_tokens == 100
 
-    summary = ReportGenerator.summarize_sessions(None, [session], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [session], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
     assert summary["kv_cache_hit_per_session_percent"]["max"] == pytest.approx(100.0)
 
 
@@ -629,7 +629,7 @@ def test_summarize_sessions_reports_kv_cache_hit_rate() -> None:
     no_cache.total_cacheable_input_tokens = None
 
     # summarize_sessions doesn't use `self`, so call it unbound with a dummy self.
-    summary = ReportGenerator.summarize_sessions(None, [with_cache, no_cache], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [with_cache, no_cache], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["total_cached_tokens"]["mean"] == pytest.approx(32.0)
     # Only s1 contributes: 32/99. s2 (None) is skipped, not treated as 0.
@@ -643,7 +643,7 @@ def test_summarize_sessions_kv_cache_hit_rate_none_when_no_cache_info() -> None:
     s.total_input_tokens = 30
     s.total_cached_tokens = None
 
-    summary = ReportGenerator.summarize_sessions(None, [s], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [s], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["kv_cache_hit_percent"] is None
     assert summary["kv_cache_hit_per_session_percent"] is None
@@ -663,7 +663,7 @@ def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
     large = _cache_session("large")
     large.total_cached_tokens, large.total_cacheable_input_tokens = 0, 10000
 
-    summary = ReportGenerator.summarize_sessions(None, [small, large], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [small, large], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
 
     assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(50.0)  # mean of ratios
     assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * 10 / 10010)  # token-weighted

@@ -41,11 +41,19 @@ class StageRuntimeInfo(BaseModel):
     start_time: float
     status: StageStatus
     concurrency_level: Optional[int] = None
-    timeout: Optional[float] = None
+
+    # Configured wall-clock duration cap for the stage: run_stage's own `timeout` for
+    # standard stages, or TraceSessionReplayLoadStage.max_stage_duration for session stages.
+    max_stage_duration: Optional[float] = None
+
     teardown_duration: Optional[float] = None
     # Requests generated for the stage but never dispatched to the model
     # server because the stage ended first; > 0 marks a truncated stage.
     dropped_requests: Optional[int] = None
+    # Session-replay stages only: sessions still active (dispatched but not finished) or
+    # pending (never dispatched) when the stage ended.
+    sessions_not_completed_active: int = 0
+    sessions_not_completed_pending: int = 0
 
 
 class PerfRuntimeParameters:

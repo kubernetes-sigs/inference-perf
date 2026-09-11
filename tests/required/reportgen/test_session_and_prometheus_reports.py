@@ -113,7 +113,7 @@ def _stage_info(
     start_time: float = 0.0,
     end_time: float = 10.0,
     rate: float = 2.0,
-    timeout: Optional[float] = None,
+    max_stage_duration: Optional[float] = None,
     concurrency_level: Optional[int] = None,
 ) -> StageRuntimeInfo:
     return StageRuntimeInfo(
@@ -122,7 +122,7 @@ def _stage_info(
         start_time=start_time,
         end_time=end_time,
         status=status,
-        timeout=timeout,
+        max_stage_duration=max_stage_duration,
         concurrency_level=concurrency_level,
     )
 
@@ -146,7 +146,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=5.0, end_time=20.0),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         # span = 20.0 - 0.0, so 2 sessions / 20s.
         assert summary["sessions_per_second"] == pytest.approx(0.1)
@@ -160,7 +160,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=3.0, end_time=3.0, duration_sec=0.0),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["sessions_per_second"] == 0.0
 
@@ -171,9 +171,9 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", num_events=6, num_events_completed=5, num_events_cancelled=1),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
-        assert summary["num_sessions"] == 2
+        assert summary["num_sessions_completed"] == 2
         assert summary["total_events"] == 10
         assert summary["total_events_completed"] == 9
         assert summary["total_events_cancelled"] == 1
@@ -185,7 +185,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", start_time=0.0, end_time=20.0, num_events=6),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["session_duration_sec"]["mean"] == pytest.approx(15.0)
         assert summary["session_duration_sec"]["min"] == pytest.approx(10.0)
@@ -204,7 +204,7 @@ class TestSummarizeSessionsRollups:
             _sess(session_id="s2", total_input_tokens=None, total_output_tokens=None, num_events_cancelled=None),
         ]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["total_input_tokens"]["mean"] == pytest.approx(100.0)
         assert summary["total_output_tokens"]["mean"] == pytest.approx(10.0)
@@ -216,7 +216,7 @@ class TestSummarizeSessionsRollups:
         gen = _make_generator()
         sessions = [_sess(session_id="s1"), _sess(session_id="s2")]
 
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
 
         assert summary["num_events_cancelled"] is None
         assert summary["total_input_tokens"] is None
@@ -274,14 +274,16 @@ class TestGenerateSessionReports:
         )
 
         by_name = {r.name: r.contents for r in reports}
-        assert by_name["stage_0_session_lifecycle_metrics"]["num_sessions"] == 1
-        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions"] == 2
+        assert by_name["stage_0_session_lifecycle_metrics"]["num_sessions_completed"] == 1
+        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions_completed"] == 2
 
     def test_stage_metadata_leads_the_report_and_carries_the_run_shape(self) -> None:
         """`stage_metadata` is prepended so the report reads as configuration first,
         measurements second."""
         gen = _make_generator()
-        runtime = _runtime({0: _stage_info(0, start_time=1.0, end_time=7.0, rate=2.0, timeout=30.0, concurrency_level=4)})
+        runtime = _runtime(
+            {0: _stage_info(0, start_time=1.0, end_time=7.0, rate=2.0, max_stage_duration=30.0, concurrency_level=4)}
+        )
 
         reports = gen.generate_session_reports(
             [_sess(stage_id=0)],
@@ -296,7 +298,7 @@ class TestGenerateSessionReports:
         assert contents["stage_metadata"] == {
             "stage_id": 0,
             "status": "COMPLETED",
-            "timeout_configured": 30.0,
+            "max_stage_duration_configured": 30.0,
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
@@ -317,7 +319,7 @@ class TestGenerateSessionReports:
 
         assert _report_names(reports) == ["stage_7_session_lifecycle_metrics"]
         assert "stage_metadata" not in reports[0].contents
-        assert reports[0].contents["num_sessions"] == 1
+        assert reports[0].contents["num_sessions_completed"] == 1
 
     def test_a_concurrency_driven_stage_reports_no_session_rate(self) -> None:
         """rate is 0 for a concurrency-driven stage; the report must say `null` rather
@@ -337,15 +339,15 @@ class TestGenerateSessionReports:
         assert reports[0].contents["stage_metadata"]["concurrent_sessions"] == 8
 
     @pytest.mark.parametrize(
-        ("status", "start_time", "end_time", "timeout", "expected"),
+        ("status", "start_time", "end_time", "max_stage_duration", "expected"),
         [
             (StageStatus.COMPLETED, 0.0, 10.0, 30.0, "COMPLETED"),
-            # A failed stage that ran at least as long as its timeout is reported as a
-            # timeout; one that failed early keeps the generic label.
+            # A failed stage that ran at least as long as its max_stage_duration is reported
+            # as timed out; one that failed early keeps the generic label.
             (StageStatus.FAILED, 0.0, 30.0, 30.0, "TIMED_OUT"),
             (StageStatus.FAILED, 0.0, 31.0, 30.0, "TIMED_OUT"),
             (StageStatus.FAILED, 0.0, 12.0, 30.0, "FAILED"),
-            # No timeout configured: nothing to have timed out against.
+            # No max_stage_duration configured: nothing to have timed out against.
             (StageStatus.FAILED, 0.0, 90.0, None, "FAILED"),
             # Neither terminal state should be published as a success.
             (StageStatus.RUNNING, 0.0, 10.0, 30.0, "FAILED"),
@@ -353,12 +355,14 @@ class TestGenerateSessionReports:
         ],
     )
     def test_stage_status_label(
-        self, status: StageStatus, start_time: float, end_time: float, timeout: Optional[float], expected: str
+        self, status: StageStatus, start_time: float, end_time: float, max_stage_duration: Optional[float], expected: str
     ) -> None:
         """The status string is derived, not stored, so it is the piece most able to
         mislabel a stage without anything else going wrong."""
         gen = _make_generator()
-        runtime = _runtime({0: _stage_info(0, status=status, start_time=start_time, end_time=end_time, timeout=timeout)})
+        runtime = _runtime(
+            {0: _stage_info(0, status=status, start_time=start_time, end_time=end_time, max_stage_duration=max_stage_duration)}
+        )
 
         reports = gen.generate_session_reports(
             [_sess(stage_id=0)],
@@ -384,6 +388,63 @@ class TestGenerateSessionReports:
 
         records = reports[0].contents
         assert [r["session_id"] for r in records] == ["s1", "s2"]
+
+    def test_stranded_sessions_are_reported_even_if_none_completed(self) -> None:
+        """A stage whose max_stage_duration fires before any session finishes has no
+        SessionLifecycleMetric at all; the stranded counts must still be surfaced."""
+        gen = _make_generator()
+        runtime = _runtime(
+            {
+                0: StageRuntimeInfo(
+                    stage_id=0,
+                    rate=2.0,
+                    start_time=0.0,
+                    end_time=30.0,
+                    status=StageStatus.FAILED,
+                    max_stage_duration=30.0,
+                    sessions_not_completed_active=3,
+                    sessions_not_completed_pending=5,
+                )
+            }
+        )
+
+        reports = gen.generate_session_reports([], SessionLifecycleReportConfig(), PERCENTILES, runtime, 100)
+
+        assert reports != []
+        by_name = {r.name: r.contents for r in reports}
+        summary = by_name["summary_session_lifecycle_metrics"]
+        assert summary["num_sessions_not_completed_active"] == 3
+        assert summary["num_sessions_not_completed_pending"] == 5
+        assert summary["num_sessions_not_completed"] == 8
+
+    def test_per_stage_reports_a_stage_with_zero_completed_sessions(self) -> None:
+        """Stage 1 timed out with nothing completed while stage 0 finished normally;
+        bucketing session_metrics by stage_id must not drop stage 1's report."""
+        gen = _make_generator()
+        sessions = [_sess(session_id="s1", stage_id=0)]
+        runtime = _runtime(
+            {
+                0: _stage_info(0),
+                1: StageRuntimeInfo(
+                    stage_id=1,
+                    rate=2.0,
+                    start_time=0.0,
+                    end_time=30.0,
+                    status=StageStatus.FAILED,
+                    max_stage_duration=30.0,
+                    sessions_not_completed_active=1,
+                    sessions_not_completed_pending=2,
+                ),
+            }
+        )
+
+        reports = gen.generate_session_reports(
+            sessions, SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False), PERCENTILES, runtime, 100
+        )
+
+        by_name = {r.name: r.contents for r in reports}
+        assert "stage_1_session_lifecycle_metrics" in by_name
+        assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions_not_completed"] == 3
 
 
 # ---------------------------------------------------------------------------

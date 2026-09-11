@@ -539,7 +539,7 @@ load:
     - concurrent_sessions: 4                      # Max sessions active simultaneously
       num_sessions: 20                            # Run 20 sessions in this stage
       session_rate: 2.0                           # Optional: start max 2 sessions/sec
-      timeout: 300                                # Optional: stage timeout in seconds
+      max_stage_duration: 300                     # Optional: Max stage duration in seconds, session exceeding it are aborted
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
 ```
@@ -558,7 +558,7 @@ load:
 - Omit for no rate limiting
 - Useful for controlled ramp-up scenarios
 
-**`timeout`** (optional): Wall-clock safety limit
+**`max_stage_duration`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
 
 #### Trace File Format

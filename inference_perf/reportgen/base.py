@@ -15,7 +15,7 @@ import logging
 import json
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
-from inference_perf.client.server_metrics.base import ModelServerMetrics, StageStatus
+from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.config import (
@@ -1116,12 +1116,19 @@ class ReportGenerator:
         return lifecycle_reports
 
     def summarize_sessions(
-        self, metrics: List[SessionLifecycleMetric], percentiles: List[float], max_error_messages: int = 100
+        self,
+        metrics: List[SessionLifecycleMetric],
+        stage_infos: Iterable[StageRuntimeInfo],
+        percentiles: List[float],
+        max_error_messages: int = 100,
     ) -> Dict[str, Any]:
         """Compute aggregated stats across a list of session lifecycle metrics."""
         num_sessions = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)
         num_failed = sum(1 for m in metrics if m.success is False)
+        sessions_not_completed_active = sum(s.sessions_not_completed_active for s in stage_infos)
+        sessions_not_completed_pending = sum(s.sessions_not_completed_pending for s in stage_infos)
+        sessions_not_completed = sessions_not_completed_active + sessions_not_completed_pending
         total_events = sum(m.num_events for m in metrics)
         total_events_completed = sum(m.num_events_completed for m in metrics)
         total_events_cancelled = sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None)
@@ -1196,9 +1203,13 @@ class ReportGenerator:
         ]
 
         return {
-            "num_sessions": num_sessions,
+            "num_sessions": num_sessions + sessions_not_completed,
+            "num_sessions_completed": num_sessions,
             "num_sessions_succeeded": num_succeeded,
             "num_sessions_failed": num_failed,
+            "num_sessions_not_completed": sessions_not_completed,
+            "num_sessions_not_completed_active": sessions_not_completed_active,
+            "num_sessions_not_completed_pending": sessions_not_completed_pending,
             "total_events": total_events,
             "total_events_completed": total_events_completed,
             "total_events_cancelled": total_events_cancelled,
@@ -1366,14 +1377,25 @@ class ReportGenerator:
         """Generate session-level lifecycle reports."""
         reports: List[ReportFile] = []
 
-        if not session_metrics:
+        any_stranded_sessions = any(
+            s.sessions_not_completed_active or s.sessions_not_completed_pending for s in runtime_parameters.stages.values()
+        )
+        if not session_metrics and not any_stranded_sessions:
             return reports
 
         if report_config.summary:
+            stage_infos = runtime_parameters.stages.values()
+            summary = self.summarize_sessions(
+                metrics=session_metrics,
+                stage_infos=stage_infos,
+                percentiles=percentiles,
+                max_error_messages=max_error_messages,
+            )
+
             reports.append(
                 ReportFile(
                     name="summary_session_lifecycle_metrics",
-                    contents=self.summarize_sessions(session_metrics, percentiles, max_error_messages),
+                    contents=summary,
                 )
             )
 
@@ -1381,19 +1403,32 @@ class ReportGenerator:
             stage_buckets: dict[int, List[SessionLifecycleMetric]] = defaultdict(list)
             for m in session_metrics:
                 stage_buckets[m.stage_id].append(m)
+            # A stage that was entirely stranded (max_stage_duration fired before any
+            # session finished) has no bucket from session_metrics; add it so its
+            # sessions_not_completed counts are still reported.
+            for stage_id, stage_runtime_info in runtime_parameters.stages.items():
+                if stage_id not in stage_buckets and (
+                    stage_runtime_info.sessions_not_completed_active or stage_runtime_info.sessions_not_completed_pending
+                ):
+                    stage_buckets[stage_id] = []
             for stage_id, stage_metrics in stage_buckets.items():
                 # Get stage runtime info and build metadata
                 stage_info = runtime_parameters.stages.get(stage_id)
-                stage_summary = self.summarize_sessions(stage_metrics, percentiles, max_error_messages)
+                stage_summary = self.summarize_sessions(
+                    metrics=stage_metrics,
+                    stage_infos=[stage_info] if stage_info else [],
+                    percentiles=percentiles,
+                    max_error_messages=max_error_messages,
+                )
 
                 if stage_info:
                     # Determine status string
                     if stage_info.status == StageStatus.COMPLETED:
                         status_str = "COMPLETED"
                     elif stage_info.status == StageStatus.FAILED:
-                        # Check if failure was due to timeout by comparing actual duration
+                        # Check if failure was due to exceeding max_stage_duration by comparing actual duration
                         actual_duration = stage_info.end_time - stage_info.start_time
-                        if stage_info.timeout is not None and actual_duration >= stage_info.timeout:
+                        if stage_info.max_stage_duration is not None and actual_duration >= stage_info.max_stage_duration:
                             status_str = "TIMED_OUT"
                         else:
                             status_str = "FAILED"
@@ -1404,7 +1439,7 @@ class ReportGenerator:
                     stage_metadata = {
                         "stage_id": stage_id,
                         "status": status_str,
-                        "timeout_configured": stage_info.timeout,
+                        "max_stage_duration_configured": stage_info.max_stage_duration,
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,

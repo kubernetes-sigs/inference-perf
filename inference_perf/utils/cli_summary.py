@@ -390,13 +390,17 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 1: Session Summary
     session_summary_table = Table(
-        title="[bold magenta]Session Summary[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Summary[/bold magenta]",
+        caption="Not Completed sessions due to SIGINT or connection errors, or exceeding max_stage_duration",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_summary_table.add_column("Stage", justify="right")
     session_summary_table.add_column("Sessions/s", justify="right")
     session_summary_table.add_column("Total Sessions", justify="right")
     session_summary_table.add_column("Succeeded", justify="right")
     session_summary_table.add_column("Failed", justify="right")
+    session_summary_table.add_column("Not Completed", justify="right")
     session_summary_table.add_column("Error %", justify="right")
     session_summary_table.add_column("Total Events", justify="right")
     session_summary_table.add_column("Events Completed", justify="right")
@@ -410,7 +414,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 2: Session Duration & Events
     session_duration_table = Table(
-        title="[bold magenta]Session Duration & Events[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Duration & Events[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_duration_table.add_column("Stage", justify="right")
     session_duration_table.add_column("Duration Mean (s)", justify="right")
@@ -422,7 +429,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Table 3: Session Token Totals
     session_tokens_table = Table(
-        title="[bold magenta]Session Token Totals (per session)[/bold magenta]", show_header=True, header_style="bold cyan"
+        title="[bold magenta]Session Token Totals (per session)[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        show_header=True,
+        header_style="bold cyan",
     )
     session_tokens_table.add_column("Stage", justify="right")
     session_tokens_table.add_column("In Tok/Sess Mean", justify="right")
@@ -435,6 +445,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     # Table 4: TFUT (Time to First User Token)
     tfut_table = Table(
         title="[bold magenta]Session TFUT (Time to First User Token)[/bold magenta]",
+        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
         show_header=True,
         header_style="bold cyan",
     )
@@ -449,10 +460,11 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     for stage_id in sorted_stages:
         contents = session_reports[stage_id]
 
-        # Extract session summary metrics
         num_sessions = contents.get("num_sessions", 0)
+        num_sessions_completed = contents.get("num_sessions_completed", 0)
         num_sessions_succeeded = contents.get("num_sessions_succeeded", 0)
         num_sessions_failed = contents.get("num_sessions_failed", 0)
+        num_sessions_not_completed = contents.get("num_sessions_not_completed", 0)
         total_events = contents.get("total_events", 0)
         total_events_completed = contents.get("total_events_completed", 0)
         total_events_cancelled = contents.get("total_events_cancelled", 0)
@@ -472,8 +484,11 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
         failed_color = "red" if num_sessions_failed > 0 else "green"
         failed_str = f"[{failed_color}]{num_sessions_failed}[/]"
 
-        # Session error rate
-        session_error_rate = num_sessions_failed / num_sessions if num_sessions > 0 else 0.0
+        not_completed_color = "red" if num_sessions_not_completed > 0 else "green"
+        not_completed_str = f"[{not_completed_color}]{num_sessions_not_completed}[/]"
+
+        # Session error rate of sessions that actually completed (succeeded or failed)
+        session_error_rate = num_sessions_failed / num_sessions_completed if num_sessions_completed > 0 else 0.0
         session_error_pct = session_error_rate * 100.0
         error_color = "red" if session_error_rate > 0.05 else ("yellow" if session_error_rate > 0 else "green")
         error_str = f"[{error_color}]{session_error_pct:.1f}%[/]"
@@ -491,6 +506,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             str(num_sessions),
             succeeded_str,
             failed_str,
+            not_completed_str,
             error_str,
             str(total_events),
             str(total_events_completed),
@@ -504,6 +520,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             retry_color = "green" if total_retries_recovered else "yellow"
             session_row.append(f"[{retry_color}]{total_retry_attempts} ({total_retries_recovered})[/]")
         session_summary_table.add_row(*session_row)
+
+        # num_sessions_completed == 0 indicates all sessions timed-out, printing only summary table
+        if num_sessions_completed == 0:
+            continue
 
         # Extract session duration metrics
         session_duration = contents.get("session_duration_sec", {})
@@ -582,7 +602,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     cache_table: Optional[Table] = None
     if has_cache_info:
         cache_table = Table(
-            title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]", show_header=True, header_style="bold cyan"
+            title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]",
+            caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+            show_header=True,
+            header_style="bold cyan",
         )
         cache_table.add_column("Stage", justify="right")
         cache_table.add_column("Hit % (pooled)", justify="right")
@@ -608,8 +631,10 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
 
     # Print all session tables
     console.print(session_summary_table)
-    console.print(session_duration_table)
-    console.print(session_tokens_table)
+    if session_duration_table.row_count > 0:
+        console.print(session_duration_table)
+    if session_tokens_table.row_count > 0:
+        console.print(session_tokens_table)
     if cache_table is not None:
         console.print(cache_table)
     if has_any_tfut:

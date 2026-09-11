@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import time
 from enum import Enum
 from os import cpu_count
@@ -20,6 +21,8 @@ from inference_perf.config.common import StrictBaseModel
 from pydantic import ConfigDict, Field, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
+
+logger = logging.getLogger(__name__)
 
 
 class LoadType(Enum):
@@ -111,12 +114,31 @@ class TraceSessionReplayLoadStage(LoadStage):
             "None = all remaining sessions."
         ),
     )
+
     timeout: Optional[float] = Field(
         None,
         gt=0,
+        deprecated="Deprecated, use max_stage_duration instead",
         description=(
-            "Wall-clock safety limit in seconds. If exceeded, in-flight sessions are "
-            "cancelled and stage exits as FAILED. Optional."
+            "Wall-clock cap in seconds on how long the stage may run. Omit to run until "
+            "all sessions in the stage complete. If exceeded, in-flight sessions are "
+            "cancelled, any sessions that had not yet started are dropped, and the stage "
+            "exits as FAILED. Sessions left incomplete this way are counted in the stage's "
+            "session report as sessions_not_completed_active and "
+            "sessions_not_completed_pending."
+        ),
+    )
+
+    max_stage_duration: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "Wall-clock cap in seconds on how long the stage may run. Omit to run until "
+            "all sessions in the stage complete. If exceeded, in-flight sessions are "
+            "cancelled, any sessions that had not yet started are dropped, and the stage "
+            "exits as FAILED. Sessions left incomplete this way are counted in the stage's "
+            "session report as sessions_not_completed_active and "
+            "sessions_not_completed_pending."
         ),
     )
 
@@ -132,6 +154,9 @@ class TraceSessionReplayLoadStage(LoadStage):
                     f"concurrent_sessions ({self.concurrent_sessions}). "
                     f"You can't start sessions faster than the concurrency limit allows."
                 )
+
+        if self.timeout is not None:
+            logger.warning("load.stages[].timeout is deprecated; use max_stage_duration instead.")
 
         return self
 

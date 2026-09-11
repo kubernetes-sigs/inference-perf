@@ -159,7 +159,7 @@ class TestSessionSubstitutions:
             _sess(session_id="s2", n_recorded_substitutions=3, recorded_substitution_event_ids=["e3", "e4", "e5"]),
             _sess(session_id="s3", n_recorded_substitutions=0),
         ]
-        summary = gen.summarize_sessions(sessions, PERCENTILES)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
         subs = summary["total_recorded_substitutions"]
         assert subs["count"] == 5  # 2 + 3
         assert summary["sessions_with_recorded_substitution"] == 2  # s1, s2
@@ -168,7 +168,7 @@ class TestSessionSubstitutions:
 
     def test_no_substitutions_zero_count_no_messages(self) -> None:
         gen = _make_generator()
-        summary = gen.summarize_sessions([_sess(session_id="s1"), _sess(session_id="s2")], PERCENTILES)
+        summary = gen.summarize_sessions([_sess(session_id="s1"), _sess(session_id="s2")], [], PERCENTILES)
         subs = summary["total_recorded_substitutions"]
         assert subs["count"] == 0
         assert subs["messages"] == []
@@ -178,7 +178,7 @@ class TestSessionSubstitutions:
         sessions = [
             _sess(session_id=f"s{i}", n_recorded_substitutions=1, recorded_substitution_event_ids=[f"e{i}"]) for i in range(5)
         ]
-        summary = gen.summarize_sessions(sessions, PERCENTILES, max_error_messages=2)
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES, max_error_messages=2)
         subs = summary["total_recorded_substitutions"]
         assert subs["count"] == 5
         assert len(subs["messages"]) == 2  # capped

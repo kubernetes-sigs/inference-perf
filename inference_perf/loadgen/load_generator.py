@@ -677,7 +677,10 @@ class LoadGenerator:
         # Session pool management
         concurrent_sessions = stage.concurrent_sessions
         session_rate = stage.session_rate
-        timeout = stage.timeout
+
+        max_stage_duration = (
+            stage.max_stage_duration if stage.max_stage_duration else stage.timeout
+        )  # timeout is deprecated, kept for legacy
 
         # Compute this stage's session slice from the cursor
         available_sessions = total_sessions - self._session_cursor
@@ -693,7 +696,7 @@ class LoadGenerator:
 
         logger.info(
             f"Session pool: concurrent_sessions={concurrent_sessions}, "
-            f"session_rate={session_rate}, timeout={timeout}, "
+            f"session_rate={session_rate}, max_stage_duration={max_stage_duration}, "
             f"num_sessions={effective_num_sessions} (corpus offset {stage_start_cursor}), "
             f"total_sessions={total_sessions}"
         )
@@ -721,8 +724,8 @@ class LoadGenerator:
             }
             if session_rate is not None:
                 stage_info["session_rate"] = session_rate
-            if timeout is not None:
-                stage_info["timeout"] = timeout
+            if max_stage_duration is not None:
+                stage_info["max_stage_duration"] = max_stage_duration
 
             stage_span, stage_context_dict = otel_instr.start_stage_span(stage_id, stage_info)
             logger.info(f"Started stage-level OTEL span for stage {stage_id}")
@@ -855,15 +858,15 @@ class LoadGenerator:
                     del session_spans[sid]
                 break
 
-            if timeout is not None and time.perf_counter() - start_time >= timeout:
+            if max_stage_duration is not None and time.perf_counter() - start_time >= max_stage_duration:
                 if progress_ctx and stage_task:
                     progress_ctx.remove_task(stage_task)
                     stage_task = None
-                logger.warning(f"Stage {stage_id}: timeout after {timeout:.1f}s")
+                logger.warning(f"Stage {stage_id}: max_stage_duration ({max_stage_duration:.1f}s) exceeded")
                 stage_status = StageStatus.FAILED
                 # Clean up any active session spans (using cached otel_instr)
                 for sid in list(session_spans.keys()):
-                    otel_instr.end_session_span(session_spans[sid], "Session timed out")
+                    otel_instr.end_session_span(session_spans[sid], "Session cancelled: max_stage_duration exceeded")
                     del session_spans[sid]
                 break
 
@@ -973,6 +976,18 @@ class LoadGenerator:
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
+        # Sessions stranded by an early exit (max_stage_duration exceeded, SIGINT, an open
+        # circuit breaker, or a dead worker): still dispatched but not finished, and
+        # never dispatched at all. On the normal completion path both sets are already
+        # empty here, so these are 0 for a cleanly COMPLETED stage.
+        sessions_not_completed_active = len(active_session_indices)
+        sessions_not_completed_pending = len(pending_session_indices)
+        if sessions_not_completed_active or sessions_not_completed_pending:
+            logger.warning(
+                f"Stage {stage_id}: {sessions_not_completed_active} session(s) still active and "
+                f"{sessions_not_completed_pending} session(s) never started when the stage ended"
+            )
+
         # The metrics window ends here: the teardown tail carries no offered
         # load, so including it would stretch every server-side rate average.
         end_time_epoch = time.time()
@@ -999,9 +1014,11 @@ class LoadGenerator:
             end_time=end_time_epoch,
             status=stage_status,
             concurrency_level=concurrent_sessions,
-            timeout=timeout,
+            max_stage_duration=max_stage_duration,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
+            sessions_not_completed_active=sessions_not_completed_active,
+            sessions_not_completed_pending=sessions_not_completed_pending,
         )
         logger.info(
             "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
@@ -1252,7 +1269,7 @@ class LoadGenerator:
             end_time=end_time_epoch,
             status=stage_status,
             concurrency_level=concurrency_level,
-            timeout=timeout,
+            max_stage_duration=timeout,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
         )

@@ -59,6 +59,32 @@ data:
 
 ---
 
+## ⏱️ Stage Timing
+
+`trace_session_replay` stages (shared with OTel trace replay) support two independent
+timing controls:
+
+| Setting | Scope | Description |
+|---------|-------|-------------|
+| `stages[].max_stage_duration` | Per stage | Optional wall-clock cap in seconds. Omit to run until every session in the stage completes. If exceeded, in-flight sessions are cancelled, never-started sessions are dropped, and the stage is marked failed/timed out. Stranded sessions are counted in the stage report as `sessions_not_completed_active` / `sessions_not_completed_pending` |
+| `stage_teardown_grace_seconds` | Global (`load.`) | How long in-flight requests get to finish after a stage ends, for any reason, before being force-cancelled. Default `120.0`. Reported separately as `teardown_duration`, excluded from the stage's metrics window |
+
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 16
+      num_sessions: 391
+      max_stage_duration: 600
+  stage_teardown_grace_seconds: 30
+```
+
+See [OTel Trace Replay: Stage Timing](otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds)
+for the full explanation and a worked timeline — the config, load generator, and session
+report shape are identical between the two datagens.
+
+---
+
 ## 🏃 Running the Benchmark
 
 Run the benchmark with the following command:
