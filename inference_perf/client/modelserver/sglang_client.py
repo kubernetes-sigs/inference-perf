@@ -54,7 +54,7 @@ class SGlangModelServerClient(openAIModelServerClient):
             request_retries=request_retries,
             request_retry_backoff_sec=request_retry_backoff_sec,
         )
-        self.metric_filters = [f"model_name='{model_name}'", *additional_filters]
+        self.metric_filters = [f"model_name='{self.model_name}'", *additional_filters]
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
