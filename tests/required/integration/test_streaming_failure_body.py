@@ -27,22 +27,17 @@ branch is exercised through the real exception path rather than a patched-in
 one.
 """
 
-import time
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from fake_truncating_server import TruncatingSSEServer
+from openai_client_harness import run_request_against
 
-from inference_perf.apis import RequestLifecycleMetric
-from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.client.modelserver import openai_client as openai_client_module
 from inference_perf.client.modelserver.metrics import BaseMetrics
-from inference_perf.client.modelserver.openai_client import OpenAIMetrics, openAIModelServerClient
 from inference_perf.client.server_metrics.base import PerfRuntimeParameters, StageRuntimeInfo, StageStatus
-from inference_perf.config import APIConfig, APIType, ReportConfig, RequestLifecycleMetricsReportConfig
-from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
+from inference_perf.config import ReportConfig, RequestLifecycleMetricsReportConfig
 from inference_perf.reportgen.base import ReportGenerator
 
 # Two well-formed frames, so a break after them leaves a body that is both
@@ -53,61 +48,12 @@ EVENTS = [
 ]
 
 
-class _ConcreteOpenAIClient(openAIModelServerClient):
-    """openAIModelServerClient is abstract only in the two methods below, and
-    neither participates in the streaming path under test."""
-
-    def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
-
-    def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
-        raise NotImplementedError("no server metrics are scraped in the integration tier")
-
-
-def make_tokenizer() -> MagicMock:
-    tokenizer = MagicMock()
-    tokenizer.count_tokens = MagicMock(side_effect=lambda text, **kwargs: len(text.split()))
-    return tokenizer
-
-
-async def run_request_against(server: TruncatingSSEServer) -> RequestLifecycleMetric:
-    """One streaming completion through the real client, returning the metric
-    the client recorded for it."""
-    collector = LocalRequestMetricCollector()
-    # The client builds a CustomTokenizer, which would otherwise fetch from the
-    # Hub; token counts are irrelevant to this test, only the response body is.
-    with patch.object(openai_client_module, "CustomTokenizer", return_value=make_tokenizer()):
-        client = _ConcreteOpenAIClient(
-            metrics_collector=collector,
-            api_config=APIConfig(type=APIType.Completion, streaming=True),
-            uri=server.base_url,
-            model_name="fake-model",
-            tokenizer_config=None,
-            max_tcp_connections=1,
-            additional_filters=[],
-        )
-
-    session = client.new_session()
-    try:
-        await session.process_request(
-            CompletionAPIData(prompt="the quick brown fox", max_tokens=16),
-            stage_id=0,
-            scheduled_time=time.perf_counter(),
-        )
-    finally:
-        await session.close()
-
-    metrics = collector.get_metrics()
-    assert len(metrics) == 1, "the client must record exactly one metric for one request"
-    return metrics[0]
-
-
 @pytest.mark.asyncio
 async def test_partial_body_is_preserved_when_the_stream_breaks() -> None:
     """The #531 regression: bytes received before the break must reach
     response_data, byte for byte."""
     async with TruncatingSSEServer(EVENTS) as server:
-        metric = await run_request_against(server)
+        metric = await run_request_against(server.base_url)
 
     assert metric.response_data == server.sent_body, "the partial body must be preserved exactly as sent"
     # Guards against a future "fix" that stores the parsed text instead: the
@@ -122,7 +68,7 @@ async def test_underlying_exception_is_reported_not_the_wrapper() -> None:
     """StreamInterruptedError is plumbing. The report must name the error the
     client actually hit, or the bucket in build_error_counts is useless."""
     async with TruncatingSSEServer(EVENTS) as server:
-        metric = await run_request_against(server)
+        metric = await run_request_against(server.base_url)
 
     assert metric.error is not None, "a broken stream must be recorded as a failure"
     assert metric.error.error_type == "ClientPayloadError"
@@ -135,7 +81,7 @@ async def test_break_before_any_body_byte_leaves_the_response_empty() -> None:
     preserve, and the 200 path must not fall through to the placeholder text
     the non-200 path writes."""
     async with TruncatingSSEServer([]) as server:
-        metric = await run_request_against(server)
+        metric = await run_request_against(server.base_url)
 
     assert metric.response_data == ""
     assert metric.error is not None
@@ -148,7 +94,7 @@ async def test_per_request_report_carries_the_partial_body() -> None:
     """End of the chain: the preserved bytes have to survive into
     per_request_lifecycle_metrics, which is the escape hatch #531 is about."""
     async with TruncatingSSEServer(EVENTS) as server:
-        metric = await run_request_against(server)
+        metric = await run_request_against(server.base_url)
         sent_body = server.sent_body
 
     config = MagicMock()
