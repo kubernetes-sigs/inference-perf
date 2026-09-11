@@ -732,3 +732,96 @@ def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
     assert prompt_tokens["total"] == pytest.approx(10.0)
     assert prompt_tokens["cached"] == pytest.approx(0.0)
     assert prompt_tokens["uncached"] == pytest.approx(10.0)
+
+
+# --- truncated sessions (stage duration boundary) ------------------------
+
+
+def _truncated_session(session_id: str = "cut", num_events: int = 5, num_events_completed: int = 2) -> SessionLifecycleMetric:
+    """A session cut short at the stage boundary: fewer events done than the graph holds."""
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"{session_id}.json",
+        start_time=0.0,
+        end_time=7.0,
+        duration_sec=7.0,
+        num_events=num_events,
+        num_events_completed=num_events_completed,
+        truncated=True,
+    )
+
+
+def test_enrich_sessions_truncated_is_neither_success_nor_failure() -> None:
+    """A truncated session gets success=None so it is not counted as a server failure.
+
+    Its events are incomplete by construction (the stage boundary stopped it), so the
+    normal `num_events_completed == num_events` rule would report it as FAILED.
+    """
+    truncated = _truncated_session()
+    ReportGenerator._enrich_sessions(None, [truncated], [])  # type: ignore[arg-type]
+
+    assert truncated.success is None
+
+    summary = ReportGenerator.summarize_sessions(None, [truncated], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["num_sessions"] == 1
+    assert summary["num_sessions_succeeded"] == 0
+    assert summary["num_sessions_failed"] == 0
+    assert summary["num_sessions_truncated"] == 1
+
+
+def test_enrich_sessions_untruncated_still_fails_on_incomplete_events() -> None:
+    """The truncated guard must not mask a genuinely incomplete session."""
+    incomplete = _truncated_session(session_id="broken")
+    incomplete.truncated = False
+    ReportGenerator._enrich_sessions(None, [incomplete], [])  # type: ignore[arg-type]
+
+    assert incomplete.success is False
+
+
+def test_summarize_sessions_excludes_truncated_from_duration_percentiles() -> None:
+    """Truncated durations are censored, so they must not enter session_duration_sec.
+
+    A session stopped at the boundary ran *at least* that long; counting it as if it
+    finished drags every percentile down.
+    """
+    complete = _cache_session("done")
+    complete.duration_sec = 100.0
+    cut = _truncated_session("cut")
+    cut.duration_sec = 7.0
+
+    ReportGenerator._enrich_sessions(None, [complete, cut], [])  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [complete, cut], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    # Only the completed session's 100s contributes.
+    assert summary["session_duration_sec"]["mean"] == pytest.approx(100.0)
+    assert summary["session_duration_sec"]["max"] == pytest.approx(100.0)
+    assert summary["num_sessions_truncated"] == 1
+
+
+def test_summarize_sessions_all_truncated_gives_null_duration_not_crash() -> None:
+    """A stage where every session was cut short reports None, not an exception."""
+    sessions = [_truncated_session("a"), _truncated_session("b")]
+    ReportGenerator._enrich_sessions(None, sessions, [])  # type: ignore[arg-type]
+
+    summary = ReportGenerator.summarize_sessions(None, sessions, DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["session_duration_sec"] is None
+    assert summary["num_sessions_truncated"] == 2
+
+
+def test_summarize_sessions_truncated_events_still_counted() -> None:
+    """Event aggregates stay inclusive: a truncated session's completed events are real."""
+    cut = _truncated_session("cut", num_events=5, num_events_completed=2)
+    ReportGenerator._enrich_sessions(None, [cut], [])  # type: ignore[arg-type]
+
+    summary = ReportGenerator.summarize_sessions(None, [cut], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["total_events"] == 5
+    assert summary["total_events_completed"] == 2
+
+
+def test_summarize_sessions_truncated_defaults_to_zero() -> None:
+    """Runs with no truncation report 0, so the key is always present in the report."""
+    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["num_sessions_truncated"] == 0

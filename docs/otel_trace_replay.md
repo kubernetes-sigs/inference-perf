@@ -261,6 +261,33 @@ The `load.trace_session_replay` section controls how sessions are executed. Unli
 | `concurrent_sessions` | integer | Yes | Max sessions running simultaneously. Set to `0` for unlimited (stress mode) |
 | `num_sessions` | integer | No | Total sessions to run in this stage. Omit to run all remaining sessions (entire corpus if single stage) |
 | `session_rate` | float | No | Optional rate limit for starting new sessions (sessions/sec) |
+| `duration` | float | No | Planned stage length in seconds. The stage stops dispatching once reached and reports `COMPLETED`. See [Bounding a stage by time](#bounding-a-stage-by-time) |
+| `timeout` | float | No | Safety limit in seconds. If exceeded, in-flight sessions are cancelled and the stage reports `FAILED`. Must be longer than `duration` when both are set |
+
+#### Bounding a stage by time
+
+Set `duration` to hold a fixed level of load for a fixed window rather than replaying a set number of sessions — the usual shape for a sustained-load measurement ("hold 16 conversations open for half an hour").
+
+```yaml
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 16
+      duration: 1800          # stop after 30 minutes
+      timeout: 2100           # safety net, must be longer than duration
+```
+
+What happens at the deadline:
+
+- No further sessions or turns are dispatched.
+- The stage reports `COMPLETED`, not `FAILED`. This is the difference from using `timeout` alone: a timeout is a fault signal, so a stop you asked for would be recorded as a failure.
+- Requests already in flight finish during stage teardown and keep their metrics.
+- Sessions that had not finished are recorded as **truncated**. They appear in the report with `truncated: true` and are counted under `num_sessions_truncated`, but are left out of the session success/failure counts and the `session_duration_sec` percentiles — a truncated session's duration reflects where the deadline fell, not how long that session takes. The requests those sessions did complete still count in the request-level metrics.
+- The stage's `stage_metadata` carries `duration_configured` alongside `actual_duration`, so a report read on its own shows whether the full window was run.
+
+**The corpus must be large enough to cover the window.** A stage draws each session once, so if the corpus runs out before the deadline the stage ends early and logs a warning saying how much short it fell. Raise `duplicate_sessions_target` until the corpus covers the window; duplicates are KV-cache-isolated automatically, so they do not inflate the cache hit rate.
+
+Note that a stage's wall-clock time is `duration` plus however long teardown takes, since in-flight requests are given a chance to finish. `duration` bounds load generation, not total stage time.
 
 **Example:**
 
@@ -346,7 +373,8 @@ After a run, three session report files are generated:
 
 - **`summary_session_lifecycle_metrics.json`** — Aggregate statistics across all sessions:
   - `num_sessions`, `num_sessions_succeeded`, `num_sessions_failed`
-  - `total_events`, `total_events_completed`, `total_events_cancelled`
+  - `num_sessions_truncated` — sessions cut short at the stage boundary (see [Bounding a stage by time](#bounding-a-stage-by-time)). Counted here but excluded from the succeeded/failed counts and from `session_duration_sec`, since a truncated session's duration reflects where the boundary fell rather than how long the session takes
+  - `total_events`, `total_events_completed`, `total_events_cancelled` — inclusive of truncated sessions: those events really did complete
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   
 - **`stage_N_session_lifecycle_metrics.json`** — Same statistics grouped by stage

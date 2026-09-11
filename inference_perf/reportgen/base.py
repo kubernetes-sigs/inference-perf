@@ -1122,6 +1122,13 @@ class ReportGenerator:
         num_sessions = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)
         num_failed = sum(1 for m in metrics if m.success is False)
+        # Sessions cut short at the stage boundary. Their success is left None by
+        # _enrich_sessions so they fall out of both counts above, and their duration is
+        # censored (we know the session ran at least that long, not how long it takes)
+        # so it is excluded from the percentiles below. Event and token aggregates stay
+        # inclusive: those events really did complete.
+        num_truncated = sum(1 for m in metrics if m.truncated)
+        completed_metrics = [m for m in metrics if not m.truncated]
         total_events = sum(m.num_events for m in metrics)
         total_events_completed = sum(m.num_events_completed for m in metrics)
         total_events_cancelled = sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None)
@@ -1199,6 +1206,7 @@ class ReportGenerator:
             "num_sessions": num_sessions,
             "num_sessions_succeeded": num_succeeded,
             "num_sessions_failed": num_failed,
+            "num_sessions_truncated": num_truncated,
             "total_events": total_events,
             "total_events_completed": total_events_completed,
             "total_events_cancelled": total_events_cancelled,
@@ -1206,7 +1214,7 @@ class ReportGenerator:
             "total_recorded_substitutions": total_recorded_substitutions,
             **retry_summary,
             "sessions_per_second": sessions_per_second,
-            "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
+            "session_duration_sec": summarize([m.duration_sec for m in completed_metrics], percentiles),
             "num_events": summarize([float(m.num_events) for m in metrics], percentiles),
             "num_events_cancelled": summarize(
                 [float(m.num_events_cancelled) for m in metrics if m.num_events_cancelled is not None], percentiles
@@ -1302,7 +1310,12 @@ class ReportGenerator:
             request_error = error_by_session.get(sm.session_id)
             if request_error is not None:
                 sm.error = request_error
-            sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
+            # A session cut short at the stage boundary has incomplete events by
+            # construction, so the rule below would mark it failed for something the
+            # server did not do. None keeps it out of both num_sessions_succeeded and
+            # num_sessions_failed, which test `is True` / `is False`; it is reported
+            # under num_sessions_truncated instead.
+            sm.success = None if sm.truncated else ((sm.num_events_completed == sm.num_events) and (sm.error is None))
 
             # Compute TFUT
             ReportGenerator._compute_tfut(sm, requests_by_session_event.get(sm.session_id, {}))
@@ -1405,6 +1418,7 @@ class ReportGenerator:
                         "stage_id": stage_id,
                         "status": status_str,
                         "timeout_configured": stage_info.timeout,
+                        "duration_configured": stage_info.duration,
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,
