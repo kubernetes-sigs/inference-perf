@@ -1,4 +1,4 @@
-# Synthetic Agentic Session Replay
+# Synthetic Agentic Workload Generator
 
 Generate agentic LLM workloads procedurally, without a recorded trace. `synthetic_agentic` builds
 replay-graph sessions — multi-turn conversations, tool-calling loops, and recursive sub-agent
@@ -45,7 +45,8 @@ python -m inference_perf.main \
 
 # Inspect a generated session graph without a server
 # (this offline tool sizes turns with a real tokenizer, so the config needs a
-#  top-level `tokenizer: {pretrained_model_name_or_path: "<model>"}` block)
+#  top-level `tokenizer: {pretrained_model_name_or_path: "<model>"}` block).
+# Set `--format sharegpt` for output in ShareGPT format.
 python -m inference_perf.datagen.synthetic_agentic.synthetic_agentic_to_replay_graph \
   --config <your-config>.yml \
   --session-index 0 \

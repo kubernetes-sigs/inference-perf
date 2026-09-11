@@ -100,7 +100,7 @@ Explore detailed documentation for specific topics:
 | **Reports** | Understanding generated JSON reports. | [reports.md](./docs/reports.md) |
 | **OTel Observability** | Instrument benchmark runs with OpenTelemetry tracing to export to Jaeger, Tempo, etc. | [otel_instrumentation.md](./docs/otel_instrumentation.md) |
 | **OTel Trace Replay** | Data/load type for replaying production traces with complex dependency graphs. | [otel_trace_replay.md](./docs/otel_trace_replay.md) |
-| **Synthetic Agentic** *(implementation in progress)* | Data/load type for generating agentic workloads (tool loops, sub-agent fan-out, context growth) procedurally, without a recorded trace. | [synthetic_agentic.md](./docs/synthetic_agentic.md) |
+| **Synthetic Agentic** | Data/load type for generating agentic workloads (tool loops, sub-agent fan-out, context growth) procedurally, without a recorded trace. | [synthetic_agentic.md](./docs/synthetic_agentic.md) |
 | **Weka Trace Replay** | Data/load type for replaying raw Weka agent traces via graph-based session execution. | [weka_trace_replay.md](./docs/weka_trace_replay.md) |
 | **Conversation Replay** | Data/load type for benchmarking concurrent multi-turn agentic conversations with configurable distributions. | [conversation_replay.md](./docs/conversation_replay.md) |
 | **BR0.2 Reports** | Always-emitted llm-d-benchmark BR0.2 partial per stage; designed for clean yq-merge with other producers. | [br_v0_2.md](./docs/br_v0_2.md) |
