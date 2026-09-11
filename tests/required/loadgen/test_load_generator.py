@@ -60,8 +60,12 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
         self.mock_datagen = MagicMock(spec=DataGenerator)
         self.load_config = LoadConfig(type=LoadType.CONCURRENT, num_workers=4, worker_max_concurrency=100)
         # Mocking get_circuit_breaker since LoadGenerator init calls it
-        with unittest.mock.patch("inference_perf.loadgen.load_generator.get_circuit_breaker"):
-            self.load_generator = LoadGenerator(self.mock_datagen, self.load_config)
+        self.patcher = unittest.mock.patch("inference_perf.loadgen.load_generator.get_circuit_breaker")
+        self.mock_get_cb = self.patcher.start()
+        self.load_generator = LoadGenerator(self.mock_datagen, self.load_config)
+
+    def tearDown(self) -> None:
+        self.patcher.stop()
 
     def test_set_worker_concurrency_divisible(self) -> None:
         # Setup workers
@@ -266,3 +270,61 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLoadGeneratorRealCircuitBreaker(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from inference_perf.circuit_breaker import _initialized_circuit_breakers, init_circuit_breakers
+        from inference_perf.config.circuit_breaker import CircuitBreakerConfig, TriggerConsecutive
+
+        _initialized_circuit_breakers.clear()
+
+        config = CircuitBreakerConfig(
+            name="real_breaker",
+            metrics={"matches": ["val > `0`"]},
+            triggers=[TriggerConsecutive(type="consecutive", threshold=1)],
+        )
+        init_circuit_breakers([config])
+
+        self.mock_datagen = MagicMock(spec=DataGenerator)
+        self.load_config = LoadConfig(
+            type=LoadType.CONCURRENT, num_workers=0, worker_max_concurrency=10, circuit_breakers=["real_breaker"]
+        )
+        self.load_generator = LoadGenerator(self.mock_datagen, self.load_config)
+
+    def tearDown(self) -> None:
+        from inference_perf.circuit_breaker import _initialized_circuit_breakers
+
+        _initialized_circuit_breakers.clear()
+
+    async def test_run_local_trips_breaker(self) -> None:
+        self.load_generator.stages = [StandardLoadStage(rate=10, duration=1)]
+
+        mock_data = MagicMock(spec=InferenceAPIData)
+        mock_data.preferred_worker_id = -1
+        self.mock_datagen.get_data.return_value = [mock_data, mock_data, mock_data]
+
+        with (
+            patch("inference_perf.loadgen.load_generator.LazyLoadDataMixin.get_request", return_value=mock_data),
+            patch("inference_perf.loadgen.load_generator.time.perf_counter", return_value=0.0),
+        ):
+            # We want to trip the breaker in the middle of the loop
+            from inference_perf.circuit_breaker import get_circuit_breaker
+
+            cb = get_circuit_breaker("real_breaker")
+
+            from pydantic import BaseModel
+
+            class MockMetric(BaseModel):
+                val: int = 1
+                end_time: float = 0.0
+
+            # Feed it once to trip it
+            cb.feed(MockMetric(val=1, end_time=0.0))
+            self.assertTrue(cb.is_open())
+            # Now run local, it should exit early
+            mock_client = AsyncMock(spec=ModelServerClient)
+            await self.load_generator.run(mock_client)
+
+            # The test passes if it exits cleanly with FAILED status
+            self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "FAILED")

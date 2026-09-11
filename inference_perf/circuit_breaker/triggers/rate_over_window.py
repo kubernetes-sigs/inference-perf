@@ -39,8 +39,9 @@ class RateOverWindow(Trigger, spec_cls=TriggerRateOverWindow):
         if total >= self.min:
             hits = sum(x.hit for x in self.buf)
             rate = hits / total if total else 0.0
-            if rate >= self.th:
-                self._fired = True
+            self._fired = rate >= self.th
+        else:
+            self._fired = False
 
     def fired(self) -> bool:
         return self._fired
