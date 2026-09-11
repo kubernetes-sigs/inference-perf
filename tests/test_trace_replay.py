@@ -177,6 +177,7 @@ class TestAzureTimestampPrecision:
         )
         timer = TraceReplayLoadTimer(AzurePublicDatasetReader(), trace)
         actual = list(timer.start_timer(initial=0.0))
+        # Epoch-sized float64 timestamps have sub-microsecond rounding error.
         assert actual == pytest.approx([0, 0.001, 0.008, 0.010, 0.010123, 1], abs=5e-7)
 
     def test_timestamp_format_compatibility(self) -> None:
@@ -190,6 +191,8 @@ class TestAzureTimestampPrecision:
             (' "2023-01-01T00:00:00.1Z" ', 100000),
             ("2023-01-01 00:00:00.12", 120000),
             ("2023-01-01T00:00:00.123Z", 123000),
+            ("2023-01-01T00:00:00.123+05:30", 123000),
+            ("2023-01-01T00:00:00.123-05:30", 123000),
             ("2023-01-01 00:00:00.123456", 123456),
             ("2023-01-01 00:00:00.123456789", 123456),
         ]:

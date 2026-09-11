@@ -13,6 +13,7 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from itertools import takewhile
 from typing import Iterator, Optional, List, Tuple
 from pathlib import Path
 import csv
@@ -111,8 +112,8 @@ class AzurePublicDatasetReader(TraceReader):
         ts = raw_ts.replace("T", " ").rstrip("Z").strip()
         if "." in ts:
             head, frac = ts.split(".", 1)
-            # Keep only digits in fractional seconds and retain up to microsecond precision
-            frac_digits = "".join(ch for ch in frac if ch.isdigit())
+            # Stop at a suffix so timezone digits cannot enter the fractional seconds.
+            frac_digits = "".join(takewhile(str.isdigit, frac))
             frac6 = frac_digits[:6].ljust(6, "0")
             ts_clean = f"{head}.{frac6}"
         else:
