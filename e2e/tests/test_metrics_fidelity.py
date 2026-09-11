@@ -158,6 +158,11 @@ async def test_streaming_metrics_match_simulated_ground_truth(ttft_sec: float, i
     assert output_tokens["total"] == num_requests * output_tokens_per_request
     distribution_stats = {k: v for k, v in output_tokens.items() if k != "total"}
     assert set(distribution_stats.values()) == {float(output_tokens_per_request)}, distribution_stats
+    # Same ground truth seen through the #655 fields: every request ran to its
+    # budget, so the sim reports finish_reason "length" on all of them and no
+    # request fell short of its max_tokens.
+    assert successes["finish_reasons"] == {"length": num_requests}
+    assert successes["output_shortfalls"] == 0
     # Input-side usage is plumbed through too. Its exact value is the sim's own
     # tokenization of the random prompts, which this test cannot predict.
     assert successes["prompt_tokens"]["total"] > 0

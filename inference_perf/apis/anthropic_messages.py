@@ -264,13 +264,21 @@ def _build_anthropic_stream_handlers() -> tuple[Callable[[dict[str, Any]], str |
 
 async def parse_anthropic_stream_response(
     response: ClientResponse,
-) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None]:
+) -> tuple[str, dict[str, Any], list[float], str, list[str], dict[str, Any] | None, str | None]:
     extract_content, build_output_message = _build_anthropic_stream_handlers()
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    output_text, chunk_times, raw_content, response_chunks, server_usage, stop_reason = await parse_sse_stream(
         response,
         extract_content=extract_content,
     )
-    return output_text, build_output_message(output_text), chunk_times, raw_content, response_chunks, server_usage
+    return (
+        output_text,
+        build_output_message(output_text),
+        chunk_times,
+        raw_content,
+        response_chunks,
+        server_usage,
+        stop_reason,
+    )
 
 
 class AnthropicMessagesAPIData(InferenceAPIData):
@@ -314,6 +322,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                 raw_content,
                 response_chunks,
                 server_usage,
+                stop_reason,
             ) = await parse_anthropic_stream_response(response)
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
@@ -330,6 +339,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=chunk_times,
                     server_usage=server_usage,
+                    finish_reason=stop_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
@@ -350,7 +360,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_len, finish_reason=data.get("stop_reason")),
             lora_adapter=lora_adapter,
             extra_info=extra_info,
         )

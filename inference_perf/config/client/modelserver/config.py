@@ -33,7 +33,11 @@ class ModelServerClientConfig(StrictBaseModel):
     base_url: str = Field(description="Base URL of the model server, e.g. 'http://localhost:8000'.")
     ignore_eos: bool = Field(
         default=True,
-        description="Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length.",
+        description=(
+            "Ask the server to keep generating past the end-of-sequence token so outputs hit the requested length. "
+            "A completion that then delivers fewer output tokens than its max_tokens is recorded as a failure "
+            "(TruncatedResponseError). Set false for servers that ignore this field."
+        ),
     )
     api_key: Optional[str] = Field(default=None, description="API key sent as a bearer token with each request.")
     cert_path: Optional[str] = Field(default=None, description="Path to a client TLS certificate file.")
