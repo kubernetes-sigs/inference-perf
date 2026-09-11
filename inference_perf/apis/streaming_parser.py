@@ -20,6 +20,7 @@ LLM APIs, reducing code duplication across different API types.
 """
 
 import json
+import re
 import time
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -80,37 +81,54 @@ async def parse_sse_stream(
     response_chunks: List[str] = []
     server_usage: Optional[dict[str, Any]] = None
 
+    data_lines: List[bytes] = []
+    skip_lf = False
+    done = False
+    line_ending = re.compile(rb"\r\n|\r|\n")
+
     try:
         async for chunk in response.content.iter_any():
             raw_content += chunk
+            if done:
+                continue
             buffer += chunk
-            while b"\n\n" in buffer:
-                message, buffer = buffer.split(b"\n\n", 1)
+            # A CR terminates a line immediately; swallow its optional LF even
+            # when the pair straddles network chunks.
+            if skip_lf and buffer:
+                buffer = buffer.removeprefix(b"\n")
+                skip_lf = False
+            while match := line_ending.search(buffer):
+                line = buffer[: match.start()]
+                skip_lf = match.group() == b"\r" and match.end() == len(buffer)
+                buffer = buffer[match.end() :]
+                if line:
+                    field, separator, value = line.partition(b":")
+                    if field == b"data":
+                        data_lines.append(value.removeprefix(b" ") if separator else b"")
+                    continue
+                if not data_lines:
+                    continue
+                data_str = b"\n".join(data_lines)
+                data_lines.clear()
                 message_time = time.perf_counter()
-                done = False
-                for line in message.split(sep=b"\n"):
-                    if line.startswith(b"data:"):
-                        data_str = line.removeprefix(b"data: ").strip()
-                        if data_str == b"[DONE]":
-                            done = True
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            usage = data.get("usage")
-                            if not isinstance(usage, dict):
-                                message_data = data.get("message")
-                                if isinstance(message_data, dict):
-                                    usage = message_data.get("usage")
-                            if isinstance(usage, dict):
-                                server_usage = {**(server_usage or {}), **usage}
-                            if content := extract_content(data):
-                                output_text += content
-                                chunk_times.append(message_time)
-                                response_chunks.append(data_str.decode("utf-8", errors="ignore"))
-                        except (json.JSONDecodeError, IndexError):
-                            continue
-                if done:
+                if data_str.strip() == b"[DONE]":
+                    done = True
                     break
+                try:
+                    data = json.loads(data_str)
+                    usage = data.get("usage")
+                    if not isinstance(usage, dict):
+                        message_data = data.get("message")
+                        if isinstance(message_data, dict):
+                            usage = message_data.get("usage")
+                    if isinstance(usage, dict):
+                        server_usage = {**(server_usage or {}), **usage}
+                    if content := extract_content(data):
+                        output_text += content
+                        chunk_times.append(message_time)
+                        response_chunks.append(data_str.decode("utf-8", errors="ignore"))
+                except (json.JSONDecodeError, IndexError):
+                    continue
     except Exception as e:
         # The stream broke partway (e.g. a truncated SSE stream, a dropped
         # connection, or a proxy that 200s then sends an error page). Re-raise

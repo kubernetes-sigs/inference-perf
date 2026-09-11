@@ -136,3 +136,77 @@ async def test_parse_sse_stream_interrupted_preserves_partial_body() -> None:
     # The bytes received before the break are retained, not discarded.
     assert "Hello" in err.raw_content
     assert "world" in err.raw_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n", b"\r"])
+@pytest.mark.parametrize("space", [b"", b" "])
+@pytest.mark.parametrize("chunk_size", [1, 7, 4096])
+async def test_sse_line_endings_and_optional_space(ending: bytes, space: bytes, chunk_size: int) -> None:
+    """Network boundaries must not change valid SSE event framing or UTF-8."""
+    payload = (
+        b": heartbeat"
+        + ending
+        + b"event: message"
+        + ending
+        + b"data:"
+        + space
+        + '{"content": "你好"}'.encode()
+        + ending * 2
+        + b"data:"
+        + space
+        + b'{"usage": {"completion_tokens": 2}}'
+        + ending * 2
+        + b"data:"
+        + space
+        + b"[DONE]"
+        + ending * 2
+    )
+    response = Mock()
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        for offset in range(0, len(payload), chunk_size):
+            yield payload[offset : offset + chunk_size]
+
+    response.content.iter_any = chunks
+    output, times, raw, events, usage = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert output == "你好"
+    assert len(times) == len(events) == 1
+    assert raw == payload.decode()
+    assert usage == {"completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_sse_multiline_data_and_incomplete_event() -> None:
+    response = Mock()
+    payload = b'data: {"content":\ndata: "Hello"}\n\ndata: invalid json\n\ndata: {"content": " discarded"}\n'
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield payload
+
+    response.content.iter_any = chunks
+    output, times, raw, events, _ = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert output == "Hello"
+    assert len(times) == len(events) == 1
+    assert events == ['{"content":\n"Hello"}']
+    assert raw == payload.decode()
+
+
+@pytest.mark.asyncio
+async def test_sse_done_ignores_later_content_but_preserves_raw_body() -> None:
+    response = Mock()
+    payloads = [
+        b'data: {"content": "Hello"}\n\n',
+        b"data:  [DONE] \n\n",
+        b'data: {"content": " ignored"}\n\n',
+    ]
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        for payload in payloads:
+            yield payload
+
+    response.content.iter_any = chunks
+    output, times, raw, events, _ = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert output == "Hello"
+    assert len(times) == len(events) == 1
+    assert raw == b"".join(payloads).decode()
