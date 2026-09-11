@@ -165,8 +165,12 @@ async def test_process_response_non_streaming_uses_server_prompt_tokens() -> Non
     response = MagicMock()
     response.json = AsyncMock(
         return_value={
-            "choices": [{"text": "hello there"}],
-            "usage": {"prompt_tokens": 42, "completion_tokens": 2},
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "text": "hello there"}],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 2, "total_tokens": 44},
         }
     )
 
@@ -174,7 +178,11 @@ async def test_process_response_non_streaming_uses_server_prompt_tokens() -> Non
 
     assert info.request_metrics.text.input_tokens == 42
     assert isinstance(info.response_metrics, UnaryResponseMetrics)
-    assert info.response_metrics.server_usage == {"prompt_tokens": 42, "completion_tokens": 2}
+    # Usage is normalized through the OpenAI schema, which carries optional
+    # detail fields, so assert the counts rather than exact dict equality.
+    assert info.response_metrics.server_usage is not None
+    assert info.response_metrics.server_usage["prompt_tokens"] == 42
+    assert info.response_metrics.server_usage["completion_tokens"] == 2
 
 
 @pytest.mark.asyncio
@@ -184,7 +192,15 @@ async def test_process_response_non_streaming_falls_back_without_server_usage() 
     tokenizer = _make_tokenizer()
 
     response = MagicMock()
-    response.json = AsyncMock(return_value={"choices": [{"text": "hi"}]})
+    response.json = AsyncMock(
+        return_value={
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [{"index": 0, "finish_reason": "stop", "text": "hi"}],
+        }
+    )
 
     info = await data.process_response(response, _make_config(streaming=False), tokenizer)
 
@@ -198,7 +214,16 @@ async def test_process_response_non_streaming_no_choices_uses_server_prompt_toke
     tokenizer = _make_tokenizer()
 
     response = MagicMock()
-    response.json = AsyncMock(return_value={"choices": [], "usage": {"prompt_tokens": 7}})
+    response.json = AsyncMock(
+        return_value={
+            "id": "cmpl-1",
+            "object": "text_completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7},
+        }
+    )
 
     info = await data.process_response(response, _make_config(streaming=False), tokenizer)
 

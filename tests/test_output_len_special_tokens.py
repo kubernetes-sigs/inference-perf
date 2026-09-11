@@ -117,7 +117,13 @@ async def test_chat_streaming_output_len_excludes_special_tokens() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_unary_output_len_excludes_special_tokens() -> None:
-    payload = {"choices": [{"message": {"content": "aa bb cc"}}]}
+    payload: Dict[str, Any] = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "aa bb cc"}}],
+    }
     response = FakeUnaryResponse(payload)
     tokenizer = _bos_tokenizer()
     config = APIConfig(type=APIType.Chat, streaming=False)
@@ -149,7 +155,13 @@ async def test_completion_streaming_output_len_excludes_special_tokens() -> None
 
 @pytest.mark.asyncio
 async def test_completion_unary_output_len_excludes_special_tokens() -> None:
-    payload = {"choices": [{"text": "aa bb cc"}]}
+    payload: Dict[str, Any] = {
+        "id": "cmpl-1",
+        "object": "text_completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{"index": 0, "finish_reason": "stop", "text": "aa bb cc"}],
+    }
     response = FakeUnaryResponse(payload)
     tokenizer = _bos_tokenizer()
     config = APIConfig(type=APIType.Completion, streaming=False)
