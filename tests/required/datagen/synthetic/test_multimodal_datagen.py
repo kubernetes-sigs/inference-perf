@@ -244,14 +244,22 @@ async def test_multimodal_datagen_video_png_frames() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multimodal_datagen_interleaved_center() -> None:
+@pytest.mark.parametrize(
+    "placement",
+    [0.5]
+    + [
+        Distribution(type=kind, min=0, max=1, mean=0.5, std_dev=0)
+        for kind in (DistributionType.FIXED, DistributionType.NORMAL, DistributionType.SKEW_NORMAL, DistributionType.LOGNORMAL)
+    ],
+)
+async def test_multimodal_datagen_interleaved_center(placement: float | Distribution) -> None:
     api_config = APIConfig(type=APIType.Chat)
     data_config = DataConfig(
         type=DataGenType.Synthetic,
         multimodal=SyntheticMultimodalDatagenConfig(
             image=ImageDatagenConfig(
                 count=Distribution(type=DistributionType.UNIFORM, min=1, max=1, mean=1),
-                insertion_point=0.5,
+                insertion_point=placement,
             ),
         ),
     )

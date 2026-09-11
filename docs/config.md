@@ -112,6 +112,12 @@ data:
           weight: 1.0
 ```
 
+An `insertion_point` distribution samples positions as fractions of the prompt and
+clamps them to `[0, 1]`. For example, `{ type: fixed, min: 0, max: 1, mean: 0.5 }`
+places media in the middle, just like `insertion_point: 0.5`. A `uniform`
+distribution with `min: 0, max: 1` samples throughout the prompt. Token and media
+count distributions continue to produce integers.
+
 The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
 
 ##### Wire formats

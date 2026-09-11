@@ -105,10 +105,10 @@ def sample_insertion_point(
     """Resolve a config ``insertion_point`` (None | float | Distribution) to a concrete float in [0, 1].
 
     ``None`` means "uniform random over the prompt"; a float is taken as-is;
-    a Distribution is sampled.
+    a Distribution is sampled without rounding and clamped to [0, 1].
     """
     if config_insertion_point is None:
         return float(rng.uniform(0.0, 1.0))
     if isinstance(config_insertion_point, float):
         return config_insertion_point
-    return float(sample_from_distribution(config_insertion_point, 1, rng)[0])
+    return float(np.clip(sample_from_distribution(config_insertion_point, 1, rng, integer=False)[0], 0.0, 1.0))
