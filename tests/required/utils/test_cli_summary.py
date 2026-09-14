@@ -5,6 +5,7 @@ from inference_perf.utils.cli_summary import (
     extract_session_stage_id,
     print_summary_table,
     print_session_summary_tables,
+    print_error_summary_table,
 )
 from inference_perf.utils.report_file import ReportFile
 
@@ -148,11 +149,8 @@ class TestCliSummary(unittest.TestCase):
         # 5 request tables (including error table) + 3 session tables = 8
         self.assertEqual(mock_console_print.call_count, 8)
 
-    @patch("inference_perf.utils.cli_summary.Console.print")
     @patch("inference_perf.utils.cli_summary.Table.add_row")
-    def test_session_error_rate_is_relative_to_completed_sessions(
-        self, mock_add_row: MagicMock, mock_console_print: MagicMock
-    ) -> None:
+    def test_session_error_rate_is_relative_to_completed_sessions(self, mock_add_row: MagicMock) -> None:
         """A stranded session (not yet succeeded or failed) must not dilute the error
         rate: 1 failure out of 2 completed is 50%, even though 4 sessions were dispatched."""
         contents = {
@@ -174,6 +172,40 @@ class TestCliSummary(unittest.TestCase):
         session_summary_row = mock_add_row.call_args_list[0].args
         assert session_summary_row[2] == "4"  # num_sessions (total)
         assert "50.0%" in session_summary_row[6]  # 1 failed / 2 completed
+
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_session_error_summary_table_printed_when_sessions_fail(self, mock_console_print: MagicMock) -> None:
+        session_contents = {
+            "num_sessions": 3,
+            "num_sessions_succeeded": 1,
+            "num_sessions_failed": 2,
+            "failures": {
+                "count": 2,
+                "by_label": {
+                    "predecessor_failed": {"count": 2, "messages": [{"message": "predecessor failed"}]},
+                },
+            },
+        }
+        report = ReportFile(name="stage_0_session_lifecycle_metrics", contents=session_contents)
+        print_error_summary_table([report])
+
+        printed = [call.args[0] for call in mock_console_print.call_args_list]
+        titles = [t.title for t in printed]
+        self.assertIn("[bold magenta]Session Error Summary[/bold magenta]", titles)
+
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_session_error_summary_table_omitted_when_no_failures(self, mock_console_print: MagicMock) -> None:
+        """A clean replay run should not print a table whose only column is the success count."""
+        session_contents = {
+            "num_sessions": 3,
+            "num_sessions_succeeded": 3,
+            "num_sessions_failed": 0,
+            "failures": {"count": 0, "by_label": {}},
+        }
+        report = ReportFile(name="stage_0_session_lifecycle_metrics", contents=session_contents)
+        print_error_summary_table([report])
+
+        self.assertEqual(mock_console_print.call_count, 0)
 
 
 if __name__ == "__main__":

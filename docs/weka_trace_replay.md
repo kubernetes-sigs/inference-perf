@@ -41,7 +41,13 @@ data:
   type: weka_trace_replay
   weka_trace_replay:
     hf_dataset_path: "semianalysisai/cc-traces-weka-with-subagents-060826-256k"
-    num_dataset_entries: 500
+    num_dataset_entries: 500 # Caps accepted traces, not lines scanned
+    # filter: "lambda x: x['max_tokens'] < 262144" # Keep traces that fit a context window.
+                          # Derived per trace: max_tokens (largest single-request
+                          # input+output), total_tokens, num_turns (flattened
+                          # request count, so a subagent's three calls count as
+                          # three). Uses eval(), so treat the expression as
+                          # trusted input.
     use_static_model: true
     static_model_name: "mock-model"
     default_block_size: 64

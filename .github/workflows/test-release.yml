@@ -24,7 +24,12 @@ jobs:
 
       - name: Update version for testing
         run: |
-          sed -i 's/version = ".*"/version = "0.0.1-dev0"/' pyproject.toml
+          # TestPyPI rejects a re-upload of an existing file, so give every run its own
+          # dev version derived from the version currently in pyproject.toml.
+          BASE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          VERSION="${BASE_VERSION}.dev${{ github.run_number }}"
+          echo "Updating version to: $VERSION"
+          sed -i 's/version = ".*"/version = "'$VERSION'"/' pyproject.toml
 
       - name: Build package
         run: python -m build
@@ -33,4 +38,4 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
-        run: python -m twine upload --repository testpypi dist/*
+        run: python -m twine upload --repository testpypi --skip-existing dist/*

@@ -90,8 +90,10 @@ lint = {cmd = "ruff check", help = "Lint code with ruff"}
 type-check = {cmd = "mypy --strict ./inference_perf ./tests", help = "Strict mypy over inference_perf and tests"}
 "check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
 "update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
+"check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify the runtime metrics doc is in sync with the registry"}
+"update:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py", help = "Regenerate the runtime metrics doc from the registry"}
 check = {composite = ["format", "lint"], help = "Fast check: format + lint"}
-validate = {composite = ["format", "lint", "type-check", "check:cli-flags"], help = "Full check: format, lint, type-check, cli-flags doc sync"}
+validate = {composite = ["format", "lint", "type-check", "check:cli-flags", "check:runtime-metrics"], help = "Full check: format, lint, type-check, cli-flags and runtime-metrics doc sync"}
 setup = {shell = "pdm install && pre-commit install --config .pre-push-config.yaml && pre-commit install --config .pre-push-config.yaml --hook-type pre-push", help = "Install dependencies and git hooks"}
 
 "test" = {cmd = "pytest tests", help = "Run unit tests"}
