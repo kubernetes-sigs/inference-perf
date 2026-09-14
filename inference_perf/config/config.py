@@ -13,11 +13,11 @@
 # limitations under the License.
 import logging
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 
 import yaml
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from inference_perf.config.apis import APIConfig
 from inference_perf.config.circuit_breaker import CircuitBreakerConfig
@@ -38,6 +38,9 @@ from inference_perf.config.utils import CustomTokenizerConfig
 
 
 class Config(StrictBaseModel):
+    # A validation error would otherwise quote the input, which holds credentials.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api: APIConfig = Field(
         default=APIConfig(), description="API endpoint type and request options used for benchmark requests."
     )
@@ -59,6 +62,20 @@ class Config(StrictBaseModel):
     circuit_breakers: Optional[List[CircuitBreakerConfig]] = Field(
         default=None, description="Circuit breakers that stop the run when observed metrics cross configured thresholds."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_placeholder_credentials(cls, data: Any) -> Any:
+        # A saved or dumped config holds a placeholder in place of each credential.
+        # read_config validates the merged input, so a credential supplied on the command line counts.
+        placeholders = redacted_credentials(data, cls) if isinstance(data, Mapping) else []
+        if placeholders:
+            raise ValueError(
+                f"These credentials hold a masked placeholder, such as {REDACTED}, instead of a value: "
+                f"{', '.join(placeholders)}. Supply the real values in the config file or on the command line, "
+                "or remove these settings."
+            )
+        return data
 
     @model_validator(mode="after")
     def validate_trace_replay_load_type(self) -> "Config":
@@ -96,15 +113,6 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
 
     if cli_overrides:
         merged_cfg = deep_merge(merged_cfg, cli_overrides)
-
-    # A saved config.yaml holds the redaction marker instead of its credentials.
-    # Checked after the overrides so a credential supplied on the command line counts.
-    placeholders = redacted_credentials(merged_cfg, Config)
-    if placeholders:
-        raise ValueError(
-            f"These credentials still hold the {REDACTED} placeholder from a saved config: {', '.join(placeholders)}. "
-            "Supply the real values in the config file or on the command line, or remove these settings."
-        )
 
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:

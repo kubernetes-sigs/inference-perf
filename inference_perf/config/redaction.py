@@ -22,130 +22,144 @@ those places should carry the operator's API key.
 Where the credentials are is read off the config schema rather than listed here,
 so a new one is covered by declaring its type:
 
-- a field typed ``SecretStr`` is a credential, and its value never appears.
-- a field named ``headers`` is a request header map, and the values of the
-  headers named in ``CREDENTIAL_HEADER_NAMES`` never appear. That map is
-  free-form so the secret cannot live in its type, but the headers that carry
-  one are well known.
+- a field typed ``SecretStr`` is a credential, and its value never appears. The
+  type can sit inside Optional, a union, Annotated, a list, a dict or a model
+  that contains itself.
+- a field named ``headers`` is a request header map, and the value of any header
+  whose name contains one of ``CREDENTIAL_HEADER_FRAGMENTS`` never appears. That
+  map is free-form so the secret cannot live in its type.
 
 Nothing else is touched. A rendered config still has to be good enough to
 reproduce a run from and to attach to a bug report.
 
-A saved config loaded back would send the marker in place of each credential, so
-``read_config`` rejects it using ``redacted_credentials``.
+A saved or dumped config loaded back would send a placeholder in place of each
+credential, so ``Config`` rejects it using ``redacted_credentials``.
 """
 
+import collections.abc
 from copy import deepcopy
 from functools import cache
-from typing import Any, Callable, Iterator, Mapping, Tuple, Union, get_args, get_origin
+from types import UnionType
+from typing import Annotated, Any, Callable, Iterator, Mapping, NamedTuple, Tuple, Union, get_args, get_origin
 
 from pydantic import BaseModel, SecretStr
 
 REDACTED = "[REDACTED]"
 
-# Request headers whose value is a credential, matched case-insensitively.
-# api.headers is how a run authenticates against a gateway that wants something
-# other than a bearer token, so it carries the same secrets as server.api_key.
-CREDENTIAL_HEADER_NAMES = frozenset(
-    {
-        "authorization",
-        "proxy-authorization",
-        "api-key",
-        "x-api-key",
-        "x-goog-api-key",
-        "x-goog-iam-authorization-token",
-        "cookie",
-    }
-)
+# What pydantic itself writes for a SecretStr in repr and model_dump(mode="json").
+_PYDANTIC_MASK = str(SecretStr("secret"))
+
+# A header whose name contains one of these, ignoring case, carries a credential.
+# Over-matching only hides a routing value, while a missed header leaks a key.
+CREDENTIAL_HEADER_FRAGMENTS = frozenset({"auth", "key", "token", "secret", "cookie"})
 
 # Name of the free-form header map on a config model.
 _HEADER_FIELD_NAME = "headers"
 
+# A path step into every item of a list or every value of a dict.
+_EACH = "*"
+
+_SEQUENCES = (list, tuple, set, frozenset, collections.abc.Sequence)
+_MAPPINGS = (dict, collections.abc.Mapping)
+
 _Path = Tuple[str, ...]
 
 
-def _unwrap_optional(annotation: Any) -> Any:
-    """The annotation with Optional stripped, or the annotation unchanged."""
-    if get_origin(annotation) is Union:
-        args = [arg for arg in get_args(annotation) if arg is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return annotation
+def _shapes(annotation: Any, steps: _Path = ()) -> Iterator[Tuple[Any, _Path]]:
+    """Each type an annotation holds, with the container steps that lead to it.
+
+    Looks through Optional, unions, Annotated, lists and dicts.
+    """
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        yield from _shapes(get_args(annotation)[0], steps)
+    elif origin is Union or origin is UnionType:
+        for arg in get_args(annotation):
+            yield from _shapes(arg, steps)
+    elif origin in _SEQUENCES:
+        for arg in get_args(annotation):
+            if arg is not Ellipsis:
+                yield from _shapes(arg, steps + (_EACH,))
+    elif origin in _MAPPINGS and get_args(annotation):
+        yield from _shapes(get_args(annotation)[-1], steps + (_EACH,))
+    else:
+        yield annotation, steps
 
 
-def _nested_models(annotation: Any) -> list[type[BaseModel]]:
-    """Every config model an annotation reaches, through Optional, list and dict."""
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return [annotation]
-    found: list[type[BaseModel]] = []
-    for arg in get_args(annotation):
-        found.extend(_nested_models(arg))
-    return found
+class _Rules(NamedTuple):
+    """Where credentials sit in one config model, as paths from that model."""
 
-
-def _collect(
-    model: type[BaseModel],
-    prefix: _Path,
-    chain: Tuple[type[BaseModel], ...],
-    secrets: set[_Path],
-    headers: set[_Path],
-) -> None:
-    # A model that can contain itself would recurse forever. Everything below the
-    # repeat was already collected on the way in, so stopping loses nothing.
-    if model in chain:
-        return
-    for name, field in model.model_fields.items():
-        path = prefix + (name,)
-        annotation = _unwrap_optional(field.annotation)
-        if annotation is SecretStr:
-            secrets.add(path)
-            continue
-        if name == _HEADER_FIELD_NAME:
-            headers.add(path)
-        for nested in _nested_models(annotation):
-            _collect(nested, path, chain + (model,), secrets, headers)
+    secrets: Tuple[_Path, ...]
+    headers: Tuple[_Path, ...]
+    models: Tuple[Tuple[_Path, type[BaseModel]], ...]
 
 
 @cache
-def credential_locations(model: type[BaseModel]) -> Tuple[frozenset[_Path], frozenset[_Path]]:
-    """Where credentials sit in a config model, as (secret fields, header maps).
+def _rules(model: type[BaseModel]) -> _Rules:
+    secrets: list[_Path] = []
+    headers: list[_Path] = []
+    models: list[Tuple[_Path, type[BaseModel]]] = []
+    for name, field in model.model_fields.items():
+        if name == _HEADER_FIELD_NAME:
+            headers.append((name,))
+        for shape, steps in _shapes(field.annotation):
+            if isinstance(shape, type) and issubclass(shape, SecretStr):
+                secrets.append((name,) + steps)
+            elif isinstance(shape, type) and issubclass(shape, BaseModel):
+                models.append(((name,) + steps, shape))
+    return _Rules(tuple(secrets), tuple(headers), tuple(models))
 
-    Each entry is a path of field names from the root of the model. Derived from
-    the schema on first use and cached, so declaring a field ``SecretStr`` is all
-    it takes for it to be redacted everywhere a config is rendered.
+
+def _locate(node: Any, path: _Path, where: _Path) -> Iterator[Tuple[Any, Any, _Path]]:
+    """Every place path reaches under node, as (container, key, location)."""
+    step, rest = path[0], path[1:]
+    if step == _EACH and isinstance(node, list):
+        items: list[Tuple[Any, Any]] = list(enumerate(node))
+    elif step == _EACH and isinstance(node, dict):
+        items = list(node.items())
+    elif isinstance(node, dict) and step in node:
+        items = [(step, node[step])]
+    else:
+        return
+    for key, value in items:
+        location = where + (str(key),)
+        if rest:
+            yield from _locate(value, rest, location)
+        else:
+            yield node, key, location
+
+
+def _visit(
+    node: Any,
+    model: type[BaseModel],
+    where: _Path,
+    on_secret: Callable[[Any, Any, _Path], None],
+    on_headers: Callable[[Any, Any, _Path], None],
+) -> None:
+    """Call back on every credential under node, following the data down the schema.
+
+    The data sets the depth, so a model that contains itself is followed as far as
+    the config goes.
     """
-    secrets: set[_Path] = set()
-    headers: set[_Path] = set()
-    _collect(model, (), (), secrets, headers)
-    return frozenset(secrets), frozenset(headers)
-
-
-def _locate(node: Any, path: _Path, where: _Path = ()) -> Iterator[Tuple[dict[str, Any], str, _Path]]:
-    """Every place path reaches under node, as (mapping, key, location).
-
-    Descends into lists so a path through a repeated config section reaches every
-    element of it. The location includes the list indices.
-    """
-    if isinstance(node, list):
-        for index, item in enumerate(node):
-            yield from _locate(item, path, where + (str(index),))
-        return
-    if not isinstance(node, dict) or path[0] not in node:
-        return
-    if len(path) == 1:
-        yield node, path[0], where + path
-        return
-    yield from _locate(node[path[0]], path[1:], where + path[:1])
-
-
-def _apply(node: Any, path: _Path, transform: Callable[[Any], Any]) -> None:
-    """Replace the value at path under node, in place, wherever the path exists."""
-    for mapping, key, _ in _locate(node, path):
-        mapping[key] = transform(mapping[key])
+    rules = _rules(model)
+    for path in rules.secrets:
+        for container, key, location in _locate(node, path, where):
+            on_secret(container, key, location)
+    for path in rules.headers:
+        for container, key, location in _locate(node, path, where):
+            on_headers(container, key, location)
+    for path, nested in rules.models:
+        for container, key, location in _locate(node, path, where):
+            _visit(container[key], nested, location, on_secret, on_headers)
 
 
 def _is_credential_header(name: Any) -> bool:
-    return str(name).lower() in CREDENTIAL_HEADER_NAMES
+    lowered = str(name).lower()
+    return any(fragment in lowered for fragment in CREDENTIAL_HEADER_FRAGMENTS)
+
+
+def _is_placeholder(value: Any) -> bool:
+    return value in (REDACTED, _PYDANTIC_MASK)
 
 
 def _mask_credential(value: Any) -> Any:
@@ -167,33 +181,37 @@ def redact(data: Mapping[str, Any], model: type[BaseModel]) -> dict[str, Any]:
     a validated config. A config that sets no credential renders unchanged.
     """
     redacted = deepcopy(dict(data))
-    secrets, headers = credential_locations(model)
-    for path in secrets:
-        _apply(redacted, path, _mask_credential)
-    for path in headers:
-        _apply(redacted, path, _mask_credential_headers)
+
+    def mask(container: Any, key: Any, location: _Path) -> None:
+        container[key] = _mask_credential(container[key])
+
+    def mask_headers(container: Any, key: Any, location: _Path) -> None:
+        container[key] = _mask_credential_headers(container[key])
+
+    _visit(redacted, model, (), mask, mask_headers)
     return redacted
 
 
 def redacted_credentials(data: Mapping[str, Any], model: type[BaseModel]) -> list[str]:
-    """The credentials in a config mapping that still hold ``REDACTED``, as dotted paths.
+    """The credentials in a config mapping that hold a placeholder, as dotted paths.
 
+    A placeholder is ``REDACTED`` or the mask pydantic writes for a ``SecretStr``.
     Header names are compared ignoring case and the last one wins, as in the request
     the client builds.
     """
-    config = dict(data)
-    secrets, headers = credential_locations(model)
-    found: list[str] = []
-    for path in secrets:
-        for mapping, key, where in _locate(config, path):
-            if mapping[key] == REDACTED:
-                found.append(".".join(where))
-    for path in headers:
-        for mapping, key, where in _locate(config, path):
-            if not isinstance(mapping[key], dict):
-                continue
-            sent = {str(name).lower(): (name, header) for name, header in mapping[key].items()}
-            for name, header in sent.values():
-                if _is_credential_header(name) and header == REDACTED:
-                    found.append(".".join(where + (str(name),)))
+    found: set[str] = set()
+
+    def check(container: Any, key: Any, location: _Path) -> None:
+        if _is_placeholder(container[key]):
+            found.add(".".join(location))
+
+    def check_headers(container: Any, key: Any, location: _Path) -> None:
+        if not isinstance(container[key], dict):
+            return
+        sent = {str(name).lower(): (name, header) for name, header in container[key].items()}
+        for name, header in sent.values():
+            if _is_credential_header(name) and _is_placeholder(header):
+                found.add(".".join(location + (str(name),)))
+
+    _visit(dict(data), model, (), check, check_headers)
     return sorted(found)
