@@ -16,7 +16,7 @@ from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatComplet
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
-from typing import Generator, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
 from datasets import load_dataset
 import os
 
@@ -27,34 +27,63 @@ class InfinityInstructDataGenerator(DataGenerator):
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if config.path is not None:
-            # check if the path is valid
-            if not os.path.exists(config.path):
-                raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
-            # depending on whether the dataset is a single file or a directory, we need to load it differently
-            # TODO: add support for other file types
-            if os.path.isfile(config.path) and config.path.endswith(".json"):
-                self.infinity_instruct_dataset = iter(
-                    load_dataset("json", data_files=config.path, streaming=True, split="train")
-                )
-            elif os.path.isdir(config.path):
-                json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
-                self.infinity_instruct_dataset = iter(
-                    load_dataset("json", data_files=json_files, streaming=True, split="train")
-                )
-            else:
-                raise ValueError(f"Invalid dataset path: {config.path}")
-        else:
+        if config.path is None:
             raise ValueError("path is not provided in the config")
 
         self.conversations_key = "conversations"
+        self.infinity_instruct_dataset = self._load_dataset()
         # initialize data collection
         next(self.infinity_instruct_dataset)
+        self._dataset_ready = True
+
+    def _load_dataset(self) -> Iterator[Any]:
+        config = self.config
+        assert config.path is not None
+        # check if the path is valid
+        if not os.path.exists(config.path):
+            raise ValueError(f"Invalid dataset path: {config.path}. Path does not exist.")
+        # depending on whether the dataset is a single file or a directory, we need to load it differently
+        # TODO: add support for other file types
+        if os.path.isfile(config.path) and config.path.endswith(".json"):
+            return iter(load_dataset("json", data_files=config.path, streaming=True, split="train"))
+        elif os.path.isdir(config.path):
+            json_files = [f for f in os.listdir(config.path) if f.endswith(".json")]
+            return iter(load_dataset("json", data_files=json_files, streaming=True, split="train"))
+        else:
+            raise ValueError(f"Invalid dataset path: {config.path}")
+
+    def __getstate__(self) -> Dict[str, Any]:
+        # The streaming dataset's iterator holds an unpicklable generator
+        # internally, so a spawn/forkserver worker fails to unpickle the whole
+        # generator (#589). Drop it here; __setstate__ leaves it unloaded, and
+        # _ensure_dataset_loaded() rebuilds it lazily the first time get_data()
+        # actually needs it in this process.
+        state = self.__dict__.copy()
+        del state["infinity_instruct_dataset"]
+        state["_dataset_ready"] = False
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+
+    def _ensure_dataset_loaded(self) -> None:
+        # A Worker process only reaches its own copy of this generator through
+        # LazyLoadDataMixin.get_request(), which is a no-op for a generator
+        # (like this one) that doesn't implement that mixin: the parent process
+        # is the one that calls get_data() and puts the materialized requests on
+        # the queue. So a worker's copy never needs the dataset at all, and
+        # rebuilding it eagerly on every worker spawn (as __setstate__ used to)
+        # cost every worker a redundant dataset open for nothing.
+        if not self._dataset_ready:
+            self.infinity_instruct_dataset = self._load_dataset()
+            next(self.infinity_instruct_dataset)
+            self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Completion, APIType.Chat]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        self._ensure_dataset_loaded()
         if self.infinity_instruct_dataset is not None:
             while True:
                 data = next(self.infinity_instruct_dataset)

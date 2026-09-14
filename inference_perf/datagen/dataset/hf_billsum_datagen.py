@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 import os
-from typing import Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from datasets import load_dataset
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAPIData, InferenceAPIData
@@ -43,6 +43,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
 
         # Advance the iterator to the first data point
         next(self.billsum_dataset)
+        self._dataset_ready = True
 
     def _initialize_dataset(self) -> None:
         if self.config.path is None:
@@ -59,10 +60,38 @@ class BillsumConversationsDataGenerator(DataGenerator):
         else:
             raise ValueError(f"Invalid dataset path: {self.config.path}")
 
+    def __getstate__(self) -> Dict[str, Any]:
+        # The streaming dataset's iterator holds an unpicklable generator
+        # internally, so a spawn/forkserver worker fails to unpickle the whole
+        # generator (#589). Drop it here; __setstate__ leaves it unloaded, and
+        # _ensure_dataset_loaded() rebuilds it lazily the first time get_data()
+        # actually needs it in this process.
+        state = self.__dict__.copy()
+        del state["billsum_dataset"]
+        state["_dataset_ready"] = False
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+
+    def _ensure_dataset_loaded(self) -> None:
+        # A Worker process only reaches its own copy of this generator through
+        # LazyLoadDataMixin.get_request(), which is a no-op for a generator
+        # (like this one) that doesn't implement that mixin: the parent process
+        # is the one that calls get_data() and puts the materialized requests on
+        # the queue. So a worker's copy never needs the dataset at all, and
+        # rebuilding it eagerly on every worker spawn (as __setstate__ used to)
+        # cost every worker a redundant dataset open for nothing.
+        if not self._dataset_ready:
+            self._initialize_dataset()
+            next(self.billsum_dataset)
+            self._dataset_ready = True
+
     def get_supported_apis(self) -> List[APIType]:
         return [APIType.Chat, APIType.Completion]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        self._ensure_dataset_loaded()
         if self.billsum_dataset is not None:
             while True:
                 try:
