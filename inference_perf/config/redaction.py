@@ -30,11 +30,14 @@ so a new one is covered by declaring its type:
 
 Nothing else is touched. A rendered config still has to be good enough to
 reproduce a run from and to attach to a bug report.
+
+A saved config loaded back would send the marker in place of each credential, so
+``read_config`` rejects it using ``redacted_credentials``.
 """
 
 from copy import deepcopy
 from functools import cache
-from typing import Any, Callable, Mapping, Tuple, Union, get_args, get_origin
+from typing import Any, Callable, Iterator, Mapping, Tuple, Union, get_args, get_origin
 
 from pydantic import BaseModel, SecretStr
 
@@ -117,32 +120,43 @@ def credential_locations(model: type[BaseModel]) -> Tuple[frozenset[_Path], froz
     return frozenset(secrets), frozenset(headers)
 
 
-def _apply(node: Any, path: _Path, transform: Callable[[Any], Any]) -> None:
-    """Replace the value at path under node, in place, wherever the path exists.
+def _locate(node: Any, path: _Path, where: _Path = ()) -> Iterator[Tuple[dict[str, Any], str, _Path]]:
+    """Every place path reaches under node, as (mapping, key, location).
 
     Descends into lists so a path through a repeated config section reaches every
-    element of it.
+    element of it. The location includes the list indices.
     """
     if isinstance(node, list):
-        for item in node:
-            _apply(item, path, transform)
+        for index, item in enumerate(node):
+            yield from _locate(item, path, where + (str(index),))
         return
     if not isinstance(node, dict) or path[0] not in node:
         return
     if len(path) == 1:
-        node[path[0]] = transform(node[path[0]])
+        yield node, path[0], where + path
         return
-    _apply(node[path[0]], path[1:], transform)
+    yield from _locate(node[path[0]], path[1:], where + path[:1])
+
+
+def _apply(node: Any, path: _Path, transform: Callable[[Any], Any]) -> None:
+    """Replace the value at path under node, in place, wherever the path exists."""
+    for mapping, key, _ in _locate(node, path):
+        mapping[key] = transform(mapping[key])
+
+
+def _is_credential_header(name: Any) -> bool:
+    return str(name).lower() in CREDENTIAL_HEADER_NAMES
 
 
 def _mask_credential(value: Any) -> Any:
-    return REDACTED if value is not None else value
+    # An empty value is no credential, so it is left as is.
+    return REDACTED if value else value
 
 
 def _mask_credential_headers(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    return {name: (REDACTED if str(name).lower() in CREDENTIAL_HEADER_NAMES else header) for name, header in value.items()}
+    return {name: (_mask_credential(header) if _is_credential_header(name) else header) for name, header in value.items()}
 
 
 def redact(data: Mapping[str, Any], model: type[BaseModel]) -> dict[str, Any]:
@@ -159,3 +173,27 @@ def redact(data: Mapping[str, Any], model: type[BaseModel]) -> dict[str, Any]:
     for path in headers:
         _apply(redacted, path, _mask_credential_headers)
     return redacted
+
+
+def redacted_credentials(data: Mapping[str, Any], model: type[BaseModel]) -> list[str]:
+    """The credentials in a config mapping that still hold ``REDACTED``, as dotted paths.
+
+    Header names are compared ignoring case and the last one wins, as in the request
+    the client builds.
+    """
+    config = dict(data)
+    secrets, headers = credential_locations(model)
+    found: list[str] = []
+    for path in secrets:
+        for mapping, key, where in _locate(config, path):
+            if mapping[key] == REDACTED:
+                found.append(".".join(where))
+    for path in headers:
+        for mapping, key, where in _locate(config, path):
+            if not isinstance(mapping[key], dict):
+                continue
+            sent = {str(name).lower(): (name, header) for name, header in mapping[key].items()}
+            for name, header in sent.values():
+                if _is_credential_header(name) and header == REDACTED:
+                    found.append(".".join(where + (str(name),)))
+    return sorted(found)

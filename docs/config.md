@@ -377,7 +377,13 @@ A run renders its config twice, to the log at startup and to `config.yaml` in th
 
 Headers are matched by name, ignoring case: `authorization`, `proxy-authorization`, `api-key`, `x-api-key`, `x-goog-api-key`, `x-goog-iam-authorization-token` and `cookie`. Every other header is left as it is, so a rendered config still shows the routing setup the run used.
 
-Because the saved `config.yaml` is redacted, re-running from it needs the credential supplied again.
+An empty value, such as `api_key: ""`, is not a credential and is left as it is.
+
+Because the saved `config.yaml` is redacted, re-running from it needs the credentials supplied again. Loading a config that still holds `[REDACTED]` fails with an error naming the setting. Supply the value in the file or with its flag, or remove the setting:
+
+```bash
+inference-perf --config_file reports-20260914-101500/config.yaml --server.api_key "$API_KEY"
+```
 
 ## Full Configuration Examples
 

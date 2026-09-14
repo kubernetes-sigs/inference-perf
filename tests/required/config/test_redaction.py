@@ -18,6 +18,9 @@ The leaks pinned here are the ones a benchmark actually hits: server.api_key,
 tokenizer.token and an api.headers authentication header printed verbatim by
 read_config, and the same three written into the config.yaml that is uploaded to
 object storage.
+
+It also pins that read_config rejects a saved config.yaml until its credentials are
+supplied again.
 """
 
 import logging
@@ -37,6 +40,7 @@ from inference_perf.config.redaction import (
     _unwrap_optional,
     credential_locations,
     redact,
+    redacted_credentials,
 )
 from inference_perf.reportgen.base import ReportGenerator
 
@@ -62,12 +66,12 @@ def _config_dict(with_credentials: bool = True) -> dict[str, Any]:
     return config
 
 
-def _read(config: dict[str, Any]) -> Config:
+def _read(config: dict[str, Any], cli_overrides: Optional[dict[str, Any]] = None) -> Config:
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as handle:
         yaml.safe_dump(config, handle)
         path = handle.name
     try:
-        return read_config(path)
+        return read_config(path, cli_overrides)
     finally:
         os.unlink(path)
 
@@ -75,6 +79,11 @@ def _read(config: dict[str, Any]) -> Config:
 def _saved_config_report(config: Config) -> str:
     generator = ReportGenerator(metrics_client=None, metrics_collector=Mock(), config=config)
     return yaml.dump(generator.generate_config_report().get_contents())
+
+
+def _saved_config(config: dict[str, Any]) -> dict[str, Any]:
+    saved: dict[str, Any] = yaml.safe_load(_saved_config_report(_read(config)))
+    return saved
 
 
 def _field_paths(
@@ -164,7 +173,7 @@ def test_every_credential_field_in_the_schema_is_a_secret() -> None:
 
 
 def test_redaction_reaches_a_credential_inside_a_list() -> None:
-    """A config section that repeats is masked in every element, not just the first."""
+    """A config section that repeats is masked, and checked on load, in every element."""
 
     class Endpoint(BaseModel):
         name: str
@@ -174,5 +183,63 @@ def test_redaction_reaches_a_credential_inside_a_list() -> None:
         endpoints: list[Endpoint] = []
 
     data = {"endpoints": [{"name": "a", "api_key": "first"}, {"name": "b", "api_key": "second"}]}
+    redacted = redact(data, Fleet)
 
-    assert redact(data, Fleet) == {"endpoints": [{"name": "a", "api_key": REDACTED}, {"name": "b", "api_key": REDACTED}]}
+    assert redacted == {"endpoints": [{"name": "a", "api_key": REDACTED}, {"name": "b", "api_key": REDACTED}]}
+    assert redacted_credentials(redacted, Fleet) == ["endpoints.0.api_key", "endpoints.1.api_key"]
+
+
+def test_saved_config_is_rejected_while_it_holds_the_placeholder() -> None:
+    """Re-running from a report bundle has to fail on load, not as a 401 from the server."""
+    with pytest.raises(ValueError) as error:
+        _read(_saved_config(_config_dict()))
+
+    message = str(error.value)
+    assert REDACTED in message
+    for setting in ("server.api_key", "tokenizer.token", "api.headers.Authorization"):
+        assert setting in message
+
+
+def test_saved_config_loads_once_its_credentials_are_supplied_again() -> None:
+    """The command line overrides the file, which is how a saved run is repeated."""
+    config = _read(
+        _saved_config(_config_dict()),
+        cli_overrides={
+            "api": {"headers": {"Authorization": AUTH_HEADER}},
+            "server": {"api_key": API_KEY},
+            "tokenizer": {"token": HF_TOKEN},
+        },
+    )
+
+    assert config.api.headers is not None and config.api.headers["Authorization"] == AUTH_HEADER
+    assert config.server is not None and config.server.api_key is not None
+    assert config.server.api_key.get_secret_value() == API_KEY
+    assert config.tokenizer is not None and config.tokenizer.token is not None
+    assert config.tokenizer.token.get_secret_value() == HF_TOKEN
+
+
+def test_placeholder_check_follows_the_header_the_client_sends() -> None:
+    """Header names match ignoring case, and the client sends the last one given."""
+    supplied_again = {"api": {"headers": {"Authorization": REDACTED, "authorization": AUTH_HEADER}}}
+    overridden = {"api": {"headers": {"authorization": AUTH_HEADER, "Authorization": REDACTED}}}
+
+    assert redacted_credentials(supplied_again, Config) == []
+    assert redacted_credentials(overridden, Config) == ["api.headers.Authorization"]
+
+
+def test_empty_credentials_are_not_masked(caplog: pytest.LogCaptureFixture) -> None:
+    """An empty credential, as in the `api_key: ""` docs example, is not masked and loads back."""
+    config = _config_dict(with_credentials=False)
+    config["api"]["headers"]["Authorization"] = ""
+    config["server"]["api_key"] = ""
+    config["tokenizer"]["token"] = ""
+
+    with caplog.at_level(logging.INFO, logger="inference_perf.config.config"):
+        saved = _saved_config(config)
+
+    assert "Benchmarking with the following config" in caplog.text
+    assert REDACTED not in caplog.text
+    assert saved["api"]["headers"]["Authorization"] == ""
+    assert saved["server"]["api_key"] == ""
+    assert saved["tokenizer"]["token"] == ""
+    _read(saved)

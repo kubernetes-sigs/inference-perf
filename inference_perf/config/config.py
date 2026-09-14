@@ -32,7 +32,7 @@ from inference_perf.config.loadgen import (
     TraceSessionReplayLoadStage,
 )
 from inference_perf.config.metrics import MetricsClientConfig
-from inference_perf.config.redaction import redact
+from inference_perf.config.redaction import REDACTED, redact, redacted_credentials
 from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
 
@@ -96,6 +96,15 @@ def read_config(config_file: Optional[str] = None, cli_overrides: Optional[dict[
 
     if cli_overrides:
         merged_cfg = deep_merge(merged_cfg, cli_overrides)
+
+    # A saved config.yaml holds the redaction marker instead of its credentials.
+    # Checked after the overrides so a credential supplied on the command line counts.
+    placeholders = redacted_credentials(merged_cfg, Config)
+    if placeholders:
+        raise ValueError(
+            f"These credentials still hold the {REDACTED} placeholder from a saved config: {', '.join(placeholders)}. "
+            "Supply the real values in the config file or on the command line, or remove these settings."
+        )
 
     # Handle timestamp substitution in storage paths
     if "storage" in merged_cfg and merged_cfg["storage"]:
