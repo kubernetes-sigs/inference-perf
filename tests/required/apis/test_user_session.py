@@ -325,6 +325,29 @@ class TestUserSessionTruncation:
         # target_len = 220 - 10 - 200 = 10, so history and system prompt are dropped
         assert payload["prompt"] == "tok_10"
 
+    @pytest.mark.asyncio
+    async def test_history_still_accumulates_after_system_prompt_truncated_away(self) -> None:
+        """Emptying the system prompt must not stop update_context accumulating history.
+
+        The accumulation branch is fixed at construction rather than keyed on the surviving
+        system prompt text, which truncation may have emptied.
+        """
+        tok = _mock_tokenizer()
+        hf = tok.get_tokenizer.return_value
+        hf.encode = MagicMock(side_effect=lambda text: [1] * tok.count_tokens(text))
+
+        session = LocalUserSession(user_session_id="sess_5", system_prompt="tok_50", tokenizer=tok, max_model_len=260)
+        LocalUserSession._instances["sess_5"] = session
+
+        # A budget too small for the turn's input drops the system prompt.
+        data = UserSessionCompletionAPIData(user_session_id="sess_5", target_round=0, prompt="tok_40", max_tokens=20)
+        await data.to_request_body("model", 2, False, False)
+        assert session.system_prompt == ""
+
+        # The next turn must still be accumulated rather than replacing the context wholesale.
+        session.update_context("tok_40 tok_10")
+        assert session.history == ["tok_40 tok_10"]
+
     @pytest.mark.parametrize("request_max_tokens", [20, 21], ids=["exactly-zero-budget", "negative-budget"])
     @pytest.mark.asyncio
     async def test_impossible_prompt_budget_does_not_abort_the_request(self, request_max_tokens: int) -> None:
