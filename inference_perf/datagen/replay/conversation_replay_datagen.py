@@ -48,7 +48,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -180,6 +180,17 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Seeded RNG for deterministic generation
         self.rng = np.random.default_rng(self.cr_config.seed)
         self.max_model_len = self.cr_config.max_model_len or 225000
+
+        # Fail here rather than mid-run: truncation can only clamp, so an output ceiling that
+        # consumes the whole context would silently send empty prompts for the entire benchmark.
+        out_dist = self.cr_config.output_tokens_per_turn
+        if out_dist is not None and out_dist.max + PROMPT_TOKEN_BUFFER >= self.max_model_len:
+            raise ValueError(
+                f"output_tokens_per_turn.max ({out_dist.max}) leaves no room for a prompt within "
+                f"max_model_len ({self.max_model_len}) after reserving the "
+                f"{PROMPT_TOKEN_BUFFER} token safety buffer. Lower output_tokens_per_turn.max "
+                f"below {self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
+            )
 
         # Cache for the currently active stage's shared system prompt
         self._current_stage_id: Optional[int] = None

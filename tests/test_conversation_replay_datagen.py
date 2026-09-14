@@ -187,6 +187,42 @@ class TestConversationReplayDataGenerator:
         assert isinstance(result, _ConversationReplayAPIData)
         assert result.tool_call_latency_sec == 0.0
 
+    def test_output_distribution_leaving_no_prompt_budget_is_rejected(self) -> None:
+        """An output ceiling that consumes the whole context fails at init, not mid-benchmark."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=1,
+            shared_system_prompt_len=50,
+            max_model_len=1000,
+            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
+            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            # 900 + 200 buffer >= 1000, so no prompt could ever fit.
+            output_tokens_per_turn=Distribution(type="normal", min=10, max=900, mean=100, std_dev=50),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+
+        with pytest.raises(ValueError, match="leaves no room for a prompt"):
+            ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+
+    def test_output_distribution_within_prompt_budget_is_accepted(self) -> None:
+        """An output max that still leaves prompt room builds normally."""
+        api_config = APIConfig(type=APIType.Completion)
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=1,
+            shared_system_prompt_len=50,
+            max_model_len=1000,
+            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
+            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            # 799 + 200 < 1000, so a prompt still fits.
+            output_tokens_per_turn=Distribution(type="normal", min=10, max=799, mean=100, std_dev=50),
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+
+        gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
+        assert len(gen.blueprints) == 1
+
     def test_tool_call_latency_fixed_distribution(self) -> None:
         """Fixed tool call latency is sampled and stored per turn."""
         api_config = APIConfig(type=APIType.Completion)

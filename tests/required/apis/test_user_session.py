@@ -324,3 +324,29 @@ class TestUserSessionTruncation:
         assert tok.count_tokens(payload["prompt"]) + payload["max_tokens"] + 200 <= 220
         # target_len = 220 - 10 - 200 = 10, so history and system prompt are dropped
         assert payload["prompt"] == "tok_10"
+
+    @pytest.mark.parametrize("request_max_tokens", [20, 21], ids=["exactly-zero-budget", "negative-budget"])
+    @pytest.mark.asyncio
+    async def test_impossible_prompt_budget_does_not_abort_the_request(self, request_max_tokens: int) -> None:
+        """A max_tokens leaving no prompt budget clamps instead of raising or slicing the tail.
+
+        max_model_len=220 gives a target_len of 0 and -1; unclamped, a negative target would
+        keep the prompt's tail (ids[:-1]) instead of truncating it.
+        """
+        tok = _mock_tokenizer()
+        hf = tok.get_tokenizer.return_value
+        hf.encode = MagicMock(side_effect=lambda text: [1] * tok.count_tokens(text))
+
+        session = LocalUserSession(user_session_id="sess_4", system_prompt="tok_5", tokenizer=tok, max_model_len=220)
+        LocalUserSession._instances["sess_4"] = session
+
+        data = UserSessionCompletionAPIData(
+            user_session_id="sess_4", target_round=0, prompt="tok_10", max_tokens=request_max_tokens
+        )
+
+        payload = await data.to_request_body("model", 2, False, False)
+
+        # The mock decodes an empty id list as "tok_0", so count tokens rather than compare text.
+        assert tok.count_tokens(payload["prompt"]) == 0
+        # The request still goes out, so the load generator records it normally.
+        assert payload["max_tokens"] == request_max_tokens

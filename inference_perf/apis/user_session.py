@@ -24,6 +24,9 @@ from inference_perf.config import APIConfig
 
 logger = logging.getLogger(__name__)
 
+# Reserved on top of max_tokens when truncating, to absorb client/server tokenization differences.
+PROMPT_TOKEN_BUFFER = 200
+
 
 class LocalUserSession:
     user_session_id: str
@@ -147,10 +150,10 @@ class UserSessionCompletionAPIData(CompletionAPIData):
         self._session_context = await self.user_session.get_context(self.target_round)
 
         if self.user_session.tokenizer and self.user_session.max_model_len:
-            # Use the request-specific max_tokens (sampled from the output distribution) rather than the
-            # client-wide default so prompt + completion stays within the model's context length.
-            # 200 token buffer to ensure we stay under model's context length regardless of any tokenization variations
-            target_len = self.user_session.max_model_len - self.max_tokens - 200
+            # Reserve self.max_tokens, the value actually sent, not the client-wide default.
+            # Clamped rather than raised on: this runs outside the client's failure handling, so an
+            # exception would abort the stage. Bad configs are rejected when the datagen is built.
+            target_len = max(0, self.user_session.max_model_len - self.max_tokens - PROMPT_TOKEN_BUFFER)
             hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
 
             system_prompt = self.user_session.system_prompt
