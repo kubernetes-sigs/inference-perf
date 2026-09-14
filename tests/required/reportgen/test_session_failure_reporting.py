@@ -83,7 +83,7 @@ def _replay_error(cause: SessionFailureCause, msg: str) -> ErrorResponseInfo:
 class TestSessionFailuresByLabel:
     def test_all_success_empty_by_label(self) -> None:
         gen = _make_generator()
-        summary = gen.summarize_sessions([_sess(success=True), _sess(session_id="s2", success=True)], PERCENTILES)
+        summary = gen.summarize_sessions([_sess(success=True), _sess(session_id="s2", success=True)], [], PERCENTILES)
         assert summary["num_sessions_failed"] == 0
         assert summary["failures"]["count"] == 0
         assert summary["failures"]["by_label"] == {}
@@ -107,7 +107,7 @@ class TestSessionFailuresByLabel:
             )
             for i in range(3)
         ]
-        summary = gen.summarize_sessions(metrics, PERCENTILES)
+        summary = gen.summarize_sessions(metrics, [], PERCENTILES)
 
         by_label = summary["failures"]["by_label"]
         assert list(by_label.keys()) == ["recorded_fallback_malformed"]
@@ -138,7 +138,7 @@ class TestSessionFailuresByLabel:
                 error=_replay_error(SessionFailureCause.REQUEST_FAILED, "ServerTimeoutError: connection timed out"),
             ),
         ]
-        summary = gen.summarize_sessions(metrics, PERCENTILES)
+        summary = gen.summarize_sessions(metrics, [], PERCENTILES)
 
         by_label = summary["failures"]["by_label"]
         assert set(by_label.keys()) == {"predecessor_wait_failed", "request_failed"}
@@ -153,7 +153,7 @@ class TestSessionFailuresByLabel:
             _sess(session_id="a2", success=False, error=_replay_error(SessionFailureCause.PREDECESSOR_FAILED, "pred")),
             _sess(session_id="b1", success=False, error=_replay_error(SessionFailureCause.REQUEST_FAILED, "boom")),
         ]
-        summary = gen.summarize_sessions(metrics, PERCENTILES)
+        summary = gen.summarize_sessions(metrics, [], PERCENTILES)
         assert list(summary["failures"]["by_label"].keys())[0] == "predecessor_failed"
 
     def test_failed_session_without_error_is_surfaced_not_dropped(self) -> None:
@@ -163,7 +163,7 @@ class TestSessionFailuresByLabel:
             _sess(session_id="s1", success=False, error=None),
             _sess(session_id="s2", success=False, error=_replay_error(SessionFailureCause.PREDECESSOR_FAILED, "pred")),
         ]
-        summary = gen.summarize_sessions(metrics, PERCENTILES)
+        summary = gen.summarize_sessions(metrics, [], PERCENTILES)
 
         by_label = summary["failures"]["by_label"]
         assert summary["failures"]["count"] == summary["num_sessions_failed"] == 2
@@ -228,7 +228,7 @@ class TestFailedSessionNeverCountsAsSuccess:
         )
 
         gen._enrich_sessions([session], [_req(session_id="s1")])
-        summary = gen.summarize_sessions([session], PERCENTILES)
+        summary = gen.summarize_sessions([session], [], PERCENTILES)
 
         assert session.success is False
         assert summary["num_sessions_succeeded"] == 0
