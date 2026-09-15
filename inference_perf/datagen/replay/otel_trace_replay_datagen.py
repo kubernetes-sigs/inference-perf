@@ -62,7 +62,7 @@ import logging
 import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 from datasets import load_dataset, Dataset
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
@@ -81,6 +81,12 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     detect_trace_format,
     iter_otel_jsonl_traces,
+)
+from inference_perf.datagen.replay.trace_source import (
+    HFDatasetTraceSource,
+    LocalTraceSource,
+    TraceSource,
+    TraceSourceError,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
@@ -252,6 +258,10 @@ def _rows_for_file(trace_file: Path, skip_invalid: bool) -> List[Dict[str, Any]]
 
     The file's format is detected from its content, not its extension. An OTel .jsonl
     file yields one row per line; every other shape yields a single row.
+
+    Not used by replay any more — LocalTraceSource reads one record at a time instead of
+    materializing every row. Kept as the reference definition of per-file normalization
+    semantics, which its tests pin and LocalTraceSource must match.
     """
     trace_format = detect_trace_format(trace_file)
 
@@ -277,7 +287,15 @@ def _rows_for_file(trace_file: Path, skip_invalid: bool) -> List[Dict[str, Any]]
 
 
 def _load_files_to_dataset(files: List[Path], skip_invalid: bool) -> Dataset:
-    """Load a list of trace files, normalize them, and return as a Dataset."""
+    """Load a list of trace files, normalize them, and return as a Dataset.
+
+    Replay no longer calls this: aggregating a corpus here holds every parsed row in
+    Python and then builds one Arrow table from it, which for large corpora costs tens
+    of GB resident and can fail outright when a combined nested column exceeds Arrow's
+    32-bit offsets ("offset overflow while concatenating arrays"). LocalTraceSource
+    replaces it. Retained for tests and for callers that genuinely want one small
+    in-memory dataset.
+    """
     rows = []
     for trace_file in files:
         try:
@@ -396,7 +414,13 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         if filter_func:
             logger.info(f"Using filter expression: {self.otel_config.filter}")
 
-        # Step 1: load all records into a Dataset with uniform HF schema
+        # Step 1: build a trace source. Local inputs are indexed by locator and read one
+        # record at a time; HF inputs stay memory-mapped. Neither aggregates all spans
+        # into Python memory or into one Arrow column — for large corpora the former is
+        # tens of GB resident in the parent (inherited by every forked worker), and the
+        # latter can exceed Arrow's 32-bit offsets and fail outright during fingerprinting
+        # with "offset overflow while concatenating arrays".
+        source_label: str
         if self.otel_config.trace_directory:
             trace_dir = Path(self.otel_config.trace_directory)
             if not trace_dir.exists():
@@ -408,8 +432,12 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             if not trace_files:
                 raise ValueError(f"No .json or .jsonl files found in {trace_dir}")
 
-            dataset: Dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
-            _validate_dataset_schema(dataset, self.otel_config.trace_directory)
+            source_label = self.otel_config.trace_directory
+            self._trace_source: TraceSource = LocalTraceSource(
+                trace_files,
+                self.otel_config.skip_invalid_files,
+                _normalize_file_trace,
+            )
 
         elif self.otel_config.trace_files:
             # Multiple files mode
@@ -430,49 +458,55 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 if trace_file.suffix not in TRACE_FILE_SUFFIXES:
                     raise ValueError(f"Trace file must be a .json or .jsonl file: {trace_file}")
 
-            dataset = _load_files_to_dataset(trace_files, self.otel_config.skip_invalid_files)
-            _validate_dataset_schema(dataset, str(self.otel_config.trace_files))
+            source_label = str(self.otel_config.trace_files)
+            self._trace_source = LocalTraceSource(
+                trace_files,
+                self.otel_config.skip_invalid_files,
+                _normalize_file_trace,
+            )
 
         elif self.otel_config.hf_dataset_path:
-            dataset = _download_hf_dataset(self.otel_config.hf_dataset_path)
+            self._trace_source = HFDatasetTraceSource(_download_hf_dataset(self.otel_config.hf_dataset_path))
+            source_label = str(self.otel_config.hf_dataset_path)
 
         else:
             raise ValueError(
                 "Either trace_directory, trace_files, or hf_dataset_path must be provided in otel_trace_replay config"
             )
 
-        logger.info(f"Loaded {len(dataset)} records")
+        records = self._trace_source.list_records()
+        if not records:
+            raise ValueError(f"No trace records found in '{source_label}'")
+        logger.info(f"Loaded {len(records)} records")
 
-        # Step 2: apply filter once across all sources
+        # Step 2: apply the filter once, before duplication and num_sessions selection.
+        # HF filters natively on the memory-mapped dataset. Local sources stream one
+        # record at a time and keep only the accepted locators, so memory stays bounded
+        # by a single record rather than the corpus.
         if filter_func:
-            original_size = len(dataset)
-            dataset = dataset.filter(filter_func)
-            logger.info(f"Filter applied: {original_size} -> {len(dataset)} records")
+            original_size = len(records)
+            self._filter_source(filter_func)
+            records = self._trace_source.list_records()
+            logger.info(f"Filter applied: {original_size} -> {len(records)} records")
 
-        # Keep the dataset memory-mapped and read rows ONE AT A TIME on demand in
-        # _build_session. We deliberately do NOT materialize all rows (their spans) into
-        # Python memory here — for large corpora that is tens of GB resident in the parent
-        # (and inherited by every forked worker). Only the small id columns are read upfront
-        # to derive stable session IDs; the heavy spans stay on disk until a session is built.
-        self._dataset = dataset
-        num_rows = len(dataset)
+        num_rows = len(records)
 
-        cols = dataset.column_names
-        session_id_col = list(dataset["session_id"]) if "session_id" in cols else [None] * num_rows
-        source_id_col = list(dataset["source_id"]) if "source_id" in cols else [None] * num_rows
-
-        # Shuffle a permutation of row indices (not the rows themselves) so order is stable
-        # and reproducible without holding any span data.
+        # Shuffle a permutation of record indices (not the records themselves) so order is
+        # stable and reproducible without holding any span data.
         order = list(range(num_rows))
         random.seed(self.base_seed)
         random.shuffle(order)
-        self._row_order = order  # slot -> dataset row index
+        self._row_order = order  # slot -> record index
         logger.info(f"Randomized session order using seed: {self.base_seed}")
 
         # Derive session IDs (stable, independent of graph build) so get_session_count()
         # works immediately and duplicate_sessions_target can expand at the ID level.
-        base_ids = [f"trace{slot}_{session_id_col[row] or f'session_{slot}'}" for slot, row in enumerate(order)]
-        self._source_ids = [source_id_col[row] for row in order]  # slot -> source_id (or None)
+        # The `session_{slot}` fallback is slot-based (post-shuffle), so it belongs here
+        # rather than in the source, which sees only pre-shuffle record order.
+        base_ids = [f"trace{slot}_{records[row].session_id_suffix or f'session_{slot}'}" for slot, row in enumerate(order)]
+        # slot -> source_id, or None when the record carries none (the generator then
+        # falls back to the session ID in _build_session).
+        self._source_ids: List[Optional[str]] = [records[row].source_id or None for row in order]
 
         # Expand for duplicate_sessions_target: append (id, source_slot) pairs.
         # _source_indices[i] is None for real slots, or the source slot to copy for duplicates.
@@ -497,19 +531,59 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         self.initialize_sessions_lazy(session_ids)
 
+    def _filter_source(self, filter_func: Callable[..., Any]) -> None:
+        """Apply the configured filter to the trace source in place.
+
+        An arbitrary filter may inspect spans, so it cannot be evaluated from a
+        locator alone. HF sources delegate to Dataset.filter, which is native and
+        memory-mapped. Local sources stream: load one record, evaluate, keep only its
+        locator, drop the record. That is O(corpus) work at startup but bounded to one
+        live record, and it preserves filtering's position before duplication and
+        num_sessions selection.
+        """
+        source = self._trace_source
+        if isinstance(source, HFDatasetTraceSource):
+            self._trace_source = HFDatasetTraceSource(source.dataset.filter(filter_func))
+            return
+
+        if not isinstance(source, LocalTraceSource):
+            raise TypeError(f"Cannot filter trace source of type {type(source).__name__}")
+
+        keep: List[int] = []
+        for index in range(len(source.records)):
+            try:
+                record = source.load_record(index)
+            except TraceSourceError as e:
+                logger.error(f"Failed to load trace record {index} while filtering: {e}")
+                if not self.otel_config.skip_invalid_files:
+                    raise
+                continue
+            if filter_func(record):
+                keep.append(index)
+            # `record` goes out of scope here: only accepted locators are retained.
+        source.restrict_to(keep)
+
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build one session's graph on demand (called by _ensure_session_built).
 
-        Reads the single underlying dataset row from disk (memory-mapped) for this slot,
-        builds the graph, and returns it — the row's spans are never retained beyond this
-        call. For a duplicate slot, reads the source slot's row and relabels with the
-        duplicate's session_id (graph content identical; the _dup suffix drives random-string
-        injection in _build_session_schedule).
+        Reads the single underlying record for this slot through the trace source (from a
+        memory-mapped dataset row for HF inputs), builds the graph, and returns it — the
+        record's spans are never retained beyond this call. For a duplicate slot, reads the
+        source slot's record and relabels with the duplicate's session_id (graph content
+        identical; the _dup suffix drives random-string injection in _build_session_schedule).
         """
         source_idx = self._source_indices[session_index]
         slot = source_idx if source_idx is not None else session_index
         row_index = self._row_order[slot]
-        row = cast(Dict[str, Any], dict(self._dataset[row_index]))
+        try:
+            row = self._trace_source.load_record(row_index)
+        except TraceSourceError as e:
+            # Lazy sources discover unusable records here rather than at startup, so
+            # skip_invalid_files is honored at the point of discovery.
+            logger.error(f"Failed to load trace record {row_index}: {e}")
+            if not self.otel_config.skip_invalid_files:
+                raise
+            return None
         source_id = self._source_ids[slot] or self._session_ids[session_index]
         return self._process_trace_data(row, session_index, session_id=self._session_ids[session_index], source_id=source_id)
 

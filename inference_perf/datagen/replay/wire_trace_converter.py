@@ -54,8 +54,21 @@ _STATUS_OK = 1
 _STATUS_ERROR = 2
 
 
-def _span_id() -> str:
-    return uuid.uuid4().hex[:16]
+def _span_id(trace_id: str, line_no: int) -> str:
+    """Derive a span id that is stable across conversions of the same record.
+
+    A random id would break lazy replay. Conversion runs once per load, and a
+    session's graph is built independently in the parent (to enumerate its events)
+    and again in its assigned worker; event ids embed the span id, so a fresh id
+    per conversion makes those two graphs disagree and every event-id lookup miss.
+    That silently drops per-event reporting -- TFUT among it.
+
+    (trace_id, line_no) identifies a record within its capture: trace_id is itself
+    stable (a recorded session header, else a hash of the resolved path), and
+    line_no is the record's position in the file.
+    """
+    digest = hashlib.sha256(f"{trace_id}:{line_no}".encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 def _new_trace_id() -> str:
@@ -619,6 +632,7 @@ def _timestamps(record: Dict[str, Any]) -> Tuple[str, str]:
 
 def _build_span(
     trace_id: str,
+    line_no: int,
     model: str,
     start_time: str,
     end_time: str,
@@ -637,7 +651,7 @@ def _build_span(
 
     span: Dict[str, Any] = {
         "trace_id": trace_id,
-        "span_id": _span_id(),
+        "span_id": _span_id(trace_id, line_no),
         "parent_span_id": None,
         "name": f"chat {model}",
         "kind": "SPAN_KIND_CLIENT",
@@ -685,7 +699,7 @@ def _load_request(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return request if isinstance(request, dict) else None
 
 
-def convert_responses_api_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
+def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one Responses API wire record to an OTel span.
 
     The response body is an SSE stream; usage and output come from response.completed.
@@ -705,6 +719,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str) -> Optio
 
     return _build_span(
         trace_id=trace_id,
+        line_no=line_no,
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
@@ -720,7 +735,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str) -> Optio
     )
 
 
-def convert_chat_completions_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
+def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one Chat Completions wire record to an OTel span.
 
     The response body is a plain JSON object with choices[] and usage.
@@ -738,6 +753,7 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str) -> Op
 
     return _build_span(
         trace_id=trace_id,
+        line_no=line_no,
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
@@ -763,7 +779,7 @@ _ANTHROPIC_STOP_REASONS = {
 }
 
 
-def convert_anthropic_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
+def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one Anthropic Messages wire record to an OTel span.
 
     The response body is an SSE stream that has to be reassembled; usage arrives split
@@ -789,6 +805,7 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str) -> Optional[
 
     return _build_span(
         trace_id=trace_id,
+        line_no=line_no,
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
@@ -804,15 +821,15 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str) -> Optional[
     )
 
 
-def convert_wire_record(record: Dict[str, Any], trace_id: str) -> Optional[Dict[str, Any]]:
+def convert_wire_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one wire record to an OTel span, dispatching on its API path."""
     api_path = record.get("path", "")
     if "/chat/completions" in api_path:
-        return convert_chat_completions_record(record, trace_id)
+        return convert_chat_completions_record(record, trace_id, line_no)
     if "/responses" in api_path:
-        return convert_responses_api_record(record, trace_id)
+        return convert_responses_api_record(record, trace_id, line_no)
     if "/v1/messages" in api_path or record.get("wire") == "anthropic":
-        return convert_anthropic_record(record, trace_id)
+        return convert_anthropic_record(record, trace_id, line_no)
     return None
 
 
@@ -862,7 +879,7 @@ def iter_wire_spans(path: Path, trace_id: str) -> Iterator[Dict[str, Any]]:
                 raise ValueError(f"{path}:{line_no}: invalid JSON: {e}") from e
             if not isinstance(record, dict):
                 continue
-            span = convert_wire_record(record, trace_id)
+            span = convert_wire_record(record, trace_id, line_no)
             if span is not None:
                 yield span
 
