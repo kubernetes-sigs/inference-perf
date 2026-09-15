@@ -21,12 +21,14 @@ import tempfile
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from inference_perf.config import (
     Config,
     DataGenType,
     Distribution,
     DistributionType,
+    ImageDatagenConfig,
     VideoProfile,
     read_config,
 )
@@ -223,3 +225,18 @@ def test_multimodal_config_parsing() -> None:
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "insertion_point",
+    [
+        -0.1,
+        1.1,
+        {"type": "uniform"},
+        {"type": "uniform", "min": -1, "max": 1},
+        {"type": "uniform", "min": 0, "max": 2},
+    ],
+)
+def test_multimodal_config_rejects_out_of_range_insertion_points(insertion_point: object) -> None:
+    with pytest.raises(ValidationError, match="insertion_point"):
+        ImageDatagenConfig(insertion_point=insertion_point)

@@ -13,11 +13,11 @@
 # limitations under the License.
 """Configuration for the VisionArena-Chat dataset loader."""
 
-from typing import Optional, Union
+from typing import Optional
 
 from pydantic import Field
 
-from inference_perf.config.common import Distribution, StrictBaseModel
+from inference_perf.config.common import InsertionPoint, StrictBaseModel
 
 
 class VisionArenaConfig(StrictBaseModel):
@@ -60,7 +60,7 @@ class VisionArenaConfig(StrictBaseModel):
         gt=0,
         description="Cap on images attached per request; truncates a row's image list.",
     )
-    insertion_point: Optional[Union[float, Distribution]] = Field(
+    insertion_point: InsertionPoint = Field(
         default=0.0,
         description=(
             "Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] "

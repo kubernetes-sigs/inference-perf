@@ -13,9 +13,9 @@
 # limitations under the License.
 from enum import Enum
 from math import sqrt
-from typing import Optional
+from typing import Annotated, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictBaseModel(BaseModel):
@@ -65,3 +65,15 @@ class Distribution(StrictBaseModel):
         if self.std_dev < 0:
             raise ValueError("std_dev cannot be negative.")
         return self
+
+
+def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Optional[Union[float, Distribution]]:
+    if isinstance(value, Distribution):
+        if value.min < 0 or value.max > 1:
+            raise ValueError("insertion_point distribution min and max must be within [0, 1].")
+    elif value is not None and not 0 <= value <= 1:
+        raise ValueError("insertion_point must be within [0, 1].")
+    return value
+
+
+InsertionPoint = Annotated[Optional[Union[float, Distribution]], AfterValidator(_validate_insertion_point)]
