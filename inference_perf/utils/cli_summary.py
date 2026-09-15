@@ -415,7 +415,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     # Table 2: Session Duration & Events
     session_duration_table = Table(
         title="[bold magenta]Session Duration & Events[/bold magenta]",
-        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        caption="Completed sessions only (succeeded or failed). Not completed sessions excluded.",
         show_header=True,
         header_style="bold cyan",
     )
@@ -430,7 +430,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     # Table 3: Session Token Totals
     session_tokens_table = Table(
         title="[bold magenta]Session Token Totals (per session)[/bold magenta]",
-        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        caption="Completed sessions only (succeeded or failed). Not completed sessions excluded.",
         show_header=True,
         header_style="bold cyan",
     )
@@ -445,7 +445,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     # Table 4: TFUT (Time to First User Token)
     tfut_table = Table(
         title="[bold magenta]Session TFUT (Time to First User Token)[/bold magenta]",
-        caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+        caption="Completed sessions only (succeeded or failed). Not completed sessions excluded.",
         show_header=True,
         header_style="bold cyan",
     )
@@ -603,7 +603,7 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
     if has_cache_info:
         cache_table = Table(
             title="[bold magenta]Session KV Cache Hit Rate[/bold magenta]",
-            caption="Completed sessions only (succeeded or failed). Timed-out sessions excluded.",
+            caption="Completed sessions only (succeeded or failed). Not completed sessions excluded.",
             show_header=True,
             header_style="bold cyan",
         )
@@ -743,9 +743,7 @@ def print_error_summary_table(reports: List[ReportFile]) -> None:
     if successes_by_stage or failures_by_stage:
         sorted_stages = sorted(set(successes_by_stage) | set(failures_by_stage))
         console.print(
-            _build_error_table(
-                sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage, retries_by_stage
-            )
+            _build_error_table(sorted_stages, successes_by_stage, failures_by_stage, substitutions_by_stage, retries_by_stage)
         )
 
     # Only worth a table when a session actually failed; a clean replay run would

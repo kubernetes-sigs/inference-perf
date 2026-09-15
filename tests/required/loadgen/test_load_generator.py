@@ -202,7 +202,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
 
         # The timeout logic sets the cancel signal
         cancel_signal.set.assert_called_once()
-        self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "FAILED")
+        self.assertEqual(self.load_generator.stage_runtime_info[0].status.name, "TIMED_OUT")
 
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_run_single_worker_mode(self, mock_sleep: AsyncMock) -> None:
@@ -262,6 +262,55 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.load_generator.interrupt_sig)
         self.load_generator._sigint_handler(signal.SIGINT, None)
         self.assertTrue(self.load_generator.interrupt_sig)
+
+    @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
+    async def test_sigint_without_timeout_is_interrupted(self, mock_sleep: AsyncMock) -> None:
+        """SIGINT must be recorded as INTERRUPTED, distinct from a real timeout, even
+        though both exit the same wait loop the same way."""
+        self.load_generator.interrupt_sig = True
+
+        async def advance_counter(*_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        mock_sleep.side_effect = advance_counter
+
+        await self.load_generator.run_stage(
+            stage_id=4,
+            rate=1.0,
+            duration=1,
+            request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
+            active_requests_counter=mp.Value("i", 0),
+            finished_requests_counter=mp.Value("i", 0),
+            request_phase=mp.Event(),
+            cancel_signal=mp.Event(),
+            timeout=None,
+        )
+
+        self.assertEqual(self.load_generator.stage_runtime_info[4].status.name, "INTERRUPTED")
+
+    @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
+    async def test_completed_stage_is_not_relabeled_by_unclean_teardown_guard(self, mock_sleep: AsyncMock) -> None:
+        """Sanity check that the normal completion path is untouched by the new
+        cause-tracking: no timeout, no SIGINT, requests finish -> COMPLETED."""
+        finished_counter = mp.Value("i", 0)
+
+        async def advance_counter(*_args: Any, **_kwargs: Any) -> None:
+            finished_counter.value = 1
+
+        mock_sleep.side_effect = advance_counter
+
+        await self.load_generator.run_stage(
+            stage_id=5,
+            rate=1.0,
+            duration=1,
+            request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
+            active_requests_counter=mp.Value("i", 0),
+            finished_requests_counter=finished_counter,
+            request_phase=mp.Event(),
+            cancel_signal=None,
+        )
+
+        self.assertEqual(self.load_generator.stage_runtime_info[5].status.name, "COMPLETED")
 
 
 if __name__ == "__main__":

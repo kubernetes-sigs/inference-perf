@@ -96,6 +96,13 @@ _WIND_DOWN_REAP_SECONDS = 10.0
 _TEARDOWN_MARGIN_SECONDS = 15.0
 _FORCE_REAP_SECONDS = 20.0
 
+# Log-line verb for each terminal StageStatus; anything not listed reads as "failed".
+_STAGE_STATUS_LOG_VERB: dict[StageStatus, str] = {
+    StageStatus.COMPLETED: "completed",
+    StageStatus.TIMED_OUT: "timed out",
+    StageStatus.INTERRUPTED: "interrupted",
+}
+
 
 def _counter_value_nolock(counter: "Synchronized[int]") -> int:
     """Read a shared counter without acquiring its lock.
@@ -839,7 +846,7 @@ class LoadGenerator:
                     progress_ctx.remove_task(stage_task)
                     stage_task = None
                 logger.info("Loadgen encountered SIGINT")
-                stage_status = StageStatus.FAILED
+                stage_status = StageStatus.INTERRUPTED
                 # Clean up any active session spans (using cached otel_instr)
                 for sid in list(session_spans.keys()):
                     otel_instr.end_session_span(session_spans[sid], "Session interrupted by SIGINT")
@@ -863,7 +870,7 @@ class LoadGenerator:
                     progress_ctx.remove_task(stage_task)
                     stage_task = None
                 logger.warning(f"Stage {stage_id}: max_stage_duration ({max_stage_duration:.1f}s) exceeded")
-                stage_status = StageStatus.FAILED
+                stage_status = StageStatus.TIMED_OUT
                 # Clean up any active session spans (using cached otel_instr)
                 for sid in list(session_spans.keys()):
                     otel_instr.end_session_span(session_spans[sid], "Session cancelled: max_stage_duration exceeded")
@@ -998,12 +1005,16 @@ class LoadGenerator:
         teardown_start = time.perf_counter()
         teardown = await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal)
         teardown_duration = time.perf_counter() - teardown_start
-        if not teardown.clean:
+        if not teardown.clean and stage_status == StageStatus.COMPLETED:
             stage_status = StageStatus.FAILED
 
         # End stage-level span if trace_per_stage is enabled
         if stage_span is not None:
-            error_msg = None if stage_status == StageStatus.COMPLETED else "Stage failed or timed out"
+            error_msg = (
+                None
+                if stage_status == StageStatus.COMPLETED
+                else f"Stage {_STAGE_STATUS_LOG_VERB.get(stage_status, 'failed')}"
+            )
             otel_instr.end_stage_span(stage_span, error_msg)
             logger.info(f"Ended stage-level OTEL span for stage {stage_id}")
 
@@ -1020,9 +1031,7 @@ class LoadGenerator:
             sessions_not_completed_active=sessions_not_completed_active,
             sessions_not_completed_pending=sessions_not_completed_pending,
         )
-        logger.info(
-            "Stage %d - session-based run %s", stage_id, "completed" if stage_status == StageStatus.COMPLETED else "failed"
-        )
+        logger.info("Stage %d - session-based run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
 
     async def _teardown_stage(
         self,
@@ -1219,18 +1228,19 @@ class LoadGenerator:
         if progress_ctx:
             stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Requests", total=num_requests)
 
-        timed_out = False
+        stage_status = StageStatus.RUNNING
         while finished_requests_counter.value < num_requests:
             if timeout and start_time + timeout < time.perf_counter():
                 logger.info(f"Loadgen timed out after {timeout:0.2f}s")
-                timed_out = True
+                stage_status = StageStatus.TIMED_OUT
                 break
             if self.interrupt_sig:
                 logger.info("Loadgen encountered SIGINT")
+                stage_status = StageStatus.INTERRUPTED
                 break
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
                 logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, exit the stage.')
-                timed_out = True
+                stage_status = StageStatus.FAILED
                 break
             if self.workers and len([w for w in self.workers if w.is_alive()]) < self.num_workers:
                 failures = collect_worker_failures(self.workers, self.worker_crash_queue)
@@ -1239,7 +1249,7 @@ class LoadGenerator:
                 self.worker_failures.extend(failures)
                 if not failures:
                     logger.error("A worker process died unexpectedly and left no exit status behind!")
-                timed_out = True  # Trigger cleanup
+                stage_status = StageStatus.FAILED  # Trigger cleanup
                 break
             await sleep(1)
             if progress_ctx and stage_task:
@@ -1248,7 +1258,8 @@ class LoadGenerator:
         if progress_ctx and stage_task:
             progress_ctx.remove_task(stage_task)
 
-        stage_status = StageStatus.FAILED if (timed_out or self.interrupt_sig) else StageStatus.COMPLETED
+        if stage_status == StageStatus.RUNNING:
+            stage_status = StageStatus.COMPLETED
 
         # The metrics window ends here: the teardown tail carries no offered
         # load, so including it would stretch every server-side rate average.
@@ -1259,7 +1270,7 @@ class LoadGenerator:
         teardown_start = time.perf_counter()
         teardown = await self._teardown_stage(stage_id, request_queue, request_phase, cancel_signal)
         teardown_duration = time.perf_counter() - teardown_start
-        if not teardown.clean:
+        if not teardown.clean and stage_status == StageStatus.COMPLETED:
             stage_status = StageStatus.FAILED
 
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
@@ -1273,7 +1284,7 @@ class LoadGenerator:
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
         )
-        logger.info("Stage %d - run completed" if stage_status == StageStatus.COMPLETED else "Stage %d - run failed", stage_id)
+        logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
 
     async def preprocess(
         self,

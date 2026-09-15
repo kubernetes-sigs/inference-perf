@@ -296,7 +296,7 @@ An optional wall-clock cap on the stage's session-dispatch loop. Omit it to run 
 
 - Any sessions still active (dispatched but not yet finished) are cancelled.
 - Any sessions that were never dispatched (still pending in the queue) are dropped.
-- The stage is marked `FAILED` (surfaced as `TIMED_OUT` in the session report, see below).
+- The stage is marked `TIMED_OUT` in the session report (see below).
 - The stranded sessions show up in the stage's session report as `sessions_not_completed_active` and `sessions_not_completed_pending`.
 
 **`stage_teardown_grace_seconds`** (global, `load.stage_teardown_grace_seconds`, default `120.0`)
@@ -383,7 +383,7 @@ After a run, three session report files are generated:
 - **`summary_session_lifecycle_metrics.json`** — Aggregate statistics across all sessions:
   - `num_sessions` (total, including sessions never completed), `num_sessions_completed` (succeeded + failed)
   - `num_sessions_succeeded`, `num_sessions_failed`
-  - `num_sessions_not_completed`, `num_sessions_not_completed_active`, `num_sessions_not_completed_pending` — sessions stranded when `max_stage_duration` fired before they finished
+  - `num_sessions_not_completed`, `num_sessions_not_completed_active`, `num_sessions_not_completed_pending` — sessions stranded when `max_stage_duration` fired before they finished, interrupted or failed due to open circuit breakers
   - `total_events`, `total_events_completed`, `total_events_cancelled`
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   

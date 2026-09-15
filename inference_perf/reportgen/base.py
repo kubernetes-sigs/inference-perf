@@ -43,6 +43,14 @@ from inference_perf.utils import ReportFile
 
 logger = logging.getLogger(__name__)
 
+# Report label for each terminal StageStatus; anything not listed (FAILED, RUNNING,
+# SKIPPED) reads as "FAILED" in the report.
+_STAGE_STATUS_LABELS: Dict[StageStatus, str] = {
+    StageStatus.COMPLETED: "COMPLETED",
+    StageStatus.TIMED_OUT: "TIMED_OUT",
+    StageStatus.INTERRUPTED: "INTERRUPTED",
+}
+
 # Labels derived purely from the HTTP status code. These are authoritative: the
 # code comes from response.status, not from free-text, so a 400 can never be
 # mislabeled as "Internal Server Error" because its message happens to contain
@@ -1463,18 +1471,9 @@ class ReportGenerator:
                 )
 
                 if stage_info:
-                    # Determine status string
-                    if stage_info.status == StageStatus.COMPLETED:
-                        status_str = "COMPLETED"
-                    elif stage_info.status == StageStatus.FAILED:
-                        # Check if failure was due to exceeding max_stage_duration by comparing actual duration
-                        actual_duration = stage_info.end_time - stage_info.start_time
-                        if stage_info.max_stage_duration is not None and actual_duration >= stage_info.max_stage_duration:
-                            status_str = "TIMED_OUT"
-                        else:
-                            status_str = "FAILED"
-                    else:
-                        status_str = "FAILED"
+                    # The status is recorded at the point the stage actually terminated
+                    # (see load_generator.py), not inferred here from durations.
+                    status_str = _STAGE_STATUS_LABELS.get(stage_info.status, "FAILED")
 
                     # Build stage metadata
                     stage_metadata = {

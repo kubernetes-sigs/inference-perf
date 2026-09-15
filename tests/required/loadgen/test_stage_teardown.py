@@ -316,7 +316,7 @@ async def test_grace_lets_inflight_requests_complete(tmp_path: object) -> None:
         # that really waits cannot return before ~3s. Upper bound: it must
         # return at completion (~4s), not at grace + margin (30s).
         assert 3.0 <= elapsed < 12.0, f"teardown window violated: {elapsed:.1f}s"
-        assert harness.loadgen.stage_runtime_info[0].status.name == "FAILED"  # timed out
+        assert harness.loadgen.stage_runtime_info[0].status.name == "TIMED_OUT"
         # Both requests (rate*duration = 2) ran to completion during the grace.
         assert _line_count(completion_log) == 2
         assert harness.finished_counter.value == 2
@@ -341,7 +341,7 @@ async def test_stuck_requests_cancelled_at_grace_expiry() -> None:
         # _WIND_DOWN_REAP_SECONDS (10s) because tasks were not cancelled would
         # exceed it.
         assert 3.0 <= elapsed < 8.0, f"teardown window violated: {elapsed:.1f}s"
-        assert harness.loadgen.stage_runtime_info[0].status.name == "FAILED"
+        assert harness.loadgen.stage_runtime_info[0].status.name == "TIMED_OUT"
         assert harness.worker_pids() == pids_before, "cancellable tasks must not force a respawn"
 
         # Multi-stage: the next stage must run through the same worker.
@@ -368,7 +368,7 @@ async def test_saturated_worker_reaches_boundary_and_drops_backlog() -> None:
         # reached within the 0.5s acquire timeout, not via the force path
         # (grace + 15s margin + terminate).
         assert 3.0 <= elapsed < 9.0, f"teardown window violated: {elapsed:.1f}s"
-        assert harness.loadgen.stage_runtime_info[0].status.name == "FAILED"
+        assert harness.loadgen.stage_runtime_info[0].status.name == "TIMED_OUT"
         assert harness.loadgen.stage_runtime_info[0].dropped_requests == 16
         assert harness.finished_counter.value == 4  # the cancelled in-flight tasks
         assert harness.worker_pids() == pids_before, "saturated worker must drain gracefully, not be terminated"
@@ -413,7 +413,7 @@ async def test_wedged_worker_terminated_and_respawned(monkeypatch: pytest.Monkey
         # must kill the worker promptly; skipping terminate and relying on the
         # join(5s)-then-kill fallback would add ~5s and exceed it.
         assert 6.0 <= elapsed < 11.0, f"teardown window violated: {elapsed:.1f}s"
-        assert harness.loadgen.stage_runtime_info[0].status.name == "FAILED"
+        assert harness.loadgen.stage_runtime_info[0].status.name == "TIMED_OUT"
         assert harness.worker_pids() != pids_before, "wedged worker should be respawned"
         assert harness.loadgen.workers[0].is_alive(), "replacement worker should be running"
 
@@ -578,7 +578,7 @@ async def test_sweep_preprocess_timeout_is_bounded() -> None:
         assert elapsed < 25, f"sweep preprocess not bounded: {elapsed:.1f}s"
         # The probe stage (stage_id=-1) timed out but still produced runtime info.
         assert -1 in loadgen.stage_runtime_info
-        assert loadgen.stage_runtime_info[-1].status.name == "FAILED"
+        assert loadgen.stage_runtime_info[-1].status.name == "TIMED_OUT"
     finally:
         await loadgen.stop()
 

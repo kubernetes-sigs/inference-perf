@@ -27,6 +27,8 @@ from inference_perf.client.modelserver.metrics import (
 class StageStatus(Enum):
     COMPLETED = auto()
     FAILED = auto()
+    TIMED_OUT = auto()
+    INTERRUPTED = auto()
     RUNNING = auto()
     SKIPPED = auto()
 
