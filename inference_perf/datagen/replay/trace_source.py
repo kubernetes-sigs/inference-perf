@@ -19,13 +19,10 @@ requiring every input to become one Hugging Face Dataset. The generator asks for
 record metadata once at startup (to derive session IDs and the shuffled order),
 then loads one record body at a time as sessions are built.
 
-Two properties matter:
-
-  * ``list_records()`` returns lightweight metadata only. It must not retain
-    trace bodies, so startup memory is proportional to the number of records
-    rather than to total span content.
-  * ``load_record(i)`` returns exactly one normalized record. Callers drop it
-    after building the graph, so at most a small number are ever live.
+Two properties matter: ``list_records()`` returns lightweight metadata and never
+retains trace bodies, so startup memory scales with the number of records rather
+than total span content; ``load_record(i)`` returns one normalized record, which
+callers drop after building the graph.
 
 This bounds local-corpus memory and keeps all spans out of any single Arrow
 column -- an aggregate column can exceed Arrow's 32-bit offsets and fail with
@@ -39,7 +36,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, cast
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, cast
 
 from datasets import Dataset
 
@@ -49,7 +46,6 @@ from inference_perf.datagen.replay.wire_trace_converter import (
     convert_wire_file,
     derive_trace_id,
     detect_trace_format,
-    iter_otel_jsonl_traces,
     iter_wire_spans,
 )
 
@@ -82,19 +78,14 @@ class UnsupportedTraceFormatError(TraceSourceError):
 class TraceRecordMetadata:
     """What the generator needs about a record before loading its body.
 
-    ``session_id_suffix`` is the trailing part of the scheduler session ID; the
-    generator prefixes it with the shuffled slot (``trace{slot}_{suffix}``), so
-    the suffix alone need not be unique -- but making it unique keeps logs and
-    reports readable when a corpus repeats filenames.
+    ``session_id_suffix`` trails the scheduler session ID, which the generator
+    prefixes with the shuffled slot (``trace{slot}_{suffix}``); unique suffixes
+    keep logs readable when a corpus repeats filenames. ``source_id`` is the
+    traceability handle carried into metrics and graph serialization.
 
-    It is empty when the record carries no usable identity. The fallback is the
-    generator's to apply, not the source's: it is derived from the post-shuffle
-    slot, which a source cannot see.
-
-    ``source_id`` is the traceability handle carried into metrics and graph
-    serialization. It is usually a path, optionally with a record locator. Empty
-    when the record carries none, which likewise leaves the fallback to the
-    generator.
+    Either is empty when the record carries no such identity: both fallbacks
+    derive from the post-shuffle slot, which a source cannot see, so applying them
+    is the generator's job.
     """
 
     session_id_suffix: str
@@ -192,15 +183,16 @@ class LocalTraceFormat(str, Enum):
 class LocalTraceRecord:
     """Locates one replay record inside the local corpus.
 
-    ``row_index`` is None for the one-record-per-file formats. For OTEL_JSONL it
-    is the position among non-blank lines, matching how the eager path enumerated
-    ``iter_otel_jsonl_traces`` output -- blank lines are skipped without consuming
-    an index.
+    ``row_index`` is None for the one-record-per-file formats; for OTEL_JSONL it
+    is the position among non-blank lines, since blank lines never consume an
+    index. ``normalize_row_index`` is the ``row_index`` handed to
+    ``_normalize_file_trace``, set only when a .jsonl held more than one record so
+    single-record files keep a plain session_id (the eager ``len(docs) > 1``).
 
-    ``normalize_row_index`` is what gets passed to ``_normalize_file_trace`` as
-    its ``row_index``. It is None for single-record files (which keep a plain
-    session_id) and set only when a .jsonl held more than one record, preserving
-    the eager path's ``multi = len(docs) > 1`` behavior.
+    ``byte_offset``/``byte_length`` bound the record's line, in bytes, and are set
+    only for OTEL_JSONL. Loading seeks straight there; scanning to row n instead
+    would decode every line before it, making a full pass O(N^2). The file must
+    not change between indexing and loading.
     """
 
     path: Path
@@ -209,6 +201,8 @@ class LocalTraceRecord:
     normalize_row_index: Optional[int]
     session_id_suffix: str
     source_id: str
+    byte_offset: Optional[int] = None
+    byte_length: Optional[int] = None
 
 
 # Injected by the generator, which owns normalization: (data, source_name,
@@ -239,18 +233,16 @@ class LocalTraceSource:
     Hugging Face Dataset, so a corpus whose aggregate spans exceed Arrow's 32-bit
     offsets cannot fail at load time.
 
-    Startup cost is bounded but not zero. Format detection reads content by
-    design (``detect_trace_format``), and for a .json file that means parsing it
-    whole, since it may be pretty-printed. Native .jsonl files are additionally
-    scanned line-by-line to count records, because a file's record count cannot
-    be known from its metadata and the generator needs the total upfront. Neither
-    step retains a trace body.
+    Startup is bounded but not free: format detection reads content by design
+    (a .json file is parsed whole, since it may be pretty-printed), and .jsonl
+    files are scanned line-by-line because their record count -- which the
+    generator needs upfront -- is not in the file metadata. Neither retains a body.
 
-    ``validate_at_startup`` (the default) checks every record before replay
-    begins, keeping the eager path's fail-fast contract: a malformed corpus fails
-    during initialization rather than partway through a run. Set it False to defer
-    validation to load_record(), where a bad record surfaces when its session is
-    dispatched. Memory is bounded either way.
+    ``validate_at_startup`` (the default) checks every record first, keeping the
+    eager path's fail-fast contract. Memory stays bounded to one record, but the
+    whole corpus is read -- for wire captures a full conversion pass, tens of
+    seconds for a few hundred large ones. False defers validation to
+    load_record(), where a bad record surfaces at dispatch instead.
     """
 
     def __init__(
@@ -280,7 +272,8 @@ class LocalTraceSource:
         trace_format = detect_trace_format(path)
 
         if trace_format == FORMAT_OTEL_JSONL:
-            count = _validate_jsonl_records(path) if self._validate_at_startup else _count_jsonl_records(path)
+            byte_ranges = _scan_jsonl_records(path, validate=self._validate_at_startup)
+            count = len(byte_ranges)
             if count == 0:
                 raise InvalidTraceError(f"{path}: no OTel documents found")
             multi = count > 1
@@ -289,6 +282,8 @@ class LocalTraceSource:
                     path=path,
                     trace_format=LocalTraceFormat.OTEL_JSONL,
                     row_index=row,
+                    byte_offset=byte_ranges[row][0],
+                    byte_length=byte_ranges[row][1],
                     normalize_row_index=row if multi else None,
                     # Mirrors _normalize_file_trace's fallback so multi-record
                     # files cannot collide, and single-record ones stay plain.
@@ -305,7 +300,7 @@ class LocalTraceSource:
             # calls.jsonl, so a bare stem would collide across sessions.
             trace_id = derive_trace_id(path)
             if self._validate_at_startup:
-                _probe_wire_convertible(path, trace_id)
+                _validate_wire_convertible(path, trace_id)
             return [
                 LocalTraceRecord(
                     path=path,
@@ -367,16 +362,23 @@ class LocalTraceSource:
         """Read one record's raw trace document."""
         path = record.path
         if record.trace_format is LocalTraceFormat.OTEL_JSONL:
-            assert record.row_index is not None
+            # Seek to the range recorded at indexing; scanning here would be O(N^2).
+            assert record.byte_offset is not None and record.byte_length is not None
             try:
-                for i, doc in enumerate(iter_otel_jsonl_traces(path)):
-                    if i == record.row_index:
-                        return doc
-            except ValueError as e:
-                raise InvalidTraceError(str(e)) from e
+                with path.open("rb") as stream:
+                    stream.seek(record.byte_offset)
+                    line = stream.read(record.byte_length)
             except OSError as e:
                 raise TraceReadError(f"{path}: {e}") from e
-            raise InvalidTraceError(f"{path}: row {record.row_index} no longer present")
+            if not line.strip():
+                raise InvalidTraceError(f"{path}: row {record.row_index} is empty; did the file change since indexing?")
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise InvalidTraceError(f"{path}: row {record.row_index}: invalid JSON: {e}") from e
+            if not isinstance(doc, dict):
+                raise InvalidTraceError(f"{path}: row {record.row_index}: expected a JSON object, got {type(doc).__name__}")
+            return cast(Dict[str, Any], doc)
 
         if record.trace_format is LocalTraceFormat.WIRE:
             try:
@@ -397,56 +399,57 @@ class LocalTraceSource:
             raise TraceReadError(f"{path}: {e}") from e
 
 
-def _count_jsonl_records(path: Path) -> int:
-    """Count non-blank lines without decoding their JSON.
+def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int]]:
+    """Return the (byte_offset, byte_length) of every non-blank line.
 
     Blank lines are skipped without consuming an index, matching
-    iter_otel_jsonl_traces. Reading bytes rather than text keeps this off the
-    JSON decoder entirely -- the cost is I/O, not parsing.
+    iter_otel_jsonl_traces. readline() rather than iteration, because iteration
+    reads ahead and tell() would then report the buffer position, not the line's.
+
+    ``validate`` also decodes and schema-checks each line, then drops it, so a bad
+    record fails here instead of at dispatch; without it nothing is parsed.
     """
-    count = 0
+    byte_ranges: List[Tuple[int, int]] = []
+    line_no = 0
     try:
         with path.open("rb") as stream:
-            for line in stream:
-                if line.strip():
-                    count += 1
+            while True:
+                offset = stream.tell()
+                line = stream.readline()
+                if not line:
+                    break
+                line_no += 1
+                if not line.strip():
+                    continue
+                if validate:
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError as e:
+                        # Physical line, so the message points where the reader will look.
+                        raise InvalidTraceError(f"{path}:{line_no}: invalid JSON: {e}") from e
+                    validate_record_schema(doc, f"{path}#{len(byte_ranges)}")
+                byte_ranges.append((offset, len(line)))
     except OSError as e:
         raise TraceReadError(f"{path}: {e}") from e
-    return count
+    return byte_ranges
 
 
-def _validate_jsonl_records(path: Path) -> int:
-    """Count records, checking each decodes to a trace object with spans.
+def _validate_wire_convertible(path: Path, trace_id: str) -> None:
+    """Check a whole wire capture converts, without retaining its spans.
 
-    The counting-only variant reads bytes, so a malformed line deep in a file
-    would not surface until its session was dispatched. Each line is decoded and
-    dropped immediately, keeping memory bounded to one record.
+    Consumed to the end, so malformed JSON anywhere fails here rather than at
+    dispatch (what the eager convert_wire_file() gave); spans are counted and
+    dropped rather than collected. Records yielding no span are skipped, as in
+    iter_wire_spans -- the file need only be readable and produce one span.
     """
-    count = 0
-    try:
-        for doc in iter_otel_jsonl_traces(path):
-            validate_record_schema(doc, f"{path}#{count}")
-            count += 1
-    except ValueError as e:
-        # iter_otel_jsonl_traces raises ValueError naming the file and line.
-        raise InvalidTraceError(str(e)) from e
-    except OSError as e:
-        raise TraceReadError(f"{path}: {e}") from e
-    return count
-
-
-def _probe_wire_convertible(path: Path, trace_id: str) -> None:
-    """Check a wire capture yields at least one convertible span.
-
-    Stops at the first span instead of converting the whole file, which is far
-    cheaper and still raises the failure the eager path raised, plus any malformed
-    JSON ahead of that span.
-    """
+    span_count = 0
     try:
         for _span in iter_wire_spans(path, trace_id):
-            return
+            span_count += 1
     except ValueError as e:
         raise InvalidTraceError(str(e)) from e
     except OSError as e:
         raise TraceReadError(f"{path}: {e}") from e
-    raise InvalidTraceError(f"{path}: wire capture produced no convertible spans")
+
+    if span_count == 0:
+        raise InvalidTraceError(f"{path}: wire capture produced no convertible spans")

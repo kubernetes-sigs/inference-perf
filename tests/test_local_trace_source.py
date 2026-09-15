@@ -252,6 +252,72 @@ def test_lazy_indexing_does_not_decode_jsonl_bodies(tmp_path: Path, monkeypatch:
     assert len(source.list_records()) == 25
 
 
+def test_loading_the_last_row_of_a_jsonl_decodes_exactly_one_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Byte-range addressing: scanning to row n would decode every line before it."""
+    path = write_jsonl(tmp_path / "traces.jsonl", [otel_trace(f"t{i}") for i in range(50)])
+    source = source_for([path])
+
+    decodes: List[Any] = []
+    real_loads = json.loads
+
+    def counting_loads(s: Any, **kwargs: Any) -> Any:
+        decodes.append(s)
+        return real_loads(s, **kwargs)
+
+    monkeypatch.setattr(json, "loads", counting_loads)
+    record = source.load_record(49)
+
+    assert record["trace_id"] == "t49"
+    assert len(decodes) == 1, f"loading the last row decoded {len(decodes)} records"
+
+
+def test_loading_every_jsonl_row_stays_linear(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One decode per record across a full pass, not O(N^2)."""
+    n = 40
+    path = write_jsonl(tmp_path / "traces.jsonl", [otel_trace(f"t{i}") for i in range(n)])
+    source = source_for([path])
+
+    decodes: List[Any] = []
+    real_loads = json.loads
+
+    def counting_loads(s: Any, **kwargs: Any) -> Any:
+        decodes.append(s)
+        return real_loads(s, **kwargs)
+
+    monkeypatch.setattr(json, "loads", counting_loads)
+    ids = [source.load_record(i)["trace_id"] for i in range(n)]
+
+    assert ids == [f"t{i}" for i in range(n)]
+    assert len(decodes) == n, f"{n} loads decoded {len(decodes)} records"
+
+
+def test_jsonl_byte_ranges_are_recorded_for_every_row(tmp_path: Path) -> None:
+    """The locator carries the range; other formats leave it unset."""
+    jsonl = write_jsonl(tmp_path / "traces.jsonl", [otel_trace("a"), otel_trace("b")])
+    (tmp_path / "solo.json").write_text(json.dumps(otel_trace()), encoding="utf-8")
+    wire = write_jsonl(tmp_path / "calls.jsonl", [chat_record()])
+
+    by_name = {r.path.name: r for r in source_for([jsonl, tmp_path / "solo.json", wire]).records}
+    rows = [r for r in source_for([jsonl]).records]
+
+    assert rows[0].byte_offset == 0
+    assert rows[1].byte_offset == rows[0].byte_length
+    assert all(r.byte_length and r.byte_length > 0 for r in rows)
+    assert by_name["solo.json"].byte_offset is None
+    assert by_name["calls.jsonl"].byte_offset is None
+
+
+def test_blank_lines_do_not_shift_recorded_byte_ranges(tmp_path: Path) -> None:
+    path = tmp_path / "traces.jsonl"
+    path.write_text(
+        "\n" + json.dumps(otel_trace("a")) + "\n\n\n" + json.dumps(otel_trace("b")) + "\n",
+        encoding="utf-8",
+    )
+    source = source_for([path])
+
+    assert [source.load_record(i)["trace_id"] for i in range(2)] == ["a", "b"]
+
+
 def test_loading_one_record_decodes_only_that_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = [write_jsonl(tmp_path / f"t{i}.jsonl", [otel_trace(f"t{i}")]) for i in range(10)]
     source = source_for(paths)
@@ -433,7 +499,7 @@ def test_wire_span_ids_differ_across_files(tmp_path: Path) -> None:
 
 
 def test_startup_validation_catches_a_bad_line_mid_jsonl(tmp_path: Path) -> None:
-    """Fail-fast: a malformed record deep in a file must not wait for dispatch."""
+    """A malformed record deep in a file must not wait for dispatch."""
     path = tmp_path / "traces.jsonl"
     path.write_text(
         json.dumps(otel_trace("a")) + "\n" + "{not json\n" + json.dumps(otel_trace("c")) + "\n",
@@ -448,6 +514,38 @@ def test_startup_validation_catches_a_jsonl_record_missing_spans(tmp_path: Path)
     path = write_jsonl(tmp_path / "traces.jsonl", [otel_trace("a"), {"trace_id": "no-spans"}])
 
     with pytest.raises(ValueError, match="spans"):
+        source_for([path], skip_invalid=False)
+
+
+def test_startup_validation_reads_past_the_first_wire_span(tmp_path: Path) -> None:
+    """A bad line after a good one must fail at startup, not at dispatch."""
+    path = tmp_path / "calls.jsonl"
+    path.write_text(
+        json.dumps(chat_record()) + "\n" + json.dumps(chat_record()) + "\n" + "{not valid json\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidTraceError, match=r"calls\.jsonl:3"):
+        source_for([path], skip_invalid=False)
+
+
+def test_startup_validation_accepts_unconvertible_records_among_valid_ones(tmp_path: Path) -> None:
+    """iter_wire_spans skips span-less records, so validation must not reject them."""
+    unconvertible = {"path": "/v1/chat/completions", "request": "{}", "response": ""}
+    path = write_jsonl(tmp_path / "calls.jsonl", [chat_record(), unconvertible, chat_record()])
+
+    assert len(source_for([path], skip_invalid=False).list_records()) == 1
+
+
+def test_jsonl_error_reports_the_physical_line_number(tmp_path: Path) -> None:
+    """Blank lines must not shift the reported line, or it points at the wrong row."""
+    path = tmp_path / "traces.jsonl"
+    path.write_text(
+        "\n" + json.dumps(otel_trace("a")) + "\n\n" + json.dumps(otel_trace("b")) + "\n\n" + "{not json\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidTraceError, match=r"traces\.jsonl:6"):
         source_for([path], skip_invalid=False)
 
 
