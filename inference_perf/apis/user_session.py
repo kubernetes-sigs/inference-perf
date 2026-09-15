@@ -24,6 +24,9 @@ from inference_perf.config import APIConfig
 
 logger = logging.getLogger(__name__)
 
+# Reserved on top of max_tokens when truncating, to absorb client/server tokenization differences.
+PROMPT_TOKEN_BUFFER = 200
+
 
 class LocalUserSession:
     user_session_id: str
@@ -45,12 +48,19 @@ class LocalUserSession:
         self.user_session_id = user_session_id
         self.context = context if context else ""
         self.system_prompt = system_prompt
+        # Whether update_context accumulates response history, fixed at construction.
+        # system_prompt cannot remain the control flag because request-time truncation
+        # may empty its text and otherwise switch behavior for subsequent turns.
+        self._accumulates_history: bool = bool(system_prompt)
         self.tokenizer = tokenizer
         self.max_model_len = max_model_len
         self.history = []
         self._current_round = 0
         self._in_flight: Optional[asyncio.Lock] = None
         self._waiting_rounds: Optional[asyncio.Queue[asyncio.Future[bool]]] = None
+        # Truncation warnings fire once per session; a per-request log would flood a full run.
+        self._warned_empty_budget: bool = False
+        self._warned_system_prompt_dropped: bool = False
 
     @classmethod
     def get_instance(cls, user_session_id: str) -> "LocalUserSession":
@@ -82,7 +92,7 @@ class LocalUserSession:
         return self.context
 
     def update_context(self, response: str) -> None:
-        if self.system_prompt and self.tokenizer and self.max_model_len:
+        if self._accumulates_history and self.tokenizer and self.max_model_len:
             history_context = " ".join(self.history) if self.history else ""
             base_len = len(self.system_prompt)
             if history_context:
@@ -141,11 +151,31 @@ class UserSessionCompletionAPIData(CompletionAPIData):
     async def to_request_body(
         self, effective_model_name: str, max_tokens: int, ignore_eos: bool, streaming: bool
     ) -> RequestBody:
+        # The completion limit this request will carry. Read, not assigned: the base class owns
+        # resolving the sentinel, and truncation only needs the value it will resolve to.
+        effective_max_tokens = self.max_tokens if self.max_tokens != 0 else max_tokens
+
         self._session_context = await self.user_session.get_context(self.target_round)
 
         if self.user_session.tokenizer and self.user_session.max_model_len:
-            # 200 token buffer to ensure we stay under model's context length regardless of any tokenization variations
-            target_len = self.user_session.max_model_len - max_tokens - 200
+            # Reserve the limit this request will send, not the client-wide default.
+            # Clamped rather than raised on: this runs outside the client's failure handling, so an
+            # exception would abort the stage. Conversation replay rejects an unusable output
+            # ceiling when its datagen is built, so the warnings below are a backstop for other
+            # session sources and for values that check cannot anticipate; they keep a squeezed
+            # budget visible instead of silently gutting the prompt.
+            target_len = max(0, self.user_session.max_model_len - effective_max_tokens - PROMPT_TOKEN_BUFFER)
+            if target_len == 0 and not self.user_session._warned_empty_budget:
+                self.user_session._warned_empty_budget = True
+                logger.warning(
+                    "Session %s: max_tokens=%d leaves no prompt budget within max_model_len=%d "
+                    "(%d token buffer); prompts are being sent empty. Lower max_tokens or raise "
+                    "max_model_len.",
+                    self.user_session_id,
+                    effective_max_tokens,
+                    self.user_session.max_model_len,
+                    PROMPT_TOKEN_BUFFER,
+                )
             hf_tokenizer = self.user_session.tokenizer.get_tokenizer()
 
             system_prompt = self.user_session.system_prompt
@@ -186,6 +216,21 @@ class UserSessionCompletionAPIData(CompletionAPIData):
                         decoded_sys = hf_tokenizer.decode(system_ids, skip_special_tokens=True)
                         system_prompt = decoded_sys if isinstance(decoded_sys, str) else " ".join(decoded_sys)
                     else:
+                        # Zero budget is already reported above, so only warn here when the budget
+                        # is positive but still cannot fit both the input and the system prompt.
+                        if target_len > 0 and not self.user_session._warned_system_prompt_dropped:
+                            self.user_session._warned_system_prompt_dropped = True
+                            logger.warning(
+                                "Session %s: the prompt budget of %d tokens (max_model_len=%d, "
+                                "max_tokens=%d) cannot fit both this turn's input and the system "
+                                "prompt, so the system prompt is being dropped and the input may "
+                                "be truncated. Reported results will not reflect the configured "
+                                "prompt shape.",
+                                self.user_session_id,
+                                target_len,
+                                self.user_session.max_model_len,
+                                effective_max_tokens,
+                            )
                         system_prompt = ""
                         current_ids = current_ids[:target_len]
                         decoded_curr = hf_tokenizer.decode(current_ids, skip_special_tokens=True)
@@ -196,6 +241,11 @@ class UserSessionCompletionAPIData(CompletionAPIData):
                     if system_prompt != self.user_session.system_prompt:
                         self.user_session.system_prompt = system_prompt
 
+            # update_context bounds accumulated history against the absolute model context.
+            # This request applies the smaller request-specific prompt budget because max_tokens
+            # can vary between turns and is not known when the preceding response is stored.
+            # TODO: the truncated system prompt and history are written back here, so one tight
+            # request permanently discards context that might fit in a later request.
             self.user_session.history = history
             self.user_session.context = (
                 system_prompt + " " + " ".join(history)

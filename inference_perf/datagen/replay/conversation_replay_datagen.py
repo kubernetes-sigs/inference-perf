@@ -48,13 +48,14 @@ from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
     ConversationReplayConfig,
     DataConfig,
     Distribution,
+    DistributionType,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution
@@ -62,6 +63,9 @@ from inference_perf.utils.numeric.distribution import sample_from_distribution
 from ..base import DataGenerator, LazyLoadDataMixin
 
 logger = logging.getLogger(__name__)
+
+# Per-turn output length used when output_tokens_per_turn is not configured.
+DEFAULT_OUTPUT_TOKENS_PER_TURN = 256
 
 
 class _ConversationReplayAPIData(UserSessionCompletionAPIData):
@@ -180,6 +184,25 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         # Seeded RNG for deterministic generation
         self.rng = np.random.default_rng(self.cr_config.seed)
         self.max_model_len = self.cr_config.max_model_len or 225000
+
+        # Fail here rather than mid-run: truncation can only clamp, so an output ceiling that
+        # consumes the whole context would silently send empty prompts for the entire benchmark.
+        out_dist = self.cr_config.output_tokens_per_turn
+        if out_dist is None:
+            output_ceiling, ceiling_desc = DEFAULT_OUTPUT_TOKENS_PER_TURN, "the default output length"
+        elif out_dist.type == DistributionType.FIXED:
+            # Fixed sampling returns int(mean) directly and is never clipped to max.
+            output_ceiling, ceiling_desc = int(out_dist.mean), "output_tokens_per_turn.mean"
+        else:
+            output_ceiling, ceiling_desc = out_dist.max, "output_tokens_per_turn.max"
+
+        if output_ceiling + PROMPT_TOKEN_BUFFER >= self.max_model_len:
+            raise ValueError(
+                f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within "
+                f"max_model_len ({self.max_model_len}) after reserving the "
+                f"{PROMPT_TOKEN_BUFFER} token safety buffer. Lower it below "
+                f"{self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
+            )
 
         # Cache for the currently active stage's shared system prompt
         self._current_stage_id: Optional[int] = None
@@ -359,7 +382,7 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         if cfg.output_tokens_per_turn is not None:
             all_output_lens = self._sample_distribution(cfg.output_tokens_per_turn, total_turns)
         else:
-            all_output_lens = [256] * total_turns
+            all_output_lens = [DEFAULT_OUTPUT_TOKENS_PER_TURN] * total_turns
 
         if cfg.tool_call_latency_sec is not None:
             # Sample latencies as floats (seconds); re-use the same distribution

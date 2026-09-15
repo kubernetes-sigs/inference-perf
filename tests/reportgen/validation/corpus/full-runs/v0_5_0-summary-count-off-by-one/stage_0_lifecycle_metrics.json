@@ -1,0 +1,168 @@
+{
+  "benchmark_time_seconds": 2.2,
+  "load_summary": {
+    "count": 4,
+    "schedule_delay": {
+      "mean": 0.000999999999999973,
+      "min": 0.0009999999999998899,
+      "max": 0.0010000000000000009,
+      "median": 0.0010000000000000005,
+      "p90": 0.0010000000000000009
+    },
+    "send_duration": 1.5,
+    "requested_rate": 1.0,
+    "achieved_rate": 2.6666666666666665
+  },
+  "successes": {
+    "count": 3,
+    "latency": {
+      "request_latency": {
+        "mean": 1.1666666666666667,
+        "min": 1.0,
+        "max": 1.3,
+        "median": 1.2000000000000002,
+        "p90": 1.28
+      },
+      "normalized_time_per_output_token": {
+        "mean": 0.14444444444444446,
+        "min": 0.10833333333333334,
+        "max": 0.20000000000000004,
+        "median": 0.125,
+        "p90": 0.18500000000000003
+      },
+      "time_per_output_token": {
+        "mean": 0.1275132275132275,
+        "min": 0.1,
+        "max": 0.1714285714285714,
+        "median": 0.11111111111111109,
+        "p90": 0.15936507936507935
+      },
+      "time_to_first_token": {
+        "mean": 0.12751322751322752,
+        "min": 0.09999999999999998,
+        "max": 0.17142857142857149,
+        "median": 0.1111111111111111,
+        "p90": 0.1593650793650794
+      },
+      "inter_token_latency": {
+        "mean": 0.11890959282263629,
+        "min": 0.09999999999999987,
+        "max": 0.1714285714285717,
+        "median": 0.11111111111111105,
+        "p90": 0.17142857142857126
+      }
+    },
+    "throughput": {
+      "input_tokens_per_sec": 140.9090909090909,
+      "output_tokens_per_sec": 11.818181818181817,
+      "total_tokens_per_sec": 152.72727272727272,
+      "requests_per_sec": 1.3636363636363635,
+      "images_per_sec": 0.0,
+      "videos_per_sec": 0.0,
+      "audios_per_sec": 0.0
+    },
+    "request_size_bytes": {
+      "mean": 2.0,
+      "min": 2.0,
+      "max": 2.0,
+      "median": 2.0,
+      "p90": 2.0
+    },
+    "prompt_len": {
+      "mean": 103.33333333333333,
+      "min": 90.0,
+      "max": 120.0,
+      "median": 100.0,
+      "p90": 116.0
+    },
+    "image": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "pixels": null,
+      "bytes": null,
+      "aspect_ratio": null
+    },
+    "video": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "frames": null,
+      "pixels": null,
+      "bytes": null,
+      "aspect_ratio": null
+    },
+    "audio": {
+      "count": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0,
+        "p90": 0.0
+      },
+      "seconds": null,
+      "bytes": null
+    },
+    "prompt_tokens": {
+      "total": 310.0,
+      "cached": 0.0,
+      "uncached": 310.0,
+      "mean": 103.33333333333333,
+      "min": 90.0,
+      "max": 120.0,
+      "median": 100.0,
+      "p90": 116.0
+    },
+    "output_len": {
+      "mean": 8.666666666666666,
+      "min": 6.0,
+      "max": 12.0,
+      "median": 8.0,
+      "p90": 11.2
+    },
+    "output_tokens": {
+      "total": 26.0,
+      "mean": 8.666666666666666,
+      "min": 6.0,
+      "max": 12.0,
+      "median": 8.0,
+      "p90": 11.2
+    },
+    "token_count_mismatches": 0
+  },
+  "failures": {
+    "count": 1,
+    "request_latency": {
+      "mean": 0.5,
+      "min": 0.5,
+      "max": 0.5,
+      "median": 0.5,
+      "p90": 0.5
+    },
+    "prompt_len": {
+      "mean": 100.0,
+      "min": 100.0,
+      "max": 100.0,
+      "median": 100.0,
+      "p90": 100.0
+    },
+    "by_label": {
+      "500 - Internal Server Error": {
+        "count": 1,
+        "messages": [
+          {
+            "message": "boom"
+          }
+        ]
+      }
+    }
+  }
+}
