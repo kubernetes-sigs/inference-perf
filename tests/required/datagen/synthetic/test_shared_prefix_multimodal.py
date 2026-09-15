@@ -78,6 +78,7 @@ def test_shared_prefix_multimodal_post_load_shape() -> None:
     assert isinstance(api_data, ChatCompletionAPIData)
     assert len(api_data.messages) == 1
     assert isinstance(api_data.messages[0].content, str)  # text-only at this stage
+    assert api_data.messages[0].content == generator.question_texts[0]
     assert api_data.prefix_text is not None
     assert api_data.prefix_multimodal_spec is not None
     assert len(api_data.prefix_multimodal_spec.images) == 1
