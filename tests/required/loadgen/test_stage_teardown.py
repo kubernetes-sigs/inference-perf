@@ -33,7 +33,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
-from typing import Generator, List, Optional, Tuple
+from typing import Any, Generator, List, Optional, Tuple
 
 import pytest
 
@@ -52,8 +52,9 @@ from inference_perf.config import (
     StageGenType,
     StandardLoadStage,
     SweepConfig,
+    TraceSessionReplayLoadStage,
 )
-from inference_perf.datagen import MockDataGenerator
+from inference_perf.datagen import MockDataGenerator, SessionGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, Worker
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
@@ -181,6 +182,40 @@ class ChainDataGenerator(MockDataGenerator):
             )
 
 
+class StubSessionGenerator(SessionGenerator):
+    """Minimal session generator used to select the session worker path."""
+
+    def get_supported_apis(self) -> List[APIType]:
+        return [APIType.Chat]
+
+    def get_session_count(self) -> int:
+        return 0
+
+    def get_session_info(self, session_index: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def get_session_event_indices(self, session_index: int) -> List[int]:
+        raise NotImplementedError
+
+    def get_session_events(self, session_index: int) -> List[Any]:
+        raise NotImplementedError
+
+    def activate_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    def check_session_completed(self, session_id: str) -> bool:
+        raise NotImplementedError
+
+    def build_session_metric(self, session_id: str, stage_id: int, start_time: float, end_time: float) -> Any:
+        raise NotImplementedError
+
+    def cleanup_session(self, session_id: str) -> None:
+        raise NotImplementedError
+
+    def get_session_state(self, session_id: str) -> Any:
+        raise NotImplementedError
+
+
 class ChainClient(_TestClientBase):
     """Logs each dispatch, then completes after a delay and raises the flag
     the gated request is waiting on."""
@@ -224,11 +259,41 @@ class StageLogClient(_TestClientBase):
             await asyncio.sleep(3600)
 
 
+class RecordingGateClient(_TestClientBase):
+    """Record dispatches while holding one selected request open."""
+
+    def __init__(self, dispatch_log: str, release_flag: str) -> None:
+        super().__init__()
+        self.dispatch_log = dispatch_log
+        self.release_flag = release_flag
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        label = data.messages[0].content  # type: ignore[attr-defined]
+        with open(self.dispatch_log, "a") as f:
+            f.write(f"{label}\n")
+        if label.endswith("-root"):
+            while not os.path.exists(self.release_flag):
+                await asyncio.sleep(0.01)
+
+
 def _line_count(path: str) -> int:
     if not os.path.exists(path):
         return 0
     with open(path) as f:
         return len(f.readlines())
+
+
+async def _wait_for_line(path: str, expected: str, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            with open(path) as f:
+                if expected in f.read().splitlines():
+                    return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{expected!r} was not dispatched within {timeout}s")
 
 
 @pytest.fixture(autouse=True)
@@ -250,16 +315,21 @@ class _Harness:
         self,
         client: ModelServerClient,
         teardown_grace_seconds: float,
-        datagen: Optional[MockDataGenerator] = None,
+        datagen: Optional[MockDataGenerator | SessionGenerator] = None,
         worker_max_concurrency: int = 4,
     ) -> None:
         api_config = APIConfig(type=APIType.Chat)
         self.datagen = (
             datagen if datagen is not None else MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
         )
+        session_mode = isinstance(self.datagen, SessionGenerator)
         load_config = LoadConfig(
-            type=LoadType.CONSTANT,
-            stages=[StandardLoadStage(rate=2, duration=1)],
+            type=LoadType.TRACE_SESSION_REPLAY if session_mode else LoadType.CONSTANT,
+            stages=(
+                [TraceSessionReplayLoadStage(concurrent_sessions=1)]
+                if session_mode
+                else [StandardLoadStage(rate=2, duration=1)]
+            ),
             num_workers=1,
             worker_max_concurrency=worker_max_concurrency,
             stage_teardown_grace_seconds=teardown_grace_seconds,
@@ -327,6 +397,37 @@ class _Harness:
             if worker.is_alive():
                 worker.terminate()
                 worker.join(timeout=3.0)
+
+
+async def test_dependency_wait_does_not_consume_request_concurrency(tmp_path: object) -> None:
+    """A blocked successor must not prevent another session's root request."""
+    dispatch_log = os.path.join(str(tmp_path), "dispatches.log")
+    predecessor_done = os.path.join(str(tmp_path), "predecessor.done")
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    harness = _Harness(
+        RecordingGateClient(dispatch_log, predecessor_done),
+        teardown_grace_seconds=1.0,
+        datagen=datagen,
+        worker_max_concurrency=2,
+    )
+
+    def request(label: str, wait_flag: Optional[str] = None) -> ChainedChatData:
+        return ChainedChatData(messages=[ChatMessage(role="user", content=label)], wait_flag_path=wait_flag)
+
+    now = time.perf_counter()
+    harness.request_queue.put(RequestQueueData(0, request("session-a-root"), now, None), 0)
+    harness.request_queue.put(RequestQueueData(0, request("session-a-successor", predecessor_done), now, None), 0)
+    harness.request_queue.put(RequestQueueData(0, request("session-b-root"), now, None), 0)
+
+    try:
+        await _wait_for_line(dispatch_log, "session-a-root")
+        await _wait_for_line(dispatch_log, "session-b-root", timeout=0.5)
+        assert harness.active_counter.value == 2
+    finally:
+        with open(predecessor_done, "w") as f:
+            f.write("done\n")
+        harness.shutdown()
 
 
 async def test_grace_lets_inflight_requests_complete(tmp_path: object) -> None:

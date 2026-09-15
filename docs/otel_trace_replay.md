@@ -94,7 +94,7 @@ load:
 
 > **Important:** `data.type: otel_trace_replay` **requires** `load.type: trace_session_replay`. A validator enforces this at startup.
 >
-> **Note on `worker_max_concurrency`:** Set this high for trace replay. All events in a session are enqueued immediately, and events waiting for predecessors hold concurrency slots. However, waiting is done via `asyncio.Event` (zero threads—just suspended coroutines), so high values have negligible cost. **Rule of thumb:** `concurrent_sessions × 50` to `concurrent_sessions × 100` depending on your trace complexity.
+> **Note on `worker_max_concurrency`:** This limits requests executing against the model server in each worker. Events waiting for their scheduled time or for predecessors do not consume a request slot.
 
 ### Router Session Affinity
 
@@ -252,7 +252,7 @@ The `load.trace_session_replay` section controls how sessions are executed. Unli
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `stages` | list | Yes | List of stage configurations (see below) |
-| `worker_max_concurrency` | integer | No (default: `100`) | Max concurrent requests per worker. **For trace replay, set to `concurrent_sessions × 50-100`** since waiting events hold slots but use zero threads |
+| `worker_max_concurrency` | integer | No (default: `100`) | Maximum requests executing against the model server per worker; dependency waits do not consume slots |
 
 **Stage Configuration:**
 
