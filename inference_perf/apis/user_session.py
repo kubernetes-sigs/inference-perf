@@ -45,6 +45,7 @@ class LocalUserSession:
         tokenizer: Optional[CustomTokenizer] = None,
         max_model_len: Optional[int] = None,
         accumulate_history: Optional[bool] = None,
+        preserve_initial_prompt_boundary: bool = False,
     ):
         self.user_session_id = user_session_id
         self.context = context if context else ""
@@ -55,6 +56,11 @@ class LocalUserSession:
         # Keep the legacy non-empty-system-prompt behavior for existing callers, while
         # allowing intentionally empty-prefix sessions to opt into history accumulation.
         self._accumulates_history: bool = bool(system_prompt) if accumulate_history is None else accumulate_history
+        # Shared-prefix generation decodes prefix + question jointly. In that
+        # workload the question stores the exact decoded remainder, so adding a
+        # separator would change the generated prompt. Other session workloads
+        # provide independently decoded pieces and retain the legacy separator.
+        self._preserves_initial_prompt_boundary = preserve_initial_prompt_boundary
         self.tokenizer = tokenizer
         self.max_model_len = max_model_len
         self.history = []
@@ -186,12 +192,23 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             def get_text(sys: str, hist: list[str], curr: str) -> str:
-                parts = [part for part in (sys, " ".join(hist), curr) if part]
-                result = ""
-                for part in parts:
-                    if result and not result[-1].isspace() and not part[0].isspace():
+                result = sys
+                history_text = " ".join(hist)
+                if history_text:
+                    for part in (history_text, curr):
+                        if not part:
+                            continue
+                        if result and not result[-1].isspace() and not part[0].isspace():
+                            result += " "
+                        result += part
+                elif curr and self.user_session._preserves_initial_prompt_boundary:
+                    # The first turn retains the tokenizer-specific boundary
+                    # from the original prefix+suffix joint decode.
+                    result += curr
+                elif curr:
+                    if result and not result[-1].isspace() and not curr[0].isspace():
                         result += " "
-                    result += part
+                    result += curr
                 return result
 
             combined_text = get_text(system_prompt, history, current_prompt)

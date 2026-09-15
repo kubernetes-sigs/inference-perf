@@ -407,7 +407,8 @@ def test_shared_prefix_datagen_excludes_special_tokens() -> None:
         assert token not in [1, 2, 3]
 
 
-def test_multiturn_uses_generated_question_boundary() -> None:
+@pytest.mark.asyncio
+async def test_multiturn_uses_generated_question_boundary() -> None:
     """Question extraction must not assume a one-character prefix separator."""
     LocalUserSession.clear_instances()
     try:
@@ -415,8 +416,11 @@ def test_multiturn_uses_generated_question_boundary() -> None:
         data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
         assert isinstance(data, UserSessionCompletionAPIData)
         assert generator.prompts == ["PREFIX::QUESTION"]
-        assert generator.question_texts == ["QUESTION"]
-        assert data.prompt == "QUESTION"
+        assert generator.question_texts == ["::QUESTION"]
+        assert data.prompt == "::QUESTION"
+
+        body = await data.to_request_body("model", 1, False, False)
+        assert body["prompt"] == generator.prompts[0]
     finally:
         LocalUserSession.clear_instances()
 
@@ -514,7 +518,7 @@ async def test_multiturn_rebuilds_session_after_stage_clear() -> None:
         assert first_session is generator.user_sessions[0]
 
         first_body = await first.to_request_body("model", 64, False, False)
-        assert first_body["prompt"] == "PREFIX QUESTION"
+        assert first_body["prompt"] == "PREFIX::QUESTION"
         first_session.update_context("OLD HISTORY")
 
         LocalUserSession.clear_instances()
@@ -529,7 +533,7 @@ async def test_multiturn_rebuilds_session_after_stage_clear() -> None:
         assert second_session.max_model_len == generator.max_model_len
 
         second_body = await second.to_request_body("model", 64, False, False)
-        assert second_body["prompt"] == "PREFIX QUESTION"
+        assert second_body["prompt"] == "PREFIX::QUESTION"
     finally:
         LocalUserSession.clear_instances()
 
@@ -560,8 +564,8 @@ async def test_multiturn_generators_keep_materialized_sessions_isolated() -> Non
 
         body_a = await second_a.to_request_body("model", 64, False, False)
         body_b = await second_b.to_request_body("model", 64, False, False)
-        assert body_a["prompt"] == "PREFIX QUESTION GENERATOR A HISTORY QUESTION"
-        assert body_b["prompt"] == "PREFIX QUESTION"
+        assert body_a["prompt"] == "PREFIX ::QUESTION GENERATOR A HISTORY ::QUESTION"
+        assert body_b["prompt"] == "PREFIX::QUESTION"
     finally:
         LocalUserSession.clear_instances()
 

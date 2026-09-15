@@ -129,8 +129,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # ``prompts[i]`` is the full prompt text (prefix + " " + question);
         # ``prefix_texts[i]`` is just the shared system prompt portion (empty
         # string when no prefix is configured). ``question_texts[i]`` is the
-        # independently decoded suffix, preserving boundary whitespace from
-        # suffix decoding. ``prompt_groups[i]`` is the group_id
+        # exact remainder of the combined decode after that prefix, preserving
+        # tokenizer-specific boundary text. ``prompt_groups[i]`` is the group_id
         # used to look up per-group prefix multimodal specs.
         self.prompts: List[str] = []
         self.prefix_texts: List[str] = []
@@ -202,6 +202,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     tokenizer=self.tokenizer,
                     max_model_len=self.max_model_len,
                     accumulate_history=True,
+                    preserve_initial_prompt_boundary=True,
                 )
                 self.user_sessions[user_id] = session
                 LocalUserSession._instances[session.user_session_id] = session
@@ -298,11 +299,16 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 full_text_str = full_text if isinstance(full_text, str) else " ".join(full_text)
                 question_text = hf_tokenizer.decode(suffix_ids, skip_special_tokens=True)
                 question_text_str = question_text if isinstance(question_text, str) else " ".join(question_text)
-                # Keep the independently decoded suffix verbatim. Leading
-                # whitespace is part of the sampled question (and may be a
-                # newline or a run of spaces), so stripping it would discard
-                # valid suffix tokens. Request builders add the prefix
-                # separator separately.
+                if full_text_str.startswith(shared_prefix_text):
+                    # The combined decode is authoritative at the token
+                    # boundary: BPE tokenizers may decode the suffix with a
+                    # boundary string that differs from an independent decode
+                    # (for example ``::`` or leading whitespace). Preserve
+                    # that remainder so the first request reproduces the
+                    # generated full prompt exactly. Fall back to the
+                    # independent suffix when the tokenizer does not retain
+                    # the prefix text verbatim.
+                    question_text_str = full_text_str[len(shared_prefix_text) :]
 
                 self.prompts.append(full_text_str)
                 self.prefix_texts.append(shared_prefix_text)
@@ -322,6 +328,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                         tokenizer=self.tokenizer,
                         max_model_len=self.max_model_len,
                         accumulate_history=True,
+                        preserve_initial_prompt_boundary=True,
                     )
                     self.user_sessions.append(session)
                     LocalUserSession._instances[session.user_session_id] = session
