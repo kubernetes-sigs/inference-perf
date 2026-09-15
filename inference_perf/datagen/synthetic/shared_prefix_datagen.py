@@ -92,6 +92,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.num_groups: int = self.shared_prefix.num_groups
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
+        # Keep the default aligned with ConversationReplayDataGenerator.  The
+        # optional config value lets multi-turn shared-prefix runs use the
+        # target model's actual context window when it is smaller.
+        self.max_model_len: int = self.shared_prefix.max_model_len or 225000
         self.session_namespace: str = f"shared_prefix_generator_{next(SharedPrefixDataGenerator._session_namespace_counter)}"
 
         # Deterministic seeded RNG
@@ -125,8 +129,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         # ``prompts[i]`` is the full prompt text (prefix + " " + question);
         # ``prefix_texts[i]`` is just the shared system prompt portion (empty
         # string when no prefix is configured). ``question_texts[i]`` is the
-        # independently decoded suffix, with synthetic boundary whitespace
-        # removed when a prefix is present. ``prompt_groups[i]`` is the group_id
+        # independently decoded suffix, preserving boundary whitespace from
+        # suffix decoding. ``prompt_groups[i]`` is the group_id
         # used to look up per-group prefix multimodal specs.
         self.prompts: List[str] = []
         self.prefix_texts: List[str] = []
@@ -194,6 +198,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 session = LocalUserSession(
                     user_session_id=session.user_session_id,
                     context=self.prefix_texts[i],
+                    system_prompt=self.prefix_texts[i],
+                    tokenizer=self.tokenizer,
+                    max_model_len=self.max_model_len,
                 )
                 self.user_sessions[user_id] = session
                 LocalUserSession._instances[session.user_session_id] = session
@@ -290,11 +297,11 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 full_text_str = full_text if isinstance(full_text, str) else " ".join(full_text)
                 question_text = hf_tokenizer.decode(suffix_ids, skip_special_tokens=True)
                 question_text_str = question_text if isinstance(question_text, str) else " ".join(question_text)
-                if shared_prefix_text:
-                    # The first suffix token is sampled from word-start tokens
-                    # to keep the token boundary stable. The API builders add
-                    # their own separator between prefix and question.
-                    question_text_str = question_text_str.lstrip()
+                # Keep the independently decoded suffix verbatim. Leading
+                # whitespace is part of the sampled question (and may be a
+                # newline or a run of spaces), so stripping it would discard
+                # valid suffix tokens. Request builders add the prefix
+                # separator separately.
 
                 self.prompts.append(full_text_str)
                 self.prefix_texts.append(shared_prefix_text)
@@ -310,6 +317,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                             f"{self.session_namespace}_user_session_{self.num_prompts_per_group * group_id + prompt_id}"
                         ),
                         context=shared_prefix_text,
+                        system_prompt=shared_prefix_text,
+                        tokenizer=self.tokenizer,
+                        max_model_len=self.max_model_len,
                     )
                     self.user_sessions.append(session)
                     LocalUserSession._instances[session.user_session_id] = session
