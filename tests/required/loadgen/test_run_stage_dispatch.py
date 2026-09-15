@@ -128,9 +128,12 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
 
     async def test_worker_death_fails_stage_and_cleans_up(self) -> None:
         self.load_generator.datagen.get_data.return_value = _mock_requests([-1] * 5)  # type: ignore[attr-defined]
-        alive_worker = MagicMock()
+        # The stage's crash report reads id and exitcode off each worker, so the
+        # doubles carry real values: a live worker has no exit code yet, and the
+        # dead one exited with code 1.
+        alive_worker = MagicMock(id=0, exitcode=None)
         alive_worker.is_alive.return_value = True
-        dead_worker = MagicMock()
+        dead_worker = MagicMock(id=1, exitcode=1)
         dead_worker.is_alive.return_value = False
         self.load_generator.workers = [alive_worker, dead_worker]
         self.load_generator.num_workers = 2
