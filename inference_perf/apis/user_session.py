@@ -44,6 +44,7 @@ class LocalUserSession:
         system_prompt: str = "",
         tokenizer: Optional[CustomTokenizer] = None,
         max_model_len: Optional[int] = None,
+        accumulate_history: Optional[bool] = None,
     ):
         self.user_session_id = user_session_id
         self.context = context if context else ""
@@ -51,7 +52,9 @@ class LocalUserSession:
         # Whether update_context accumulates response history, fixed at construction.
         # system_prompt cannot remain the control flag because request-time truncation
         # may empty its text and otherwise switch behavior for subsequent turns.
-        self._accumulates_history: bool = bool(system_prompt)
+        # Keep the legacy non-empty-system-prompt behavior for existing callers, while
+        # allowing intentionally empty-prefix sessions to opt into history accumulation.
+        self._accumulates_history: bool = bool(system_prompt) if accumulate_history is None else accumulate_history
         self.tokenizer = tokenizer
         self.max_model_len = max_model_len
         self.history = []
@@ -183,14 +186,13 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             def get_text(sys: str, hist: list[str], curr: str) -> str:
-                parts = []
-                if sys:
-                    parts.append(sys)
-                if hist:
-                    parts.append(" ".join(hist))
-                if curr:
-                    parts.append(curr)
-                return " ".join(parts)
+                parts = [part for part in (sys, " ".join(hist), curr) if part]
+                result = ""
+                for part in parts:
+                    if result and not result[-1].isspace() and not part[0].isspace():
+                        result += " "
+                    result += part
+                return result
 
             combined_text = get_text(system_prompt, history, current_prompt)
             token_ids = hf_tokenizer.encode(combined_text)

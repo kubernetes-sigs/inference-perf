@@ -201,6 +201,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                     system_prompt=self.prefix_texts[i],
                     tokenizer=self.tokenizer,
                     max_model_len=self.max_model_len,
+                    accumulate_history=True,
                 )
                 self.user_sessions[user_id] = session
                 LocalUserSession._instances[session.user_session_id] = session
@@ -320,6 +321,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                         system_prompt=shared_prefix_text,
                         tokenizer=self.tokenizer,
                         max_model_len=self.max_model_len,
+                        accumulate_history=True,
                     )
                     self.user_sessions.append(session)
                     LocalUserSession._instances[session.user_session_id] = session

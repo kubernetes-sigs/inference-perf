@@ -324,7 +324,17 @@ class WhitespaceBoundaryHFTokenizer:
         return [self.decode(sequence, **kwargs) for sequence in sequences]
 
     def encode(self, text: str, **kwargs: Any) -> list[int]:
-        return list(range(len(text.split())))
+        encoded = {
+            "": [],
+            "PREFIX": [1],
+            "\n": [2],
+            "  ": [3],
+            "QUESTION": [4],
+            "  QUESTION": [3, 4],
+            "PREFIX\n": [1, 2],
+            "PREFIX  QUESTION": [1, 3, 4],
+        }
+        return encoded.get(text, list(range(len(text.split()))))
 
 
 class WhitespaceBoundaryCustomTokenizer(CustomTokenizer):
@@ -438,9 +448,14 @@ async def test_multiturn_preserves_whitespace_suffix_tokens(suffix_ids: list[int
         assert isinstance(data, UserSessionCompletionAPIData)
         assert generator.question_texts == [suffix_text]
         assert data.prompt == suffix_text
+        tokenizer = generator.tokenizer
+        assert tokenizer is not None
+        hf_tokenizer = tokenizer.get_tokenizer()
+        assert hf_tokenizer.encode(data.prompt) == suffix_ids
 
         body = await data.to_request_body("model", 1, False, False)
-        assert body["prompt"].endswith(" " + suffix_text)
+        assert body["prompt"] == generator.prompts[0]
+        assert hf_tokenizer.encode(body["prompt"]) == [1, *suffix_ids]
     finally:
         LocalUserSession.clear_instances()
 
@@ -596,5 +611,50 @@ async def test_multiturn_process_response_truncates_context_and_keeps_prefix_onc
 
         assert max(prompt_lengths) <= 20
         assert len(session.history) < 40
+    finally:
+        LocalUserSession.clear_instances()
+
+
+@pytest.mark.asyncio
+async def test_multiturn_zero_prefix_accumulates_process_response() -> None:
+    """An empty shared prefix still represents a history-bearing session."""
+    LocalUserSession.clear_instances()
+    try:
+        api_config = APIConfig(type=APIType.Completion)
+        data_config = DataConfig(
+            type=DataGenType.SharedPrefix,
+            shared_prefix=SharedPrefix(
+                num_groups=1,
+                num_prompts_per_group=1,
+                system_prompt_len=0,
+                question_len=2,
+                output_len=1,
+                max_model_len=225,
+                enable_multi_turn_chat=True,
+                seed=42,
+            ),
+        )
+        generator = SharedPrefixDataGenerator(api_config, data_config, DummyCustomTokenizer())
+        tokenizer = generator.tokenizer
+        assert tokenizer is not None
+        session = generator.user_sessions[0]
+        assert session.system_prompt == ""
+        assert session._accumulates_history
+
+        first = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(first, UserSessionCompletionAPIData)
+        first_body = await first.to_request_body("model", 1, False, False)
+        assert first_body["prompt"] == generator.prompts[0]
+
+        response = MagicMock()
+        response.json = AsyncMock(return_value={"choices": [{"text": "RESPONSE"}]})
+        await first.process_response(response, api_config, tokenizer)
+        assert session.history == [f"{first.prompt} RESPONSE"]
+
+        second = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+        assert isinstance(second, UserSessionCompletionAPIData)
+        second_body = await second.to_request_body("model", 1, False, False)
+        assert "RESPONSE" in second_body["prompt"]
+        assert second_body["prompt"].endswith(generator.question_texts[0])
     finally:
         LocalUserSession.clear_instances()
