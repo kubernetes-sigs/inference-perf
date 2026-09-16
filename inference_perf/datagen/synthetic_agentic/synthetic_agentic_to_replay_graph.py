@@ -42,7 +42,7 @@ use ``--session-index`` to select which session graph to build.
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from inference_perf.config.config import read_config
 from inference_perf.config.datagen.config import DataGenType
@@ -110,22 +110,31 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 conversations.append({"from": "function_call", "value": fc_value})
                 # Collect the immediately-following role:tool messages into one observation.
-                # Collect tool results keyed by tool_call_id, then emit in
+                # Collect tool results in message order, then try to emit in
                 # tool_calls order so function_call[i] aligns with observation[i]
-                # even when results arrive out of order (e.g. OTel graphs).
-                result_by_id: Dict[str, str] = {}
+                # even when results arrive out of order (e.g. OTel graphs). Some
+                # tool messages carry no tool_call_id at all (e.g. an OTel part
+                # with no recorded id) -- those can't be matched by id, so we
+                # only attempt id-matching when every tool_call has a distinct,
+                # present result id; otherwise we fall back to zipping results
+                # to tool_calls positionally by message order.
+                tool_results: List[Tuple[str, str]] = []
                 j = i + 1
                 while j < len(messages) and messages[j].get("role") == "tool":
                     tool_msg = messages[j]
-                    result_by_id[tool_msg.get("tool_call_id", "")] = tool_msg.get("content", "")
+                    tool_results.append((tool_msg.get("tool_call_id", ""), tool_msg.get("content", "")))
                     j += 1
-                if result_by_id:
-                    results = [
-                        {"name": tc.get("function", {}).get("name", ""), "results": result_by_id.get(tc.get("id", ""), "")}
-                        for tc in tool_calls
-                    ]
-                    if any(not res["results"] for res in results):  # results not matched by id fall back to positional
-                        results = [{"name": "", "results": res} for id, res in result_by_id.items()]
+                if tool_results:
+                    result_by_id = {tool_call_id: content for tool_call_id, content in tool_results if tool_call_id}
+                    call_ids = [tc.get("id", "") for tc in tool_calls]
+                    ids_all_matchable = all(cid and cid in result_by_id for cid in call_ids)
+                    if ids_all_matchable:
+                        results = [
+                            {"name": tc.get("function", {}).get("name", ""), "results": result_by_id[tc.get("id", "")]}
+                            for tc in tool_calls
+                        ]
+                    else:
+                        results = [{"name": "", "results": content} for _, content in tool_results]
                     conversations.append({"from": "observation", "value": json.dumps(results)})
                 i = j
             else:

@@ -137,6 +137,60 @@ def test_tool_call_without_matching_id_falls_back_positionally() -> None:
     assert json.loads(observation["value"]) == [{"name": "", "results": "result"}]
 
 
+def test_multiple_unkeyed_tool_results_are_not_collapsed() -> None:
+    call = {
+        "messages": [
+            {"role": "user", "content": "compare cities"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "get_weather", "arguments": '{"city": "NYC"}'}},
+                    {"id": "call_2", "function": {"name": "get_weather", "arguments": '{"city": "LA"}'}},
+                ],
+            },
+            # Neither tool message carries a tool_call_id (e.g. an OTel part with no
+            # recorded id) -- both must survive in message order, not collapse onto "".
+            {"role": "tool", "content": "rainy, 55F"},
+            {"role": "tool", "content": "sunny, 80F"},
+        ],
+    }
+    record = _event_to_toolace("evt-1", _event(call))
+
+    observation = next(c for c in record["conversations"] if c["from"] == "observation")
+    assert json.loads(observation["value"]) == [
+        {"name": "", "results": "rainy, 55F"},
+        {"name": "", "results": "sunny, 80F"},
+    ]
+
+
+def test_one_empty_result_does_not_blank_other_matched_names() -> None:
+    call = {
+        "messages": [
+            {"role": "user", "content": "compare cities"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "get_weather", "arguments": '{"city": "NYC"}'}},
+                    {"id": "call_2", "function": {"name": "get_weather", "arguments": '{"city": "LA"}'}},
+                ],
+            },
+            # call_2's result is legitimately empty, but both ids are still present
+            # and matchable -- names should not be discarded for either result.
+            {"role": "tool", "tool_call_id": "call_1", "content": "rainy, 55F"},
+            {"role": "tool", "tool_call_id": "call_2", "content": ""},
+        ],
+    }
+    record = _event_to_toolace("evt-1", _event(call))
+
+    observation = next(c for c in record["conversations"] if c["from"] == "observation")
+    assert json.loads(observation["value"]) == [
+        {"name": "get_weather", "results": "rainy, 55F"},
+        {"name": "get_weather", "results": ""},
+    ]
+
+
 def test_assistant_tool_call_with_no_following_tool_messages_emits_no_observation() -> None:
     call = {
         "messages": [
