@@ -71,6 +71,8 @@ def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Op
     if isinstance(value, Distribution):
         if value.min < 0 or value.max > 1:
             raise ValueError("insertion_point distribution min and max must be within [0, 1].")
+        if value.type != DistributionType.UNIFORM and not value.min <= value.mean <= value.max:
+            raise ValueError("insertion_point distribution mean must be within [min, max].")
     elif value is not None and not 0 <= value <= 1:
         raise ValueError("insertion_point must be within [0, 1].")
     return value

@@ -235,6 +235,8 @@ def test_multimodal_config_parsing() -> None:
         {"type": "uniform"},
         {"type": "uniform", "min": -1, "max": 1},
         {"type": "uniform", "min": 0, "max": 2},
+        {"type": "fixed", "min": 0, "max": 1, "mean": 3},
+        {"type": "normal", "min": 0, "max": 1},
     ],
 )
 def test_multimodal_config_rejects_out_of_range_insertion_points(insertion_point: object) -> None:
