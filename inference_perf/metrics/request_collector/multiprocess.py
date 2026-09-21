@@ -12,49 +12,82 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import multiprocessing as mp
-
-from asyncio import get_event_loop, create_task
+from asyncio import create_task, get_event_loop
 from contextlib import asynccontextmanager
-from queue import Empty
-from typing import AsyncIterator, Optional
-from functools import partial
 import logging
-from inference_perf.metrics.request_collector import RequestMetricCollector
+import multiprocessing as mp
+from queue import Empty
+from typing import AsyncIterator, List, Optional, Union
+
 from inference_perf.apis import RequestLifecycleMetric
 from inference_perf.circuit_breaker import feed_breakers
+from inference_perf.metrics.request_collector import RequestMetricCollector
 
 logger = logging.getLogger(__name__)
 
 
 class MultiprocessRequestMetricCollector(RequestMetricCollector):
-    """Responsible for accumulating client request metrics"""
+    """Responsible for accumulating client request metrics."""
 
     def __init__(self) -> None:
-        self.queue: "mp.JoinableQueue[Optional[RequestLifecycleMetric]]" = mp.JoinableQueue()
+        self.queue: "mp.JoinableQueue[Optional[Union[RequestLifecycleMetric, List[RequestLifecycleMetric]]]]" = (
+            mp.JoinableQueue()
+        )
 
     def record_metric(self, metric: RequestLifecycleMetric) -> None:
+        """Record a single metric directly to the multiprocessing queue."""
         self.queue.put(metric)
 
     async def collect_metrics(self) -> list[RequestLifecycleMetric]:
         metrics: list[RequestLifecycleMetric] = []
         event_loop = get_event_loop()
-        # prevent get from blocking the executor for too long:
-        get_queue = partial(self.queue.get, timeout=0.5)
+
+        def _drain_batch(max_batch_size: int = 4096) -> tuple[list[RequestLifecycleMetric], bool]:
+            """Drain a batch of items from the queue in the executor thread."""
+            batch: list[RequestLifecycleMetric] = []
+            try:
+                first_item = self.queue.get(timeout=0.5)
+            except Empty:
+                return batch, False
+
+            if first_item is None:
+                self.queue.task_done()
+                return batch, True
+
+            if isinstance(first_item, list):
+                batch.extend(first_item)
+            else:
+                batch.append(first_item)
+            self.queue.task_done()
+
+            # Drain any remaining available items up to max_batch_size non-blockingly
+            while len(batch) < max_batch_size:
+                try:
+                    item = self.queue.get_nowait()
+                except Empty:
+                    break
+
+                if item is None:
+                    self.queue.task_done()
+                    return batch, True
+
+                if isinstance(item, list):
+                    batch.extend(item)
+                else:
+                    batch.append(item)
+                self.queue.task_done()
+
+            return batch, False
 
         while True:
-            try:
-                item = await event_loop.run_in_executor(None, get_queue)
-            except Empty:
-                continue
+            batch, done = await event_loop.run_in_executor(None, _drain_batch)
+            if batch:
+                metrics.extend(batch)
+                for item in batch:
+                    feed_breakers(item)
 
-            if item is None:
-                self.queue.task_done()
+            if done:
                 break
-
-            metrics.append(item)
-            feed_breakers(item)
-            self.queue.task_done()
 
         return metrics
 
