@@ -573,6 +573,23 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
+def _extract_chunk_text(chunk_str: str) -> Optional[str]:
+    """Extract text content from an SSE streaming response JSON chunk."""
+    try:
+        data = json.loads(chunk_str)
+        if choices := data.get("choices"):
+            delta = choices[0]
+            text = delta.get("text") or delta.get("delta", {}).get("content")
+            if text:
+                return str(text)
+        elif delta := data.get("delta"):
+            if isinstance(delta, dict) and (text := delta.get("text")):
+                return str(text)
+    except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
+        pass
+    return None
+
+
 def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Optional[CustomTokenizer]) -> bool:
     """Re-derive output_token_times for a streamed response from its raw chunks.
 
@@ -586,38 +603,43 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     ):
         return False
 
-    output_token_times = []
+    output_token_times: list[float] = []
     accumulated_tokens = 0
-    parsed_chunks = []
     expected_output_tokens = (
         m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
     )
 
+    token_cache = getattr(tokenizer, "_count_tokens_cache", None)
+    if not isinstance(token_cache, dict):
+        token_cache = {}
+        try:
+            tokenizer._count_tokens_cache = token_cache  # type: ignore[attr-defined]
+        except Exception:
+            token_cache = None
+
     for chunk_str, chunk_time in zip(
         m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
     ):
-        try:
-            data = json.loads(chunk_str)
-            if choices := data.get("choices"):
-                delta = choices[0]
-                text = delta.get("text") or delta.get("delta", {}).get("content")
-                if text:
-                    parsed_chunks.append((text, chunk_time))
-        except json.JSONDecodeError:
+        text = _extract_chunk_text(chunk_str)
+        if not text:
             continue
 
-    for text, chunk_time in parsed_chunks:
         # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
         # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
         # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
         # by the same factor. See #564.
-        tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
+        if token_cache is not None and text in token_cache:
+            tokens_in_chunk = token_cache[text]
+        else:
+            tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
+            if token_cache is not None and len(token_cache) < 8192:
+                token_cache[text] = tokens_in_chunk
+
         if tokens_in_chunk > 0:
             # Assign every token in a chunk the chunk's arrival time to match user-perceived
             # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
             # reports the smoothed average.
-            for _ in range(tokens_in_chunk):
-                output_token_times.append(chunk_time)
+            output_token_times.extend([chunk_time] * tokens_in_chunk)
             accumulated_tokens += tokens_in_chunk
 
     m.info.response_metrics.output_token_times = output_token_times

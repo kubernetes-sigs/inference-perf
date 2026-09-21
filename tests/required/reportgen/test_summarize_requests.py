@@ -732,3 +732,128 @@ def test_summarize_requests_handles_null_prompt_tokens_details() -> None:
     assert prompt_tokens["total"] == pytest.approx(10.0)
     assert prompt_tokens["cached"] == pytest.approx(0.0)
     assert prompt_tokens["uncached"] == pytest.approx(10.0)
+
+
+def test_extract_chunk_text_variations() -> None:
+    from inference_perf.reportgen.base import _extract_chunk_text
+
+    # 1. Compact chat completion delta content (vLLM / SGLang style)
+    c1 = '{"choices":[{"index":0,"delta":{"content":"Hello world"}}]}'
+    assert _extract_chunk_text(c1) == "Hello world"
+
+    # 2. Spaced chat completion delta content
+    c2 = '{"id": "chat-1", "choices": [{"index": 0, "delta": {"content": "Hello spaced"}}]}'
+    assert _extract_chunk_text(c2) == "Hello spaced"
+
+    # 3. Text completion delta text
+    c3 = '{"choices": [{"text": "completion text"}]}'
+    assert _extract_chunk_text(c3) == "completion text"
+
+    # 4. Escaped content with newlines/quotes
+    c4 = '{"choices": [{"delta": {"content": "line1\\nline2"}}]}'
+    assert _extract_chunk_text(c4) == "line1\nline2"
+
+    # 5. Anthropic style text_delta
+    c5 = '{"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Anthropic chunk"}}'
+    assert _extract_chunk_text(c5) == "Anthropic chunk"
+
+    # 6. Non-content / role-only / usage chunk
+    c6 = '{"choices": [{"delta": {"role": "assistant"}}]}'
+    assert _extract_chunk_text(c6) is None
+
+    # 7. Malformed JSON
+    c7 = '{"choices": [{"delta": '
+    assert _extract_chunk_text(c7) is None
+
+
+def test_correct_streamed_response_metrics_caching_and_vectorization() -> None:
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    # Setup 4 chunks: 2 identical tokens, 1 multi-token, 1 empty
+    chunks = [
+        '{"choices": [{"delta": {"content": "token"}}]}',
+        '{"choices": [{"delta": {"content": "token"}}]}',
+        '{"choices": [{"delta": {"content": "multi token"}}]}',
+        '{"choices": [{"delta": {"role": "assistant"}}]}',
+    ]
+    chunk_times = [1.0, 2.0, 3.0, 4.0]
+
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=10)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=4,
+            output_token_times=[],
+            response_chunks=chunks,
+            chunk_times=chunk_times,
+            server_usage={"completion_tokens": 4},
+        ),
+    )
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="req", info=info, error=None
+    )
+
+    tokenizer = MagicMock()
+
+    # "token" -> 1 token, "multi token" -> 2 tokens
+    def mock_count(text: str, **kwargs: Any) -> int:
+        return 2 if "multi" in text else 1
+
+    tokenizer.count_tokens = MagicMock(side_effect=mock_count)
+
+    # Discrepancy returns False because accumulated (1 + 1 + 2 = 4) == server completion_tokens (4)
+    has_discrepancy = correct_streamed_response_metrics(metric, tokenizer)
+    assert not has_discrepancy
+
+    # Verify timestamps: 1 at t=1.0, 1 at t=2.0, 2 at t=3.0
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_token_times == [1.0, 2.0, 3.0, 3.0]
+
+    # Verify token cache on tokenizer was populated and reused for the duplicate "token" chunk
+    token_cache = getattr(tokenizer, "_count_tokens_cache", None)
+    assert token_cache is not None
+    assert token_cache["token"] == 1
+    assert token_cache["multi token"] == 2
+    # count_tokens should have been called only twice despite 3 content chunks
+    assert tokenizer.count_tokens.call_count == 2
+
+
+def test_correct_streamed_response_metrics_anthropic_calculates_ttft_tpot_itl() -> None:
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import compute_request_latency_metrics, correct_streamed_response_metrics
+
+    # Anthropic SSE content_block_delta chunks (no "choices" key)
+    chunks = [
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "!"}}',
+    ]
+    chunk_times = [1.0, 2.0, 3.5]
+
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=3,
+            output_token_times=[],
+            response_chunks=chunks,
+            chunk_times=chunk_times,
+            server_usage={"completion_tokens": 3},
+        ),
+    )
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.5, end_time=4.0, request_data="req", info=info, error=None
+    )
+
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = MagicMock(return_value=1)
+
+    correct_streamed_response_metrics(metric, tokenizer)
+
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_token_times == [1.0, 2.0, 3.5]
+
+    metrics = compute_request_latency_metrics(metric)
+    assert metrics["time_to_first_token"] == pytest.approx(0.5)  # 1.0 - 0.5
+    assert metrics["time_per_output_token"] == pytest.approx(1.25)  # (3.5 - 1.0) / (3 - 1)
+    assert metrics["inter_token_latency"] == pytest.approx(1.25)  # mean([1.0, 1.5])
+    assert metrics["inter_token_latency_deltas"] == [pytest.approx(1.0), pytest.approx(1.5)]
