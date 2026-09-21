@@ -23,6 +23,7 @@ hot request path cycles through it deterministically.
 
 from __future__ import annotations
 
+from functools import partial
 import io
 import logging
 from typing import Any, Generator, List, Optional, Tuple
@@ -36,6 +37,7 @@ from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig, VisionArenaConfig
 from inference_perf.payloads import ImageRepresentation, MultimodalSpec, PreEncodedImageSpec
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.dataset import load_dataset_with_deadline
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..multimodal_sampling import sample_insertion_point
@@ -129,7 +131,12 @@ class VisionArenaDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         logger.info("Streaming VisionArena dataset '%s' ...", self.va_config.hf_dataset_name)
         pool: List[dict[str, Any]] = []
-        for row in load_dataset(self.va_config.hf_dataset_name, **load_kwargs):
+        dataset = load_dataset_with_deadline(
+            partial(load_dataset, self.va_config.hf_dataset_name, **load_kwargs),
+            self.va_config.hf_dataset_name,
+            self.config.load_timeout,
+        )
+        for row in dataset:
             if len(pool) >= self.va_config.num_rows:
                 break
             entry = self._row_to_entry(row)
