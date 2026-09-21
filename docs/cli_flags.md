@@ -21,6 +21,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
+| `--data.load_timeout` | float | Deadline in seconds for Hub dataset loading calls. Does not bound streaming iteration. Null disables the deadline. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
 | `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.input_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |

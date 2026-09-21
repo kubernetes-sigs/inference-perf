@@ -110,6 +110,13 @@ class DataConfig(StrictBaseModel):
     path: Optional[str] = Field(
         default=None, description="Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type."
     )
+    load_timeout: Optional[float] = Field(
+        default=300.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Deadline in seconds for Hub dataset loading calls."
+        " Does not bound streaming iteration. Null disables the deadline.",
+    )
     corpus_file_path: Optional[str] = Field(
         None,
         description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet",
