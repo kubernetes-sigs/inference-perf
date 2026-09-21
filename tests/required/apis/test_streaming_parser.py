@@ -14,8 +14,14 @@
 
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
-from inference_perf.apis.streaming_parser import parse_sse_stream, StreamInterruptedError
+
 import pytest
+
+from inference_perf.apis.streaming_parser import (
+    StreamInterruptedError,
+    _SSEStreamParser,
+    parse_sse_stream,
+)
 
 
 @pytest.mark.asyncio
@@ -210,3 +216,306 @@ async def test_sse_done_ignores_later_content_but_preserves_raw_body() -> None:
     assert output == "Hello"
     assert len(times) == len(events) == 1
     assert raw == b"".join(payloads).decode()
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_fragmented_chunks() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    # Chunks split across arbitrary byte boundaries
+    chunks = [
+        b"da",
+        b'ta: {"choices": [{"delta": {"content": "Frag"',
+        b"}}]}\n",
+        b'\ndata: {"choices": [{"delta": {"content": "mented"}}]}\n\ndata: [DONE]\n\n',
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+
+    assert output_text == "Fragmented"
+    assert len(chunk_times) == 2
+    assert len(response_chunks) == 2
+    assert "Frag" in response_chunks[0]
+    assert "mented" in response_chunks[1]
+    assert "Frag" in raw_content
+    assert "mented" in raw_content
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_multiple_events_in_single_chunk() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "One"}}]}\n\n'
+        b'data: {"choices": [{"delta": {"content": "Two"}}]}\n\n'
+        b'data: {"choices": [{"delta": {"content": "Three"}}]}\n\n'
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+
+    assert output_text == "OneTwoThree"
+    assert len(chunk_times) == 3
+    assert len(response_chunks) == 3
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_no_space_prefix() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data:{"choices": [{"delta": {"content": "A"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "B"}}]}\n\n',
+        b"data:[DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+
+    assert output_text == "AB"
+    assert len(chunk_times) == 2
+    assert len(response_chunks) == 2
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_comments_and_multiline_events() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b": keepalive ping\n\n",
+        b'event: message\ndata: {"choices": [{"delta": {"content": "Data"}}]}\n\n',
+        b": trailing comment\n\n",
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+
+    assert output_text == "Data"
+    assert len(chunk_times) == 1
+    assert len(response_chunks) == 1
+    assert "keepalive ping" in raw_content
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_merges_multiple_usage_updates() -> None:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hi"}}], "usage": {"prompt_tokens": 10}}\n\n',
+        b'data: {"choices": [{"delta": {"content": "!"}}], "usage": {"completion_tokens": 2}}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+        mock_response, extract_content
+    )
+
+    assert output_text == "Hi!"
+    assert len(chunk_times) == 2
+    assert server_usage == {"prompt_tokens": 10, "completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_bare_cr_mid_chunk_does_not_drop_content() -> None:
+    """Bare CR mid-chunk with CRLF ending must not be treated as a single data frame."""
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    # The exact reproduction from differential fuzzing: bare \r before id: 1
+    chunks = [
+        b'data: {"choices":[{"delta":{"content":"A"}}]}\rid: 1\r\n\r\n',
+        b"data: [DONE]\r\n\r\n",
+    ]
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    assert output_text == "A"
+    assert len(chunk_times) == 1
+    assert len(response_chunks) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_chunking_invariance_whole_byte_by_byte_per_event() -> None:
+    """Differential test: feeding a stream whole, byte-by-byte, or per-event must yield identical results."""
+    event_chunks = [
+        b'data: {"choices": [{"delta": {"content": "Hello"}}]}\r\n\r\n',
+        b'data: {"choices": [{"delta": {"content": " world"}}]}\n\n',
+        b'data: {"message": {"usage": {"output_tokens": 15}}}\n\n',
+        b'data: {"choices": [{"delta": {"content": "!"}}]}\rid: 42\r\n\r\n',
+        b": ping heartbeat\r\n\r\n",
+        b"data: [DONE]\r\n\r\n",
+    ]
+    full_stream = b"".join(event_chunks)
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    async def run_with_chunks(
+        chunks_to_feed: list[bytes],
+    ) -> tuple[str, int, str, list[str], Optional[dict[str, Any]]]:
+        mock_response = Mock()
+        mock_content = Mock()
+        mock_response.content = mock_content
+
+        async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+            for c in chunks_to_feed:
+                yield c
+
+        mock_content.iter_any = mock_iter_any
+        output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+            mock_response, extract_content
+        )
+        return output_text, len(chunk_times), raw_content, response_chunks, server_usage
+
+    # 1. Per-event delivery (exercises fast path on standalone frames)
+    res_per_event = await run_with_chunks(event_chunks)
+
+    # 2. Whole delivery (exercises multi-frame buffered iteration)
+    res_whole = await run_with_chunks([full_stream])
+
+    # 3. Byte-by-byte delivery (exercises fine-grained buffer accumulation & straddling endings)
+    res_byte_by_byte = await run_with_chunks([full_stream[i : i + 1] for i in range(len(full_stream))])
+
+    # All three chunking modes must produce identical results
+    assert res_per_event == res_whole == res_byte_by_byte
+
+    # Verify expected values
+    output_text, num_times, raw_content, response_chunks, server_usage = res_per_event
+    assert output_text == "Hello world!"
+    assert num_times == 3
+    assert len(response_chunks) == 3
+    assert server_usage == {"output_tokens": 15}
+    assert raw_content == full_stream.decode("utf-8")
+
+
+def test_sse_stream_parser_process_data_payload_content_and_timing() -> None:
+    """Verify process_data_payload records content, timing, and response chunks for content-bearing deltas."""
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    parser = _SSEStreamParser(extract_content)
+    timestamp = 123.456
+    payload = b'{"choices": [{"delta": {"content": "foo"}}]}'
+
+    parser.process_data_payload(payload, timestamp)
+
+    assert parser.output_text_parts == ["foo"]
+    assert parser.chunk_times == [timestamp]
+    assert len(parser.response_chunks) == 1
+    assert "foo" in parser.response_chunks[0]
+    assert parser.server_usage is None
+
+
+def test_sse_stream_parser_process_data_payload_skips_empty_or_role_deltas() -> None:
+    """Verify process_data_payload skips recording timestamps/response chunks when no content is present."""
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+    parser = _SSEStreamParser(extract_content)
+    # Role-only chunk
+    parser.process_data_payload(b'{"choices": [{"delta": {"role": "assistant"}}]}', 100.0)
+    # Empty choices chunk
+    parser.process_data_payload(b'{"choices": []}', 101.0)
+
+    assert parser.output_text_parts == []
+    assert parser.chunk_times == []
+    assert parser.response_chunks == []
+    assert parser.server_usage is None
+
+
+def test_sse_stream_parser_process_data_payload_usage_extraction_and_merge() -> None:
+    """Verify process_data_payload extracts and merges direct and nested usage fields."""
+    parser = _SSEStreamParser(lambda d: None)
+
+    # Direct usage (OpenAI style)
+    parser.process_data_payload(b'{"usage": {"prompt_tokens": 10, "completion_tokens": 5}}', 1.0)
+    assert parser.server_usage == {"prompt_tokens": 10, "completion_tokens": 5}
+
+    # Nested message.usage (Anthropic style)
+    parser.process_data_payload(b'{"message": {"usage": {"completion_tokens": 20, "cached_tokens": 4}}}', 2.0)
+    assert parser.server_usage == {"prompt_tokens": 10, "completion_tokens": 20, "cached_tokens": 4}
+
+    # Non-dictionary usage ignored gracefully
+    parser.process_data_payload(b'{"usage": "invalid"}', 3.0)
+    assert parser.server_usage == {"prompt_tokens": 10, "completion_tokens": 20, "cached_tokens": 4}
+
+
+def test_sse_stream_parser_process_data_payload_malformed_json_handled_silently() -> None:
+    """Verify process_data_payload catches json decode and index errors silently."""
+
+    def extract_content(data: dict[str, Any]) -> Optional[str]:
+        val = data.get("text")
+        return str(val) if val is not None else None
+
+    parser = _SSEStreamParser(extract_content)
+
+    # Malformed JSON should not raise
+    parser.process_data_payload(b'{"broken": json', 1.0)
+    assert parser.output_text_parts == []
+    assert parser.chunk_times == []
+    assert parser.response_chunks == []
