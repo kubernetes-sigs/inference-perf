@@ -18,7 +18,7 @@ Work through the steps in order. Each symptom entry in the [symptom index](#symp
 
 ### Step 0: Check the automated findings
 
-Automated report validation ([#705](https://github.com/kubernetes-sigs/inference-perf/pull/705), in review) emits a `validation.json` alongside the other report files, containing findings at two severities:
+Automated report validation emits a `validation.json` alongside the other report files, containing findings at two severities:
 
 - An **error** means the report set is internally inconsistent: the tool's own math does not reconcile. This is bucket 1 by definition, and it is terminal. The run is invalid, and the remedy is to file an inference-perf bug with `validation.json` attached. Do not spend effort interpreting the other numbers.
 - A **warning** means something is suspicious but not necessarily wrong. Warnings are entry points into the checks below, not verdicts.
@@ -84,7 +84,7 @@ The distinguishing property of bucket 3 is reproducibility under variation: the 
 
 ## What To Do With the Verdict
 
-- **Bucket 1 (measurement wrong):** the run is invalid. File an inference-perf bug with the report directory (and `validation.json` once available) attached. Do not interpret or publish the numbers; do not "correct" them by hand.
+- **Bucket 1 (measurement wrong):** the run is invalid. File an inference-perf bug with the report directory (including `validation.json`, if your build emits it) attached. Do not interpret or publish the numbers; do not "correct" them by hand.
 - **Bucket 2 (workload wrong):** the run is a valid measurement of a workload you did not intend. Fix the config and rerun. Keep the old reports if the accidental measurement is itself informative (saturation behavior often is).
 - **Bucket 3 (real behavior):** keep the result and annotate the mechanism. If it changes the conclusion of a comparison, that is the comparison working as intended.
 
