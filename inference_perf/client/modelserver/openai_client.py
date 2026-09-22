@@ -43,6 +43,11 @@ import ssl
 
 logger = logging.getLogger(__name__)
 
+# Bound for the /v1/models probe that backs model auto-detection. ``request_timeout``
+# is optional and defaults to None; an unresponsive server must not hang startup, so
+# the probe falls back to this bounded deadline.
+_SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
+
 
 class OpenAIMetrics(BaseMetrics):
     def __init__(
@@ -184,7 +189,14 @@ class openAIModelServerClient(ModelServerClient):
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
-            response = requests.get(f"{self.uri}/v1/models", headers=_build_request_headers(self.api_config, self.api_key))
+            timeout = self.timeout if self.timeout is not None else _SUPPORTED_MODELS_TIMEOUT_SEC
+            cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+            response = requests.get(
+                f"{self.uri}/v1/models",
+                headers=_build_request_headers(self.api_config, self.api_key),
+                timeout=timeout,
+                cert=cert,
+            )
             response.raise_for_status()
             data = response.json()
             if "data" in data and isinstance(data["data"], list):
