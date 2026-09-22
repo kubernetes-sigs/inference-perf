@@ -58,7 +58,66 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import GENERIC_TH
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 
-def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_output_successor(event_id: str, graph: ReplayGraph) -> Tuple[str, int] | None:
+    """Find the successor whose ``output`` segment sources *event_id*, if any.
+
+    Mirrors the replay-time substitution in ``replay_graph_session_datagen.py``
+    (``_build_messages_with_substitution``): an ``output`` segment slot is
+    filled with the SOURCE event's own materialized assistant turn. Returns
+    ``(successor_event_id, offset)`` for the successor's message that covers
+    this event's output slot, or ``None`` if no successor consumes it this way
+    (e.g. this event is the session terminal).
+    """
+    for succ_id, succ in graph.events.items():
+        cursor = 0
+        for seg in succ.call.input_segments:
+            if seg.type == "output" and seg.source_event_id == event_id:
+                return succ_id, cursor
+            cursor += seg.message_count
+    return None
+
+
+def _resolved_messages(event_id: str, graph: ReplayGraph, cache: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Return *event_id*'s messages with every placeholder slot substituted.
+
+    Each event's own ``call.messages`` is recorded independently at
+    graph-build time, so an ``output``/``async_report`` slot holds a
+    ``PLACEHOLDER_*`` string even after an earlier event in the chain has
+    already been resolved -- and a ``shared`` segment just re-records the
+    predecessor's (still-unresolved) prefix rather than pointing back at it.
+    So resolving one event requires first resolving whichever predecessor
+    each of its segments draws from, recursively, exactly like a live replay
+    walks the whole predecessor chain via the registry. Memoized in *cache*
+    since the same predecessor is shared by many descendants (e.g. a fan-out's
+    K children all share the spawn event's prefix).
+    """
+    if event_id in cache:
+        return cache[event_id]
+    event = graph.events.get(event_id)
+    if event is None:
+        return []
+    messages = list(event.call.messages)
+    input_segments = event.call.input_segments
+    if input_segments:
+        cursor = 0
+        for seg in input_segments:
+            if seg.type == "shared" and seg.source_event_id:
+                source_messages = _resolved_messages(seg.source_event_id, graph, cache)
+                messages[cursor : cursor + seg.message_count] = source_messages[cursor : cursor + seg.message_count]
+            elif seg.type in ("output", "async_report") and seg.message_count == 1 and seg.source_event_id:
+                source_event = graph.events.get(seg.source_event_id)
+                if source_event is not None:
+                    substituted = dict(messages[cursor])
+                    substituted["content"] = source_event.call.expected_output
+                    messages[cursor] = substituted
+            cursor += seg.message_count
+    cache[event_id] = messages
+    return messages
+
+
+def _event_to_toolace(
+    event_id: str, event: Dict[str, Any], graph: ReplayGraph, _cache: Dict[str, List[Dict[str, Any]]] | None = None
+) -> Dict[str, Any]:
     """Convert one graph-event dict to a ToolACE-ShareGPT record.
 
     Each ``role:assistant`` message with tool calls becomes one ``function_call``
@@ -70,11 +129,27 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     ``call.expected_output``, when non-empty, is appended as a final ``gpt`` turn.
 
     When ``expected_output_is_tool_call`` is set, a ``function_call`` turn is
-    emitted from ``expected_output_tool_names`` (always a list) instead of a
-    ``gpt`` turn.
+    emitted instead of a ``gpt`` turn. Its arguments are recovered from the
+    successor event that actually consumes this event's output via an
+    ``output``-type input segment (the successor's materialized assistant
+    message IS this event's rendered call — see ``_resolve_output_successor``);
+    when no such successor exists, ``expected_output_tool_names`` renders with
+    empty ``"{}"`` arguments as a last resort.
+
+    ``output`` and ``async_report`` input segments carry a recorded placeholder
+    message (``PLACEHOLDER_PRIOR_ANSWER`` / ``PLACEHOLDER_ASYNC_REPORT``) in
+    place of the predecessor's real output, and a ``shared`` segment just
+    re-records its source's own (possibly still-unresolved) prefix. Exactly
+    like ``_build_messages_with_substitution`` does at replay time -- but
+    recursively, since each event's placeholders are only resolvable after its
+    own predecessors are -- ``_resolved_messages`` walks the segment chain and
+    swaps every placeholder for ``graph.events[source_event_id].call.expected_output``.
     """
+    cache: Dict[str, List[Dict[str, Any]]] = _cache if _cache is not None else {}
     call = event["call"]
-    messages: List[Dict[str, Any]] = call["messages"]
+    messages: List[Dict[str, Any]] = (
+        _resolved_messages(event_id, graph, cache) if event_id in graph.events else call["messages"]
+    )
     expected_output: str = call.get("expected_output", "") or ""
     tool_defs: List[Dict[str, Any]] = call.get("tool_definitions") or []
 
@@ -90,7 +165,8 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
     while i < len(messages):
         msg = messages[i]
         role = msg.get("role", "")
-
+        # Note LLaMA-Factory's alternation check does not handle final user turns right after a tool result.
+        # Fixing this requires changes to the way the synthetic graph is built.
         if role == "user":
             conversations.append({"from": "human", "value": msg.get("content", "")})
             i += 1
@@ -145,20 +221,32 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
             # Skip stray tool messages not consumed above (should not occur).
             i += 1
 
-    if expected_output:
-        if call.get("expected_output_is_tool_call"):
-            tool_names: List[str] = call.get("expected_output_tool_names") or []
-            conversations.append(
-                {"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])}
-            )
-        else:
-            conversations.append({"from": "gpt", "value": expected_output})
+    if expected_output and not call.get("expected_output_is_tool_call"):
+        conversations.append({"from": "gpt", "value": expected_output})
     elif call.get("expected_output_is_tool_call"):
-        # expected_output is blank but the graph records it will be a tool call.
-        tool_names = call.get("expected_output_tool_names") or []
-        conversations.append(
-            {"from": "function_call", "value": json.dumps([{"name": n, "arguments": "{}"} for n in tool_names])}
-        )
+        # The recorded call is a tool call; recover its real rendered
+        # arguments from the successor event that consumes this event's
+        # output via an `output` input segment (see _resolve_output_successor).
+        # Fall back to a name-only call with empty arguments only when no
+        # such successor exists (e.g. this event is the session terminal).
+        tool_names: List[str] = call.get("expected_output_tool_names") or []
+        successor = _resolve_output_successor(event_id, graph)
+        rendered_calls: List[Dict[str, Any]] | None = None
+        if successor is not None:
+            successor_event_id, offset = successor
+            successor_messages = _resolved_messages(successor_event_id, graph, cache)
+            successor_tool_calls = successor_messages[offset].get("tool_calls") or []
+            if successor_tool_calls:
+                rendered_calls = [
+                    {
+                        "name": tc.get("function", {}).get("name", ""),
+                        "arguments": tc.get("function", {}).get("arguments", "{}"),
+                    }
+                    for tc in successor_tool_calls
+                ]
+        if rendered_calls is None:
+            rendered_calls = [{"name": n, "arguments": "{}"} for n in tool_names]
+        conversations.append({"from": "function_call", "value": json.dumps(rendered_calls)})
 
     # Preserve graph metadata in a dedicated namespace so standard ShareGPT
     # readers ignore it while inference-perf tooling can recover replay context.
@@ -186,7 +274,10 @@ def _event_to_toolace(event_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
 
 def graph_to_sharegpt(graph: ReplayGraph) -> List[Dict[str, Any]]:
     """Convert every event in *graph* to a ToolACE-ShareGPT record (one per event)."""
-    return [_event_to_toolace(eid, graph_event_to_dict(event)) for eid, event in graph.events.items()]
+    # One cache shared across all events: resolving descendant N re-resolves
+    # its whole predecessor chain, so without sharing this it costs O(events^2).
+    cache: Dict[str, List[Dict[str, Any]]] = {}
+    return [_event_to_toolace(eid, graph_event_to_dict(event), graph, cache) for eid, event in graph.events.items()]
 
 
 def main() -> None:
