@@ -467,6 +467,84 @@ class BackendClientSuite:
         _, kwargs = mock_get.call_args
         assert kwargs["timeout"] == _SUPPORTED_MODELS_TIMEOUT_SEC
 
+    def test_tokenizer_falls_back_to_model_root_when_id_is_alias(self) -> None:
+        """The tokenizer fallback must try the /v1/models entry's ``root`` after its
+        ``id``: vLLM serves ``--served-model-name`` as the id, which can be an alias
+        the tokenizer cannot load under (#809)."""
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "served-alias",
+                    "object": "model",
+                    "created": 1750000000,
+                    "owned_by": "vllm",
+                    "root": MODEL,
+                }
+            ],
+        }
+
+        class AliasRejectingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                path = config.pretrained_model_name_or_path
+                if path == "served-alias":
+                    raise RuntimeError("no tokenizer files under served alias")
+                assert path == MODEL
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        assert client.model_name == "served-alias"
+
+    def test_tokenizer_fallback_error_names_config_field(self) -> None:
+        """When neither the served id nor the model root loads a tokenizer, the error
+        must point the user at tokenizer.pretrained_model_name_or_path (#809)."""
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "served-alias",
+                    "object": "model",
+                    "created": 1750000000,
+                    "owned_by": "vllm",
+                    "root": "also-unloadable",
+                }
+            ],
+        }
+
+        class AlwaysFailingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                raise RuntimeError("cannot load")
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AlwaysFailingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+            pytest.raises(Exception, match="tokenizer.pretrained_model_name_or_path"),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+
     def test_supported_apis_and_metric_metadata(self) -> None:
         client = make_client(self.backend, APIConfig(type=APIType.Completion, streaming=False))
         assert client.get_supported_apis() == self.backend.expected_supported_apis
