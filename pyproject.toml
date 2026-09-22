@@ -28,6 +28,7 @@ license = {text = "Apache-2.0"}
 
 [project.scripts]
 inference-perf = "inference_perf:main_cli"
+inference-perf-convert = "inference_perf.tools.convert:main_cli"
 
 [project.optional-dependencies]
 analysis = [
