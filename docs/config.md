@@ -162,6 +162,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
@@ -179,6 +180,25 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 

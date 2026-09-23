@@ -326,7 +326,7 @@ def main_cli() -> None:
                 max_requests = 0
                 for stage in config.load.stages:
                     if isinstance(stage, StandardLoadStage):
-                        max_requests = max(max_requests, int(stage.rate * stage.duration))
+                        max_requests = max(max_requests, int(stage.rate * stage.effective_duration))
                     elif isinstance(stage, ConcurrentLoadStage):
                         max_requests = max(max_requests, stage.num_requests)
                 total_count = max_requests + 1

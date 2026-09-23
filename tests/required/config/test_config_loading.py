@@ -27,6 +27,7 @@ import pytest
 import yaml
 
 from inference_perf.config import (
+    StandardLoadStage,
     APIType,
     Config,
     DataGenType,
@@ -163,3 +164,23 @@ def test_otel_trace_replay_with_session_replay_load_ok() -> None:
     )
     assert config.data.type == DataGenType.OTelTraceReplay
     assert config.load.type == LoadType.TRACE_SESSION_REPLAY
+
+
+# A YAML file whose stage sets stop_condition 't >= 30' instead of duration loads through read_config; the stage's effective_duration is 30.0.
+def test_read_config_stop_condition_stage() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {"type": "constant", "stages": [{"rate": 2, "stop_condition": "t >= 30"}]},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.duration is None
+        assert stage.stop_condition == "t >= 30"
+        assert stage.effective_duration == 30.0
+    finally:
+        os.remove(tmp_path)
