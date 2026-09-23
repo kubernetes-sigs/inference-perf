@@ -191,7 +191,8 @@ class TestExecuteQueryHappyPath:
 
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
             get.return_value = _response(_vector("NaN"))
-            assert math.isnan(client.execute_query("up", "100"))
+            nan_result = client.execute_query("up", "100")
+        assert nan_result is not None and math.isnan(nan_result)
 
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
             get.return_value = _response(_vector("+Inf"))
@@ -203,22 +204,30 @@ class TestExecuteQueryReturnsZeroOnFailure:
 
     Pinning them documents that the handled failure mode is a silent zero rather than an
     exception, and pins which zeros leave an error log behind: the HTTP and parse
-    failures do, an empty result set and the tolerated malformed shapes do not. If a
-    future change makes any of these raise or return None instead, these tests are the
-    ones to update.
+    failures do, the tolerated malformed shapes do not. A query that matches no series
+    is the one exception: it returns None, the signal the collector uses to retry with an
+    underscore-escaped name, and only then falls back to 0.0. If a future change makes
+    any of these raise or return None instead, these tests are the ones to update.
     """
 
-    # A query that matches no series returns an empty result list, which yields 0.0 with
-    # no error record at all: an absent metric is indistinguishable from a real zero even
-    # in the logs.
-    def test_empty_result_set(self, caplog: pytest.LogCaptureFixture) -> None:
+    # A query that matches no series (an empty result list, or a body with no "data" key
+    # at all) returns None with no error record, so the collector can tell a missing
+    # series from a real zero and retry with the underscore-escaped name.
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"status": "success", "data": {"resultType": "vector", "result": []}},
+            {"status": "success"},
+        ],
+        ids=["empty-result", "no-data-key"],
+    )
+    def test_empty_result_set(self, payload: Dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
-        payload: Dict[str, Any] = {"status": "success", "data": {"resultType": "vector", "result": []}}
 
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = _response(payload)
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert not [record for record in caplog.records if record.levelname == "ERROR"]
 
@@ -312,8 +321,8 @@ class TestExecuteQueryReturnsZeroOnFailure:
         assert "error executing query: up" in caplog.text
 
     # Malformed payloads that fall out of the dict/list checks yield 0.0, with no error
-    # record at all: a sample with no "value" key, a scalar "value", a one-element
-    # "value", and a body with no "data" key. This list is curated, not exhaustive;
+    # record at all: a sample with no "value" key, a scalar "value", and a one-element
+    # "value". This list is curated, not exhaustive;
     # malformed shapes that raise instead are pinned in TestExecuteQueryRaisingPaths.
     @pytest.mark.parametrize(
         "payload",
@@ -321,9 +330,8 @@ class TestExecuteQueryReturnsZeroOnFailure:
             {"status": "success", "data": {"result": [{"metric": {}}]}},
             {"status": "success", "data": {"result": [{"metric": {}, "value": "1.5"}]}},
             {"status": "success", "data": {"result": [{"metric": {}, "value": [1632741820.781]}]}},
-            {"status": "success"},
         ],
-        ids=["no-value-key", "scalar-value", "one-element-value", "no-data-key"],
+        ids=["no-value-key", "scalar-value", "one-element-value"],
     )
     def test_malformed_result_shapes(self, payload: Dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
