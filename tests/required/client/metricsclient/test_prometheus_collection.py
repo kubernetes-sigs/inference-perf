@@ -22,13 +22,13 @@ entry points with no coverage of their own.
 
 Two behaviours make this mostly a silent-wrongness surface rather than a crash surface:
 
-- every failure path `execute_query` handles returns 0.0, so a non-200, an error body,
-  or an unparseable value reaches the report as a real-looking zero rather than an
-  error. Some of those zeros leave an error log behind; an empty result set and the
-  tolerated malformed shapes do not even do that. The handling has holes, pinned in
-  `TestExecuteQueryRaisingPaths`: a 200 whose body is not JSON, a null sample value,
-  or a body that is not a JSON object raises out of `execute_query` instead (only
-  `raise_for_status` and the float conversion are guarded).
+- every failure path `execute_query` handles returns None, so a non-200, an error body,
+  an unparseable value or a malformed result shape reaches the report as missing rather
+  than as a real-looking zero, and each leaves an error log behind. An empty result set
+  also returns None, but silently. The handling has holes, pinned in
+  `TestExecuteQueryRaisingPaths`: a 200 whose body is not JSON, or a body that is not a
+  JSON object, raises out of `execute_query` instead (only `raise_for_status` and the
+  float conversion are guarded).
 - `collect_metrics_for_stage` derives the query window from the stage's own timestamps
   plus the scrape interval and buffer. Wrong arithmetic there reads the wrong samples
   and reports numbers that belong to another stage.
@@ -184,46 +184,55 @@ class TestExecuteQueryHappyPath:
 
     # Prometheus legitimately returns "NaN" (e.g. histogram_quantile over a window with no
     # samples) and "+Inf"; both parse under float(), so they come back as-is rather than
-    # as 0.0, and the report then carries non-finite numbers. Documented, not endorsed:
+    # as None, and the report then carries non-finite numbers. Documented, not endorsed:
     # pinned so a change in either direction is a conscious one.
     def test_nan_and_inf_pass_through(self) -> None:
         client = _client()
 
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
             get.return_value = _response(_vector("NaN"))
-            assert math.isnan(client.execute_query("up", "100"))
+            nan_result = client.execute_query("up", "100")
+        assert nan_result is not None and math.isnan(nan_result)
 
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
             get.return_value = _response(_vector("+Inf"))
             assert client.execute_query("up", "100") == float("inf")
 
 
-class TestExecuteQueryReturnsZeroOnFailure:
-    """Every one of these reaches the report as a plain 0.0, indistinguishable from a real zero.
+class TestExecuteQueryReturnsNoneOnFailure:
+    """Every one of these returns None, which the report shows as missing rather than 0.0.
 
-    Pinning them documents that the handled failure mode is a silent zero rather than an
-    exception, and pins which zeros leave an error log behind: the HTTP and parse
-    failures do, an empty result set and the tolerated malformed shapes do not. If a
-    future change makes any of these raise or return None instead, these tests are the
-    ones to update.
+    Pinning them documents that the handled failure mode is a missing value rather than
+    an exception or a real-looking zero, and pins which failures leave an error log
+    behind: the HTTP, status, parse and malformed-shape failures do. A query that matches
+    no series returns None silently; that None is also the signal the collector uses to
+    retry with an underscore-escaped name. If a future change makes any of these raise or
+    return a number instead, these tests are the ones to update.
     """
 
-    # A query that matches no series returns an empty result list, which yields 0.0 with
-    # no error record at all: an absent metric is indistinguishable from a real zero even
-    # in the logs.
-    def test_empty_result_set(self, caplog: pytest.LogCaptureFixture) -> None:
+    # A query that matches no series (an empty result list, or a body with no "data" key
+    # at all) returns None with no error record, so the collector can tell a missing
+    # series from a real zero and retry with the underscore-escaped name.
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"status": "success", "data": {"resultType": "vector", "result": []}},
+            {"status": "success"},
+        ],
+        ids=["empty-result", "no-data-key"],
+    )
+    def test_empty_result_set(self, payload: Dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
-        payload: Dict[str, Any] = {"status": "success", "data": {"resultType": "vector", "result": []}}
 
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = _response(payload)
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert not [record for record in caplog.records if record.levelname == "ERROR"]
 
     # A 500 from Prometheus makes raise_for_status raise, which is caught, logged, and
-    # yields 0.0. json() must never be reached on this path.
+    # yields None. json() must never be reached on this path.
     def test_non_200_response(self, caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
         response = _response(_vector("1.5"), error=requests.HTTPError("500 Server Error"))
@@ -231,7 +240,7 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = response
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         response.json.assert_not_called()
         assert "error executing query: 500 Server Error" in caplog.text
@@ -247,13 +256,13 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = response
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         response.json.assert_not_called()
         assert "error executing query: 400 Client Error" in caplog.text
 
     # A 200 whose body reports status "error" rather than "success" is logged and yields
-    # 0.0. The payload carries a well-formed result of "7.0" so this test fails loudly
+    # None. The payload carries a well-formed result of "7.0" so this test fails loudly
     # (by returning 7.0) if the status guard is ever removed.
     def test_two_hundred_with_error_status_in_body(self, caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
@@ -267,25 +276,25 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = _response(payload)
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert "error executing query" in caplog.text
         assert "bad_data" in caplog.text
 
     # The connection never gets made (server down, DNS failure). The exception is caught,
-    # logged, and yields 0.0 rather than propagating out of report generation.
+    # logged, and yields None rather than propagating out of report generation.
     def test_connection_error(self, caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
 
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.side_effect = requests.ConnectionError("connection refused")
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert "error executing query: connection refused" in caplog.text
 
     # A sample value float() cannot parse at all fails the conversion, is logged, and
-    # yields 0.0. Real "NaN"/"+Inf" strings DO parse and are not this case; they pass
+    # yields None. Real "NaN"/"+Inf" strings DO parse and are not this case; they pass
     # through unconverted (see test_nan_and_inf_pass_through).
     def test_non_numeric_value(self, caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
@@ -293,12 +302,12 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = _response(_vector("not-a-number"))
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert "error converting value to float: not-a-number" in caplog.text
 
     # The defensive branch for a None response object (requests.get does not do this, but
-    # the code guards for it) yields 0.0. The guard's own log line names the query ("up"),
+    # the code guards for it) yields None. The guard's own log line names the query ("up"),
     # unlike the exception path's, so the assertion fails if the guard is removed and the
     # AttributeError from None.raise_for_status() is handled instead.
     def test_none_response(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -307,13 +316,13 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = None
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
         assert "error executing query: up" in caplog.text
 
-    # Malformed payloads that fall out of the dict/list checks yield 0.0, with no error
-    # record at all: a sample with no "value" key, a scalar "value", a one-element
-    # "value", and a body with no "data" key. This list is curated, not exhaustive;
+    # Malformed payloads that fall out of the dict/list checks yield None and log the
+    # unexpected shape: a sample with no "value" key, a scalar "value", and a one-element
+    # "value". This list is curated, not exhaustive;
     # malformed shapes that raise instead are pinned in TestExecuteQueryRaisingPaths.
     @pytest.mark.parametrize(
         "payload",
@@ -321,9 +330,8 @@ class TestExecuteQueryReturnsZeroOnFailure:
             {"status": "success", "data": {"result": [{"metric": {}}]}},
             {"status": "success", "data": {"result": [{"metric": {}, "value": "1.5"}]}},
             {"status": "success", "data": {"result": [{"metric": {}, "value": [1632741820.781]}]}},
-            {"status": "success"},
         ],
-        ids=["no-value-key", "scalar-value", "one-element-value", "no-data-key"],
+        ids=["no-value-key", "scalar-value", "one-element-value"],
     )
     def test_malformed_result_shapes(self, payload: Dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
         client = _client()
@@ -331,17 +339,33 @@ class TestExecuteQueryReturnsZeroOnFailure:
         with caplog.at_level("ERROR"):
             with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
                 get.return_value = _response(payload)
-                assert client.execute_query("up", "100") == 0.0
+                assert client.execute_query("up", "100") is None
 
-        assert not [record for record in caplog.records if record.levelname == "ERROR"]
+        assert "unexpected query result shape for query 'up'" in caplog.text
+
+    # A well-formed sample whose value is JSON null: float(None) raises TypeError, which
+    # the conversion handler catches and logs, yielding None.
+    def test_null_sample_value(self, caplog: pytest.LogCaptureFixture) -> None:
+        client = _client()
+        payload = {
+            "status": "success",
+            "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1632741820.781, None]}]},
+        }
+
+        with caplog.at_level("ERROR"):
+            with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
+                get.return_value = _response(payload)
+                assert client.execute_query("up", "100") is None
+
+        assert "error converting value to float: None" in caplog.text
 
 
 class TestExecuteQueryRaisingPaths:
-    """Not every bad response is absorbed into 0.0: these escape `execute_query`.
+    """Not every bad response is absorbed into None: these escape `execute_query`.
 
-    `response.json()` sits outside the try/except and only ValueError is caught around
-    the float conversion, so each of these propagates out of report generation and would
-    kill the report of a completed run. Pinned as documentation of the current contract,
+    `response.json()` and the body's `.get` calls sit outside the try/except, so each of
+    these propagates out of report generation and would kill the report of a completed
+    run. Pinned as documentation of the current contract,
     not as endorsement; if the handling is ever widened to absorb them, these are the
     tests to flip.
     """
@@ -356,20 +380,6 @@ class TestExecuteQueryRaisingPaths:
         with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
             get.return_value = response
             with pytest.raises(requests.exceptions.JSONDecodeError):
-                client.execute_query("up", "100")
-
-    # A well-formed sample whose value is JSON null: float(None) raises TypeError, which
-    # the ValueError-only handler around the conversion lets escape.
-    def test_null_sample_value_raises(self) -> None:
-        client = _client()
-        payload = {
-            "status": "success",
-            "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1632741820.781, None]}]},
-        }
-
-        with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get") as get:
-            get.return_value = _response(payload)
-            with pytest.raises(TypeError):
                 client.execute_query("up", "100")
 
     # A body that is JSON but not an object (a bare array): .get does not exist on a
