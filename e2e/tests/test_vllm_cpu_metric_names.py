@@ -167,9 +167,10 @@ def test_declared_names_resolve_against_goldens(golden_file: Path) -> None:
 @pytest.mark.parametrize("golden_file", GOLDEN_FILES, ids=lambda p: p.stem)
 def test_known_unresolved_still_do_not_resolve(golden_file: Path) -> None:
     # Guards the allowlist above. Each KNOWN_UNRESOLVED name must still be declared
-    # and must still fail to resolve; the moment #568 lands and vllm:prompt_tokens
-    # starts selecting vllm:prompt_tokens_total, this goes red and the entry has to
-    # be deleted. An allowlist that quietly stops applying is how a gate rots.
+    # and must still fail to resolve; the moment its fix lands and the name starts
+    # resolving, this goes red and the entry has to be deleted. That is how
+    # vllm:prompt_tokens and vllm:generation_tokens left the list when #568 landed.
+    # An allowlist that quietly stops applying is how a gate rots.
     golden = load_golden(golden_file)
     declared = _declared("http://127.0.0.1:1", DEFAULT_MODEL)
 
