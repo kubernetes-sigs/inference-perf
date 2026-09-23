@@ -149,6 +149,25 @@ jobs:
           pdm run python scripts/capture_server_metric_names.py \
             --server "${SERVER}" --base-url http://127.0.0.1:8080
 
+      # A pull request opened with github.token starts no workflows, so nothing
+      # would check the refresh PR on its own. The serverless checks need no
+      # server, so run them here against the fixture just captured and put the
+      # verdict in the PR body instead.
+      - name: Check declared names against the new fixture
+        id: check
+        run: |
+          set -uo pipefail
+          T=e2e/tests/test_sglang_tgi_metric_names.py
+          if pdm run pytest -p no:cacheprovider \
+              "${T}::test_fixture_header_is_complete[${SERVER}]" \
+              "${T}::test_declared_names_resolve_against_fixture[${SERVER}]" \
+              "${T}::test_known_unresolved_are_still_unresolved[${SERVER}]" \
+              2>&1 | tee drift-check.log; then
+            echo "result=pass" >> "${GITHUB_OUTPUT}"
+          else
+            echo "result=fail" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Collect server logs
         if: always()
         run: docker logs drift > "${SERVER}-server.log" 2>&1 || true
@@ -165,10 +184,11 @@ jobs:
         run: docker rm -f drift 2>/dev/null || true
 
       # A refresh PR, not a test failure: the diff is the finding, and the
-      # checks on the PR say whether it breaks anything we declare.
+      # check step above says whether it breaks anything we declare.
       - name: Open a fixture-refresh pull request
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECK_RESULT: ${{ steps.check.outputs.result }}
         run: |
           set -euo pipefail
 
@@ -201,11 +221,23 @@ jobs:
           The /metrics exposition of ${SERVER} ${VERSION} no longer matches the checked-in
           fixture. The diff is the drift.
 
-          If a name inference-perf declares in get_prometheus_metric_metadata() disappeared,
-          e2e/tests/test_sglang_tgi_metric_names.py fails on this PR, and the declaration in
-          inference_perf/client/modelserver/${SERVER}_client.py needs updating in the same
-          change. If the checks are green, upstream added or removed metrics this project does
-          not query and the refresh can merge as is.
+          Declared names against this fixture: **${CHECK_RESULT}** (the serverless checks in
+          e2e/tests/test_sglang_tgi_metric_names.py, run by the workflow before opening this PR).
+
+          On **fail**, a name inference-perf declares in get_prometheus_metric_metadata()
+          disappeared, and the declaration in inference_perf/client/modelserver/${SERVER}_client.py
+          needs updating in the same change. On **pass**, upstream added or removed metrics this
+          project does not query and the refresh can merge as is.
+
+          GitHub starts no workflows for a PR opened by github.token, so this PR has no checks
+          of its own until someone closes and reopens it.
+
+          <details><summary>check output</summary>
+
+          \`\`\`
+          $(tail -n 40 drift-check.log)
+          \`\`\`
+          </details>
           EOF
 
           gh pr create \
