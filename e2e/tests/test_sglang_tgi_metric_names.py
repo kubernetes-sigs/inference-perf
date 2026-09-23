@@ -56,21 +56,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from utils.metric_families import declared_metrics, exposed_names, is_exposed, parse_exposition, resolves
 from utils.server_metric_names import (
     LIVE_SCRAPE,
     PROVENANCES,
     REQUIRED_HEADER_KEYS,
     SERVERS,
     ServerSpec,
-    declared_metrics,
-    exposed_names,
     external_base_url,
     fetch_text,
     fixture_path,
-    is_exposed,
     load_fixture,
-    parse_exposition,
-    resolves,
 )
 
 from inference_perf.config import APIConfig, APIType
