@@ -211,11 +211,11 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(3, load_generator.stage_runtime_info)
 
     async def test_stage_timeout_fails_stage_and_respects_rate_limit(self) -> None:
-        # A rate limit far below 1/timeout means only the first session is
-        # ever dispatched; the stage must exit FAILED at the timeout instead
-        # of waiting on the remaining pending sessions.
+        # A rate limit far below 1/max_stage_duration means only the first
+        # session is ever dispatched; the stage must exit TIMED_OUT at the
+        # limit instead of waiting on the remaining pending sessions.
         datagen = FakeSessionGenerator(num_sessions=3)
-        stage = TraceSessionReplayLoadStage(concurrent_sessions=0, session_rate=0.001, timeout=0.3)
+        stage = TraceSessionReplayLoadStage(concurrent_sessions=0, session_rate=0.001, max_stage_duration=0.3)
         load_generator = _make_load_generator(datagen, [stage])
         load_generator.session_metrics_collector = self.collector
 
@@ -224,9 +224,9 @@ class TestRunSessionStage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(datagen.activated, ["s0"], "rate limit must gate later dispatches")
         self.assertEqual(self.collector.record_metric.call_count, 1)
         info = load_generator.stage_runtime_info[0]
-        self.assertEqual(info.status.name, "FAILED")
+        self.assertEqual(info.status.name, "TIMED_OUT")
         self.assertEqual(info.rate, 0.001)
-        self.assertEqual(info.timeout, 0.3)
+        self.assertEqual(info.max_stage_duration, 0.3)
 
     async def test_dispatch_stamps_events_and_remaps_affinity(self) -> None:
         datagen = FakeSessionGenerator(num_sessions=1, events_per_session=4, preferred_worker_ids=[0, 1, 2, -1])
