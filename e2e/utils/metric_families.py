@@ -13,14 +13,15 @@
 # limitations under the License.
 """Prometheus metric-family bookkeeping shared by the metric-name checks.
 
+Both drift checks (vLLM, and SGLang/TGI via ``utils.server_metric_names``)
+resolve names through this module, so there is one copy of the rules.
+
 Three representations of "which metrics exist" meet in these tests, and this
 module converts between them:
 
-- declared: the (base name, type) pairs the vLLM client will query, read from
-  ``get_prometheus_metric_metadata()``. Names are bare family names
-  (``vllm:num_requests_waiting``, ``vllm:request_success``); counters span
-  the exposition's optional ``_total`` suffix at query time, so matching is
-  by base name plus the type's naming convention, never string equality.
+- declared: the metric objects a client will query, read from
+  ``get_prometheus_metric_metadata()``. Which series each one selects comes
+  from the metric's own ``candidate_names()``, never from rules restated here.
 - exposed: what a live server's ``/metrics`` text actually contains.
 - golden: the committed per-release snapshot of the exposed ``vllm:*``
   families (``e2e/testdata/vllm_metric_families/<release-tag>.txt``), which
@@ -37,13 +38,12 @@ from pathlib import Path
 from typing import Any, Dict, Set
 
 from inference_perf.client.modelserver.metrics import CounterMetric, GaugeMetric, HistogramMetric
-from inference_perf.client.modelserver.metrics.base import Metric
-from inference_perf.client.modelserver.openai_client import OpenAIMetrics
+from inference_perf.client.modelserver.metrics.base import BaseMetrics, Metric
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "testdata" / "vllm_metric_families"
 
 
-def declared_metrics(metadata: OpenAIMetrics) -> Dict[str, Metric[Any]]:
+def declared_metrics(metadata: BaseMetrics) -> Dict[str, Metric[Any]]:
     """Declared metric name -> the metric object, as declared by a client's metadata.
 
     The metric itself is carried, not just its name and type, because it is the
@@ -67,7 +67,7 @@ def prometheus_type(metric: Metric[Any]) -> str:
 
 def exposed_names(metrics_text: str) -> Set[str]:
     """All family and sample names present in a /metrics exposition."""
-    names = set()
+    names: Set[str] = set()
     for line in metrics_text.splitlines():
         if line.startswith("# TYPE ") or line.startswith("# HELP "):
             names.add(line.split(" ")[2])
@@ -76,16 +76,21 @@ def exposed_names(metrics_text: str) -> Set[str]:
     return names
 
 
-def exposed_vllm_families(metrics_text: str) -> Dict[str, str]:
-    """The exposition's ``vllm:*`` family -> type map, ``*_created`` dropped."""
+def parse_exposition(metrics_text: str, prefix: str) -> Dict[str, str]:
+    """The exposition's ``<prefix>*`` family -> type map, ``*_created`` dropped."""
     families: Dict[str, str] = {}
     for line in metrics_text.splitlines():
-        if not line.startswith("# TYPE vllm:"):
+        if not line.startswith(f"# TYPE {prefix}"):
             continue
-        _, _, name, metric_type = line.split(" ")
+        _, _, name, metric_type = line.split(" ", 3)
         if not name.endswith("_created"):
-            families[name] = metric_type
+            families[name] = metric_type.strip()
     return families
+
+
+def exposed_vllm_families(metrics_text: str) -> Dict[str, str]:
+    """The exposition's ``vllm:*`` family -> type map, ``*_created`` dropped."""
+    return parse_exposition(metrics_text, "vllm:")
 
 
 def provided_by_families(series: str, metric_type: str, families: Dict[str, str]) -> bool:
