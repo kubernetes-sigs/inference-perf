@@ -140,8 +140,8 @@ def resolve_trace_files(trace_files: List[str]) -> List[Path]:
             else:
                 print(f"Warning: File not found: {path_pattern}")
 
-    # Convert to sorted list for consistent output
-    return [Path(f) for f in all_files]
+    # Sorted: set order follows per-process string hashes, and record order seeds the shuffle.
+    return [Path(f) for f in sorted(all_files)]
 
 
 def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
