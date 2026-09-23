@@ -28,6 +28,12 @@ are assertions by default: a value that can provably escape them is rejected at
 construction, and an escape only detectable at sample time raises there. A call
 site that would rather truncate random draws, e.g. so a request-rate expression
 can never go negative, opts in with ``clip=True``.
+
+A :class:`Predicate` is the boolean counterpart: a condition over ``t`` such as
+``"t >= 60"``, meant for stop conditions. It shares the grammar and parser but
+is validated differently: it must be false at ``t = 0`` and then hold from some
+time onward, which is proved statically so the condition compiles to an exact
+boundary instead of being polled.
 """
 
 from __future__ import annotations
@@ -43,6 +49,8 @@ from numpy.typing import NDArray
 from sympy import Interval, Symbol, oo
 from sympy.calculus.util import function_range
 from sympy.core.function import AppliedUndef
+from sympy.core.relational import Relational
+from sympy.logic.boolalg import And, Boolean, Or
 from sympy.parsing.sympy_parser import parse_expr
 
 logger = logging.getLogger(__name__)
@@ -111,6 +119,30 @@ def _is_random_symbol(sym: Any) -> bool:
     return isinstance(sym, sympy.stats.rv.RandomSymbol)
 
 
+def _parse_raw(kind: str, raw: Union[str, int, float]) -> Any:
+    """Parse a config value into a sympy object, shared by both grammars."""
+    if isinstance(raw, bool):
+        raise TypeError(f"{kind} does not accept bool input.")
+    if isinstance(raw, (int, float)):
+        return sympy.sympify(raw)
+    if isinstance(raw, str):
+        # parse_expr ultimately eval()s the transformed string, so an
+        # expression is only as trustworthy as the config it came from.
+        # These strings are config-author input, never end-user input.
+        try:
+            return parse_expr(raw, local_dict=_parse_namespace([0]))
+        except (SyntaxError, TypeError, AttributeError, sympy.SympifyError) as e:
+            raise ValueError(f"Could not parse {kind.lower()} {raw!r}: {e}") from e
+    raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
+
+
+def _reject_unknown_functions(kind: str, raw: Any, expr: Any) -> None:
+    """Reject unknown functions, e.g. a misspelled distribution InvalidDist(10)."""
+    undefined = {f.func.__name__ for f in expr.atoms(AppliedUndef)}
+    if undefined:
+        raise ValueError(f"{kind} {raw!r} uses unknown function(s): {sorted(undefined)}.")
+
+
 class Expression:
     """A numeric config value: constant, time-varying (``t``), and/or random.
 
@@ -164,11 +196,7 @@ class Expression:
         self.maximum = maximum
         self.clip = clip
         self._expr = self._parse(raw)
-
-        # Reject unknown functions, e.g. a misspelled distribution InvalidDist(10).
-        undefined = {f.func.__name__ for f in self._expr.atoms(AppliedUndef)}
-        if undefined:
-            raise ValueError(f"Expression {raw!r} uses unknown function(s): {sorted(undefined)}.")
+        _reject_unknown_functions("Expression", raw, self._expr)
 
         free = self._expr.free_symbols
         self._random_symbols = sorted((s for s in free if _is_random_symbol(s)), key=str)
@@ -229,19 +257,10 @@ class Expression:
         self._lambdified = sympy.lambdify(order, skeleton, "numpy")
 
     def _parse(self, raw: Union[str, int, float]) -> Any:
-        if isinstance(raw, bool):
-            raise TypeError("Expression does not accept bool input.")
-        if isinstance(raw, (int, float)):
-            return sympy.sympify(raw)
-        if isinstance(raw, str):
-            # parse_expr ultimately eval()s the transformed string, so an
-            # expression is only as trustworthy as the config it came from.
-            # These strings are config-author input, never end-user input.
-            try:
-                return parse_expr(raw, local_dict=_parse_namespace([0]))
-            except (SyntaxError, TypeError, AttributeError, sympy.SympifyError) as e:
-                raise ValueError(f"Could not parse expression {raw!r}: {e}") from e
-        raise TypeError(f"Expression accepts str or number, got {type(raw).__name__}.")
+        expr = _parse_raw("Expression", raw)
+        if isinstance(expr, (bool, Boolean)):
+            raise ValueError(f"Expression {raw!r} is a condition, not a numeric value; use Predicate for conditions.")
+        return expr
 
     def _validate_range(self, duration: Optional[float]) -> None:
         if self.minimum is None and self.maximum is None:
@@ -417,3 +436,141 @@ class Expression:
 
     def __repr__(self) -> str:
         return f"Expression({self.raw!r})"
+
+
+# The ``t`` domain a predicate is proved over: a stage runs from t = 0 onward.
+_TIME_DOMAIN = Interval(0, oo)
+
+
+class Predicate:
+    """A boolean condition over stage time ``t``, e.g. ``"t >= 60"``.
+
+    The string-grammar counterpart of :class:`Expression` for stop conditions.
+    It is parsed and validated once at construction and evaluated with
+    :meth:`holds`. Construction raises :class:`ValueError` unless the condition
+    is false at ``t = 0`` and then holds for every later ``t`` from some time
+    onward. That shape is what makes a stop condition meaningful when it is
+    checked at discrete instants: a condition that holds only at a single time
+    (``Eq(t, 60)``) or over a window (``(t >= 60) & (t < 120)``) can be skipped
+    over by the check, and one that already holds at ``t = 0`` (``t < 60``,
+    ``t >= 0``) would stop a stage before it starts.
+
+    The shape is proved statically by solving the condition over ``t >= 0``,
+    which is why :attr:`boundary` is always known: the condition compiles to
+    the exact time it starts holding, so a caller can schedule against it
+    instead of polling. The solver is only trusted for conditions polynomial
+    in ``t`` (``t >= 60``, ``2*t + 1 >= 121``, ``t**2 >= 3600``) and their
+    ``&``/``|`` combinations; anything else is rejected rather than evaluated
+    on an unproven shape. Random variables are never permitted: a stop
+    condition must be reproducible.
+
+    Note the grammar quirk: ``&`` and ``|`` bind tighter than a comparison, so
+    each comparison must be parenthesised, ``(t >= 60) & (t < 120)``. Python's
+    ``==`` compares structure rather than value here and is rejected; ``Eq``
+    is the equality form, though as above it is not a valid stop condition.
+
+    Args:
+        raw: The condition as a string.
+    """
+
+    def __init__(self, raw: str) -> None:
+        if not isinstance(raw, str):
+            raise TypeError(f"Predicate accepts str, got {type(raw).__name__}.")
+        self.raw = raw
+        try:
+            expr = _parse_raw("Predicate", raw)
+        except ValueError as e:
+            if "&" in raw or "|" in raw:
+                raise ValueError(
+                    f"{e} Hint: '&' and '|' bind tighter than a comparison, so parenthesise each one: '(t >= 60) & (t < 120)'."
+                ) from e
+            raise
+
+        if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
+            raise ValueError(
+                f"Predicate {raw!r} is constant ({expr!r}). '==' compares structure in this grammar; "
+                f"a stop condition must vary with t, e.g. 't >= 60'."
+            )
+        if not isinstance(expr, Boolean):
+            raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
+        _reject_unknown_functions("Predicate", raw, expr)
+
+        free = expr.free_symbols
+        if any(_is_random_symbol(s) for s in free):
+            raise ValueError(f"Predicate {raw!r} contains a random variable; a stop condition must be reproducible.")
+        disallowed = {str(s) for s in free} - {"t"}
+        if disallowed:
+            raise ValueError(f"Predicate {raw!r} uses disallowed symbol(s) {sorted(disallowed)}; permitted: ['t'].")
+        if not free:
+            raise ValueError(f"Predicate {raw!r} does not depend on t; a stop condition must vary with t.")
+
+        self._expr = expr
+        self._boundary = self._prove_boundary()
+        self._holds = sympy.lambdify([_T], expr, "numpy")
+
+    def _prove_boundary(self) -> float:
+        """Solve the condition over ``t >= 0`` and require the shape ``[b, oo)`` with ``b > 0``."""
+        holding = _holding_set(self._expr)
+        if holding is None:
+            raise ValueError(
+                f"Predicate {self.raw!r} could not be proved to hold from some time onward; "
+                f"only conditions polynomial in t, combined with & and |, are supported."
+            )
+        if holding == sympy.S.EmptySet:
+            raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
+        if not isinstance(holding, Interval) or holding.sup != oo:
+            raise ValueError(
+                f"Predicate {self.raw!r} holds only on {holding}; a stop condition must hold from some time onward "
+                f"without lapsing, e.g. 't >= 60'."
+            )
+        if holding.inf == 0:
+            raise ValueError(
+                f"Predicate {self.raw!r} already holds at (or immediately after) t=0; "
+                f"a stop condition must be false at t=0, e.g. 't >= 60'."
+            )
+        return float(holding.inf)
+
+    @property
+    def boundary(self) -> float:
+        """The time from which the condition holds (inclusive or exclusive per the comparison)."""
+        return self._boundary
+
+    @property
+    def free_symbols(self) -> set[str]:
+        """Names of free symbols (currently always ``{"t"}``)."""
+        return {str(s) for s in self._expr.free_symbols}
+
+    def holds(self, t: float) -> bool:
+        """Evaluate the condition at stage time ``t`` (seconds)."""
+        return bool(self._holds(float(t)))
+
+    def __repr__(self) -> str:
+        return f"Predicate({self.raw!r})"
+
+
+def _holding_set(expr: Any) -> Any:
+    """The set of ``t >= 0`` where ``expr`` holds, or ``None`` when not provable.
+
+    Only relationals polynomial in ``t`` are solved (sympy's inequality solver
+    returns partial answers for e.g. trigonometric conditions), and ``&``/``|``
+    are folded as set intersection/union of their solved leaves.
+    """
+    if isinstance(expr, And):
+        sets = [_holding_set(arg) for arg in expr.args]
+        if any(s is None for s in sets):
+            return None
+        return sympy.Intersection(*sets)
+    if isinstance(expr, Or):
+        sets = [_holding_set(arg) for arg in expr.args]
+        if any(s is None for s in sets):
+            return None
+        return sympy.Union(*sets)
+    if isinstance(expr, Relational):
+        difference = expr.lhs - expr.rhs
+        if not difference.is_polynomial(_T):
+            return None
+        try:
+            return sympy.solveset(expr, _T, _TIME_DOMAIN)
+        except Exception:
+            return None
+    return None
