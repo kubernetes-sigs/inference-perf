@@ -1691,7 +1691,7 @@ class LoadGenerator:
         self,
         stage_id: int,
         rate: float,
-        duration: int,
+        duration: float,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
@@ -2119,7 +2119,7 @@ class LoadGenerator:
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
-                    duration = stage.duration
+                    duration = stage.effective_duration
                     concurrency_level = None
                     await self._run_reported_stage(
                         stage_id,
@@ -2178,10 +2178,11 @@ class LoadGenerator:
         self, client: ModelServerClient, stage_id: int, stage: StandardLoadStage, progress: ProgressBars
     ) -> None:
         """Send one stage's requests from this process and record its StageRuntimeInfo."""
-        timer = self.get_timer(stage.rate, stage.duration)
+        duration = stage.effective_duration
+        timer = self.get_timer(stage.rate, duration)
         start_time_epoch = time.time()
         start_time = time.perf_counter()
-        end_time = start_time + stage.duration
+        end_time = start_time + duration
         stage_status = StageStatus.RUNNING
         logger.info("Stage %d - run started", stage_id)
 
@@ -2191,7 +2192,7 @@ class LoadGenerator:
         self._stage_started(
             StageContext(
                 stage_id=stage_id,
-                planned_requests=int(stage.rate * stage.duration),
+                planned_requests=int(stage.rate * duration),
                 requests_finished=lambda: self._local_finished,
             )
         )

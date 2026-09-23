@@ -36,7 +36,7 @@ from inference_perf.config import (
     deep_merge,
     read_config,
 )
-from inference_perf.config.loadgen import ConcurrentLoadStage, TraceSessionReplayLoadStage
+from inference_perf.config.loadgen import ConcurrentLoadStage, StandardLoadStage, TraceSessionReplayLoadStage
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -543,3 +543,23 @@ def test_conversation_replay_default_survives_a_round_trip() -> None:
         stage = reloaded.load.stages[0]
         assert isinstance(stage, ConcurrentLoadStage)
         assert stage.concurrency_level == 4
+
+
+# A YAML file whose stage sets stop_condition 't >= 30' instead of duration loads through read_config; the stage's effective_duration is 30.0.
+def test_read_config_stop_condition_stage() -> None:
+    config_content = {
+        "data": {"type": "mock"},
+        "load": {"type": "constant", "stages": [{"rate": 2, "stop_condition": "t >= 30"}]},
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(config_content, tmp)
+        tmp_path = tmp.name
+    try:
+        config = read_config(tmp_path)
+        stage = config.load.stages[0]
+        assert isinstance(stage, StandardLoadStage)
+        assert stage.duration is None
+        assert stage.stop_condition == "t >= 30"
+        assert stage.effective_duration == 30.0
+    finally:
+        os.remove(tmp_path)
