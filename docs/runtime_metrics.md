@@ -14,7 +14,7 @@ Every metric declares a stability level, and that level is prepended to the metr
 - `BETA`: Labels may still change, but no rename or removal without a release that deprecates it first.
 - `STABLE`: Name, type and label names are fixed for the current major version.
 
-**Every metric below is `ALPHA` today, and the whole set stays `ALPHA` through v0.7.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; nothing is promoted before v1.0.0, and promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
+**Every metric below is `ALPHA` today, and nothing is promoted before v1.0.0.** These names, labels and buckets are a first cut that we expect to refine while the endpoint gets used; promotion is per metric, one `stability=` in its spec, not a blanket graduation of the set. The level appears only in the HELP text, never in a metric name and never in a label, so promoting a metric later does not break the queries or dashboards written against it.
 
 ## Metrics
 
