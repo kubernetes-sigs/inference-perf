@@ -16,10 +16,11 @@
 Three representations of "which metrics exist" meet here, and this module
 converts between them:
 
-- **declared**: the (base name, type) pairs a client will query, read from its
-  ``get_prometheus_metric_metadata()``. Matching is by base name plus the
-  type's naming convention, never string equality, because a Prometheus type
-  decides which series a name actually produces.
+- **declared**: the metric objects a client will query, read from its
+  ``get_prometheus_metric_metadata()``. Resolving them (``declared_metrics``,
+  ``resolves``, ``is_exposed``, ``parse_exposition``) lives in
+  ``utils.metric_families``, shared with the vLLM check, so the two checks
+  cannot drift apart.
 - **exposed**: what a live server's ``/metrics`` text contains.
 - **fixture**: the committed snapshot of a server's metric families
   (``e2e/testdata/server_metric_families/<server>.txt``), which stands in for
@@ -50,10 +51,8 @@ import os
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Type
+from typing import Any, Dict, Optional, Type
 
-from inference_perf.client.modelserver.metrics import CounterMetric, GaugeMetric, HistogramMetric
-from inference_perf.client.modelserver.metrics.base import BaseMetrics, Metric
 from inference_perf.client.modelserver.openai_client import openAIModelServerClient
 from inference_perf.client.modelserver.sglang_client import SGlangModelServerClient
 from inference_perf.client.modelserver.tgi_client import TGImodelServerClient
@@ -68,12 +67,6 @@ PROVENANCES = (LIVE_SCRAPE, UPSTREAM_SOURCE)
 # Header keys every fixture must carry, so a fixture can never be committed
 # without saying where its contents came from.
 REQUIRED_HEADER_KEYS = ("provenance", "server", "version", "source", "captured")
-
-# Series suffixes produced by a histogram or summary family rather than being
-# families in their own right. A client may declare one directly as a counter
-# (SGLang counts requests off the latency histogram's _count series), which is
-# valid PromQL, so resolving a series against a family map has to recognise it.
-_AGGREGATE_SUFFIXES = ("_bucket", "_count", "_sum")
 
 
 @dataclass(frozen=True)
@@ -156,99 +149,6 @@ def fetch_text(url: str, timeout: float = 30.0) -> str:
 
 def fetch_json(url: str, timeout: float = 30.0) -> Any:
     return json.loads(fetch_text(url, timeout))
-
-
-def declared_metrics(metadata: BaseMetrics) -> Dict[str, Metric[Any]]:
-    """Declared metric name -> the metric object, as declared by a client's metadata.
-
-    The metric is carried rather than its name and type because only the metric
-    knows which series its queries select (``candidate_names``). The server's
-    family prefix used to be needed here to pull base names out of a declaration;
-    the metric takes itself apart now, so nothing here has to know the prefix.
-    """
-    declared: Dict[str, Metric[Any]] = {}
-    for _field, metric in metadata:
-        declared[metric.metric_name] = metric
-    return declared
-
-
-def prometheus_type(metric: Metric[Any]) -> str:
-    """The exposition type a declared metric expects its family to carry."""
-    for cls, metric_type in ((CounterMetric, "counter"), (GaugeMetric, "gauge"), (HistogramMetric, "histogram")):
-        if isinstance(metric, cls):
-            return metric_type
-    raise TypeError(f"no prometheus type known for {type(metric).__name__}")
-
-
-def parse_exposition(metrics_text: str, prefix: str) -> Dict[str, str]:
-    """The exposition's ``<prefix>*`` family -> type map, ``*_created`` dropped."""
-    families: Dict[str, str] = {}
-    for line in metrics_text.splitlines():
-        if not line.startswith(f"# TYPE {prefix}"):
-            continue
-        _, _, name, metric_type = line.split(" ", 3)
-        if not name.endswith("_created"):
-            families[name] = metric_type.strip()
-    return families
-
-
-def exposed_names(metrics_text: str) -> Set[str]:
-    """All family and sample names present in a /metrics exposition."""
-    names: Set[str] = set()
-    for line in metrics_text.splitlines():
-        if line.startswith("# TYPE ") or line.startswith("# HELP "):
-            names.add(line.split(" ")[2])
-        elif line and not line.startswith("#"):
-            names.add(line.split("{")[0].split(" ")[0])
-    return names
-
-
-def _aggregate_of(name: str) -> str:
-    """The family a ``_bucket``/``_count``/``_sum`` series belongs to, or "" if not one."""
-    for suffix in _AGGREGATE_SUFFIXES:
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return ""
-
-
-def provided_by_families(series: str, metric_type: str, families: Dict[str, str]) -> bool:
-    """Whether a family -> type map provides one series a query selects.
-
-    A fixture records what ``# TYPE`` declares, so counter and gauge series are
-    families in their own right, while ``_bucket``/``_count``/``_sum`` series come
-    from a histogram or summary family with the suffix stripped.
-    """
-    if families.get(series) == metric_type:
-        return True
-    base = _aggregate_of(series)
-    return bool(base) and families.get(base) in ("histogram", "summary")
-
-
-def resolves(metric: Metric[Any], families: Dict[str, str]) -> bool:
-    """Whether every series this metric's queries select resolves against a fixture.
-
-    The naming conventions (a counter spanning the optional ``_total`` suffix, a
-    histogram needing all three of its series) are not restated here: they come
-    from the metric's own ``candidate_names``, so this check cannot drift away
-    from what the client actually queries the way it did in #669.
-    """
-    metric_type = prometheus_type(metric)
-    return any(
-        all(provided_by_families(series, metric_type, families) for series in group) for group in metric.candidate_names()
-    )
-
-
-def is_exposed(metric: Metric[Any], names: Set[str]) -> bool:
-    """Whether every series this metric's queries select is in a live exposition.
-
-    An exposition lists real series names, so this is a plain subset test over the
-    metric's candidate groups.
-
-    Presence only. It cannot see a family that kept its name and changed type, so
-    the live check pairs it with ``resolves`` over the same exposition's family
-    map rather than using it alone (#669).
-    """
-    return any(group <= names for group in metric.candidate_names())
 
 
 def parse_fixture(text: str) -> Fixture:

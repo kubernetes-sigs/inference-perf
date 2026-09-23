@@ -56,9 +56,9 @@ from utils.server_metric_names import (  # noqa: E402
     fetch_text,
     fixture_path,
     format_fixture,
-    parse_exposition,
     parse_fixture,
 )
+from utils.metric_families import parse_exposition  # noqa: E402
 
 
 def resolve_version(spec: ServerSpec, base_url: str) -> str:

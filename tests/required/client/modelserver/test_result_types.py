@@ -125,11 +125,15 @@ def test_candidate_names_are_the_series_each_metric_actually_queries() -> None:
         GaugeMetric("vllm:num_requests_waiting"),
         HistogramMetric("vllm:e2e_request_latency_seconds"),
     ]
+    #
+    # Each name is matched with its selector brace attached, `name{`, not as a bare
+    # substring: "vllm:prompt_tokens" is a substring of "vllm:prompt_tokens_total",
+    # so a query that dropped the bare leg would otherwise still pass.
     for metric in metrics:
         queries = " ".join(metric.get_queries(60.0, "model_name='m'"))
         advertised = {name for group in metric.candidate_names() for name in group}
         assert advertised, f"{metric.metric_name} advertises no candidate names"
-        unqueried = sorted(name for name in advertised if name not in queries)
+        unqueried = sorted(name for name in advertised if f"{name}{{" not in queries)
         assert not unqueried, f"{metric.metric_name} advertises {unqueried} but never queries them"
 
 
