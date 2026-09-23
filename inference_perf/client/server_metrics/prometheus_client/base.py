@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import re
 import time
 from typing import Any, Optional
 import requests
@@ -20,6 +21,8 @@ from inference_perf.config import PrometheusClientConfig
 from ..base import ServerMetricsClient, PerfRuntimeParameters, ModelServerMetrics
 
 PROMETHEUS_SCRAPE_BUFFER_SEC = 2
+# Match only PromQL metric selectors, leaving colons in label values untouched.
+_PROMQL_METRIC_SELECTOR = re.compile(r"[A-Za-z_:][A-Za-z0-9_:]*(?=\{)")
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +116,13 @@ class PrometheusMetricsClient(ServerMetricsClient):
         """
 
         def execute(query: str) -> float:
-            return self.execute_query(query, str(query_eval_time))
+            eval_time = str(query_eval_time)
+            result = self.execute_query(query, eval_time)
+            if result is None:
+                fallback_query = _PROMQL_METRIC_SELECTOR.sub(lambda match: match.group().replace(":", "_"), query)
+                if fallback_query != query:
+                    result = self.execute_query(fallback_query, eval_time)
+            return 0.0 if result is None else result
 
         # Iterating the metadata yields (target_field, metric) pairs; each metric owns its
         # query+parse (collect), with the container's shared label filters applied. Building the
@@ -128,7 +137,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
         collected = {field: metric.collect(execute, query_duration, filters) for field, metric in pairs}
         return ModelServerMetrics.model_validate(collected)
 
-    def execute_query(self, query: str, eval_time: str) -> float:
+    def execute_query(self, query: str, eval_time: str) -> Optional[float]:
         """
         Executes the given query on the Prometheus server and returns the result.
 
@@ -137,7 +146,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
         eval_time: the time at which the query is evaluated, used to ensure we are querying the correct time range
 
         Returns:
-        The result of the query.
+        The first query result, or None when a successful query returns no series.
         """
         query_result = 0.0
         try:
@@ -178,6 +187,9 @@ class PrometheusMetricsClient(ServerMetricsClient):
 
         data = response_obj.get("data", {})
         result = data.get("result", [])
+        if not result:
+            logger.debug(f"query '{query}' returned no series")
+            return None
         if len(result) > 0 and "value" in result[0]:
             if isinstance(result[0]["value"], list) and len(result[0]["value"]) > 1:
                 # Return the value of the first result
