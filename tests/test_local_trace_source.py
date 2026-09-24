@@ -221,6 +221,31 @@ def test_json_identity_comes_from_the_filename_not_the_slot(tmp_path: Path) -> N
     assert suffixes == ["run_a", "run_b"]
 
 
+def test_json_identity_prefers_embedded_session_id_then_trace_id(tmp_path: Path) -> None:
+    with_session = otel_trace("ignored-trace-id")
+    with_session["session_id"] = "recorded-session"
+    session_path = tmp_path / "duplicate.json"
+    session_path.write_text(json.dumps(with_session), encoding="utf-8")
+
+    trace_path = tmp_path / "other" / "duplicate.json"
+    trace_path.parent.mkdir()
+    trace_path.write_text(json.dumps(otel_trace("recorded-trace")), encoding="utf-8")
+
+    suffixes = [r.session_id_suffix for r in source_for([session_path, trace_path]).list_records()]
+
+    assert suffixes == ["recorded-session", "recorded-trace"]
+
+
+def test_jsonl_identity_prefers_each_records_embedded_id(tmp_path: Path) -> None:
+    first = otel_trace("trace-a")
+    first["session_id"] = "session-a"
+    path = write_jsonl(tmp_path / "traces.jsonl", [first, otel_trace("trace-b")])
+
+    suffixes = [r.session_id_suffix for r in source_for([path]).list_records()]
+
+    assert suffixes == ["session-a", "trace-b"]
+
+
 def test_single_record_source_id_is_the_bare_path(tmp_path: Path) -> None:
     path = write_jsonl(tmp_path / "solo.jsonl", [otel_trace()])
     assert source_for([path]).list_records()[0].source_id == str(path)

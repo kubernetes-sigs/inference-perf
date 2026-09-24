@@ -272,8 +272,8 @@ class LocalTraceSource:
         trace_format = detect_trace_format(path)
 
         if trace_format == FORMAT_OTEL_JSONL:
-            byte_ranges = _scan_jsonl_records(path, validate=self._validate_at_startup)
-            count = len(byte_ranges)
+            indexed_rows = _scan_jsonl_records(path, validate=self._validate_at_startup)
+            count = len(indexed_rows)
             if count == 0:
                 raise InvalidTraceError(f"{path}: no OTel documents found")
             multi = count > 1
@@ -282,12 +282,14 @@ class LocalTraceSource:
                     path=path,
                     trace_format=LocalTraceFormat.OTEL_JSONL,
                     row_index=row,
-                    byte_offset=byte_ranges[row][0],
-                    byte_length=byte_ranges[row][1],
+                    byte_offset=indexed_rows[row][0],
+                    byte_length=indexed_rows[row][1],
                     normalize_row_index=row if multi else None,
-                    # Mirrors _normalize_file_trace's fallback so multi-record
-                    # files cannot collide, and single-record ones stay plain.
-                    session_id_suffix=f"{path.stem}_{row}" if multi else path.stem,
+                    # Prefer an embedded identity when the row was decoded.
+                    session_id_suffix=_indexed_session_id(
+                        indexed_rows[row][2],
+                        f"{path.stem}_{row}" if multi else path.stem,
+                    ),
                     source_id=f"{path}#{row}" if multi else str(path),
                 )
                 for row in range(count)
@@ -312,20 +314,20 @@ class LocalTraceSource:
                 )
             ]
 
-        # A .json file was already parsed whole by detect_trace_format (it may be
-        # pretty-printed), and reaching here means it carried a "spans" key, so its
-        # schema is validated by construction -- no extra read needed.
+        # Prefer session_id, then trace_id, then the filename stem.
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise InvalidTraceError(f"{path}: unable to read OTel identity: {e}") from e
+        if not isinstance(document, dict):
+            raise InvalidTraceError(f"{path}: expected a trace object, got {type(document).__name__}")
         return [
             LocalTraceRecord(
                 path=path,
                 trace_format=LocalTraceFormat.OTEL_JSON,
                 row_index=None,
                 normalize_row_index=None,
-                # The stem, matching _normalize_file_trace's own fallback. The eager
-                # path used the record's embedded session_id/trace_id here, which a
-                # locator cannot see; the stem keeps scheduler ids traceable to their
-                # file instead of degrading to a bare slot number.
-                session_id_suffix=path.stem,
+                session_id_suffix=_otel_session_id(document, path.stem),
                 source_id=str(path),
             )
         ]
@@ -399,8 +401,21 @@ class LocalTraceSource:
             raise TraceReadError(f"{path}: {e}") from e
 
 
-def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int]]:
-    """Return the (byte_offset, byte_length) of every non-blank line.
+def _otel_session_id(document: Dict[str, Any], fallback: str) -> str:
+    """Return the preferred identity for a local OTel document."""
+    if "session_id" in document:
+        value = document["session_id"]
+        return str(value) if value else ""
+    trace_id = document.get("trace_id")
+    return str(trace_id) if trace_id else fallback
+
+
+def _indexed_session_id(embedded_id: Optional[str], fallback: str) -> str:
+    return embedded_id if embedded_id is not None else fallback
+
+
+def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int, Optional[str]]]:
+    """Return byte ranges and, when decoded, embedded IDs for non-blank lines.
 
     Blank lines are skipped without consuming an index, matching
     iter_otel_jsonl_traces. readline() rather than iteration, because iteration
@@ -409,7 +424,7 @@ def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int]]:
     ``validate`` also decodes and schema-checks each line, then drops it, so a bad
     record fails here instead of at dispatch; without it nothing is parsed.
     """
-    byte_ranges: List[Tuple[int, int]] = []
+    indexed_rows: List[Tuple[int, int, Optional[str]]] = []
     line_no = 0
     try:
         with path.open("rb") as stream:
@@ -427,11 +442,14 @@ def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int]]:
                     except json.JSONDecodeError as e:
                         # Physical line, so the message points where the reader will look.
                         raise InvalidTraceError(f"{path}:{line_no}: invalid JSON: {e}") from e
-                    validate_record_schema(doc, f"{path}#{len(byte_ranges)}")
-                byte_ranges.append((offset, len(line)))
+                    validate_record_schema(doc, f"{path}#{len(indexed_rows)}")
+                    embedded_id = _otel_session_id(doc, "")
+                else:
+                    embedded_id = None
+                indexed_rows.append((offset, len(line), embedded_id))
     except OSError as e:
         raise TraceReadError(f"{path}: {e}") from e
-    return byte_ranges
+    return indexed_rows
 
 
 def _validate_wire_convertible(path: Path, trace_id: str) -> None:
