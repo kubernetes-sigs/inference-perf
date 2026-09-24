@@ -56,6 +56,10 @@ class StageRuntimeInfo(BaseModel):
     # pending (never dispatched) when the stage ended.
     sessions_not_completed_active: int = 0
     sessions_not_completed_pending: int = 0
+    # The `duration` configured for this stage, when it was bounded by time instead of by
+    # session count. Compare against end_time - start_time to see whether the stage ran
+    # the full window or stopped early because the corpus ran out.
+    duration: Optional[float] = None
 
 
 class PerfRuntimeParameters:

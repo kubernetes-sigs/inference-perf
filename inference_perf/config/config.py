@@ -36,6 +36,18 @@ from inference_perf.config.redaction import REDACTED, redact, redacted_credentia
 from inference_perf.config.reportgen import ReportConfig
 from inference_perf.config.utils import CustomTokenizerConfig
 
+# Generators that replay their corpus for a duration-bounded stage instead of ending when
+# it runs out. Mirrors SessionGenerator.supports_corpus_cycling(): weka_trace_replay builds
+# every session up front and cannot rebuild a freed slot, so it is absent on purpose.
+_CORPUS_CYCLING_DATA_TYPES = frozenset({DataGenType.OTelTraceReplay, DataGenType.SyntheticAgentic})
+
+# Where each session-replay data type keeps its generator settings on DataConfig.
+_SESSION_REPLAY_CONFIG_FIELDS = {
+    DataGenType.OTelTraceReplay: "otel_trace_replay",
+    DataGenType.WekaTraceReplay: "weka_trace_replay",
+    DataGenType.SyntheticAgentic: "synthetic_agentic",
+}
+
 
 class Config(StrictBaseModel):
     # A validation error would otherwise quote the input, which holds credentials.
@@ -87,6 +99,67 @@ class Config(StrictBaseModel):
                     f"but got '{self.load.type.value}'. Trace replay with dependencies requires "
                     f"session-based load dispatch to properly handle event dependencies and timing."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_duration_bounded_replay_stage(self) -> "Config":
+        """Reject datagen settings a duration-bounded stage would silently contradict.
+
+        Such a stage replays the corpus, so duplicate sessions now arise from ``load`` too.
+        Two ``data`` settings were written when ``data`` was their only source, and neither
+        surface's validator sees both halves — only this one does.
+        """
+        if self.data.type not in _CORPUS_CYCLING_DATA_TYPES:
+            return self
+        duration_stages = [
+            stage
+            for stage in self.load.stages
+            if isinstance(stage, TraceSessionReplayLoadStage) and stage.duration is not None
+        ]
+        if not duration_stages:
+            return self
+
+        # Admission needs at least one bound. A replaying corpus is not one: the dispatch
+        # loop keeps admitting while the pool has room and the supply holds, and the supply
+        # never runs out, so with no concurrency cap and no rate the loop only stops at the
+        # deadline — starting sessions as fast as they can be built for the whole window.
+        for stage in duration_stages:
+            if stage.concurrent_sessions == 0 and stage.session_rate is None:
+                raise ValueError(
+                    "concurrent_sessions: 0 cannot be combined with a duration-bounded "
+                    f"'{self.data.type.value}' stage unless session_rate is set: 0 means start every "
+                    "session at once, which has no meaning for a corpus that replays for as long as "
+                    "the stage runs - there is no last session to start. Nothing would then limit how "
+                    "many sessions the stage opens, so it would keep building them until the deadline "
+                    "or until it ran out of memory. Set concurrent_sessions to the pool size you want "
+                    "to hold open, or set session_rate to bound how fast sessions start."
+                )
+
+        replay_config = getattr(self.data, _SESSION_REPLAY_CONFIG_FIELDS[self.data.type], None)
+        if replay_config is None:
+            return self
+
+        if getattr(replay_config, "duplicate_sessions_target", None) is not None:
+            raise ValueError(
+                "duplicate_sessions_target cannot be combined with a duration-bounded "
+                f"'{self.data.type.value}' stage: such a stage replays the corpus itself once it is "
+                "exhausted, numbering each replay per source session, while "
+                "duplicate_sessions_target numbers its copies with a single running counter. The "
+                "two independently mint the same '_dupN' session ID, and session state, completion "
+                "tracking and cleanup are all keyed by that ID. Remove duplicate_sessions_target: a "
+                "duration-bounded stage no longer needs the corpus padded by hand."
+            )
+
+        if getattr(replay_config, "disable_output_substitution", False):
+            raise ValueError(
+                "disable_output_substitution=True cannot be combined with a duration-bounded "
+                f"'{self.data.type.value}' stage: such a stage replays the corpus once it is "
+                "exhausted, and a replayed session triggers random session-ID injection, which "
+                "substitutes live predecessor output into output/shared segments — the opposite of "
+                "replaying recorded outputs as-is. Bound the stage by num_sessions to replay "
+                "recorded outputs, or set disable_output_substitution=False to allow substitution."
+            )
+
         return self
 
 

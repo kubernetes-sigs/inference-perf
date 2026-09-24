@@ -117,6 +117,14 @@ class SessionLifecycleMetric(BaseModel):
     num_events: int
     num_events_completed: int
     num_events_cancelled: Optional[int] = None
+    # True when the stage boundary (its configured duration, or a timeout or
+    # interrupt) cut this session short before its graph finished. The event and
+    # token counts are real, but the duration is an artifact of where the boundary
+    # fell, so summarize_sessions keeps a truncated session out of the
+    # success/failure counts and the duration percentiles and reports it under
+    # num_sessions_truncated instead. The requests it did complete still count in
+    # the request-level metrics.
+    truncated: bool = False
     # Per-session count of events whose live tool_call response was
     # detected malformed and replaced with the recorded assistant
     # message at substitution time. None when bad_tool_call_handling

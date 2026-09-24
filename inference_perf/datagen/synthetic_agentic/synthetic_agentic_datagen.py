@@ -2319,6 +2319,15 @@ class SyntheticAgenticDataGenerator(ReplayGraphSessionGeneratorBase):
         rng = child_rng(session_seed(self.synthetic_config.seed, session_index), 999)
         return self._themes[names[int(rng.choice(len(names), p=weights))]]
 
+    def _cycled_session_id(self, session_index: int, source_slot: int, play: int) -> str:
+        """A further index is a new session here, not a replay of an earlier one.
+
+        Sessions are generated from the index, so _build_session already produces distinct
+        content under the name `synthN{index}`; matching it keeps the id tables and the built
+        session in agreement. No `_dup` marker: there is no shared prefix to invalidate.
+        """
+        return f"synthN{session_index}"
+
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         theme = self._pick_theme(session_index)
         # The graph builder sizes every turn against the tokenizer (input/output token
