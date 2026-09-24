@@ -20,8 +20,15 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SyntheticMultimodalDatagenConfig
+from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    Distribution,
+    DistributionType,
+    SyntheticMultimodalDatagenConfig,
+)
 from inference_perf.datagen.multimodal_sampling import (
     resolution_to_wh,
     sample_audio_duration,
@@ -108,6 +115,19 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
         question_dist = self._resolve_distribution(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
         output_dist = self._resolve_distribution(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
+
+        if self.enable_multi_turn_chat:
+            if output_dist.type == DistributionType.FIXED:
+                output_ceiling, ceiling_desc = int(output_dist.mean), "output_len.mean"
+            else:
+                output_ceiling, ceiling_desc = output_dist.max, "output_len.max"
+
+            if output_ceiling + PROMPT_TOKEN_BUFFER >= self.max_model_len:
+                raise ValueError(
+                    f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within max_model_len "
+                    f"({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. "
+                    f"Lower it below {self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
+                )
 
         # Generate per-group system prompt lengths
         self.system_prompt_lens_per_group: List[int] = sample_from_distribution(

@@ -105,6 +105,24 @@ async def test_shared_prefix_multimodal_request_body_has_both_images() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shared_prefix_text_boundary_does_not_duplicate_decoded_whitespace() -> None:
+    """The chat separator must respect whitespace already present in the suffix."""
+    generator = _build_generator()
+    api_data = generator.load_lazy_data(cast(LazyLoadInferenceAPIData, next(generator.get_data())))
+    assert isinstance(api_data, ChatCompletionAPIData)
+    assert api_data.prefix_text is not None
+
+    # Keep the prefix-side image to exercise the multimodal path, and use a
+    # tokenizer-style leading-space suffix in the text-only payload.
+    api_data.messages[0].content = " QUESTION"
+    api_data.multimodal_spec = None
+    payload = await api_data.to_request_body(effective_model_name="test", max_tokens=10, ignore_eos=False, streaming=False)
+
+    text_blocks = [block["text"] for block in payload["messages"][0]["content"] if block.get("type") == "text"]
+    assert text_blocks == [api_data.prefix_text + " QUESTION"]
+
+
+@pytest.mark.asyncio
 async def test_shared_prefix_multimodal_prefix_bytes_stable_across_requests() -> None:
     """Prefix-side bytes must be identical across requests in the same group
     (server prefix-cache hits depend on this)."""

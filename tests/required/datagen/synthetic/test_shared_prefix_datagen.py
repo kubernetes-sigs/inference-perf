@@ -460,6 +460,16 @@ async def test_multiturn_preserves_whitespace_suffix_tokens(suffix_ids: list[int
         body = await data.to_request_body("model", 1, False, False)
         assert body["prompt"] == generator.prompts[0]
         assert hf_tokenizer.encode(body["prompt"]) == [1, *suffix_ids]
+
+        response_text = " RESPONSE"
+        prior_prompt_and_response = body["prompt"] + response_text
+        data.user_session.update_context(prior_prompt_and_response)
+
+        next_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
+        assert isinstance(next_data, UserSessionCompletionAPIData)
+        next_body = await next_data.to_request_body("model", 1, False, False)
+        assert next_body["prompt"].startswith(prior_prompt_and_response)
+        assert next_body["prompt"] == prior_prompt_and_response + suffix_text
     finally:
         LocalUserSession.clear_instances()
 
@@ -555,7 +565,8 @@ async def test_multiturn_generators_keep_materialized_sessions_isolated() -> Non
         assert first_a.user_session is not first_b.user_session
 
         await first_a.to_request_body("model", 64, False, False)
-        first_a.user_session.update_context(first_a.prompt + " GENERATOR A HISTORY")
+        prior_prompt_and_response = first_a.prompt + " GENERATOR A HISTORY"
+        first_a.user_session.update_context(prior_prompt_and_response)
 
         second_a = generator_a.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
         second_b = generator_b.load_lazy_data(LazyLoadInferenceAPIData(data_index=1, preferred_worker_id=0))
@@ -564,10 +575,25 @@ async def test_multiturn_generators_keep_materialized_sessions_isolated() -> Non
 
         body_a = await second_a.to_request_body("model", 64, False, False)
         body_b = await second_b.to_request_body("model", 64, False, False)
-        assert body_a["prompt"] == "PREFIX ::QUESTION GENERATOR A HISTORY ::QUESTION"
+        assert body_a["prompt"].startswith(prior_prompt_and_response)
+        assert body_a["prompt"] == prior_prompt_and_response + " ::QUESTION"
         assert body_b["prompt"] == "PREFIX::QUESTION"
     finally:
         LocalUserSession.clear_instances()
+
+
+def test_multiturn_output_len_leaving_no_prompt_budget_is_rejected() -> None:
+    """Reject a context ceiling that cannot fit output and the safety buffer."""
+    with pytest.raises(ValueError, match="leaves no room for a prompt"):
+        _make_generator(
+            SharedPrefix(
+                num_groups=1,
+                num_prompts_per_group=1,
+                output_len=100,
+                max_model_len=300,
+                enable_multi_turn_chat=True,
+            )
+        )
 
 
 @pytest.mark.asyncio

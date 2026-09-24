@@ -102,33 +102,38 @@ class LocalUserSession:
 
     def update_context(self, response: str) -> None:
         if self._accumulates_history and self.tokenizer and self.max_model_len:
-            history_context = " ".join(self.history) if self.history else ""
+            history_context = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
             base_len = len(self.system_prompt)
             if history_context:
-                base_len += len(history_context) + 1
-            turn_content = response[base_len:].strip()
+                base_len += len(history_context) if self._preserves_initial_prompt_boundary else len(history_context) + 1
+            turn_content = response[base_len:]
+            if not self._preserves_initial_prompt_boundary:
+                turn_content = turn_content.strip()
             if turn_content:
                 self.history.append(turn_content)
 
-            history_str = " ".join(self.history)
+            history_str = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
             system_tokens = self.tokenizer.count_tokens(self.system_prompt)
             history_tokens = self.tokenizer.count_tokens(history_str)
 
             if system_tokens + history_tokens > self.max_model_len:
                 while self.history:
-                    history_str = " ".join(self.history)
+                    history_str = "".join(self.history) if self._preserves_initial_prompt_boundary else " ".join(self.history)
                     history_tokens = self.tokenizer.count_tokens(history_str)
                     if system_tokens + history_tokens <= self.max_model_len:
                         break
                     self.history.pop(0)
 
-            self.context = (
-                self.system_prompt + " " + " ".join(self.history)
-                if self.history and self.system_prompt
-                else " ".join(self.history)
-                if self.history
-                else self.system_prompt
-            )
+            if self._preserves_initial_prompt_boundary:
+                self.context = self.system_prompt + "".join(self.history)
+            else:
+                self.context = (
+                    self.system_prompt + " " + " ".join(self.history)
+                    if self.history and self.system_prompt
+                    else " ".join(self.history)
+                    if self.history
+                    else self.system_prompt
+                )
         else:
             self.context = response
 
@@ -192,20 +197,24 @@ class UserSessionCompletionAPIData(CompletionAPIData):
             current_prompt = self.prompt
 
             def get_text(sys: str, hist: list[str], curr: str) -> str:
-                result = sys
-                history_text = " ".join(hist)
-                if history_text:
-                    for part in (history_text, curr):
-                        if not part:
-                            continue
-                        if result and not result[-1].isspace() and not part[0].isspace():
-                            result += " "
-                        result += part
-                elif curr and self.user_session._preserves_initial_prompt_boundary:
-                    # The first turn retains the tokenizer-specific boundary
-                    # from the original prefix+suffix joint decode.
-                    result += curr
-                elif curr:
+                if not self.user_session._preserves_initial_prompt_boundary:
+                    parts = []
+                    if sys:
+                        parts.append(sys)
+                    if hist:
+                        parts.append(" ".join(hist))
+                    if curr:
+                        parts.append(curr)
+                    return " ".join(parts)
+
+                # Shared-prefix questions are decoded from prefix + question
+                # token IDs. Keep that exact first boundary in history so every
+                # later request starts with the prior prompt and response.
+                history_text = "".join(hist)
+                result = sys + history_text
+                if curr:
+                    if not history_text:
+                        return result + curr
                     if result and not result[-1].isspace() and not curr[0].isspace():
                         result += " "
                     result += curr

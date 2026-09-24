@@ -153,6 +153,23 @@ class TestConversationReplayDataGenerator:
         body = await result.to_request_body("model", 64, False, False)
         assert body["prompt"] == "SYSTEM TURN"
 
+    @pytest.mark.asyncio
+    async def test_first_request_keeps_legacy_separator_before_leading_space(self) -> None:
+        """A tokenizer-decoded leading space remains in addition to the old separator."""
+        api_config, data_config = _make_config(num_conversations=1)
+        tokenizer = _make_mock_tokenizer()
+        tokenizer.get_tokenizer().encode.side_effect = lambda text: list(range(len(text)))
+        gen = ConversationReplayDataGenerator(api_config, data_config, tokenizer)
+
+        result = gen.load_lazy_data(LazyLoadInferenceAPIData(data_index=0, preferred_worker_id=0))
+        assert isinstance(result, _ConversationReplayAPIData)
+        result.user_session.system_prompt = "SYSTEM"
+        result.user_session.context = "SYSTEM"
+        result.prompt = " TURN"
+
+        body = await result.to_request_body("model", 64, False, False)
+        assert body["prompt"] == "SYSTEM  TURN"
+
     def test_turn_recycling(self) -> None:
         """When data_index exceeds total turns, it wraps around."""
         api_config, data_config = _make_config(num_conversations=2, turns_min=3, turns_max=3, turns_mean=3)
