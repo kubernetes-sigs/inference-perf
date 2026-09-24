@@ -35,6 +35,9 @@ class PrometheusMetricsClient(ServerMetricsClient):
             self.query_url = config.url.unicode_string().rstrip("/") + "/api/v1/query"
             logger.debug(f"Prometheus metrics client configured, querying metrics from '{self.query_url}'")
             self.scrape_interval = config.scrape_interval or 30
+            self.bearer_token = config.bearer_token.get_secret_value() if config.bearer_token else None
+            self.verify_ssl = config.verify_ssl
+            self.extra_headers = dict(config.headers) if config.headers else {}
         else:
             raise Exception("prometheus config missing")
 
@@ -151,7 +154,9 @@ class PrometheusMetricsClient(ServerMetricsClient):
         query_result = 0.0
         try:
             logger.debug(f"making PromQL query: '{query}'")
-            response = requests.get(self.query_url, headers=self.get_headers(), params={"query": query, "time": eval_time})
+            response = requests.get(
+                self.query_url, headers=self.get_headers(), params={"query": query, "time": eval_time}, verify=self.verify_ssl
+            )
             if response is None:
                 logger.error("error executing query: %s" % (query))
                 return query_result
@@ -207,4 +212,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
         return query_result
 
     def get_headers(self) -> dict[str, Any]:
-        return {}
+        headers: dict[str, Any] = dict(self.extra_headers)
+        if self.bearer_token and "authorization" not in {str(k).lower() for k in headers}:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        return headers

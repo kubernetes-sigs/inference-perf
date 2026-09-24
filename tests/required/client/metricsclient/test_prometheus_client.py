@@ -239,3 +239,73 @@ def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
     with patch.object(PrometheusMetricsClient, "execute_query", return_value=1.0):
         with pytest.raises(ValidationError):
             client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+
+def test_get_headers_empty_by_default() -> None:
+    """Regression: without auth config the client sends no auth headers (existing behavior)."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    assert client.get_headers() == {}
+    assert client.verify_ssl is True
+
+
+def test_get_headers_with_bearer_token() -> None:
+    """The original failing scenario from #810/#816: auth-gated Prometheus needs a bearer token."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090", bearer_token="prom-token"))
+    assert client.get_headers() == {"Authorization": "Bearer prom-token"}
+
+
+def test_get_headers_merges_custom_headers() -> None:
+    client = PrometheusMetricsClient(
+        PrometheusClientConfig(url="http://localhost:9090", bearer_token="prom-token", headers={"X-Scope-OrgID": "team-a"})
+    )
+    assert client.get_headers() == {"X-Scope-OrgID": "team-a", "Authorization": "Bearer prom-token"}
+
+
+def test_get_headers_explicit_authorization_wins() -> None:
+    """Edge case: an explicit Authorization header is never overwritten by bearer_token."""
+    client = PrometheusMetricsClient(
+        PrometheusClientConfig(
+            url="http://localhost:9090",
+            bearer_token="prom-token",
+            headers={"Authorization": "Bearer explicit"},
+        )
+    )
+    assert client.get_headers() == {"Authorization": "Bearer explicit"}
+
+
+def test_get_headers_explicit_authorization_wins_case_insensitive() -> None:
+    """Edge case: the precedence check is case-insensitive, like HTTP header names."""
+    client = PrometheusMetricsClient(
+        PrometheusClientConfig(
+            url="http://localhost:9090",
+            bearer_token="prom-token",
+            headers={"authorization": "Bearer explicit"},
+        )
+    )
+    assert client.get_headers() == {"authorization": "Bearer explicit"}
+
+
+def test_execute_query_sends_auth_headers_and_verify() -> None:
+    """execute_query forwards the auth headers and the TLS verify flag to requests."""
+    client = PrometheusMetricsClient(
+        PrometheusClientConfig(url="http://localhost:9090", bearer_token="prom-token", verify_ssl=False)
+    )
+    response = Mock()
+    response.json.return_value = {"status": "success", "data": {"result": [{"metric": {}, "value": [100, "42"]}]}}
+    with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get", return_value=response) as mock_get:
+        assert client.execute_query("up{}", "100") == 42.0
+    _, kwargs = mock_get.call_args
+    assert kwargs["headers"] == {"Authorization": "Bearer prom-token"}
+    assert kwargs["verify"] is False
+
+
+def test_execute_query_verifies_tls_by_default() -> None:
+    """Regression: TLS verification stays enabled unless explicitly disabled."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    response = Mock()
+    response.json.return_value = {"status": "success", "data": {"result": [{"metric": {}, "value": [100, "1"]}]}}
+    with patch("inference_perf.client.server_metrics.prometheus_client.base.requests.get", return_value=response) as mock_get:
+        client.execute_query("up{}", "100")
+    _, kwargs = mock_get.call_args
+    assert kwargs["verify"] is True
+    assert kwargs["headers"] == {}

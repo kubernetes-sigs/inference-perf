@@ -379,7 +379,7 @@ tokenizer:
 
 ### Credentials
 
-A config can carry a credential in three places: `server.api_key`, `tokenizer.token`, and an authentication header under `api.headers`.
+A config can carry a credential in five places: `server.api_key`, `tokenizer.token`, an authentication header under `api.headers`, `metrics.prometheus.bearer_token`, and an authentication header under `metrics.prometheus.headers`.
 
 A run renders its config twice, to the log at startup and to `config.yaml` in the report bundle. Both copies replace these values with `[REDACTED]`, so pod logs and reports uploaded to GCS or S3 do not carry keys. The requests themselves still use the real values.
 

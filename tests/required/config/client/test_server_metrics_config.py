@@ -37,3 +37,27 @@ def test_both_url_and_google_managed_is_error() -> None:
 def test_neither_url_nor_google_managed_is_error() -> None:
     with pytest.raises(ValueError, match="Exactly one of 'url' or 'google_managed' must be set"):
         PrometheusClientConfig(google_managed=False)
+
+
+def test_auth_defaults_preserve_existing_behavior() -> None:
+    """Regression: no token, TLS verified, no extra headers unless configured."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    assert config.bearer_token is None
+    assert config.verify_ssl is True
+    assert config.headers is None
+
+
+def test_bearer_token_accepted() -> None:
+    config = PrometheusClientConfig(url="http://localhost:9090", bearer_token="prom-token")
+    assert config.bearer_token is not None
+    assert config.bearer_token.get_secret_value() == "prom-token"
+
+
+def test_verify_ssl_can_be_disabled() -> None:
+    config = PrometheusClientConfig(url="http://localhost:9090", verify_ssl=False)
+    assert config.verify_ssl is False
+
+
+def test_custom_headers_accepted() -> None:
+    config = PrometheusClientConfig(url="http://localhost:9090", headers={"X-Scope-OrgID": "team-a"})
+    assert config.headers == {"X-Scope-OrgID": "team-a"}

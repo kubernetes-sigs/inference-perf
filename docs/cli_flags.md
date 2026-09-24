@@ -369,6 +369,9 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--metrics.prometheus.url` | string | URL of the Prometheus server to query. |
 | `--metrics.prometheus.filters` | JSON | PromQL label matchers (e.g. 'namespace="default"') applied to every metric query. |
 | `--metrics.prometheus.google_managed` | boolean | Query Google Cloud Managed Service for Prometheus instead of a self-hosted server. |
+| `--metrics.prometheus.bearer_token` | str | Bearer token sent as an Authorization header with every Prometheus query. Redacted in the logged and saved config. |
+| `--metrics.prometheus.verify_ssl` | boolean | Verify the Prometheus server's TLS certificate. Disable for self-signed certificates. |
+| `--metrics.prometheus.headers` | JSON | Additional HTTP headers to send with every Prometheus query. |
 | `--report.request_lifecycle.summary` | boolean | Generate a summary report across the whole run. |
 | `--report.request_lifecycle.per_stage` | boolean | Generate a report for each load stage. |
 | `--report.request_lifecycle.per_request` | boolean | Generate a report with per-request details. |
