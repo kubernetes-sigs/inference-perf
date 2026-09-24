@@ -523,7 +523,7 @@ class Predicate:
             raise ValueError(f"Predicate {self.raw!r} never holds for t >= 0.")
         if not isinstance(holding, Interval) or holding.sup != oo:
             raise ValueError(
-                f"Predicate {self.raw!r} holds only on {holding}; a stop condition must hold from some time onward "
+                f"Predicate {self.raw!r} holds only on {_format_time_set(holding)}; a stop condition must hold from some time onward "
                 f"without lapsing, e.g. 't >= 60'."
             )
         if holding.inf == 0:
@@ -600,6 +600,25 @@ _PREDICATE_NODES: tuple[type, ...] = (
     sympy.Min,
     sympy.Max,
 )
+
+
+def _format_time_set(s: Any) -> str:
+    """Render a solved set of times in interval notation, e.g. ``[0, 60)`` or ``[0, 30) or [60, infinity)``.
+
+    sympy's own repr (``Interval.Ropen(0, 60)``) is exact but reads as code in
+    a config error.
+    """
+    if isinstance(s, sympy.Union):
+        return " or ".join(_format_time_set(part) for part in s.args)
+    if isinstance(s, Interval):
+
+        def end(x: Any) -> str:
+            if x == oo:
+                return "infinity"
+            return str(x) if x.is_Integer else format(float(x), "g")
+
+        return f"{'(' if s.left_open else '['}{end(s.inf)}, {end(s.sup)}{')' if s.right_open else ']'}"
+    return str(s)
 
 
 def _equality_message(raw: str) -> str:
