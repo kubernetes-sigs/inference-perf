@@ -101,14 +101,14 @@ class TestRejectedShapes:
         with pytest.raises(ValueError, match="uses equality"):
             Predicate(raw)
 
-    # 't < 60' is already true at t=0 and lapses at 60; rejected as holding only on [0, 60).
+    # 't < 60' is already true at t=0 and lapses at 60; rejected as holding only on [0, 60), in interval notation.
     def test_lapsing_condition(self) -> None:
-        with pytest.raises(ValueError, match="holds only on Interval.Ropen\\(0, 60\\)"):
+        with pytest.raises(ValueError, match=r"holds only on \[0, 60\);"):
             Predicate("t < 60")
 
     # '(t >= 60) & (t < 120)' is a window; rejected as holding only on [60, 120).
     def test_window(self) -> None:
-        with pytest.raises(ValueError, match="holds only on Interval.Ropen\\(60, 120\\)"):
+        with pytest.raises(ValueError, match=r"holds only on \[60, 120\);"):
             Predicate("(t >= 60) & (t < 120)")
 
     # 't >= 0', 't > 0' and 't >= -5' all hold from the start; each is rejected as already holding at t=0.
@@ -116,6 +116,16 @@ class TestRejectedShapes:
     def test_already_holding_at_start(self, raw: str) -> None:
         with pytest.raises(ValueError, match="already holds at"):
             Predicate(raw)
+
+    # '(t < 30) | (t >= 60)' is true, lapses, then holds again; rejected naming both pieces: '[0, 30) or [60, infinity)'.
+    def test_lapsing_then_holding_again(self) -> None:
+        with pytest.raises(ValueError, match=r"holds only on \[0, 30\) or \[60, infinity\);"):
+            Predicate("(t < 30) | (t >= 60)")
+
+    # '(t > 60.5) & (t <= 90)' has open and fractional ends; rejected as holding only on (60.5, 90].
+    def test_window_with_open_fractional_end(self) -> None:
+        with pytest.raises(ValueError, match=r"holds only on \(60\.5, 90\];"):
+            Predicate("(t > 60.5) & (t <= 90)")
 
     # 't < -5' is never true for t >= 0; rejected as never holding.
     def test_never_holds(self) -> None:
