@@ -20,8 +20,10 @@ each accepted shape compiles to, and the message for each rejected shape.
 """
 
 import pytest
+from sympy import Interval, oo
 
 from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.expression import expression as expression_module
 
 
 class TestAccepted:
@@ -50,6 +52,24 @@ class TestAccepted:
         assert Predicate("2*t + 1 >= 121").boundary == 60.0
         assert Predicate("t**2 >= 3600").boundary == 60.0
 
+    # Every allowed non-polynomial node solves to the boundary it should:
+    # exp(t) >= 100 -> ln(100), log(t) >= 3 -> e**3, sqrt(t) >= 5 -> 25, 1/t <= 0.1 -> 10,
+    # 2**t >= 1024 -> 10, Max(t, 10) >= 60 -> 60, Min(t, 100) >= 60 -> 60.
+    @pytest.mark.parametrize(
+        "raw, boundary",
+        [
+            ("exp(t) >= 100", 4.605170185988092),
+            ("log(t) >= 3", 20.085536923187668),
+            ("sqrt(t) >= 5", 25.0),
+            ("1/t <= 0.1", 10.0),
+            ("2**t >= 1024", 10.0),
+            ("Max(t, 10) >= 60", 60.0),
+            ("Min(t, 100) >= 60", 60.0),
+        ],
+    )
+    def test_allowed_non_polynomial_nodes(self, raw: str, boundary: float) -> None:
+        assert Predicate(raw).boundary == pytest.approx(boundary)
+
     # '(t >= 60) | (t >= 30)' holds from whichever comes first: boundary 30.0, true at t=45.
     def test_or_takes_earliest(self) -> None:
         p = Predicate("(t >= 60) | (t >= 30)")
@@ -74,15 +94,12 @@ class TestAccepted:
 
 
 class TestRejectedShapes:
-    # 'Eq(t, 60)' holds only at the single instant t=60, which a discrete check can skip; rejected naming {60}.
-    def test_equality_single_instant(self) -> None:
-        with pytest.raises(ValueError, match=r"holds only on \{60\}"):
-            Predicate("Eq(t, 60)")
-
-    # 't == 60' is Python structural equality and parses to a constant False; rejected with the '==' hint.
-    def test_python_double_equals(self) -> None:
-        with pytest.raises(ValueError, match="'==' compares structure"):
-            Predicate("t == 60")
+    # Equality holds at a single instant a discrete check can step over. All five spellings,
+    # 't = 60', 't == 60', 't != 60', 'Eq(t, 60)' and 'Ne(t, 60)', get the same "uses equality" error.
+    @pytest.mark.parametrize("raw", ["t = 60", "t == 60", "t != 60", "Eq(t, 60)", "Ne(t, 60)"])
+    def test_equality_in_any_spelling(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="uses equality"):
+            Predicate(raw)
 
     # 't < 60' is already true at t=0 and lapses at 60; rejected as holding only on [0, 60).
     def test_lapsing_condition(self) -> None:
@@ -93,11 +110,6 @@ class TestRejectedShapes:
     def test_window(self) -> None:
         with pytest.raises(ValueError, match="holds only on Interval.Ropen\\(60, 120\\)"):
             Predicate("(t >= 60) & (t < 120)")
-
-    # 'Ne(t, 60)' holds everywhere except one instant; rejected because the holding set is a Union, not [b, oo).
-    def test_not_equal(self) -> None:
-        with pytest.raises(ValueError, match="holds only on Union"):
-            Predicate("Ne(t, 60)")
 
     # 't >= 0', 't > 0' and 't >= -5' all hold from the start; each is rejected as already holding at t=0.
     @pytest.mark.parametrize("raw", ["t >= 0", "t > 0", "t >= -5"])
@@ -110,11 +122,31 @@ class TestRejectedShapes:
         with pytest.raises(ValueError, match="never holds"):
             Predicate("t < -5")
 
-    # 'sin(t) > 0' and 'exp(t) >= 10' are not polynomial in t, so the solver is not trusted; both rejected as unprovable.
-    @pytest.mark.parametrize("raw", ["sin(t) > 0", "exp(t) >= 10"])
-    def test_non_polynomial_not_proved(self, raw: str) -> None:
-        with pytest.raises(ValueError, match="could not be proved"):
+    # 'Min(t, 50) >= 60' caps at 50 so it is never true; rejected as never holding.
+    def test_capped_never_holds(self) -> None:
+        with pytest.raises(ValueError, match="never holds"):
+            Predicate("Min(t, 50) >= 60")
+
+    # A solver that answers wrongly is caught by direct evaluation: with the solved set forced to [30, oo)
+    # for 't >= 60', t=45 evaluates False inside the claimed set, so the condition is rejected.
+    def test_wrong_solver_answer_is_caught(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(expression_module, "_holding_set", lambda expr: Interval(30, oo))
+        with pytest.raises(ValueError, match="disagrees with direct evaluation"):
+            Predicate("t >= 60")
+
+
+class TestRejectedNodes:
+    # 'sin(t) > 0' (solver returns only (0, pi)), 'Abs(t - 30) >= 60' (solver wrong on nested Abs) and
+    # 'floor(t) >= 60' (unsolvable) use nodes outside the allowlist; each is rejected naming the node.
+    @pytest.mark.parametrize("raw, node", [("sin(t) > 0", "sin"), ("Abs(t - 30) >= 60", "Abs"), ("floor(t) >= 60", "floor")])
+    def test_node_outside_allowlist(self, raw: str, node: str) -> None:
+        with pytest.raises(ValueError, match=f"uses '{node}', which is not allowed"):
             Predicate(raw)
+
+    # 't**t >= 5' has t in both base and exponent; rejected by the power rule. '2**t' (constant base) is accepted above.
+    def test_power_with_t_in_base_and_exponent(self) -> None:
+        with pytest.raises(ValueError, match="a power needs a constant exponent or a positive constant base"):
+            Predicate("t**t >= 5")
 
 
 class TestRejectedInputs:
