@@ -118,6 +118,65 @@ def test_trace_session_replay_stage_max_stage_duration_must_be_positive() -> Non
         TraceSessionReplayLoadStage(concurrent_sessions=2, max_stage_duration=0)
 
 
+def test_trace_session_replay_stage_duration_defaults_to_none() -> None:
+    assert TraceSessionReplayLoadStage(concurrent_sessions=2).duration is None
+
+
+def test_trace_session_replay_stage_duration_alone_is_valid() -> None:
+    # max_stage_duration is optional: duration on its own bounds load generation, and the
+    # teardown grace bounds the wind-down that follows.
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800)
+    assert stage.duration == 1800
+    assert stage.max_stage_duration is None
+
+
+def test_trace_session_replay_stage_duration_shorter_than_max_stage_duration_is_valid() -> None:
+    stage = TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, max_stage_duration=2100)
+    assert stage.duration == 1800
+    assert stage.max_stage_duration == 2100
+
+
+def test_trace_session_replay_stage_duration_cannot_exceed_max_stage_duration() -> None:
+    # max_stage_duration would fire before the planned stop, reporting FAILED for a run that
+    # asked to end.
+    with pytest.raises(ValueError, match="must be shorter than max_stage_duration"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, max_stage_duration=1800)
+
+
+def test_trace_session_replay_stage_duration_cannot_equal_max_stage_duration() -> None:
+    # Equal is not shorter: the two deadlines coincide and the failure path wins.
+    with pytest.raises(ValueError, match="must be shorter than max_stage_duration"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, max_stage_duration=1800)
+
+
+def test_trace_session_replay_stage_duration_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0)
+
+
+def test_trace_session_replay_stage_duration_and_num_sessions_are_exclusive() -> None:
+    """Two stop conditions race, and a count-based win misreports the time window.
+
+    The message has to say that, and not that duration "draws sessions for as long as it
+    takes": only a cycling generator can do that, so the reason has to hold for every
+    generator. Asserted on the wording because the wording is the whole point of the
+    error -- it is what tells a user which field to remove and why.
+    """
+    with pytest.raises(ValueError, match="whichever stop condition is reached first ends the stage"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=1800, num_sessions=100)
+
+
+def test_trace_session_replay_stage_duration_checked_against_deprecated_timeout() -> None:
+    """The cap is still honoured under its old name, so the gap check cannot be bypassed.
+
+    #786 renamed the field and kept `timeout` working, so a config written before that
+    rename must still be rejected for leaving no gap -- otherwise the safety net fires
+    first and every duration-bounded run reports FAILED.
+    """
+    with pytest.raises(ValueError, match="must be shorter than timeout"):
+        TraceSessionReplayLoadStage(concurrent_sessions=4, duration=2100, timeout=1800)
+
+
 # --- LoadConfig cross-stage validation -----------------------------------
 
 
