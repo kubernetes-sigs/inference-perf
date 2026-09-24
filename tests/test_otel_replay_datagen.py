@@ -33,9 +33,11 @@ Key architectural principles tested:
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import multiprocessing as mp
 import sys
+import weakref
 from pathlib import Path
 from typing import Any, List, Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -1581,7 +1583,255 @@ def _make_generator(
     gen._session_events = {}
     gen.all_events = []
     gen._skipped_session_count = 0
+    # Corpus-cycling state normally set in __init__, which this helper bypasses.
+    gen._corpus_cycling_enabled = False
+    gen._corpus_session_count = 0
+    gen._cycle_base_ids = []
+    gen._cycle_logged = False
     return gen
+
+
+class TestCorpusCycling:
+    """Resolving session indices past the loaded corpus, for a duration-bounded stage.
+
+    A stage bounded by time keeps drawing sessions until its deadline, so it asks for
+    indices the corpus does not have. Resolution is pure arithmetic on the index over state
+    fixed before workers fork, which is what lets the parent and every worker agree on what
+    an index means without talking to each other.
+    """
+
+    def _cycling_generator(self, count: int = 3) -> Any:
+        """A minimal lazy generator: slot -> a record it can rebuild from at any time.
+
+        Stands in for otel_trace_replay and synthetic_agentic. The one thing that matters
+        for cycling is that _build_session works from a retained record rather than from a
+        previously built session, so a replay needs nothing kept alive between plays.
+        """
+        gen = _make_generator(replay_config=SessionReplayConfig())
+        records = {i: _make_simple_graph() for i in range(count)}
+
+        def build(session_index: int) -> ReplaySession:
+            slot = session_index % count
+            return ReplaySession(
+                session_id=gen._session_ids[session_index],
+                source_id=f"src{slot}",
+                session_index=session_index,
+                graph=records[slot],
+            )
+
+        gen._build_session = build  # type: ignore[method-assign]
+        gen.initialize_sessions_lazy([f"t{i}" for i in range(count)])
+        return gen
+
+    def test_index_past_the_corpus_resolves_to_a_replay(self) -> None:
+        """index -> (index % corpus) played (index // corpus) times."""
+        gen = self._cycling_generator(count=3)
+        assert gen.supports_corpus_cycling() is True
+
+        gen._register_cycled_slots(7)
+
+        assert gen._session_ids[3] == "t0_dup1"
+        assert gen._session_ids[4] == "t1_dup1"
+        assert gen._session_ids[6] == "t0_dup2"
+        assert gen._session_ids[7] == "t1_dup2"
+
+    def test_replay_ids_are_registered_for_lookup(self) -> None:
+        """build_session_metric resolves a session id back to its index, so the map must grow too."""
+        gen = self._cycling_generator(count=2)
+        gen._register_cycled_slots(3)
+
+        assert gen._session_id_to_index["t0_dup1"] == 2
+        assert gen._session_id_to_index["t1_dup1"] == 3
+
+    def test_a_replay_is_built_from_its_source_slot(self) -> None:
+        """A replay is rebuilt from the source record, not copied from a live session."""
+        gen = self._cycling_generator(count=2)
+
+        # _ensure_session_built is the real entry point: it registers the slot, then builds.
+        gen._ensure_session_built(0)
+        source_graph = gen.sessions[0].graph
+        gen._ensure_session_built(2)
+        replay = gen.sessions[2]
+
+        assert replay is not None
+        assert replay.session_id == "t0_dup1"
+        assert replay.graph is source_graph
+
+    def test_a_replay_does_not_need_its_source_kept_alive(self) -> None:
+        """Nothing is retained between plays, so the corpus does not grow with the run.
+
+        The parent frees each session as it completes. A replay asked for afterwards has to
+        come from the source record -- which is why only the lazy path can cycle.
+        """
+        gen = self._cycling_generator(count=2)
+        gen._ensure_session_built(0)
+        gen.cleanup_session("t0")
+        assert gen.sessions[0] is None, "precondition: the source slot has been freed"
+
+        gen._ensure_session_built(2)
+
+        assert gen.sessions[2] is not None
+
+    def test_session_info_resolves_a_replay_index_on_its_own(self) -> None:
+        """The public accessors must not depend on another call having run first.
+
+        The dispatcher happens to call is_session_buildable() before get_session_info(),
+        and that call grows the index tables as a side effect. Asking for the info first is
+        the same request in a different order, so it has to give the same answer rather than
+        an IndexError.
+        """
+        gen = self._cycling_generator(count=3)
+
+        info = gen.get_session_info(4)
+
+        assert info["session_id"] == "t1_dup1"
+        assert info["session_index"] == 4
+
+    def test_registration_is_idempotent(self) -> None:
+        """Called on every dispatch, and independently in each worker, so it must not double up."""
+        gen = self._cycling_generator(count=3)
+        gen._register_cycled_slots(5)
+        first = list(gen._session_ids)
+
+        gen._register_cycled_slots(5)
+        gen._register_cycled_slots(2)
+
+        assert gen._session_ids == first
+
+    def test_raises_when_the_generator_cannot_cycle(self) -> None:
+        """Cycling is opt-in; without it an out-of-range index is still an error."""
+        gen = _make_generator(replay_config=SessionReplayConfig())
+        gen.sessions = [None]
+        gen._session_ids = ["only"]
+        assert gen.supports_corpus_cycling() is False
+
+        with pytest.raises(IndexError, match="does not support corpus cycling"):
+            gen._register_cycled_slots(5)
+
+
+class TestEagerPathDoesNotCycle:
+    """The eager path builds every session up front, so it cannot serve a replay.
+
+    Cycling re-derives a session from its source record on demand. A generator that
+    already built everything has no record left to re-derive from, so its only way to
+    serve a replay would be to keep the built session alive for the whole run -- which
+    is exactly the memory the parent process frees as sessions complete. Rather than
+    trade that away, the eager path opts out of cycling and a duration-bounded stage on
+    it ends when its corpus does (the runtime warns that the window fell short).
+    """
+
+    def _eager_generator(self, count: int = 3) -> Any:
+        gen = _make_generator(replay_config=SessionReplayConfig())
+        gen.initialize_sessions(
+            [
+                ReplaySession(session_id=f"t{i}", source_id=f"src{i}", session_index=i, graph=_make_simple_graph())
+                for i in range(count)
+            ]
+        )
+        return gen
+
+    def test_eager_corpus_does_not_support_cycling(self) -> None:
+        gen = self._eager_generator()
+        assert gen.supports_corpus_cycling() is False
+
+    def test_index_past_an_eager_corpus_is_an_error(self) -> None:
+        """Not a replay, and not silence either: the same IndexError as before cycling existed."""
+        gen = self._eager_generator()
+        with pytest.raises(IndexError, match="does not support corpus cycling"):
+            gen._register_cycled_slots(5)
+
+    def test_session_info_past_the_corpus_still_raises(self) -> None:
+        """Guard: _get_session dropped its own bounds check, so this must come from the build.
+
+        Removing a bounds check risks silently accepting a bad index. The rejection moved to
+        _ensure_session_built rather than going away, and it has to reach a caller of the
+        public accessor as the same IndexError it always did.
+        """
+        gen = self._eager_generator(count=3)
+        with pytest.raises(IndexError):
+            gen.get_session_info(5)
+
+    def test_session_info_for_a_negative_index_still_raises(self) -> None:
+        """Guard: a negative index is a bug in the caller, never a replay."""
+        gen = self._eager_generator(count=3)
+        with pytest.raises(IndexError):
+            gen.get_session_info(-1)
+
+    def test_completed_session_is_released(self) -> None:
+        """cleanup_session must actually free the session, not just blank its slot.
+
+        The parent holds a dispatched session only between dispatch and completion; over a
+        long run with a large corpus, holding them all is the difference between flat and
+        growing memory. A second list of the same objects kept for cycling would defeat
+        this while leaving every test about slots and ids passing.
+        """
+        gen = self._eager_generator(count=2)
+        watch = weakref.ref(gen.sessions[0])
+
+        gen.cleanup_session("t0")
+        gc.collect()
+
+        assert gen.sessions[0] is None, "the slot is blanked"
+        assert watch() is None, "and nothing else is still holding the session"
+
+
+class TestRealGeneratorBuildsAReplay:
+    """The real OTel builder resolving a replay index, not an injected stand-in.
+
+    TestCorpusCycling injects its own ``_build_session``, so it pins the base class's index
+    arithmetic but never the subclass hook that makes a replay buildable at all:
+    ``_on_cycled_slot`` has to record which corpus slot a replay index copies, because
+    ``_build_session`` reads the dataset through ``_source_indices``. Without that entry a
+    replay would read its own index as a slot -- past the end of the corpus -- so cycling
+    would fail on the first replay, and only against a real corpus.
+    """
+
+    def _generator(self, count: int) -> OTelTraceReplayDataGenerator:
+        gen = object.__new__(OTelTraceReplayDataGenerator)
+        gen.replay_config = SessionReplayConfig()
+        gen.output_registry = EventOutputRegistry()
+        gen.worker_tracker = WorkerSessionTracker()
+        gen.session_completion_queue = None
+        gen.num_workers = 1
+        gen.sessions = []
+        gen._session_ids = []
+        gen.session_graph_state = {}
+        gen._session_events = {}
+        gen.all_events = []
+        gen._skipped_session_count = 0
+        gen._corpus_cycling_enabled = False
+        gen._corpus_session_count = 0
+        gen._cycle_base_ids = []
+        gen._cycle_logged = False
+        # Slot -> row is deliberately not the identity: the real generator shuffles rows, so
+        # a builder that used the index directly would read the wrong trace.
+        gen._dataset = [{"tag": f"row{i}"} for i in range(count)]
+        gen._row_order = [(i + 1) % count for i in range(count)]
+        gen._source_ids = [f"src{i}" for i in range(count)]
+        gen._source_indices = [None] * count
+        gen.initialize_sessions_lazy([f"t{i}" for i in range(count)])
+        return gen
+
+    def test_a_replay_reads_its_source_row_under_its_own_id(self) -> None:
+        """Index 4 of a 3-session corpus builds slot 1's trace, labelled t1_dup1."""
+        gen = self._generator(count=3)
+        captured: dict[str, Any] = {}
+
+        def fake_process(data: dict[str, Any], trace_index: int, session_id: str, source_id: str) -> None:
+            captured.update(data=data, trace_index=trace_index, session_id=session_id, source_id=source_id)
+            return None
+
+        gen._process_trace_data = fake_process  # type: ignore[method-assign]
+
+        gen._register_cycled_slots(4)
+        gen._build_session(4)
+
+        # Slot 1's row, reached through _row_order, not dataset[4] or dataset[1].
+        assert captured["data"] == {"tag": "row2"}
+        assert captured["source_id"] == "src1"
+        # The replay's own id, so its state and its cache marker are its own.
+        assert captured["session_id"] == "t1_dup1"
+        assert captured["trace_index"] == 4
 
 
 class TestBuildReplayScheduleRandomSessionID:
@@ -2522,3 +2772,118 @@ class TestDisableOutputSubstitutionValidation:
             duplicate_sessions_target=10,
         )
         assert cfg.disable_output_substitution is False
+
+
+class TestTruncatedSessionReporting:
+    """A session cut short at the stage boundary must still report what it got through.
+
+    Such a session is deliberately kept out of the success/failure counts, but that is a
+    statement about aggregates, not a reason to report nothing about the session itself.
+    Two separate things used to erase its picture: the worker only reports a session once
+    it finishes, so a cut-short one was never reported at all, and build_session_metric
+    zeroed the cancellation count for anything that was not an outright failure.
+    """
+
+    def _state(self, completed: set[str], num_events: int = 4, complete: bool = False, failed: bool = False) -> Any:
+        graph = MagicMock()
+        graph.events = {
+            f"event_{i}": MagicMock(is_user_facing=False, is_structured_output_call=False) for i in range(num_events)
+        }
+        return ReplaySessionState(
+            session_id="session_1",
+            graph=graph,
+            ready_events=set(),
+            dispatched_events=set(),
+            completed_events=set(completed),
+            event_completion_times={e: 1.0 for e in completed},
+            is_active=True,
+            is_complete=complete,
+            failed=failed,
+        )
+
+    def _generator(self, state: Any) -> OTelTraceReplayDataGenerator:
+        gen = object.__new__(OTelTraceReplayDataGenerator)
+        gen.session_graph_state = {"session_1": state}
+        gen.sessions = []
+        gen._session_id_to_index = {"session_1": 0}
+        gen._session_events = {}
+        return gen
+
+    def test_a_cut_short_session_reports_the_events_it_lost(self) -> None:
+        """2 of 4 events done when the stage stopped means 2 completed and 2 cancelled.
+
+        Reporting 0 cancelled hides the loss: a reader sees num_events=4, completed=2 and
+        cancelled=0, which adds up to nothing that happened.
+        """
+        gen = self._generator(self._state(completed={"event_0", "event_1"}))
+
+        metric = gen.build_session_metric(session_id="session_1", stage_id=0, start_time=0.0, end_time=5.0)
+
+        assert metric.num_events == 4
+        assert metric.num_events_completed == 2
+        assert metric.num_events_cancelled == 2
+        assert metric.num_events_completed + metric.num_events_cancelled == metric.num_events
+
+    def test_a_session_that_finished_reports_nothing_cancelled(self) -> None:
+        """Guard: the normal path must not start claiming cancellations."""
+        gen = self._generator(self._state(completed={f"event_{i}" for i in range(4)}, complete=True))
+
+        metric = gen.build_session_metric(session_id="session_1", stage_id=0, start_time=0.0, end_time=5.0)
+
+        assert metric.num_events_completed == 4
+        assert metric.num_events_cancelled == 0
+
+    def test_a_failed_session_keeps_the_count_the_worker_sent(self) -> None:
+        """Guard: a failure already reports its own cancellation count; don't recompute it."""
+        state = self._state(completed={"event_0"}, complete=True, failed=True)
+        state.cancelled_events = 3
+        gen = self._generator(state)
+
+        metric = gen.build_session_metric(session_id="session_1", stage_id=0, start_time=0.0, end_time=5.0)
+
+        assert metric.num_events_cancelled == 3
+
+    def test_partial_progress_is_recorded_without_marking_the_session_done(self) -> None:
+        """A flush from a winding-down worker fills in progress but must not claim completion.
+
+        If it set is_complete, the load generator would stop calling the session truncated
+        and it would re-enter the success counts - the opposite of what was asked for.
+        """
+        gen = object.__new__(OTelTraceReplayDataGenerator)
+        gen.session_graph_state = {"session_1": self._state(completed=set())}
+        items = [{"session_id": "session_1", "partial": True, "event_completion_times": {"event_0": 10.0, "event_1": 11.0}}]
+
+        queue = MagicMock()
+        queue.get_nowait = lambda: items.pop(0) if items else (_ for _ in ()).throw(Exception("empty"))
+        gen.session_completion_queue = queue
+
+        gen._process_completion_queue()
+
+        state = gen.session_graph_state["session_1"]
+        assert state.completed_events == {"event_0", "event_1"}
+        assert state.is_complete is False, "a partial flush must not mark the session complete"
+        assert state.failed is False
+
+    def test_a_winding_down_worker_flushes_what_its_open_sessions_got_through(self) -> None:
+        """The worker holds the only record of partial progress; it must hand it over.
+
+        Without this the parent has nothing to report for a truncated session, because the
+        worker's single per-session notification is only sent once the session finishes.
+        """
+        gen = object.__new__(OTelTraceReplayDataGenerator)
+        gen.worker_tracker = WorkerSessionTracker()
+        gen.worker_tracker.record_event_completed("session_1", "event_0", 10.0)
+        gen.worker_tracker.record_event_completed("session_1", "event_1", 11.0)
+        gen.worker_tracker.record_event_completed("session_2", "event_0", 12.0)
+        gen.worker_tracker.mark_session_failed("session_2")
+        pushed: list[dict[str, Any]] = []
+        queue = MagicMock()
+        queue.put_nowait = pushed.append
+        gen.session_completion_queue = queue
+
+        gen.flush_incomplete_sessions()
+
+        assert len(pushed) == 1, "the failed session already reported itself"
+        assert pushed[0]["session_id"] == "session_1"
+        assert pushed[0]["partial"] is True
+        assert pushed[0]["event_completion_times"] == {"event_0": 10.0, "event_1": 11.0}

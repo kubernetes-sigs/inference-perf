@@ -269,6 +269,14 @@ class WorkerSessionTracker:
     def get_session_completion_times(self, session_id: str) -> Dict[str, float]:
         return self._event_completions.get(session_id, {}).copy()
 
+    def get_tracked_session_ids(self) -> List[str]:
+        """Sessions this worker has recorded at least one event completion for.
+
+        A session drops out of here once it is evicted, which happens after its last event
+        drains - so what is left are sessions still in flight on this worker.
+        """
+        return list(self._event_completions.keys())
+
     def record_recorded_substitution(self, session_id: str, event_id: str) -> None:
         """Tag a predecessor event_id whose live tool_call response was
         replaced with the recorded message. Idempotent."""
@@ -1416,6 +1424,16 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         # Flat list kept only for the eager initialize_sessions() path / back-compat.
         self.all_events: List[ReplaySessionEvent] = []
         self._skipped_session_count: int = 0
+        # Corpus cycling, for a stage bounded by time rather than by session count: an index
+        # at or past _corpus_session_count replays `index % _corpus_session_count` under a
+        # distinct id, so a trace can be played again without colliding with its own state.
+        # Resolution is pure arithmetic over state fixed before workers fork, so the parent
+        # and every worker agree without sharing anything — a worker only ever sees its
+        # fork-time snapshot. Only the lazy path opts in; see initialize_sessions_lazy.
+        self._corpus_cycling_enabled: bool = False
+        self._corpus_session_count: int = 0
+        self._cycle_base_ids: List[str] = []
+        self._cycle_logged: bool = False
 
     def initialize_sessions(self, sessions: List[ReplaySession]) -> None:
         """Finalize generator state from fully-built sessions (eager path)."""
@@ -1432,6 +1450,10 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         self.sessions = list(sessions)
         self._build_replay_schedule()
+        # No cycling snapshot here on purpose: these sessions are the only copy of their
+        # graphs, so serving a replay would mean holding them all for the whole run and
+        # defeating the release in cleanup_session. A duration-bounded stage on this path
+        # ends when the corpus does, and the runtime warns the window fell short.
         logger.info(
             "Built replay schedule: %d events across %d sessions (eager)",
             len(self.all_events),
@@ -1452,16 +1474,74 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         self._session_id_to_index = {sid: i for i, sid in enumerate(session_ids)}
         self._session_events = {}
         self.all_events = []
+        # Snapshot for cycling, taken before any worker forks. Safe to opt in here because
+        # _build_session rebuilds any slot from its source record, so a replay needs nothing
+        # kept alive between plays.
+        self._corpus_cycling_enabled = True
+        self._corpus_session_count = len(session_ids)
+        self._cycle_base_ids = list(session_ids)
         logger.info("Lazy init: %d session slots allocated", len(session_ids))
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build the ReplaySession for one slot. Implemented by lazy subclasses."""
         raise NotImplementedError("Lazy generators must implement _build_session()")
 
+    def supports_corpus_cycling(self) -> bool:
+        """Whether this generator can serve session indices past the loaded corpus.
+
+        A duration-bounded stage keeps drawing sessions until its deadline, so it needs
+        indices beyond the corpus to resolve to replays rather than raise. True only on the
+        lazy path, which can rebuild a slot from its source record; see initialize_sessions.
+        """
+        return self._corpus_cycling_enabled
+
+    def _cycled_session_id(self, session_index: int, source_slot: int, play: int) -> str:
+        """Id for a replay of source_slot. Distinct per play, so state cannot collide.
+
+        `_dup{N}` is the existing duplicate-session convention, which also drives the
+        prefix-cache marker (see is_duplicate_session), so a replay is not a free cache hit.
+        """
+        return f"{self._cycle_base_ids[source_slot]}_dup{play}"
+
+    def _on_cycled_slot(self, session_index: int, source_slot: int) -> None:
+        """Hook for subclasses to record how to build a replay index. Default: nothing."""
+
+    def _register_cycled_slots(self, session_index: int) -> None:
+        """Grow the local index tables to cover session_index. Idempotent.
+
+        Called in whichever process asks. Both sides derive identical entries because the
+        inputs (_corpus_session_count, _cycle_base_ids) were fixed before the fork.
+        """
+        if session_index < len(self._session_ids):
+            return
+        if not self.supports_corpus_cycling():
+            raise IndexError(
+                f"Session index {session_index} out of range (total: {len(self.sessions)}) and this "
+                f"generator does not support corpus cycling"
+            )
+        if not self._cycle_logged:
+            # Once, so replaying is never silent: expected under duration, notable elsewhere.
+            self._cycle_logged = True
+            logger.info(
+                "Corpus of %d session(s) exhausted; replaying it from the start (first index %d)",
+                self._corpus_session_count,
+                session_index,
+            )
+        for idx in range(len(self._session_ids), session_index + 1):
+            source_slot = idx % self._corpus_session_count
+            play = idx // self._corpus_session_count
+            session_id = self._cycled_session_id(idx, source_slot, play)
+            self._session_ids.append(session_id)
+            self._session_id_to_index[session_id] = idx
+            self.sessions.append(None)
+            self._on_cycled_slot(idx, source_slot)
+
     def _ensure_session_built(self, session_index: int) -> None:
         """Build and register session_index's graph if not already done. Idempotent."""
-        if session_index < 0 or session_index >= len(self.sessions):
+        if session_index < 0:
             raise IndexError(f"Session index {session_index} out of range (total: {len(self.sessions)})")
+        if session_index >= len(self.sessions):
+            self._register_cycled_slots(session_index)
         if self.sessions[session_index] is not None or session_index in self._session_events:
             return
         session = self._build_session(session_index)
@@ -1656,8 +1736,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
     def _get_session(self, session_index: int) -> ReplaySession:
         """Return the built session at session_index, building it on demand if needed."""
-        if session_index < 0 or session_index >= len(self._session_ids):
-            raise IndexError(f"Session index {session_index} out of range (total: {len(self._session_ids)})")
+        # No bounds check of its own: checking here would reject the replay indices the call
+        # below is about to register. _ensure_session_built is the single place that decides,
+        # and still raises IndexError for a negative index or a non-cycling generator.
         self._ensure_session_built(session_index)
         session = self.sessions[session_index]
         if session is None:
@@ -1718,7 +1799,18 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             else len(state.graph.events)
         )
         num_events_completed = len(state.completed_events)
-        num_events_cancelled = state.cancelled_events if state.failed else 0
+        if state.failed:
+            # A failure reports its own count: the worker knows which event failed and how
+            # many downstream events it cancelled, which is not simply "everything left".
+            num_events_cancelled = state.cancelled_events
+        elif not state.is_complete:
+            # Cut short at the stage boundary. The session never reached a terminal state,
+            # so nothing computed a cancellation count for it - but the events that had not
+            # finished when the stage stopped were cancelled along with it, and saying 0
+            # would leave the numbers not adding up to the events the session had.
+            num_events_cancelled = max(num_events - num_events_completed, 0)
+        else:
+            num_events_cancelled = 0
 
         # `state.failed` alone must produce an error, not just `failure_reason`.
         # The report's success predicate is derived from `error is None`, so a
@@ -1765,6 +1857,42 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         state.ready_events.update(root_events)
         logger.debug("Activated session %s with %d root events", session_id, len(root_events))
 
+    def flush_incomplete_sessions(self) -> None:
+        """Hand the parent the progress of sessions still open as this worker winds down.
+
+        A worker reports a session exactly once, when it reaches a terminal state. That is
+        enough while sessions are allowed to finish, but a stage bounded by duration stops
+        with sessions mid-flight, and those never reach a terminal state - so the parent is
+        left with no record of them at all and reports zero events completed for a session
+        that may have got most of the way through.
+
+        The worker is the only process that knows: every completion was recorded in its own
+        tracker. This pushes that record across, flagged ``partial`` so the parent merges the
+        event times without treating the session as finished.
+        """
+        queue = getattr(self, "session_completion_queue", None)
+        tracker = getattr(self, "worker_tracker", None)
+        if queue is None or tracker is None:
+            return
+
+        for session_id in tracker.get_tracked_session_ids():
+            # A failed session already reported itself, cancellation count included.
+            if tracker.is_session_failed(session_id):
+                continue
+            completion_times = tracker.get_session_completion_times(session_id)
+            if not completion_times:
+                continue
+            try:
+                queue.put_nowait(
+                    {
+                        "session_id": session_id,
+                        "partial": True,
+                        "event_completion_times": completion_times,
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to flush partial progress for session {session_id}: {e}")
+
     def _process_completion_queue(self) -> None:
         if self.session_completion_queue is None:
             return
@@ -1782,6 +1910,30 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                             completed_state.completed_events.add(event_id)
                             completed_state.event_completion_times[event_id] = completion_time
 
+                    # Bad tool-call handling telemetry. The two keys are
+                    # gated worker-side behind `len(...) > 0`, so their
+                    # absence here is meaningful (no substitution path
+                    # exercised) and we propagate that absence to the
+                    # session metric as None.
+                    if "n_recorded_substitutions" in completion_data:
+                        completed_state.n_recorded_substitutions = completion_data["n_recorded_substitutions"]
+                        completed_state.recorded_substitution_event_ids = completion_data.get(
+                            "recorded_substitution_event_ids", []
+                        )
+                    # A partial flush is a worker handing over the progress of a session that
+                    # is still open, because the stage is winding down and the session will
+                    # never reach a terminal state to report itself. Take the event times and
+                    # stop there: marking it complete would tell the load generator the
+                    # session finished, which would drop it out of the truncated set and back
+                    # into the success counts - the opposite of what the flush is for.
+                    if completion_data.get("partial", False):
+                        logger.debug(
+                            "Session %s reported partial progress from queue notification (%d events)",
+                            completed_session_id,
+                            len(event_times),
+                        )
+                        continue
+
                     completed_state.is_complete = True
                     # Failure is sticky in both directions. A session that any
                     # worker payload reported as failed stays failed, and the
@@ -1795,16 +1947,6 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                         completed_state.failure_reason = incoming_reason
                         completed_state.failure_cause = completion_data.get("failure_cause")
                     completed_state.cancelled_events = completion_data.get("cancelled_events", 0)
-                    # Bad tool-call handling telemetry. The two keys are
-                    # gated worker-side behind `len(...) > 0`, so their
-                    # absence here is meaningful (no substitution path
-                    # exercised) and we propagate that absence to the
-                    # session metric as None.
-                    if "n_recorded_substitutions" in completion_data:
-                        completed_state.n_recorded_substitutions = completion_data["n_recorded_substitutions"]
-                        completed_state.recorded_substitution_event_ids = completion_data.get(
-                            "recorded_substitution_event_ids", []
-                        )
                     logger.debug(
                         "Session %s marked complete from queue notification (failed=%s)",
                         completed_session_id,

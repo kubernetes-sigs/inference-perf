@@ -439,6 +439,17 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         self.initialize_sessions_lazy(session_ids)
 
+    def _on_cycled_slot(self, session_index: int, source_slot: int) -> None:
+        """Point a replay index at the dataset row of the slot it replays.
+
+        _build_session resolves a slot through _source_indices, so a replay index needs an
+        entry there before it can be built. Same shape as the duplicate_sessions_target
+        expansion above, just filled in on demand instead of up front.
+        """
+        while len(self._source_indices) <= session_index:
+            self._source_indices.append(None)
+        self._source_indices[session_index] = source_slot
+
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build one session's graph on demand (called by _ensure_session_built).
 
