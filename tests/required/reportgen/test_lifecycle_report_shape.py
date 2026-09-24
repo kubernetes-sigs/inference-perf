@@ -15,61 +15,14 @@
 that should be populated when a mix of multimodal requests is observed."""
 
 import typing
-from unittest.mock import Mock
 
-from inference_perf.apis import ErrorResponseInfo, InferenceInfo, StreamedResponseMetrics
 from inference_perf.payloads import (
-    RequestMetrics,
-    Text,
-    Images,
-    Videos,
-    Audios,
     Image,
     Video,
     Audio,
 )
 from inference_perf.reportgen.base import summarize_requests
-
-
-def _mock_metric(
-    *,
-    start_time: float,
-    end_time: float,
-    scheduled_time: float,
-    input_tokens: int,
-    output_tokens: int,
-    request_data: str,
-    images: typing.List[Image],
-    videos: typing.List[Video],
-    audios: typing.List[Audio],
-    output_token_times: typing.List[float],
-) -> Mock:
-    m = Mock()
-    m.start_time = start_time
-    m.end_time = end_time
-    m.scheduled_time = scheduled_time
-    m.error = None
-    m.ttft_slo_sec = None
-    m.tpot_slo_sec = None
-    m.request_data = request_data
-    m.info = Mock(spec=InferenceInfo)
-    # Real int/bool, not auto-specced Mocks: the retry rollup does arithmetic on these.
-    m.info.retries_attempted = 0
-    m.info.retries_recovered = False
-    m.info.request_metrics = RequestMetrics(
-        text=Text(input_tokens=input_tokens),
-        image=Images(count=len(images), instances=images) if images else None,
-        video=Videos(count=len(videos), instances=videos) if videos else None,
-        audio=Audios(count=len(audios), instances=audios) if audios else None,
-    )
-    m.info.response_metrics = StreamedResponseMetrics(
-        response_chunks=[],
-        chunk_times=output_token_times,
-        output_tokens=output_tokens,
-        output_token_times=output_token_times,
-    )
-    m.info.extra_info = {}
-    return m
+from lifecycle_fixtures import failed_metric, mock_metric, retry_metric
 
 
 def _assert_summary(d: typing.Any) -> None:
@@ -83,7 +36,7 @@ def _assert_summary(d: typing.Any) -> None:
 def test_lifecycle_report_shape_populated() -> None:
     # Three successful requests covering all modalities.
     metrics = [
-        _mock_metric(
+        mock_metric(
             start_time=0.0,
             end_time=0.5,
             scheduled_time=-0.001,
@@ -98,7 +51,7 @@ def test_lifecycle_report_shape_populated() -> None:
             audios=[Audio(bytes=60000, seconds=15)],
             output_token_times=[0.03, 0.2, 0.4, 0.5],
         ),
-        _mock_metric(
+        mock_metric(
             start_time=1.0,
             end_time=1.49,
             scheduled_time=0.999,
@@ -110,7 +63,7 @@ def test_lifecycle_report_shape_populated() -> None:
             audios=[Audio(bytes=90000, seconds=25)],
             output_token_times=[1.03, 1.2, 1.4, 1.49],
         ),
-        _mock_metric(
+        mock_metric(
             start_time=2.0,
             end_time=2.48,
             scheduled_time=2.001,
@@ -200,7 +153,7 @@ def test_lifecycle_report_shape_populated() -> None:
 
 
 def test_lifecycle_report_shape_with_failures() -> None:
-    success = _mock_metric(
+    success = mock_metric(
         start_time=0.0,
         end_time=0.5,
         scheduled_time=0.0,
@@ -213,21 +166,7 @@ def test_lifecycle_report_shape_with_failures() -> None:
         output_token_times=[0.1, 0.3, 0.5],
     )
 
-    failure = Mock()
-    failure.start_time = 1.0
-    failure.end_time = 1.2
-    failure.scheduled_time = 1.0
-    failure.error = ErrorResponseInfo(error_type="HTTP Error 500", error_msg="Internal Server Error")
-    failure.session_id = None
-    failure.ttft_slo_sec = None
-    failure.tpot_slo_sec = None
-    failure.request_data = "bad"
-    failure.info = Mock(spec=InferenceInfo)
-    failure.info.retries_attempted = 0
-    failure.info.retries_recovered = False
-    failure.info.request_metrics = RequestMetrics(text=Text(input_tokens=80))
-    failure.info.response_metrics = None
-    failure.info.extra_info = {}
+    failure = failed_metric(start_time=1.0, end_time=1.2, scheduled_time=1.0, input_tokens=80)
 
     summary = summarize_requests(typing.cast(typing.Any, [success, failure]), percentiles=[50])
     report = summary.model_dump()
@@ -242,32 +181,6 @@ def test_lifecycle_report_shape_with_failures() -> None:
 # --- Retry reporting (#777) ---
 
 
-def _retry_metric(
-    retries_attempted: int,
-    retries_recovered: bool,
-    retry_wasted_sec: typing.Optional[float] = None,
-) -> Mock:
-    """A minimal successful request metric carrying retry counters."""
-    m = _mock_metric(
-        start_time=0.0,
-        end_time=1.0,
-        scheduled_time=0.0,
-        input_tokens=10,
-        output_tokens=5,
-        request_data="req",
-        images=[],
-        videos=[],
-        audios=[],
-        output_token_times=[0.5, 1.0],
-    )
-    m.info.retries_attempted = retries_attempted
-    m.info.retries_recovered = retries_recovered
-    # Real float or None, never an auto-specced Mock: the retry rollup feeds this
-    # straight into summarize().
-    m.info.retry_wasted_sec = retry_wasted_sec
-    return m
-
-
 def test_retries_absent_when_nothing_retried() -> None:
     """A run with retries off must carry no retry section at all -- not a block of zeros
     implying the mechanism was exercised, and not a `"retries": null` either.
@@ -276,7 +189,7 @@ def test_retries_absent_when_nothing_retried() -> None:
     byte-identical to one produced before retries existed, or every downstream consumer
     sees a schema change from a feature nobody enabled.
     """
-    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(0, False)]), percentiles=[50])
+    summary = summarize_requests(typing.cast(typing.Any, [retry_metric(0, False)]), percentiles=[50])
     assert summary.retries is None
     assert "retries" not in summary.model_dump()
 
@@ -289,10 +202,10 @@ def test_retries_partition_recovered_and_failed() -> None:
     reached the endpoint and came back with a non-retryable failure, which stops the loop
     with attempts still in the budget."""
     metrics = [
-        _retry_metric(0, False),  # never retried -> excluded entirely
-        _retry_metric(1, True),  # retried once, recovered
-        _retry_metric(2, True),  # retried twice, recovered
-        _retry_metric(2, False),  # retried twice, still failed
+        retry_metric(0, False),  # never retried -> excluded entirely
+        retry_metric(1, True),  # retried once, recovered
+        retry_metric(2, True),  # retried twice, recovered
+        retry_metric(2, False),  # retried twice, still failed
     ]
     summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
     assert summary.retries is not None
@@ -306,7 +219,7 @@ def test_retries_partition_recovered_and_failed() -> None:
 def test_retries_are_not_counted_as_errors() -> None:
     """A retry is not an error label: a recovered retry must leave failures untouched,
     or the run's error rate would double-count faults the retry already absorbed."""
-    summary = summarize_requests(typing.cast(typing.Any, [_retry_metric(2, True)]), percentiles=[50])
+    summary = summarize_requests(typing.cast(typing.Any, [retry_metric(2, True)]), percentiles=[50])
     assert summary.failures["count"] == 0
     assert summary.failures["by_label"] == {}
     assert summary.successes["count"] == 1
@@ -320,9 +233,9 @@ def test_retries_report_wasted_time() -> None:
     already counts retry time: start_time stays at dispatch.
     """
     metrics = [
-        _retry_metric(0, False),  # never retried -> contributes nothing
-        _retry_metric(1, True, retry_wasted_sec=2.0),
-        _retry_metric(1, True, retry_wasted_sec=4.0),
+        retry_metric(0, False),  # never retried -> contributes nothing
+        retry_metric(1, True, retry_wasted_sec=2.0),
+        retry_metric(1, True, retry_wasted_sec=4.0),
     ]
     summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
     assert summary.retries is not None
@@ -343,8 +256,8 @@ def test_retries_count_failed_requests_as_wasted() -> None:
     meaningless. Waste is waste regardless of how the request ended.
     """
     metrics = [
-        _retry_metric(2, True, retry_wasted_sec=5.0),  # recovered
-        _retry_metric(2, False, retry_wasted_sec=95.0),  # never succeeded -- still wasted
+        retry_metric(2, True, retry_wasted_sec=5.0),  # recovered
+        retry_metric(2, False, retry_wasted_sec=95.0),  # never succeeded -- still wasted
     ]
     summary = summarize_requests(typing.cast(typing.Any, metrics), percentiles=[50])
     assert summary.retries is not None
@@ -358,7 +271,7 @@ def test_retries_report_waste_when_nothing_recovered() -> None:
     failed has paid the full cost for nothing, which the block must show rather than omit.
     """
     summary = summarize_requests(
-        typing.cast(typing.Any, [_retry_metric(2, False, retry_wasted_sec=7.0)]),
+        typing.cast(typing.Any, [retry_metric(2, False, retry_wasted_sec=7.0)]),
         percentiles=[50],
     )
     assert summary.retries is not None

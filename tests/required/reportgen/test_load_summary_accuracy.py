@@ -32,10 +32,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from inference_perf.apis import ErrorResponseInfo, InferenceInfo
-from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.reportgen.base import summarize_requests
-from test_lifecycle_report_shape import _mock_metric
+from lifecycle_fixtures import failed_metric, mock_metric
 
 # Percentile list wide enough to cover both key-naming branches in `summarize`
 # (p == 50 becomes "median", everything else becomes "p<n>") and to exercise
@@ -44,16 +42,16 @@ PERCENTILES: typing.List[float] = [50, 90, 99]
 
 
 # Builds one fake request record where only the three timestamps matter. Reuses the
-# shape test's builder so both files describe a request the same way; token and
+# shared builder so every reportgen test describes a request the same way; token and
 # modality fields get throwaway minimums that no assertion here reads.
 def _load_metric(*, scheduled_time: float, start_time: float, end_time: float) -> Mock:
     """A lifecycle metric whose load-side timing is the only interesting thing about it.
 
-    Delegates to the shape test's builder so both modules describe a request the same
+    Delegates to the shared builder in `lifecycle_fixtures.py` so every reportgen test describes a request the same
     way. Token and modality fields are filled with the smallest values that keep the
     success path of `summarize_requests` well-defined; no assertion here reads them.
     """
-    return _mock_metric(
+    return mock_metric(
         start_time=start_time,
         end_time=end_time,
         scheduled_time=scheduled_time,
@@ -165,21 +163,7 @@ def test_schedule_delay_includes_failed_requests() -> None:
     """
     success_a, success_b = _delayed(start_times=[0.0, 1.0], delays=[0.0, 0.2])
 
-    failure = Mock()
-    failure.scheduled_time = 1.0
-    failure.start_time = 2.0
-    failure.end_time = 2.5
-    failure.error = ErrorResponseInfo(error_type="HTTP Error 500", error_msg="Internal Server Error")
-    failure.session_id = None
-    failure.ttft_slo_sec = None
-    failure.tpot_slo_sec = None
-    failure.request_data = "bad"
-    failure.info = Mock(spec=InferenceInfo)
-    failure.info.retries_attempted = 0
-    failure.info.retries_recovered = False
-    failure.info.request_metrics = RequestMetrics(text=Text(input_tokens=10))
-    failure.info.response_metrics = None
-    failure.info.extra_info = {}
+    failure = failed_metric(scheduled_time=1.0, start_time=2.0, end_time=2.5, input_tokens=10)
 
     load = _load_summary([success_a, success_b, failure], stage_rate=1.0)
 
@@ -277,15 +261,19 @@ def test_achieved_rate_is_zero_when_all_requests_share_a_send_time() -> None:
     assert load["achieved_rate"] == 0.0
 
 
-# No stage_rate passed (a concurrency-driven stage). achieved_rate, send_duration and
-# requested_rate must be absent entirely (KeyError for a careless consumer, not a fake
-# 0), while schedule_delay is still reported and correct.
+# No stage_rate passed, which is what the combined summary_lifecycle_metrics report
+# does. achieved_rate, send_duration and requested_rate must be absent entirely, while
+# schedule_delay (all 0.5) is still reported and correct.
 def test_load_summary_omits_rate_fields_without_a_stage_rate() -> None:
     """No requested rate means no rate block at all, not a rate reported as zero.
 
-    A stage driven by concurrency rather than by a rate has no `achieved_rate` key, so a
-    consumer reading it unconditionally gets a KeyError rather than a wrong number.
-    `schedule_delay` is still reported and still exact.
+    Only the cross-stage `summary_lifecycle_metrics` report calls `summarize_requests`
+    without a `stage_rate`, since stages with different rates have no single requested
+    rate. Per-stage reports always pass one: `StageRuntimeInfo.rate` is a non-optional
+    float, and a trace-replay stage without `session_rate` stores 0.0 there, so it gets
+    the full block with `requested_rate: 0.0`. In the combined report the rate keys are
+    missing, so a consumer reading `achieved_rate` unconditionally gets a KeyError rather
+    than a wrong number. `schedule_delay` is still reported and still exact.
     """
     load = _load_summary(_delayed(start_times=[0.0, 1.0, 2.0], delays=[0.5, 0.5, 0.5]))
 
