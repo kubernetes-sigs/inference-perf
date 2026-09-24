@@ -184,7 +184,7 @@ def test_achieved_rate_equals_count_over_send_duration() -> None:
     divides the request count, not the number of gaps between requests, by the span from
     the first send to the last, which overstates the sustained rate by a factor of
     n / (n - 1). This asserts the shipped definition rather than the intended one; see
-    the PR description.
+    #821.
     """
     load = _load_summary(
         _delayed(start_times=[0.0, 1.0, 2.0, 3.0, 4.0], delays=[0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -225,7 +225,7 @@ def test_achieved_rate_is_zero_for_a_single_request() -> None:
     `summarize_requests` divides by `send_duration` only when it is positive and
     substitutes 0.0 otherwise. That sentinel is indistinguishable from a stage that
     genuinely achieved no throughput, so this pins the current behavior rather than
-    endorsing it; see the PR description.
+    endorsing it; see #821.
     """
     load = _load_summary(_delayed(start_times=[7.0], delays=[0.3]), stage_rate=2.0)
 
