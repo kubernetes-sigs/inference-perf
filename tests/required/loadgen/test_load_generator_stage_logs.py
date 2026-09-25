@@ -38,6 +38,7 @@ from inference_perf.loadgen.load_generator import LoadGenerator
 
 def _make_load_generator() -> LoadGenerator:
     mock_datagen = MagicMock(spec=DataGenerator)
+    mock_datagen.is_preferred_worker_requested.return_value = False
     mock_datagen.trace = None
     mock_data = MagicMock(spec=InferenceAPIData)
     mock_data.preferred_worker_id = -1
