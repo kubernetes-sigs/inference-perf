@@ -67,6 +67,15 @@ def azure_trace_config(trace: Path) -> Dict[str, Any]:
     }
 
 
+def azure_workload_config(trace: Path) -> Dict[str, Any]:
+    """The record-layer spelling: the format is named once, and the send
+    times come from the arrangement, so load has no trace block."""
+    return {
+        "data": {"type": "workload_replay", "workload": {"format": "AzurePublicDataset", "file": str(trace)}},
+        "load": {"type": "trace_replay", "num_workers": 2, "stages": [{"rate": 1, "duration": 1}]},
+    }
+
+
 def assert_replays_the_trace(entries: List[Dict[str, Any]], tokenizer: CustomTokenizer) -> None:
     """The report, ordered by send time, must line up with the trace line by line.
 
@@ -91,7 +100,13 @@ def assert_replays_the_trace(entries: List[Dict[str, Any]], tokenizer: CustomTok
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-@pytest.mark.parametrize("make_config", [pytest.param(azure_trace_config, id="azure_trace_block")])
+@pytest.mark.parametrize(
+    "make_config",
+    [
+        pytest.param(azure_trace_config, id="azure_trace_block"),
+        pytest.param(azure_workload_config, id="azure_workload_format"),
+    ],
+)
 async def test_azure_trace_replay(tmp_path: Path, make_config: Any) -> None:
     model_path = extract_tarball(TEST_MODEL_TARBALL)
     trace = write_azure_trace(tmp_path / "trace.csv")
