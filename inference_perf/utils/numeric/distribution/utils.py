@@ -166,42 +166,83 @@ def generate_distribution(
     return cast(NDArray[np.int_], generated_lengths)
 
 
-def sample_lengths(
-    value: Union[int, "Distribution", str],
+def sample_values(
+    value: Union[int, float, "Distribution", str],
     count: int,
     rng: Optional[np.random.Generator] = None,
-) -> NDArray[np.int_]:
-    """Sample integer lengths from any length-field config value.
+    *,
+    integer: bool,
+) -> NDArray[np.float64]:
+    """Sample from any numeric config value: a number, a Distribution, or an expression string.
 
-    - int: the constant, repeated (no random draws are consumed).
-    - Distribution: :func:`sample_from_distribution`'s legacy contract (draws
-      clipped into the config bounds and rounded).
-    - str: an Expression sampled as written and rounded to integers. The
-      expression author owns the value range; nothing is clamped on top.
+    - number: the constant, repeated (no random draws are consumed).
+    - Distribution: :func:`sample_from_distribution`'s contract (draws clipped
+      into the config bounds). A ``fixed`` Distribution is never clipped, in
+      either mode: integer mode returns ``int(mean)`` as it always has, and
+      fractional mode returns ``mean`` itself.
+    - str: an Expression sampled as written. The expression author owns the
+      value range; nothing is clamped on top.
 
     Args:
-        value: The configured length: a fixed int, a Distribution, or an
-            expression string.
-        count: Number of lengths to sample.
+        value: The configured value.
+        count: Number of values to sample.
         rng: Optional numpy Generator for deterministic seeding. If None, creates a default one.
+        integer: Round to whole numbers (counts, token lengths) or keep
+            fractions (seconds).
 
     Returns:
-        A numpy array of ``count`` integers.
+        A float array of ``count`` values, whole-numbered when ``integer``.
     """
+    from inference_perf.config import DistributionType
+
     if count <= 0:
         raise ValueError("Count must be a positive integer.")
 
-    if isinstance(value, int):
-        return cast(NDArray[np.int_], np.full(count, value, dtype=int))
+    if isinstance(value, (int, float)):
+        return np.full(count, round(value) if integer else float(value), dtype=np.float64)
 
     if isinstance(value, str):
         if rng is None:
             rng = np.random.default_rng()
         expression = Expression(value, allow_time=False)
         samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
-        return cast(NDArray[np.int_], np.round(samples).astype(int))
+        return np.round(samples) if integer else samples
 
-    return sample_from_distribution(value, count, rng)
+    if not integer and value.type == DistributionType.FIXED:
+        return np.full(count, float(value.mean), dtype=np.float64)
+    if integer:
+        return sample_from_distribution(value, count, rng).astype(np.float64)
+    return sample_from_distribution(value, count, rng, integer=False)
+
+
+def sample_lengths(
+    value: Union[int, "Distribution", str],
+    count: int,
+    rng: Optional[np.random.Generator] = None,
+) -> NDArray[np.int_]:
+    """Sample integer lengths from any length-field config value; see :func:`sample_values`."""
+    return cast(NDArray[np.int_], sample_values(value, count, rng, integer=True).astype(int))
+
+
+def value_ceiling(value: Union[int, float, "Distribution", str]) -> Optional[float]:
+    """The largest value a numeric config value can produce, for worst-case budget checks.
+
+    A number is its own ceiling. A ``fixed`` Distribution is never clipped, so
+    its ceiling is ``mean``; every other Distribution is clipped to ``max``.
+    An expression string's ceiling is its provable upper bound
+    (:attr:`Expression.bounds`), which is ``inf`` for an unbounded expression
+    such as ``Normal(50, 10)``, and ``None`` when nothing can be proven.
+    """
+    from inference_perf.config import DistributionType
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        bounds = Expression(value, allow_time=False).bounds
+        return None if bounds is None else bounds[1]
+    if value.type == DistributionType.FIXED:
+        return float(value.mean)
+    return float(value.max)
 
 
 @overload
