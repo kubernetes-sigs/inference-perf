@@ -218,6 +218,7 @@ class Expression:
         self._runtime_check = False
         self._validate_range(duration)
         self._compile_random_sampler()
+        self._evaluator: Optional[Any] = None
 
     def _compile_random_sampler(self) -> None:
         """Precompute a numpy-vectorised sampler for the random fast path.
@@ -427,6 +428,44 @@ class Expression:
         # The fallback yields a 0-d scalar for size==1 while the numpy fast path
         # yields a shape-(1,) array; flatten before scalarising so both work.
         return float(samples.reshape(-1)[0]) if size == 1 else samples
+
+    def evaluate(self, t: Union[float, NDArray[np.float64]]) -> NDArray[np.float64]:
+        """Evaluate a deterministic expression at many times at once.
+
+        :meth:`sample` substitutes ``t`` symbolically on every call, which is
+        fine for one value and far too slow for a grid (a time-varying rate is
+        integrated over thousands of points). This compiles the expression
+        once with ``sympy.lambdify`` and evaluates it over a numpy array.
+
+        Args:
+            t: Stage time(s) in seconds; a scalar or an array.
+
+        Returns:
+            A float array with the same shape as ``t``.
+
+        Raises:
+            ValueError: If the expression is random, or if a bound that could
+                not be proven at construction is violated at some ``t``.
+        """
+        if self._is_random:
+            raise ValueError(f"Expression {self.raw!r} is random; evaluate() is only for deterministic expressions.")
+        if self._evaluator is None:
+            self._evaluator = sympy.lambdify([_T], self._expr, "numpy")
+        times = np.asarray(t, dtype=np.float64)
+        # A constant lambdifies to a scalar; broadcast it to the input's shape.
+        values = np.broadcast_to(np.asarray(self._evaluator(times), dtype=np.float64), times.shape).copy()
+        if self._runtime_check:
+            lo = self.minimum if self.minimum is not None else -np.inf
+            hi = self.maximum if self.maximum is not None else np.inf
+            out_of_range = (values < lo) | (values > hi)
+            if bool(np.any(out_of_range)):
+                index = int(np.argmax(out_of_range.reshape(-1)))
+                raise ValueError(
+                    f"Expression {self.raw!r} evaluated to {float(values.reshape(-1)[index])} "
+                    f"at t={float(np.broadcast_to(times, values.shape).reshape(-1)[index])}, outside the permitted range "
+                    f"[{self.minimum}, {self.maximum}]."
+                )
+        return values
 
     def _within_bounds(self, value: float) -> bool:
         if self.minimum is not None and value < self.minimum:

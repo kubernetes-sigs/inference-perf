@@ -243,3 +243,34 @@ class TestSympyInternalsFence:
 
         for name in ("Normal", "Uniform", "Poisson", "Exponential", "LogNormal", "Gamma"):
             assert name in mod._DISTRIBUTION_CTORS, f"sympy.stats constructor discovery lost {name}"
+
+
+# evaluate(): vectorized evaluation of a deterministic expression over an array
+# of times. Inputs are a constant, a function of t, and a random expression;
+# expected: values match sample() at each t, constants broadcast to the input
+# shape, random expressions are refused, and an unprovable bound still raises.
+class TestEvaluate:
+    def test_matches_sample_at_each_time(self) -> None:
+        expr = Expression("10 + 5*sin(t)")
+        times = np.linspace(0.0, 60.0, 7)
+        expected = np.array([float(expr.sample(t=float(x))) for x in times])
+        assert np.allclose(expr.evaluate(times), expected)
+
+    def test_constant_broadcasts_to_input_shape(self) -> None:
+        values = Expression("4").evaluate(np.zeros(5))
+        assert values.shape == (5,)
+        assert np.all(values == 4.0)
+
+    def test_scalar_time_returns_zero_dim_array(self) -> None:
+        assert float(Expression("2*t").evaluate(3.0)) == 6.0
+
+    def test_random_expression_rejected(self) -> None:
+        with pytest.raises(ValueError, match="random"):
+            Expression("Normal(0, 1)").evaluate(np.zeros(3))
+
+    def test_unprovable_bound_checked_over_the_array(self) -> None:
+        # No duration, so the range of 10 - t can't be proven at construction
+        # and the minimum of 0 is checked per value: t=20 gives -10.
+        expr = Expression("10 - t", minimum=0)
+        with pytest.raises(ValueError, match="t=20"):
+            expr.evaluate(np.array([0.0, 5.0, 20.0]))
