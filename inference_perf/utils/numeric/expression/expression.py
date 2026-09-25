@@ -137,6 +137,16 @@ def _parse_raw(kind: str, raw: Union[str, int, float]) -> Any:
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
 
 
+def _is_condition(expr: Any) -> bool:
+    """True for a truth value or a relational/logical combination, false for a number.
+
+    A bare ``isinstance(expr, Boolean)`` is not enough: sympy's ``Symbol``
+    subclasses ``Boolean`` (so it can stand in ``And(x, y)``), which would
+    make the numeric expression ``"t"`` look like a condition.
+    """
+    return isinstance(expr, (bool, Boolean)) and not isinstance(expr, sympy.Expr)
+
+
 def _reject_unknown_functions(kind: str, raw: Any, expr: Any) -> None:
     """Reject unknown functions, e.g. a misspelled distribution InvalidDist(10)."""
     undefined = {f.func.__name__ for f in expr.atoms(AppliedUndef)}
@@ -260,7 +270,7 @@ class Expression:
 
     def _parse(self, raw: Union[str, int, float]) -> Any:
         expr = _parse_raw("Expression", raw)
-        if isinstance(expr, (bool, Boolean)):
+        if _is_condition(expr):
             raise ValueError(f"Expression {raw!r} is a condition, not a numeric value; use Predicate for conditions.")
         return expr
 
@@ -535,7 +545,7 @@ class Predicate:
 
         if isinstance(expr, bool) or expr in (sympy.true, sympy.false):
             raise ValueError(f"Predicate {raw!r} is constant ({expr!r}); a stop condition must vary with t, e.g. 't >= 60'.")
-        if not isinstance(expr, Boolean):
+        if not _is_condition(expr):
             raise ValueError(f"Predicate {raw!r} is not a condition; use a comparison such as 't >= 60'.")
         _reject_unknown_functions("Predicate", raw, expr)
 

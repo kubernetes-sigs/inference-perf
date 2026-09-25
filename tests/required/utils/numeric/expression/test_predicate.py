@@ -160,8 +160,9 @@ class TestRejectedNodes:
 
 
 class TestRejectedInputs:
-    # 't + 60' and '60' are numeric values, not conditions; each is rejected asking for a comparison.
-    @pytest.mark.parametrize("raw", ["t + 60", "60"])
+    # 't + 60', '60', 't' and '1*t' are numeric values, not conditions; each is rejected asking for a comparison.
+    # A bare 't' is the trap: sympy's Symbol subclasses Boolean, so a naive check took it for a condition.
+    @pytest.mark.parametrize("raw", ["t + 60", "60", "t", "1*t"])
     def test_numeric_value_is_not_a_condition(self, raw: str) -> None:
         with pytest.raises(ValueError, match="is not a condition"):
             Predicate(raw)
