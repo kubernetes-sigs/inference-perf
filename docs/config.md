@@ -129,6 +129,10 @@ Its `min` and `max` must be within `[0, 1]`; for distributions other than
 throughout the prompt. Token and media count distributions continue to produce
 integers.
 
+`count` and `insertion_point` also take expression strings, such as `count: "Poisson(2)"` or
+`insertion_point: "Beta(2, 5)"`. An `insertion_point` expression must be provably within `[0, 1]`;
+bound one that isn't with `Min(Max(..., 0), 1)`.
+
 The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
 
 ##### Wire formats

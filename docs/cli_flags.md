@@ -88,6 +88,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. |
+| `--data.shared_prefix.multimodal.image.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.shared_prefix.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.image.count.mean` | float | Mean of the distribution. |
@@ -96,7 +97,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.shared_prefix.multimodal.image.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.image.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.image.insertion_point.mean` | float | Mean of the distribution. |
@@ -107,6 +108,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.image.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.shared_prefix.multimodal.video.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.shared_prefix.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.video.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.video.count.mean` | float | Mean of the distribution. |
@@ -115,7 +117,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.shared_prefix.multimodal.video.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.video.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.video.insertion_point.mean` | float | Mean of the distribution. |
@@ -126,6 +128,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.video.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.shared_prefix.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
+| `--data.shared_prefix.multimodal.audio.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.shared_prefix.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.audio.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.audio.count.mean` | float | Mean of the distribution. |
@@ -134,7 +137,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.shared_prefix.multimodal.audio.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.audio.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.audio.insertion_point.mean` | float | Mean of the distribution. |
@@ -144,6 +147,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.audio.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.audio.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
+| `--data.multimodal.image.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.image.count.mean` | float | Mean of the distribution. |
@@ -152,7 +156,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.image.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.multimodal.image.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.image.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.image.insertion_point.mean` | float | Mean of the distribution. |
@@ -163,6 +167,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.image.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
+| `--data.multimodal.video.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.video.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.video.count.mean` | float | Mean of the distribution. |
@@ -171,7 +176,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.video.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.multimodal.video.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.video.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.video.insertion_point.mean` | float | Mean of the distribution. |
@@ -182,6 +187,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.video.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
+| `--data.multimodal.audio.count` | string | Number of media items to generate per request: a Distribution, or an expression string like 'Poisson(2)'. |
 | `--data.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.audio.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.audio.count.mean` | float | Mean of the distribution. |
@@ -190,7 +196,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.audio.count.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), a Distribution to sample from, or an expression string provably within [0, 1] like 'Beta(2, 5)'. |
 | `--data.multimodal.audio.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.audio.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.multimodal.audio.insertion_point.mean` | float | Mean of the distribution. |
