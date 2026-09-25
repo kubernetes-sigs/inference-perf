@@ -26,7 +26,7 @@ import json
 import logging
 import string
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -44,7 +44,7 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import (
     load_theme,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution.utils import sample_from_distribution, sample_values
+from inference_perf.utils.numeric.distribution.utils import sample_values
 
 if TYPE_CHECKING:
     from multiprocessing.managers import SyncManager
@@ -72,15 +72,14 @@ def child_rng(parent_seed: int, *path: int) -> np.random.Generator:
     return np.random.default_rng([parent_seed, *path])
 
 
-def sample_int(dist: Optional[Distribution], rng: np.random.Generator, fallback: Distribution) -> int:
+def sample_int(dist: Optional[Union[Distribution, str]], rng: np.random.Generator, fallback: Union[Distribution, str]) -> int:
     """Resolve `dist` (or `fallback` if None) and draw a single deterministic int.
 
-    Always passes `rng` explicitly to `sample_from_distribution` -- the
-    util's default (unseeded) RNG would break determinism.
+    `dist` is a Distribution or an expression string. Always passes `rng`
+    explicitly -- the util's default (unseeded) RNG would break determinism.
     """
     d = dist if dist is not None else fallback
-    val = sample_from_distribution(d, 1, rng=rng)[0]
-    return int(val)
+    return int(sample_values(d, 1, rng, integer=True)[0])
 
 
 def _pick(rng: np.random.Generator, seq: Sequence[Any]) -> Any:
