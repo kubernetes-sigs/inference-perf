@@ -13,6 +13,7 @@
    - [Storage](#storage)
    - [Tokenizer](#tokenizer)
    - [Credentials](#credentials)
+   - [Observability](#observability)
 3. [Full Configuration Examples](#full-configuration-examples)
 4. [Advanced Use Cases](#advanced-use-cases)
    - [OpenTelemetry Trace Replay](#opentelemetry-trace-replay)
@@ -395,6 +396,20 @@ Because the saved `config.yaml` is redacted, re-running from it needs the creden
 ```bash
 inference-perf --config_file reports-20260914-101500/config.yaml --server.api_key "$API_KEY"
 ```
+
+### Observability
+
+Runtime metrics inference-perf exports about the benchmark run itself (stage state, request counts, in-flight requests, latency histograms), as opposed to the server-side metrics it collects under [Metrics Collection](#metrics-collection). The metric set is documented in [runtime_metrics.md](./runtime_metrics.md).
+
+```yaml
+observability:
+  metrics:
+    enabled: true       # Serve the metrics over HTTP /metrics for Prometheus to scrape
+    host: "0.0.0.0"     # Bind address of the endpoint
+    port: 9464          # Port of the endpoint; 0 picks an ephemeral port (logged at startup)
+```
+
+Metrics are always collected in-process; `enabled` only controls the HTTP endpoint. It is on by default, so a run is observable without having been configured for it. If the port cannot be bound the run continues and the reports are unaffected: that is logged as a warning on the default port, where side-by-side runs on one host are expected to contend, and as an error on a port you asked for explicitly. Set `enabled: false` to keep the port free. For an in-cluster Job, point a `PodMonitor`/scrape config at the port; transient signals (current stage, in-flight requests) only exist while the run is active, so they need a scraper attached during the run.
 
 ## Full Configuration Examples
 

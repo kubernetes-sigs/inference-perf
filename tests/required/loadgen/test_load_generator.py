@@ -178,6 +178,8 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         active_counter.value = 0
         finished_counter = MagicMock()
         finished_counter.value = 0
+        skipped_counter = MagicMock()
+        skipped_counter.value = 0
         request_phase = MagicMock()
         cancel_signal = MagicMock()
 
@@ -195,6 +197,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
                 request_queue=request_queue,
                 active_requests_counter=active_counter,
                 finished_requests_counter=finished_counter,
+                skipped_requests_counter=skipped_counter,
                 request_phase=request_phase,
                 cancel_signal=cancel_signal,
                 timeout=5.0,
@@ -281,6 +284,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
             active_requests_counter=mp.Value("i", 0),
             finished_requests_counter=mp.Value("i", 0),
+            skipped_requests_counter=mp.Value("i", 0),
             request_phase=mp.Event(),
             cancel_signal=mp.Event(),
             timeout=None,
@@ -306,6 +310,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
             request_queue=MagicMock(put=MagicMock(), join=MagicMock()),
             active_requests_counter=mp.Value("i", 0),
             finished_requests_counter=finished_counter,
+            skipped_requests_counter=mp.Value("i", 0),
             request_phase=mp.Event(),
             cancel_signal=None,
         )

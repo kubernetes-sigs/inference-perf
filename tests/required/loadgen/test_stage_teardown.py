@@ -244,6 +244,7 @@ class _Harness:
         self.request_queue: RequestQueue[RequestQueueData] = RequestQueue(1)
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
+        self.skipped_counter = mp.Value("i", 0)
         self.request_phase = mp.Event()
         self.stop_signal = mp.Event()
         self.cancel_signal = mp.Event()
@@ -264,6 +265,7 @@ class _Harness:
             self.request_phase,
             self.finished_counter,
             self.active_counter,
+            self.skipped_counter,
             None,
             base_seed=42,
             force_stop_signal=self.force_stop_signal,
@@ -283,6 +285,7 @@ class _Harness:
             request_queue=self.request_queue,
             active_requests_counter=self.active_counter,
             finished_requests_counter=self.finished_counter,
+            skipped_requests_counter=self.skipped_counter,
             request_phase=self.request_phase,
             cancel_signal=self.cancel_signal,
             timeout=timeout,
