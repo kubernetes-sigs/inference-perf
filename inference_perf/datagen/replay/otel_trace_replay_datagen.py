@@ -63,7 +63,9 @@ import random
 from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
+from functools import partial
 from datasets import load_dataset, Dataset
+from inference_perf.utils.dataset import load_dataset_with_deadline
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplaySession,
@@ -233,6 +235,7 @@ def _load_files_to_dataset(files: List[Path], skip_invalid: bool) -> Dataset:
 
 def _download_hf_dataset(
     dataset_config: Union[str, Dict[str, Any]],
+    load_timeout: Optional[float],
 ) -> Dataset:
     """Load HuggingFace dataset and return it as a Dataset.
 
@@ -241,11 +244,13 @@ def _download_hf_dataset(
             - path (required): HuggingFace dataset identifier
             - Any other kwargs supported by datasets.load_dataset() (e.g., revision, split, etc.)
             - If 'split' is not provided, defaults to 'train'
+        load_timeout: Deadline in seconds for the loading call; None disables it.
 
     Returns:
         Dataset with trace records
 
     Raises:
+        TimeoutError: If dataset loading exceeds load_timeout.
         ValueError: If dataset cannot be downloaded, doesn't contain trace data, or schema is invalid
     """
     if isinstance(dataset_config, str):
@@ -268,12 +273,18 @@ def _download_hf_dataset(
         logger.info(f"Loading HuggingFace dataset: {dataset_path} with {load_kwargs.items()}")
 
         split = load_kwargs.pop("split", "train")
-        dataset = load_dataset(dataset_path, split=split, **load_kwargs)
+        dataset = load_dataset_with_deadline(
+            partial(load_dataset, dataset_path, split=split, **load_kwargs),
+            dataset_path,
+            load_timeout,
+        )
 
         _validate_dataset_schema(dataset, dataset_path)
         logger.info(f"Loaded {len(dataset)} trace records from HuggingFace dataset")
         return dataset
 
+    except TimeoutError:
+        raise
     except Exception as e:
         error_msg = str(e)
         if "gated dataset" in error_msg.lower() or "authenticated" in error_msg.lower():
@@ -376,7 +387,7 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             _validate_dataset_schema(dataset, str(self.otel_config.trace_files))
 
         elif self.otel_config.hf_dataset_path:
-            dataset = _download_hf_dataset(self.otel_config.hf_dataset_path)
+            dataset = _download_hf_dataset(self.otel_config.hf_dataset_path, config.load_timeout)
 
         else:
             raise ValueError(
