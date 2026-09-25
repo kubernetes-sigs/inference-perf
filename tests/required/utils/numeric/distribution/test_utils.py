@@ -15,7 +15,13 @@ import numpy as np
 import pytest
 
 from inference_perf.config import Distribution, DistributionType
-from inference_perf.utils.numeric.distribution import generate_distribution, sample_from_distribution
+from inference_perf.utils.numeric.distribution import (
+    generate_distribution,
+    sample_from_distribution,
+    sample_lengths,
+    sample_values,
+    value_ceiling,
+)
 
 
 class TestSampleFromDistribution:
@@ -135,3 +141,36 @@ class TestLegacyGenerateDistribution:
     def test_fixed_value(self) -> None:
         result = generate_distribution(min=42, max=42, mean=42, std_dev=0, total_count=100)
         assert all(v == 42 for v in result)
+
+
+# sample_values in fractional mode keeps fractions. Inputs: the number 0.25, the expression 'Uniform(0.1, 0.4)',
+# and a fixed Distribution with mean 0.3 (its default min of 10 must NOT clip it). Expected: 0.25 repeated, draws
+# strictly inside (0.1, 0.4) with a fractional part, and 0.3 repeated.
+def test_sample_values_fractional() -> None:
+    rng = np.random.default_rng(0)
+    assert np.all(sample_values(0.25, 3, rng, integer=False) == 0.25)
+    draws = sample_values("Uniform(0.1, 0.4)", 100, rng, integer=False)
+    assert np.all((draws > 0.1) & (draws < 0.4)) and np.any(draws != np.round(draws))
+    assert np.all(sample_values(Distribution(type=DistributionType.FIXED, mean=0.3), 3, rng, integer=False) == 0.3)
+
+
+# sample_values in integer mode matches sample_lengths draw for draw: same seed, same Distribution and expression.
+def test_sample_values_integer_matches_sample_lengths() -> None:
+    dist = Distribution(type=DistributionType.NORMAL, mean=100, std_dev=20, min=10, max=200)
+    for value in (dist, "Normal(100, 20)", 7):
+        a = sample_values(value, 50, np.random.default_rng(3), integer=True)
+        b = sample_lengths(value, 50, np.random.default_rng(3))
+        assert a.tolist() == b.tolist()
+
+
+# value_ceiling: the worst case each form can produce. Inputs and expected ceilings: the int 99 -> 99; a fixed
+# Distribution with mean 512 -> 512 (fixed is never clipped); a normal Distribution with max 1024 -> 1024;
+# 'Min(LogNormal(6, 0.5), 4096)' -> 4096; 'Normal(50, 10)' -> inf (unbounded);
+# 'Piecewise((1, Normal(0, 1) > 0), (2, True))' -> None (no interval rule, nothing proven).
+def test_value_ceiling() -> None:
+    assert value_ceiling(99) == 99.0
+    assert value_ceiling(Distribution(type=DistributionType.FIXED, mean=512)) == 512.0
+    assert value_ceiling(Distribution(type=DistributionType.NORMAL, mean=512, std_dev=10, max=1024)) == 1024.0
+    assert value_ceiling("Min(LogNormal(6, 0.5), 4096)") == 4096.0
+    assert value_ceiling("Normal(50, 10)") == float("inf")
+    assert value_ceiling("Piecewise((1, Normal(0, 1) > 0), (2, True))") is None
