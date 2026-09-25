@@ -58,7 +58,7 @@ from inference_perf.config import (
     DistributionType,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_from_distribution, sample_values
 
 from ..base import DataGenerator, LazyLoadDataMixin
 
@@ -385,11 +385,10 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             all_output_lens = [DEFAULT_OUTPUT_TOKENS_PER_TURN] * total_turns
 
         if cfg.tool_call_latency_sec is not None:
-            # Sample latencies as floats (seconds); re-use the same distribution
-            # machinery but convert from the integer output to float seconds.
-            all_tool_latencies: List[float] = [
-                float(v) for v in self._sample_distribution(cfg.tool_call_latency_sec, total_turns)
-            ]
+            # Latencies are seconds, so keep fractions: 0.3s must not round to 0.
+            all_tool_latencies: List[float] = sample_values(
+                cfg.tool_call_latency_sec, total_turns, self.rng, integer=False
+            ).tolist()
         else:
             all_tool_latencies = []
 
