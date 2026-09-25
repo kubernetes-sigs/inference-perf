@@ -53,6 +53,17 @@ class BaseGenerator(ABC):
         """
         return False
 
+    def preferred_worker_count(self) -> Optional[int]:
+        """How many distinct preferred worker ids this generator emits.
+
+        Only read when is_preferred_worker_requested() is True. The load
+        generator splits concurrency_level across at most this many workers,
+        so pinned routing never strands part of the level on workers the
+        pins cannot reach. None means unknown, and the split falls back to
+        num_workers.
+        """
+        return None
+
 
 class DataGenerator(BaseGenerator):
     """Request-based data generation for standard load types (CONSTANT, POISSON, CONCURRENT, TRACE_REPLAY)."""

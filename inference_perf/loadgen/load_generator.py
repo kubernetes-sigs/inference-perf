@@ -611,14 +611,37 @@ class LoadGenerator:
         """SIGINT handler that sets interrup_sig flag to True"""
         self.interrupt_sig = True
 
+    def _active_worker_count(self, concurrency_level: Optional[int]) -> int:
+        """Number of workers that can receive requests in a stage.
+
+        Routing (worker_id % active) and the concurrency split both use this
+        number, so a worker that gets no requests also gets no share of
+        concurrency_level. Two things shrink it below num_workers: a
+        concurrency_level smaller than num_workers, and a data generator
+        whose preferred_worker_id values reach fewer workers than exist.
+        """
+        active = self.num_workers
+        if concurrency_level:
+            active = min(active, concurrency_level)
+        if self.datagen.is_preferred_worker_requested():
+            pinned = self.datagen.preferred_worker_count()
+            if pinned:
+                active = min(active, pinned)
+        return max(1, active)
+
     def _set_worker_concurrency(self, concurrency_level: int) -> None:
         """Determines the per worker concurrency, handling cases where concurrency_level % num_workers != 0."""
+        active_workers = self._active_worker_count(concurrency_level)
         # Calculate new concurrency for worker (concurrency_level will always be > 0)
-        new_concurrency = concurrency_level // self.num_workers
+        new_concurrency = concurrency_level // active_workers
         # Calculate index cutoff for workers with +1 concurrency
-        remainder = concurrency_level % self.num_workers
+        remainder = concurrency_level % active_workers
         for worker in self.workers:
-            worker_concurrency = new_concurrency + 1 if worker.id < remainder else new_concurrency
+            if worker.id >= active_workers:
+                # Never routed to, so it must not hold any of the budget.
+                worker_concurrency = 0
+            else:
+                worker_concurrency = new_concurrency + 1 if worker.id < remainder else new_concurrency
             # Update the shared concurrency value to signal the worker to update its semaphore (needs to be synchronized with main process)
             if worker.shared_max_concurrency:
                 with worker.shared_max_concurrency.get_lock():
@@ -1206,10 +1229,9 @@ class LoadGenerator:
             data_generator = self.datagen.get_data()
         else:
             raise TypeError("run_stage requires DataGenerator, use run_session_stage for SessionGenerator")
-        active_workers = self.num_workers
-        if concurrency_level:
-            # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.
-            active_workers = min(self.num_workers, concurrency_level)
+        # Same count _set_worker_concurrency split the level over, so pinned
+        # requests only ever land on workers that hold a share of it.
+        active_workers = self._active_worker_count(concurrency_level)
 
         for _ in range(num_requests):
             request_data = next(data_generator)
