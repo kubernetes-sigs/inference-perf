@@ -274,3 +274,11 @@ class TestEvaluate:
         expr = Expression("10 - t", minimum=0)
         with pytest.raises(ValueError, match="t=20"):
             expr.evaluate(np.array([0.0, 5.0, 20.0]))
+
+
+# A bare 't' (and '1*t', which sympy folds back to 't') is a numeric value, not a
+# condition, even though sympy's Symbol subclasses Boolean. Expected: both construct,
+# and evaluate at t=3 gives 3.
+@pytest.mark.parametrize("raw", ["t", "1*t"])
+def test_bare_time_symbol_is_numeric(raw: str) -> None:
+    assert float(Expression(raw).evaluate(3.0)) == 3.0
