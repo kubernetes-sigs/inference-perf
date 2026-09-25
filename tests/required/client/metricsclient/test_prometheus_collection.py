@@ -148,7 +148,7 @@ class TestExecuteQueryHappyPath:
             get.return_value = _response(_vector("1.0"))
             client.execute_query("up", "100")
 
-        get.assert_called_once_with(QUERY_URL, headers={}, params={"query": "up", "time": "100"})
+        get.assert_called_once_with(QUERY_URL, headers={}, params={"query": "up", "time": "100"}, verify=True)
 
     # Prometheus returns values as strings with full float precision; 0.1234567891 is
     # rounded to 6 decimal places, so the result is 0.123457.
