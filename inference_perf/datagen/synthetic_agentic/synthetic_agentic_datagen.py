@@ -44,7 +44,7 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import (
     load_theme,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution.utils import sample_from_distribution
+from inference_perf.utils.numeric.distribution.utils import sample_from_distribution, sample_values
 
 if TYPE_CHECKING:
     from multiprocessing.managers import SyncManager
@@ -1684,7 +1684,7 @@ def build_graph_for_session(
             ]
             turn_id = f"{agent_prefix}:t{t}"
             tool_latency = cfg.tool_call_latency_sec or _FB_TOOL_LATENCY
-            turn_wait = int(sample_from_distribution(tool_latency, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000)
+            turn_wait = int(sample_values(tool_latency, 1, child_rng(seed, *agent_seed_path, t, 3), integer=False)[0] * 1000)
             is_last_turn = t == k - 1
             turn_is_terminal = is_last_turn and not will_spawn
             if turn_is_terminal:
@@ -2149,7 +2149,7 @@ def build_graph_for_session(
             think_dist = cfg.user_think_time_sec or _FB_USER_THINK
             # Sample as a float and scale to ms BEFORE truncating to int, so a
             # fractional-second mean (e.g. 0.5s) doesn't collapse to 0/1s.
-            principal_wait = int(sample_from_distribution(think_dist, 1, rng=child_rng(seed, r, 2))[0] * 1000)
+            principal_wait = int(sample_values(think_dist, 1, child_rng(seed, r, 2), integer=False)[0] * 1000)
 
         # Context compaction decision (PRE-turn): if extending the grown transcript
         # into THIS round would cross the trigger, compact instead — start fresh with

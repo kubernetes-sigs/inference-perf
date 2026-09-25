@@ -4523,3 +4523,16 @@ def test_dispatch_description_documents_the_envelope_and_ordering() -> None:
     assert "one at a time" in desc.lower(), "per-report (non-batched) delivery documented"
     assert DISPATCH_AGENT_TOOL_DEF["description"] == desc
     assert DISPATCH_AGENT_TOOL_DEF["function"]["description"] == desc
+
+
+# Tool-call latency and user think time are seconds, so fractions must survive into wait_ms. Inputs: 3 rounds,
+# tool latency fixed 0.25s, think time fixed 0.5s. Expected wait_ms values: 250 on tool turns, 500 on later
+# rounds' first turn, 0 on the very first turn. Integer sampling truncated both to 0.
+def test_fractional_latencies_reach_wait_ms() -> None:
+    cfg = _cfg(
+        turns_per_session=Distribution(type="fixed", mean=3),
+        tool_call_latency_sec=Distribution(type="fixed", mean=0.25),
+        user_think_time_sec=Distribution(type="fixed", mean=0.5),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    assert {ev.wait_ms for ev in g.events.values()} == {0, 250, 500}
