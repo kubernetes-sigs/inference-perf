@@ -141,6 +141,24 @@ class TraceSessionReplayLoadStage(LoadStage):
             "sessions_not_completed_pending."
         ),
     )
+    duration: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "Planned run length in seconds. When reached, the stage stops dispatching and "
+            "reports COMPLETED rather than FAILED. Sessions still running are cut short and "
+            "recorded as truncated: they are kept out of the session success/failure counts "
+            "and duration percentiles, while the requests they did complete still count. "
+            "In-flight requests finish within load.stage_teardown_grace_seconds and keep "
+            "their metrics. Must be shorter than timeout when both are set. "
+            "Whether the stage can fill its whole window depends on the data generator: "
+            "otel_trace_replay and synthetic_agentic replay the corpus once it is used up, "
+            "while weka_trace_replay builds every session up front and so ends when its "
+            "corpus does - grow that corpus (duplicate_sessions_target) to cover the "
+            "window. Either way a stage that falls short logs a warning saying by how "
+            "much. Optional."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -157,6 +175,36 @@ class TraceSessionReplayLoadStage(LoadStage):
 
         if self.timeout is not None:
             logger.warning("load.stages[].timeout is deprecated; use max_stage_duration instead.")
+
+        # Both fields stop the stage, so together they race, and a count-based win is the
+        # exact outcome duration was added to rule out: the stage would report COMPLETED
+        # for a time window it stopped short of running. Kept exclusive rather than
+        # letting one act as the other's safety net, which is what max_stage_duration is for.
+        if self.duration is not None and self.num_sessions is not None:
+            raise ValueError(
+                "duration and num_sessions cannot both be set: they are two stop conditions, "
+                "and whichever stop condition is reached first ends the stage. Running out of "
+                "sessions before the deadline would report COMPLETED for a time window that "
+                "was never run, which is what duration exists to prevent. Use duration to "
+                "bound a stage by time, or num_sessions to bound it by session count; for a "
+                "wall-clock safety net on a count-bounded stage, use max_stage_duration."
+            )
+
+        # duration is the planned stop and reports COMPLETED; max_stage_duration is the
+        # failure safety net and reports FAILED. If the net fires first, every
+        # duration-bounded run fails and duration silently does nothing, so require a real
+        # gap rather than only documenting one. timeout is the deprecated spelling of the
+        # same cap, so compare against whichever one is in effect.
+        effective_cap_field = "max_stage_duration" if self.max_stage_duration is not None else "timeout"
+        effective_cap = self.max_stage_duration if self.max_stage_duration is not None else self.timeout
+        if self.duration is not None and effective_cap is not None and self.duration >= effective_cap:
+            raise ValueError(
+                f"duration ({self.duration}) must be shorter than {effective_cap_field} "
+                f"({effective_cap}). duration is the planned stop and reports success; "
+                f"{effective_cap_field} is a safety limit that reports FAILED. With "
+                f"{effective_cap_field} <= duration the stage always fails before reaching "
+                f"its planned stop."
+            )
 
         return self
 

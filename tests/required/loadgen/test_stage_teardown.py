@@ -33,7 +33,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
-from typing import Generator, List, Optional, Tuple
+from typing import Any, Generator, List, Optional, Tuple
 
 import pytest
 
@@ -585,3 +585,73 @@ async def test_sweep_preprocess_timeout_is_bounded() -> None:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# --- partial progress flush at wind-down ----------------------------------
+#
+# A worker reports a session to the parent exactly once, when it reaches a terminal
+# state. A stage bounded by duration stops with sessions mid-flight, which never reach
+# one, so without a flush the parent has no record of them and reports zero events
+# completed for a session that may have got most of the way through.
+
+
+class _FlushRecordingDataGen:
+    def __init__(self) -> None:
+        self.flush_calls = 0
+
+    def flush_incomplete_sessions(self) -> None:
+        self.flush_calls += 1
+
+
+def _wind_down_worker(datagen: Any) -> Worker:
+    """A Worker with only the attributes _wind_down_stage reads."""
+    worker = object.__new__(Worker)
+    worker.id = 0
+    worker.draining = False
+    worker.teardown_grace_seconds = 0.0
+    worker.force_stop_signal = None
+    worker.datagen = datagen
+    return worker
+
+
+@pytest.mark.asyncio
+async def test_wind_down_flushes_partial_session_progress() -> None:
+    datagen = _FlushRecordingDataGen()
+    worker = _wind_down_worker(datagen)
+
+    await worker._wind_down_stage([])
+
+    assert datagen.flush_calls == 1, "the parent gets no record of a cut-short session without this"
+    assert worker.draining is False
+
+
+@pytest.mark.asyncio
+async def test_wind_down_flushes_even_when_a_task_had_to_be_cancelled() -> None:
+    """The cancellation path is exactly the one that leaves sessions unfinished.
+
+    If the flush only ran on the clean path it would never run when it matters.
+    """
+    datagen = _FlushRecordingDataGen()
+    worker = _wind_down_worker(datagen)
+
+    async def never_ends() -> None:
+        await asyncio.sleep(3600)
+
+    task = asyncio.ensure_future(never_ends())
+    await worker._wind_down_stage([task])
+
+    assert task.cancelled()
+    assert datagen.flush_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_wind_down_survives_a_datagen_that_cannot_flush() -> None:
+    """Only session-replay generators track per-event progress; the rest have no flush.
+
+    Wind-down must reach the stage rendezvous regardless, or the whole run hangs.
+    """
+    worker = _wind_down_worker(object())  # stands in for any non-replay generator
+
+    await worker._wind_down_stage([])
+
+    assert worker.draining is False

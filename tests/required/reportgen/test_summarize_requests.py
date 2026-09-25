@@ -10,6 +10,7 @@ from inference_perf.apis.base import (
     UnaryResponseMetrics,
     SessionLifecycleMetric,
 )
+from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
 from inference_perf.config.reportgen.config import RequestLifecycleMetricsReportConfig
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -857,3 +858,153 @@ def test_correct_streamed_response_metrics_anthropic_calculates_ttft_tpot_itl() 
     assert metrics["time_per_output_token"] == pytest.approx(1.25)  # (3.5 - 1.0) / (3 - 1)
     assert metrics["inter_token_latency"] == pytest.approx(1.25)  # mean([1.0, 1.5])
     assert metrics["inter_token_latency_deltas"] == [pytest.approx(1.0), pytest.approx(1.5)]
+
+
+# --- truncated sessions (stage duration boundary) ------------------------
+
+
+def _truncated_session(session_id: str = "cut", num_events: int = 5, num_events_completed: int = 2) -> SessionLifecycleMetric:
+    """A session cut short at the stage boundary: fewer events done than the graph holds."""
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"{session_id}.json",
+        start_time=0.0,
+        end_time=7.0,
+        duration_sec=7.0,
+        num_events=num_events,
+        num_events_completed=num_events_completed,
+        truncated=True,
+    )
+
+
+def test_enrich_sessions_truncated_is_neither_success_nor_failure() -> None:
+    """A truncated session gets success=None so it is not counted as a server failure.
+
+    Its events are incomplete by construction (the stage boundary stopped it), so the
+    normal `num_events_completed == num_events` rule would report it as FAILED.
+    """
+    truncated = _truncated_session()
+    ReportGenerator._enrich_sessions(None, [truncated], [])  # type: ignore[arg-type]
+
+    assert truncated.success is None
+
+    summary = ReportGenerator.summarize_sessions(None, [truncated], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["num_sessions"] == 1
+    assert summary["num_sessions_succeeded"] == 0
+    assert summary["num_sessions_failed"] == 0
+    assert summary["num_sessions_not_completed_active"] == 1
+
+
+def test_enrich_sessions_untruncated_still_fails_on_incomplete_events() -> None:
+    """The truncated guard must not mask a genuinely incomplete session."""
+    incomplete = _truncated_session(session_id="broken")
+    incomplete.truncated = False
+    ReportGenerator._enrich_sessions(None, [incomplete], [])  # type: ignore[arg-type]
+
+    assert incomplete.success is False
+
+
+def test_summarize_sessions_excludes_truncated_from_duration_percentiles() -> None:
+    """Truncated durations are censored, so they must not enter session_duration_sec.
+
+    A session stopped at the boundary ran *at least* that long; counting it as if it
+    finished drags every percentile down.
+    """
+    complete = _cache_session("done")
+    complete.duration_sec = 100.0
+    cut = _truncated_session("cut")
+    cut.duration_sec = 7.0
+
+    ReportGenerator._enrich_sessions(None, [complete, cut], [])  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, [complete, cut], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    # Only the completed session's 100s contributes.
+    assert summary["session_duration_sec"]["mean"] == pytest.approx(100.0)
+    assert summary["session_duration_sec"]["max"] == pytest.approx(100.0)
+    assert summary["num_sessions_not_completed_active"] == 1
+
+
+def test_summarize_sessions_all_truncated_gives_null_duration_not_crash() -> None:
+    """A stage where every session was cut short reports None, not an exception."""
+    sessions = [_truncated_session("a"), _truncated_session("b")]
+    ReportGenerator._enrich_sessions(None, sessions, [])  # type: ignore[arg-type]
+
+    summary = ReportGenerator.summarize_sessions(None, sessions, [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["session_duration_sec"] is None
+    assert summary["num_sessions_not_completed_active"] == 2
+
+
+def test_summarize_sessions_truncated_events_still_counted() -> None:
+    """Event aggregates stay inclusive: a truncated session's completed events are real."""
+    cut = _truncated_session("cut", num_events=5, num_events_completed=2)
+    ReportGenerator._enrich_sessions(None, [cut], [])  # type: ignore[arg-type]
+
+    summary = ReportGenerator.summarize_sessions(None, [cut], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["total_events"] == 5
+    assert summary["total_events_completed"] == 2
+
+
+def test_summarize_sessions_truncated_defaults_to_zero() -> None:
+    """Runs with no truncation report 0, so the key is always present in the report."""
+    summary = ReportGenerator.summarize_sessions(None, [_cache_session("s1")], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+    assert summary["num_sessions_not_completed_active"] == 0
+
+
+def test_summarize_sessions_does_not_double_count_stranded_sessions() -> None:
+    """A truncated row and the stage's stranded-active counter are the same session.
+
+    #786 derives ``num_sessions`` as ``len(metrics) + not_completed``, which is correct
+    only while a stranded session has no lifecycle row -- on main, loadgen builds one
+    solely for sessions that finished. A duration-bounded stage records the stragglers
+    too, so adding the counter on top counts each of them twice: a 10-session stage where
+    6 finished and 4 were cut short would report 14 sessions, and claim all 10 completed.
+    """
+    sessions = [_cache_session(f"done{i}") for i in range(6)]
+    sessions += [_truncated_session(f"cut{i}") for i in range(4)]
+    stage_info = StageRuntimeInfo(
+        stage_id=0,
+        rate=0.0,
+        start_time=0.0,
+        end_time=150.0,
+        status=StageStatus.COMPLETED,
+        sessions_not_completed_active=4,
+        sessions_not_completed_pending=0,
+    )
+
+    ReportGenerator._enrich_sessions(None, sessions, [])  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, sessions, [stage_info], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["num_sessions"] == 10, "every session counted exactly once"
+    assert summary["num_sessions_completed"] == 6
+    assert summary["num_sessions_not_completed"] == 4
+    assert summary["num_sessions_not_completed_active"] == 4
+
+
+def test_summarize_sessions_counts_never_dispatched_sessions_separately() -> None:
+    """A session that never started has no row, so the stage counter is its only record.
+
+    It must still reach num_sessions: dropping it would under-report the stage, which is
+    the visibility gap #786 set out to close.
+    """
+    stage_info = StageRuntimeInfo(
+        stage_id=0,
+        rate=0.0,
+        start_time=0.0,
+        end_time=150.0,
+        status=StageStatus.COMPLETED,
+        sessions_not_completed_active=1,
+        sessions_not_completed_pending=3,
+    )
+    sessions = [_cache_session("done"), _truncated_session("cut")]
+
+    ReportGenerator._enrich_sessions(None, sessions, [])  # type: ignore[arg-type]
+    summary = ReportGenerator.summarize_sessions(None, sessions, [stage_info], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    # 1 completed + 1 truncated row + 3 never dispatched.
+    assert summary["num_sessions"] == 5
+    assert summary["num_sessions_completed"] == 1
+    assert summary["num_sessions_not_completed_active"] == 1
+    assert summary["num_sessions_not_completed_pending"] == 3

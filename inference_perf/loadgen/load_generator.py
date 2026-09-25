@@ -472,6 +472,18 @@ class Worker(mp.Process):
                         logger.error(f"[Worker {self.id}] task failed during stage: {type(exc).__name__}: {exc}")
         finally:
             self.draining = False
+            # Sessions still open at this point end with the stage and never reach a
+            # terminal state, so they never report themselves to the main process. This
+            # worker's tracker holds the only record of how far each of them got; hand it
+            # over so they can be reported as truncated with real numbers instead of zeros.
+            # In the finally so it runs on every wind-down path, including cancellation -
+            # which is the path that leaves sessions unfinished in the first place.
+            flush = getattr(self.datagen, "flush_incomplete_sessions", None)
+            if flush is not None:
+                try:
+                    flush()
+                except Exception as e:
+                    logger.error(f"[Worker {self.id}] failed to flush partial session progress: {e}")
 
     def run(self) -> None:
         """Entry point in the worker process. Nothing below may escape unexplained."""
@@ -688,31 +700,54 @@ class LoadGenerator:
         max_stage_duration = (
             stage.max_stage_duration if stage.max_stage_duration else stage.timeout
         )  # timeout is deprecated, kept for legacy
+        duration = stage.duration
 
-        # Compute this stage's session slice from the cursor
+        # A duration-bounded stage draws sessions without limit: indices past the corpus
+        # resolve to further plays, so it fills its window instead of ending with the corpus.
+        can_cycle = self.datagen.supports_corpus_cycling()
+        cycle_corpus = duration is not None and can_cycle
+
         available_sessions = total_sessions - self._session_cursor
-        if available_sessions <= 0:
-            logger.warning(f"Stage {stage_id}: no sessions remaining in trace files, skipping")
+        if available_sessions <= 0 and not cycle_corpus:
+            # Same symptom, two causes needing different fixes: a corpus that is genuinely
+            # used up, or a replayable one this count-bounded stage simply won't replay.
+            if can_cycle:
+                logger.warning(
+                    f"Stage {stage_id}: corpus used up at index {self._session_cursor}, skipping - "
+                    f"this generator can replay its corpus, but only a duration-bounded stage does. "
+                    f"Give this stage a duration instead of num_sessions to replay, or run it before "
+                    f"the stage that used the corpus up."
+                )
+            else:
+                logger.warning(f"Stage {stage_id}: no sessions remaining in trace files, skipping")
             return
         effective_num_sessions = (
-            min(stage.num_sessions, available_sessions) if stage.num_sessions is not None else available_sessions
+            0
+            if cycle_corpus
+            else (min(stage.num_sessions, available_sessions) if stage.num_sessions is not None else available_sessions)
         )
 
         stage_start_cursor = self._session_cursor
-        self._session_cursor += effective_num_sessions
+        next_session_index = stage_start_cursor
+        # Where the supply runs out, or None while cycling - which is what leaves the
+        # deadline as the only thing that can end the stage.
+        session_supply_end: Optional[int] = None if cycle_corpus else stage_start_cursor + effective_num_sessions
+
+        def sessions_left_to_start() -> Optional[int]:
+            """Sessions not yet started, or None when the supply is unbounded."""
+            return None if session_supply_end is None else session_supply_end - next_session_index
 
         logger.info(
             f"Session pool: concurrent_sessions={concurrent_sessions}, "
             f"session_rate={session_rate}, max_stage_duration={max_stage_duration}, "
-            f"num_sessions={effective_num_sessions} (corpus offset {stage_start_cursor}), "
+            f"duration={duration}, "
+            f"num_sessions={'unbounded (corpus cycling)' if cycle_corpus else effective_num_sessions} "
+            f"(corpus offset {stage_start_cursor}), "
             f"total_sessions={total_sessions}"
         )
 
         # Track active sessions
         active_session_indices: Set[int] = set()  # Session indices currently active
-        pending_session_indices: List[int] = list(
-            range(stage_start_cursor, stage_start_cursor + effective_num_sessions)
-        )  # Sessions waiting to start
         completed_session_ids: Set[str] = set()  # Session IDs that have completed
         session_dispatch_times: Dict[str, float] = {}  # session_id → wall-clock dispatch time
         session_dispatch_perf_counters: Dict[str, float] = {}  # session_id → perf_counter dispatch time
@@ -726,13 +761,17 @@ class LoadGenerator:
         # Start stage-level span if trace_per_stage is enabled
         if otel_instr.trace_per_stage:
             stage_info: Dict[str, Union[int, float]] = {
-                "num_sessions": effective_num_sessions,
                 "concurrent_sessions": concurrent_sessions,
             }
+            # Omitted while cycling: the stage has no session count to report.
+            if session_supply_end is not None:
+                stage_info["num_sessions"] = effective_num_sessions
             if session_rate is not None:
                 stage_info["session_rate"] = session_rate
             if max_stage_duration is not None:
                 stage_info["max_stage_duration"] = max_stage_duration
+            if duration is not None:
+                stage_info["duration"] = duration
 
             stage_span, stage_context_dict = otel_instr.start_stage_span(stage_id, stage_info)
             logger.info(f"Started stage-level OTEL span for stage {stage_id}")
@@ -741,15 +780,32 @@ class LoadGenerator:
         sessions_dispatched = 0
         last_dispatch_time = start_time
         next_dispatch_time = start_time
+        # Skips in a row, and the point at which they mean the corpus itself is the problem.
+        # A skipped session never enters the pool, so it never counts against
+        # concurrent_sessions and never slows admission down. With a fixed slice that is
+        # harmless - the stage skips its share and ends. While cycling there is always
+        # another index, so a corpus with nothing buildable would be skipped over as fast as
+        # the process can loop, for the whole window, admitting nothing and growing the
+        # generator's index tables the entire time. One full pass with no session admitted
+        # is proof enough; anything buildable resets the count well before this.
+        consecutive_skipped_sessions = 0
+        unbuildable_corpus_limit = max(total_sessions, 1)
 
         def should_start_next_session() -> bool:
             """Check if we should start the next session."""
+            # Past the planned stop: admit nothing new. Checked here as well as at the
+            # loop exit because dispatch runs earlier in the same iteration, so without
+            # this a session could be started microseconds after the deadline only to be
+            # cut short immediately.
+            if duration is not None and time.perf_counter() - start_time >= duration:
+                return False
+
             # Check concurrency limit (0 = unlimited)
             if concurrent_sessions > 0 and len(active_session_indices) >= concurrent_sessions:
                 return False
 
-            # Check if there are pending sessions
-            if not pending_session_indices:
+            # Check if the supply is exhausted (never, while cycling)
+            if sessions_left_to_start() == 0:
                 return False
 
             # Check rate limit
@@ -763,6 +819,7 @@ class LoadGenerator:
         def dispatch_session(session_idx: int) -> int:
             """Dispatch all events for a session. Returns number of events dispatched."""
             nonlocal sessions_dispatched, last_dispatch_time, next_dispatch_time
+            nonlocal consecutive_skipped_sessions
 
             if not isinstance(self.datagen, SessionGenerator):
                 raise TypeError("Expected SessionGenerator for session-based operations")
@@ -775,7 +832,10 @@ class LoadGenerator:
             # skipped/failed session metric here instead of only marking them complete.
             if hasattr(self.datagen, "is_session_buildable") and not self.datagen.is_session_buildable(session_idx):
                 completed_session_ids.add(self.datagen._session_ids[session_idx])  # type: ignore[attr-defined]
+                consecutive_skipped_sessions += 1
                 return 0
+
+            consecutive_skipped_sessions = 0
 
             # Get session info
             session_info = self.datagen.get_session_info(session_idx)
@@ -783,7 +843,7 @@ class LoadGenerator:
 
             logger.debug(
                 f"Starting session {session_idx}: {session_id} "
-                f"({len(active_session_indices)} active, {len(pending_session_indices)} pending)"
+                f"({len(active_session_indices)} active, {sessions_left_to_start()} pending)"
             )
 
             # Start OTEL session span (as child of stage span if trace_per_stage is enabled)
@@ -837,7 +897,20 @@ class LoadGenerator:
         # Main dispatch and wait loop
         stage_task = None
         if progress_ctx:
-            stage_task = progress_ctx.add_task(description=f"Stage {stage_id} Sessions", total=effective_num_sessions)
+            # A cycling stage has no session count to count towards - effective_num_sessions
+            # is 0 for it - and a bar with a total of 0 sits at 0% printing "18/0" for the
+            # whole window. Its deadline is the thing it is actually progressing towards, so
+            # bar the elapsed time instead. That also restores the ETA, which needs a total.
+            stage_task = progress_ctx.add_task(
+                description=f"Stage {stage_id} {'Elapsed' if duration is not None else 'Sessions'}",
+                total=duration if duration is not None else effective_num_sessions,
+            )
+
+        def stage_progress() -> float | int:
+            """What the stage bar should read right now."""
+            if duration is None:
+                return len(completed_session_ids)
+            return min(time.perf_counter() - start_time, duration)
 
         while True:
             # Check for interrupts
@@ -919,7 +992,7 @@ class LoadGenerator:
 
                         logger.debug(
                             f"Session {session_idx} ({session_id}) completed "
-                            f"({len(completed_session_ids)}/{effective_num_sessions} total)"
+                            f"({len(completed_session_ids)}/{effective_num_sessions or 'unbounded'} total)"
                         )
 
             # Remove completed sessions from active pool and clean up memory
@@ -952,19 +1025,50 @@ class LoadGenerator:
 
             # Try to start new sessions to fill the pool
             while should_start_next_session():
-                session_idx = pending_session_indices.pop(0)
+                session_idx = next_session_index
+                next_session_index += 1
                 dispatch_session(session_idx)
+                if cycle_corpus and consecutive_skipped_sessions >= unbuildable_corpus_limit:
+                    break
 
-            # Check if we're done
-            if len(completed_session_ids) >= effective_num_sessions:
+            if cycle_corpus and consecutive_skipped_sessions >= unbuildable_corpus_limit:
+                logger.error(
+                    f"Stage {stage_id}: no session in the corpus could be built - "
+                    f"{consecutive_skipped_sessions} in a row were skipped, which is the whole corpus "
+                    f"of {total_sessions}. Replaying it would skip every session again, so the stage is "
+                    "stopped instead of running to its duration. Check that the trace files are the "
+                    "format this generator expects, and if include_errors is false, that not every "
+                    "recorded call errored."
+                )
+                stage_status = StageStatus.FAILED
+                break
+
+            # Only meaningful for a fixed slice: a cycling stage has no count to finish.
+            if session_supply_end is not None and len(completed_session_ids) >= effective_num_sessions:
                 logger.info(f"All {effective_num_sessions} sessions completed")
                 skipped = getattr(self.datagen, "_skipped_session_count", 0)
                 if skipped:
                     logger.warning(f"{skipped} session(s) were skipped (failed to build or had no schedulable events)")
                 break
 
-            # Check if we should stop (no more sessions to start or wait for)
-            if not pending_session_indices and not active_session_indices:
+            # Planned stop. stage_status is deliberately left RUNNING so the fall-through
+            # below marks it COMPLETED: this is a stop we asked for, not a failure. Any
+            # session still active is recorded as truncated after teardown rather than
+            # here, so that a session whose last request lands while the stage winds down
+            # is recorded as complete instead of truncated. Checked before the
+            # pending/active exit so a corpus that runs dry exactly at the deadline
+            # reports the planned stop rather than the short-corpus warning.
+            if duration is not None and time.perf_counter() - start_time >= duration:
+                logger.info(
+                    f"Stage {stage_id}: duration {duration:.1f}s reached; "
+                    f"{len(completed_session_ids)} session(s) completed, "
+                    f"{len(active_session_indices)} still running"
+                )
+                break
+
+            # Nothing left to start or wait for. While cycling this is None, never 0, so
+            # the stage runs to its deadline instead.
+            if sessions_left_to_start() == 0 and not active_session_indices:
                 logger.info("No more sessions to dispatch or wait for")
                 break
 
@@ -973,27 +1077,52 @@ class LoadGenerator:
 
             # Update progress
             if progress_ctx and stage_task:
-                progress_ctx.update(stage_task, completed=len(completed_session_ids))
+                progress_ctx.update(stage_task, completed=stage_progress())
 
-        # Clean up progress task
+        # Clean up progress task. One last update first: the loop breaks on its stop
+        # condition before the in-loop update runs again, so the bar would otherwise
+        # vanish reading short of the total it had just reached. Only the clean exits
+        # reach here with a task still set - every fault path above drops it, so a
+        # stage that failed is never shown as having got all the way.
         if progress_ctx and stage_task:
+            progress_ctx.update(stage_task, completed=stage_progress())
             progress_ctx.remove_task(stage_task)
+
+        # A duration-bounded stage that exited before its deadline ran out of corpus, so
+        # it measured a shorter window than was asked for. Only a generator that cannot
+        # replay its corpus reaches here: a cycling one draws further plays instead of
+        # running out. Checked here rather than at each break so every early-exit path is
+        # covered, and only while the status is still RUNNING — on a failure the shortfall
+        # is not the story.
+        if duration is not None and stage_status == StageStatus.RUNNING:
+            elapsed = time.perf_counter() - start_time
+            if elapsed < duration:
+                # Kept generic: weka_trace_replay grows its corpus with
+                # duplicate_sessions_target, and another non-cycling generator may size
+                # its corpus by some other setting.
+                logger.warning(
+                    f"Stage {stage_id}: corpus exhausted after {elapsed:.1f}s but duration="
+                    f"{duration:.1f}s was requested - the stage ran {duration - elapsed:.1f}s short "
+                    f"of the requested window. Grow the session corpus in the data config until "
+                    f"it covers the window."
+                )
 
         # Mark stage as completed if we finished normally
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
-        # Sessions stranded by an early exit (max_stage_duration exceeded, SIGINT, an open
-        # circuit breaker, or a dead worker): still dispatched but not finished, and
-        # never dispatched at all. On the normal completion path both sets are already
-        # empty here, so these are 0 for a cleanly COMPLETED stage.
-        sessions_not_completed_active = len(active_session_indices)
-        sessions_not_completed_pending = len(pending_session_indices)
-        if sessions_not_completed_active or sessions_not_completed_pending:
-            logger.warning(
-                f"Stage {stage_id}: {sessions_not_completed_active} session(s) still active and "
-                f"{sessions_not_completed_pending} session(s) never started when the stage ended"
-            )
+        # Sessions this stage never got to dispatch, dropped by an early exit
+        # (max_stage_duration exceeded, SIGINT, an open circuit breaker, or a dead worker).
+        # Taken from the cursor rather than a materialized pending list, because a cycling
+        # duration-bounded stage has an unbounded supply: no fixed set was promised, so
+        # nothing is left outstanding and the count is 0.
+        sessions_left = sessions_left_to_start()
+        sessions_not_completed_pending = max(0, sessions_left) if sessions_left is not None else 0
+        if sessions_not_completed_pending:
+            logger.warning(f"Stage {stage_id}: {sessions_not_completed_pending} session(s) never started when the stage ended")
+        # The stranded-active count is settled after teardown, by the truncation sweep below:
+        # a session whose last request lands inside the grace really does finish, so counting
+        # the pool here would contradict the lifecycle rows the report is built from.
 
         # The metrics window ends here: the teardown tail carries no offered
         # load, so including it would stretch every server-side rate average.
@@ -1007,6 +1136,64 @@ class LoadGenerator:
         teardown_duration = time.perf_counter() - teardown_start
         if not teardown.clean and stage_status == StageStatus.COMPLETED:
             stage_status = StageStatus.FAILED
+
+        # Sessions still active when the loop exited never reached the completion path
+        # above, so they produced no lifecycle metric and their OTEL span was never
+        # ended. Both are handled here — deliberately after teardown, because a session
+        # whose last request lands while in-flight work is winding down completes, and
+        # recording earlier would label it truncated when it is not. check_session_
+        # completed() drains the worker completion queue, so those late completions are
+        # picked up.
+        #
+        # This runs on every exit path, not just the duration one: a timeout, an
+        # interrupt or an open circuit breaker drops sessions the same way, and marking
+        # them truncated keeps them out of the success/failure counts either way. The
+        # requests they did complete are already in the request-level metrics.
+        sessions_truncated = 0
+        for session_idx in list(active_session_indices):
+            session_id = self.datagen.get_session_info(session_idx)["session_id"]
+            if session_id in completed_session_ids:
+                continue
+            session_completed = self.datagen.check_session_completed(session_id)
+            # Stamped with the boundary captured above, not the current time: the teardown
+            # tail is excluded from the metrics window, and reading the clock here would
+            # pull up to the whole grace into session_duration_sec (via a wind-down
+            # completion, which is not truncated) and into the span sessions_per_second
+            # divides by.
+            session_metric = self.datagen.build_session_metric(
+                session_id=session_id,
+                stage_id=stage_id,
+                start_time=session_dispatch_times.get(session_id, start_time_epoch),
+                end_time=end_time_epoch,
+            )
+            session_metric.dispatch_perf_counter = session_dispatch_perf_counters.get(session_id)
+            if not session_completed:
+                session_metric.truncated = True
+                sessions_truncated += 1
+            if self.session_metrics_collector:
+                self.session_metrics_collector.record_metric(session_metric)
+            if session_id in session_spans:
+                otel_instr.end_session_span(
+                    session_spans[session_id],
+                    None if session_completed else "Session cut short at stage boundary",
+                )
+                del session_spans[session_id]
+            self.datagen.cleanup_session(session_id)
+
+        # One source of truth for stranded actives: every session still unfinished after the
+        # grace got a truncated row just above, and every row counted here has one.
+        sessions_not_completed_active = sessions_truncated
+        if sessions_truncated:
+            logger.warning(
+                f"Stage {stage_id}: {sessions_truncated} session(s) cut short at the stage boundary; "
+                f"recorded as truncated and excluded from the session success/failure counts and "
+                f"duration percentiles"
+            )
+
+        # The next index this stage would have handed out, so a stage that stopped early does
+        # not burn sessions it never started, and slots whose graph failed to build still
+        # count as consumed rather than being retried by the next stage.
+        self._session_cursor = next_session_index
 
         # End stage-level span if trace_per_stage is enabled
         if stage_span is not None:
@@ -1026,6 +1213,7 @@ class LoadGenerator:
             status=stage_status,
             concurrency_level=concurrent_sessions,
             max_stage_duration=max_stage_duration,
+            duration=duration,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
             sessions_not_completed_active=sessions_not_completed_active,

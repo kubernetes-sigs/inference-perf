@@ -565,9 +565,10 @@ load:
   type: trace_session_replay                      # Required for otel_trace_replay
   stages:
     - concurrent_sessions: 4                      # Max sessions active simultaneously
-      num_sessions: 20                            # Run 20 sessions in this stage
+      num_sessions: 20                            # Run 20 sessions in this stage (omit when using duration)
       session_rate: 2.0                           # Optional: start max 2 sessions/sec
-      max_stage_duration: 300                     # Optional: Max stage duration in seconds, session exceeding it are aborted
+      duration: 1800                              # Optional: planned stop after 30 min; stage reports COMPLETED
+      max_stage_duration: 2100                    # Optional: safety limit; reports FAILED. Must exceed duration
   num_workers: 4                                  # Worker processes
   worker_max_concurrency: 10                      # Max concurrent requests per worker
 ```
@@ -586,8 +587,16 @@ load:
 - Omit for no rate limiting
 - Useful for controlled ramp-up scenarios
 
+**`duration`** (optional): Planned stage length in seconds — bound the stage by time rather than by session count
+- At the deadline the stage stops dispatching and exits as COMPLETED
+- Sessions still running are recorded as truncated: counted under `num_sessions_not_completed_active`, and left out of the session success/failure counts and duration percentiles. The requests they completed still count
+- Each truncated session still reports its own split — `num_events_completed` plus `num_events_cancelled` adds up to `num_events`, with `success: null` — so being excluded from the aggregates does not mean being unaccounted for
+- Whether the window is filled depends on the data generator. `otel_trace_replay` and `synthetic_agentic` replay their corpus once it is used up, each replay under its own session ID, so the corpus need not be sized by hand — and `duplicate_sessions_target` is rejected with `duration` for these two, since both would mint the same `_dupN` IDs. `weka_trace_replay` builds every session up front and so ends when its corpus does; raise its `duplicate_sessions_target` to cover the window. Either way a stage that falls short logs a warning saying by how much
+- Wall-clock time is `duration` plus teardown, since in-flight requests are given a chance to finish
+
 **`max_stage_duration`** (optional): Wall-clock safety limit
 - If exceeded, in-flight sessions are cancelled and stage exits as FAILED
+- Distinct from `duration`: this is the fault signal, `duration` is the planned stop. Must be longer than `duration` when both are set
 
 #### Trace File Format
 

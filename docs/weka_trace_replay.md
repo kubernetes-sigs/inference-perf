@@ -78,27 +78,36 @@ See the [Reporting section of config.md](config.md#reporting) for details on `pe
 
 ## ⏱️ Stage Timing
 
-`trace_session_replay` stages (shared with OTel trace replay) support two independent
+`trace_session_replay` stages (shared with OTel trace replay) support three independent
 timing controls:
 
 | Setting | Scope | Description |
 |---------|-------|-------------|
+| `stages[].duration` | Per stage | Optional planned stage length in seconds, used instead of `num_sessions`. The stage stops dispatching at the deadline and reports `COMPLETED` |
 | `stages[].max_stage_duration` | Per stage | Optional wall-clock cap in seconds. Omit to run until every session in the stage completes. If exceeded, in-flight sessions are cancelled, never-started sessions are dropped, and the stage is marked failed/timed out. Stranded sessions are counted in the stage report as `sessions_not_completed_active` / `sessions_not_completed_pending` |
 | `stage_teardown_grace_seconds` | Global (`load.`) | How long in-flight requests get to finish after a stage ends, for any reason, before being force-cancelled. Default `120.0`. Reported separately as `teardown_duration`, excluded from the stage's metrics window |
+
+### Bounding a stage by time instead of session count
+
+These corpora are large and usually are not replayed in full — the useful measurement is sustained load over a fixed window. Set `duration` on the stage instead of `num_sessions`:
 
 ```yaml
 load:
   type: trace_session_replay
   stages:
     - concurrent_sessions: 16
-      num_sessions: 391
-      max_stage_duration: 600
+      duration: 1800              # hold 16 conversations open for 30 minutes
+      max_stage_duration: 2100    # safety net; must be longer than duration
   stage_teardown_grace_seconds: 30
 ```
 
-See [OTel Trace Replay: Stage Timing](otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds)
-for the full explanation and a worked timeline — the config, load generator, and session
-report shape are identical between the two datagens.
+At the deadline the stage stops dispatching and reports `COMPLETED` (not `FAILED`, which is what using `max_stage_duration` alone would give you). Sessions still running are recorded as **truncated**: counted under `num_sessions_not_completed_active` and kept out of the session success/failure counts and duration percentiles, while the requests they completed still count. Each one still reports its own event split — `num_events_completed` plus `num_events_cancelled` adds up to `num_events` — so a session cut off by the deadline is excluded from the aggregates without being unaccounted for.
+
+**Unlike `otel_trace_replay`, this generator does not replay its corpus to fill the window.** It builds every session up front and holds them all in memory, so a session cannot be rebuilt once it has run and been released — replaying one would mean keeping the whole corpus alive for the whole run. The corpus therefore has to be large enough to fill the window, since each session is drawn once; if it runs out early the stage ends short and logs a warning saying by how much. Raise `duplicate_sessions_target` until the corpus covers the window. (That combination is rejected for `otel_trace_replay`, which replays instead — here it is the intended way to cover a window.)
+
+See [OTel Trace Replay](otel_trace_replay.md#bounding-a-stage-by-time) for the rest of the description, and [OTel Trace Replay: Stage Timing](otel_trace_replay.md#stage-timing-max_stage_duration-and-stage_teardown_grace_seconds)
+for a worked timeline — the config, load generator, and session report shape are identical
+between the two datagens, except for corpus replay.
 
 ---
 

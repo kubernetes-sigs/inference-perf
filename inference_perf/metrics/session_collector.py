@@ -89,4 +89,8 @@ class SessionMetricsCollector:
             request_error = error_by_session.get(sm.session_id)
             if request_error is not None:
                 sm.error = request_error
-            sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
+            # Mirrors ReportGenerator._enrich_sessions: a session cut short at the stage
+            # boundary is not a failure, so it is left None rather than False. This copy
+            # has no callers today (report generation uses _enrich_sessions), but the two
+            # must not disagree if it is ever wired up.
+            sm.success = None if sm.truncated else ((sm.num_events_completed == sm.num_events) and (sm.error is None))

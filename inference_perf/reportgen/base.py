@@ -1186,10 +1186,26 @@ class ReportGenerator:
         max_error_messages: int = 100,
     ) -> Dict[str, Any]:
         """Compute aggregated stats across a list of session lifecycle metrics."""
-        num_sessions = len(metrics)
+        num_sessions_recorded = len(metrics)
         num_succeeded = sum(1 for m in metrics if m.success is True)
         num_failed = sum(1 for m in metrics if m.success is False)
-        sessions_not_completed_active = sum(s.sessions_not_completed_active for s in stage_infos)
+        # Sessions cut short at the stage boundary. Their success is left None by
+        # _enrich_sessions so they fall out of both counts above, and their duration is
+        # censored (we know the session ran at least that long, not how long it takes)
+        # so it is excluded from the percentiles below. Event and token aggregates stay
+        # inclusive: those events really did complete.
+        completed_metrics = [m for m in metrics if not m.truncated]
+        num_sessions_completed = len(completed_metrics)
+        # A stranded active session reaches us two ways, and they overlap rather than add.
+        # A stage that stopped at its duration records each straggler as a truncated row and
+        # counts it; a stage killed by max_stage_duration cancels its stragglers and can only
+        # count them, because there is no row to record. So take whichever view is larger:
+        # summing would count every truncated row twice, and using the counter alone would
+        # lose rows if a caller reports none.
+        sessions_not_completed_active = max(
+            sum(s.sessions_not_completed_active for s in stage_infos),
+            num_sessions_recorded - num_sessions_completed,
+        )
         sessions_not_completed_pending = sum(s.sessions_not_completed_pending for s in stage_infos)
         sessions_not_completed = sessions_not_completed_active + sessions_not_completed_pending
         total_events = sum(m.num_events for m in metrics)
@@ -1233,10 +1249,12 @@ class ReportGenerator:
         }
 
         sessions_per_second = 0.0
-        if num_sessions > 0:
+        if num_sessions_recorded > 0:
             total_span = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
             if total_span > 0:
-                sessions_per_second = num_sessions / total_span
+                # Every recorded session was dispatched inside the window, truncated or not,
+                # so all of them count towards the rate actually driven.
+                sessions_per_second = num_sessions_recorded / total_span
 
         # Bucketed on the stable cause code carried as error_type, mirroring the
         # request-side shape from #601. Sessions counted as failed but carrying
@@ -1284,8 +1302,8 @@ class ReportGenerator:
         ]
 
         return {
-            "num_sessions": num_sessions + sessions_not_completed,
-            "num_sessions_completed": num_sessions,
+            "num_sessions": num_sessions_completed + sessions_not_completed,
+            "num_sessions_completed": num_sessions_completed,
             "num_sessions_succeeded": num_succeeded,
             "num_sessions_failed": num_failed,
             "num_sessions_not_completed": sessions_not_completed,
@@ -1302,7 +1320,7 @@ class ReportGenerator:
             "total_recorded_substitutions": total_recorded_substitutions,
             **retry_summary,
             "sessions_per_second": sessions_per_second,
-            "session_duration_sec": summarize([m.duration_sec for m in metrics], percentiles),
+            "session_duration_sec": summarize([m.duration_sec for m in completed_metrics], percentiles),
             "num_events": summarize([float(m.num_events) for m in metrics], percentiles),
             "num_events_cancelled": summarize(
                 [float(m.num_events_cancelled) for m in metrics if m.num_events_cancelled is not None], percentiles
@@ -1401,7 +1419,12 @@ class ReportGenerator:
             # the session recorded no cause of its own.
             if request_error is not None and sm.error is None:
                 sm.error = request_error
-            sm.success = (sm.num_events_completed == sm.num_events) and (sm.error is None)
+            # A session cut short at the stage boundary has incomplete events by
+            # construction, so the rule below would mark it failed for something the
+            # server did not do. None keeps it out of both num_sessions_succeeded and
+            # num_sessions_failed, which test `is True` / `is False`; it is reported
+            # under num_sessions_not_completed_active instead.
+            sm.success = None if sm.truncated else ((sm.num_events_completed == sm.num_events) and (sm.error is None))
 
             # Compute TFUT
             ReportGenerator._compute_tfut(sm, requests_by_session_event.get(sm.session_id, {}))
@@ -1519,6 +1542,7 @@ class ReportGenerator:
                         "stage_id": stage_id,
                         "status": status_str,
                         "max_stage_duration_configured": stage_info.max_stage_duration,
+                        "duration_configured": stage_info.duration,
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,
