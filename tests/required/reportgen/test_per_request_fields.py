@@ -152,3 +152,18 @@ def test_per_request_fields_computed_metrics_uses_tokenizer_corrected_chunks() -
     # The correction sets output_token_times only; output_tokens keeps the API layer's
     # whole-message count (see #564).
     assert entry["computed_metrics"]["output_tokens"] == 4
+
+
+def test_per_request_fields_include_session_id_when_set() -> None:
+    metric = _metric()
+    metric.session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
+
+    assert entry["session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+
+
+def test_per_request_fields_omit_session_id_when_absent() -> None:
+    entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
+
+    assert "session_id" not in entry

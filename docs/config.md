@@ -330,6 +330,10 @@ report:
 Setting `info: false` removes the entire `info` block, including
 `response_chunks`; in that case `response_chunks` has no effect.
 
+In `trace_session_replay` runs, each entry also carries a top-level
+`session_id` naming the session the request belongs to, regardless of
+`per_request_fields`. Other workloads do not set it.
+
 `computed_metrics` (off by default) adds a `computed_metrics` block to each
 successful entry with `request_latency`, `normalized_time_per_output_token`,
 `time_to_first_token`, `time_per_output_token`, `inter_token_latency` (mean),
