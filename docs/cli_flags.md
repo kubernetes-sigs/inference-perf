@@ -23,12 +23,52 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
 | `--data.input_distribution` | string | Input (prompt) length distribution in tokens: a distribution, or (for the 'synthetic' and 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's min/max as filter bounds. |
+| `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.input_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.input_distribution.mean` | float | Mean of the distribution. |
+| `--data.input_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.input_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.input_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.input_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.input_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.output_distribution` | string | Output length distribution in tokens: a distribution, or (for the 'synthetic' and 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's min/max as filter bounds. |
+| `--data.output_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.output_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.output_distribution.mean` | float | Mean of the distribution. |
+| `--data.output_distribution.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.output_distribution.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.num_groups` | int | Number of unique system prompts (shared prefix groups) to generate. |
 | `--data.shared_prefix.num_prompts_per_group` | int | Number of prompts generated per shared system prompt. |
 | `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
+| `--data.shared_prefix.system_prompt_len.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.system_prompt_len.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.system_prompt_len.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.system_prompt_len.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.system_prompt_len.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.system_prompt_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.system_prompt_len.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.system_prompt_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
+| `--data.shared_prefix.question_len.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.question_len.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.question_len.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.question_len.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.question_len.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.question_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.question_len.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.question_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value, a distribution, or an expression string like 'Normal(512, 200)'. |
+| `--data.shared_prefix.output_len.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.output_len.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.output_len.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.output_len.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.output_len.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.output_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.output_len.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.output_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.max_model_len` | int | Maximum model context length in tokens for multi-turn sessions. Defaults to 225000 when omitted, matching conversation_replay. |
 | `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
 | `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -57,6 +97,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.image.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.image.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.image.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.image.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.image.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.image.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.image.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.image.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.shared_prefix.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
 | `--data.shared_prefix.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -68,6 +116,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.video.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.video.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.video.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.video.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.video.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.video.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.video.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.video.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.shared_prefix.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
 | `--data.shared_prefix.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -79,6 +135,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.shared_prefix.multimodal.audio.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
 | `--data.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
@@ -89,6 +153,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.image.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.image.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.image.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.image.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.image.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.image.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.multimodal.image.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.image.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.image.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.image.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.image.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.image.resolutions` | JSON | Resolution or list of weighted resolutions for generated images. |
 | `--data.multimodal.image.representation` | Enum (png, jpeg, webp) | Wire encoding for emitted image bytes: ``png`` (default, lossless) or ``jpeg`` (lossy, smaller payload). Some VLMs prefer one or the other; consult the model's spec sheet. |
 | `--data.multimodal.video.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -100,6 +172,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.video.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.video.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.video.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.video.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.video.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.video.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.multimodal.video.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.video.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.video.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.video.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.video.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.video.profiles` | JSON | Video profile or list of weighted video profiles for generated videos. |
 | `--data.multimodal.video.representation` | Enum (mp4, png_frames, jpeg_frames) | Wire-format strategy. ``mp4`` sends one ``video_url`` block carrying an MP4 blob (measures full pipeline including server-side decode). ``png_frames`` and ``jpeg_frames`` send ``frames`` × ``image_url`` blocks at one insertion point in the named encoding (no decode dependency, useful for prefix-cache benchmarks and servers that don't accept ``video_url``). |
 | `--data.multimodal.audio.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -111,6 +191,14 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.multimodal.audio.count.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.multimodal.audio.count.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.audio.insertion_point` | string | Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from. |
+| `--data.multimodal.audio.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.multimodal.audio.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.multimodal.audio.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.multimodal.audio.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.multimodal.audio.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.multimodal.audio.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.multimodal.audio.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.multimodal.audio.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.multimodal.audio.durations` | JSON | Duration or list of weighted durations for generated audio clips. |
 | `--data.trace.file` | str | Path to the trace file to replay. |
 | `--data.trace.format` | Enum (AzurePublicDataset) | Format of the trace file. |
@@ -174,10 +262,50 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |
 | `--data.conversation_replay.dynamic_system_prompt_len` | string | Per-conversation dynamic system prompt length distribution |
+| `--data.conversation_replay.dynamic_system_prompt_len.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.dynamic_system_prompt_len.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.dynamic_system_prompt_len.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.dynamic_system_prompt_len.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.dynamic_system_prompt_len.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.dynamic_system_prompt_len.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.dynamic_system_prompt_len.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.dynamic_system_prompt_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.turns_per_conversation` | string | Number of turns per conversation distribution |
+| `--data.conversation_replay.turns_per_conversation.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.turns_per_conversation.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.turns_per_conversation.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.turns_per_conversation.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.turns_per_conversation.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.turns_per_conversation.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.turns_per_conversation.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.turns_per_conversation.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.input_tokens_per_turn` | string | Input tokens per turn distribution |
+| `--data.conversation_replay.input_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.input_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.input_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.input_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.input_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.input_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.input_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.input_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.output_tokens_per_turn` | string | Output tokens per turn distribution |
+| `--data.conversation_replay.output_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.output_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.output_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.output_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.output_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.output_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.output_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.output_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.tool_call_latency_sec` | string | Per-turn tool execution latency distribution in seconds. When set, each turn sleeps for the sampled duration after model inference completes and before the next turn begins, simulating tool call round-trips. The sleep holds the session lock so the GPU is free to serve other concurrent conversations — correctly modelling offline agentic workloads. Omit for pure GPU throughput measurement. Values are in seconds; min/max are whole seconds, mean/std_dev may be fractional. |
+| `--data.conversation_replay.tool_call_latency_sec.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.conversation_replay.tool_call_latency_sec.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.conversation_replay.tool_call_latency_sec.mean` | float | Mean of the distribution. |
+| `--data.conversation_replay.tool_call_latency_sec.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.conversation_replay.tool_call_latency_sec.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.conversation_replay.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.conversation_replay.tool_call_latency_sec.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.conversation_replay.tool_call_latency_sec.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.conversation_replay.max_model_len` | int | Maximum model context length in tokens |
 | `--data.visionarena.hf_dataset_name` | str | HuggingFace dataset identifier; override only when mirroring the dataset elsewhere. |
 | `--data.visionarena.hf_split` | str | HuggingFace split to stream. |
@@ -185,6 +313,14 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.visionarena.num_rows` | int | Number of usable rows to stream into the in-memory request pool at startup. Caps memory use; the benchmark cycles through this pool. |
 | `--data.visionarena.max_images_per_request` | int | Cap on images attached per request; truncates a row's image list. |
 | `--data.visionarena.insertion_point` | string | Placement of the image block(s) within the prompt text. Float in [0.0, 1.0] (0=start, 1=end), or a Distribution to sample per request. |
+| `--data.visionarena.insertion_point.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.visionarena.insertion_point.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.visionarena.insertion_point.mean` | float | Mean of the distribution. |
+| `--data.visionarena.insertion_point.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.visionarena.insertion_point.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.visionarena.insertion_point.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.visionarena.insertion_point.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.visionarena.insertion_point.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.use_static_model` | boolean | Use a single static model for all requests |
 | `--data.synthetic_agentic.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.synthetic_agentic.model_mapping` | JSON | Map recorded model names to target models |
@@ -200,23 +336,111 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.synthetic_agentic.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
 | `--data.synthetic_agentic.num_sessions` | int | Number of sessions (load volume) |
 | `--data.synthetic_agentic.input_tokens_per_turn` | string | per-turn input tokens |
+| `--data.synthetic_agentic.input_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.input_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.input_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.input_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.input_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.input_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.input_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.input_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.output_tokens_per_turn` | string | per-turn output tokens (plain-text turns) |
+| `--data.synthetic_agentic.output_tokens_per_turn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.output_tokens_per_turn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.output_tokens_per_turn.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.output_tokens_per_turn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.output_tokens_per_turn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.output_tokens_per_turn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.output_tokens_per_turn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.output_tokens_per_turn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.turns_per_session` | string | N user turns to the root agent (each triggers one agent run); default 1 = autonomous single-turn |
+| `--data.synthetic_agentic.turns_per_session.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.turns_per_session.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.turns_per_session.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.turns_per_session.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.turns_per_session.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.turns_per_session.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.turns_per_session.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.turns_per_session.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.fanout_probability` | float | Probability an agent spawns sub-agents (instead of just answering), rolled fresh for each of the root's turns and once for each sub-agent. Default 0 = single-agent; 1 = always spawn (full tree to max_depth). |
 | `--data.synthetic_agentic.theme_mix` | JSON | theme name -> weight. Preferred form is an explicit block, `{name: {weight: W}}`; a bare float `{name: W}` is also accepted for brevity. Default is an equal mix of the four built-in themes. Use theme_weights() to read normalized {name: float}. |
 | `--data.synthetic_agentic.seed` | int | Base seed for stable per-session RNG |
 | `--data.synthetic_agentic.shared_system_prompt_len` | int | Tokens of a fixed system-prompt head that opens EVERY agent call (the standing 'system head' real agents carry: tool instructions, policies). Defaults to 1000 because virtually every agentic flow ships a non-trivial system prompt; set 0 only for a deliberately head-less baseline. |
 | `--data.synthetic_agentic.tool_loop_depth` | string | How many times an agent goes around its tool loop before answering -- each iteration is a model call that emits a tool call and gets a result. 0 = answer directly (no tool loop). Then the agent makes one more model call for its final answer, so total model calls = this value + 1. Drawn fresh for each of the root's turns, and once for each sub-agent. Fallback fixed 2. |
+| `--data.synthetic_agentic.tool_loop_depth.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.tool_loop_depth.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.tool_loop_depth.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.tool_loop_depth.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.tool_loop_depth.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.tool_loop_depth.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.tool_loop_depth.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.tool_loop_depth.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.sub_agents_per_spawn` | string | K children per spawn (fallback uniform 2-4) |
+| `--data.synthetic_agentic.sub_agents_per_spawn.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.sub_agents_per_spawn.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.max_depth` | int | Hard recursion terminator |
 | `--data.synthetic_agentic.max_events_per_session` | int | Self-limiting event budget |
 | `--data.synthetic_agentic.tool_catalog_size_per_agent` | string | advertised tool-catalog size per agent (fallback fixed 8) |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.tool_catalog_size_per_agent.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.parallel_tool_calls_per_step` | string | parallel tool calls emitted in one step's tool round (fallback fixed 1) |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.parallel_tool_calls_per_step.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.tool_call_latency_sec` | string | Pause between an agent's steps, in seconds, modelling how long a tool takes to run (the tool round-trip). Held as an offline wait that frees the GPU. Omit to use the default (fixed 1s). |
+| `--data.synthetic_agentic.tool_call_latency_sec.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.tool_call_latency_sec.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.tool_call_latency_sec.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.tool_call_latency_sec.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.tool_call_latency_sec.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.tool_call_latency_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.tool_call_latency_sec.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.tool_call_latency_sec.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.user_think_time_sec` | string | Pause before each follow-up turn (turns 2..N), in seconds, modelling the user's read/think/reply time. Omit to use the default (fixed 10s). |
+| `--data.synthetic_agentic.user_think_time_sec.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.user_think_time_sec.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.user_think_time_sec.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.user_think_time_sec.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.user_think_time_sec.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.user_think_time_sec.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.user_think_time_sec.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.user_think_time_sec.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.max_model_len` | int | Fail-fast context-length ceiling (tokens). When set, a config whose single largest request -- worst-case inputs (system head + tool catalog + accumulated turns + tool loop) plus the output to generate -- would exceed this is rejected at load, instead of 400-ing mid-run. Uses each distribution's clip ceiling (`max`) as the worst case. Excludes the model's per-message chat-template wrapper (~10-15 tok/msg), so set this at or a little below your model's true window. Omit to skip the check. |
 | `--data.synthetic_agentic.context_compaction.trigger_tokens` | string | When a round's accumulated principal input (message content + advertised tool catalog) would cross this many tokens, the NEXT round starts fresh with a summary block replacing the grown transcript. Sampled per session. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.context_compaction.trigger_tokens.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.synthetic_agentic.context_compaction.target_tokens` | string | Size (tokens) of the summary block that replaces the transcript on compaction. Sampled per session. Set it to the size you want the post-compaction context to have -- typically a fraction of the trigger (a real compaction reduces a bloated window to ~20-40% of its size). |
+| `--data.synthetic_agentic.context_compaction.target_tokens.min` | int | Smallest value the distribution can produce; samples below are clamped. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.max` | int | Largest value the distribution can produce; samples above are clamped. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.mean` | float | Mean of the distribution. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.std_dev` | float | Standard deviation of the distribution. Exclusive with 'variance'. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.total_count` | int | Total number of values to sample from the distribution. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
+| `--data.synthetic_agentic.context_compaction.target_tokens.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.use_chat_template` | boolean | Wrap each generated prompt in the tokenizer's chat template as a single user turn before sending it on the completions path, reproducing the request shape of harnesses that benchmark with chat templating enabled. The input length distribution targets the fully templated prompt, so the server-side prefill token count still matches the configured length. Only supported by the 'random' type; setting it with any other type is a config error. |
 | `--load.type` | Enum (constant, poisson, trace_replay, concurrent, trace_session_replay) | Load pattern used to schedule requests. |
 | `--load.interval` | float | Seconds to wait between stages. |
