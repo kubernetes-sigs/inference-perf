@@ -282,3 +282,45 @@ class TestEvaluate:
 @pytest.mark.parametrize("raw", ["t", "1*t"])
 def test_bare_time_symbol_is_numeric(raw: str) -> None:
     assert float(Expression(raw).evaluate(3.0)) == 3.0
+
+
+# bounds: provable (lower, upper) over every value. Inputs and expected bounds:
+#   Min(LogNormal(6, 0.5), 4096) -> (0, 4096)     a capped long tail
+#   Min(2*Uniform(10, 20), 30)   -> (20, 30)      arithmetic inside Min
+#   Uniform(10, 20) + Uniform(0, 5) -> (10, 25)   sums of supports
+#   128 + Poisson(64)            -> (128, inf)    unbounded above
+#   Abs(Normal(0, 1))            -> (0, inf)      the skew_normal building block
+#   Beta(2, 5)                   -> (0, 1)
+#   5 + t/2 with duration 60     -> (5, 35);  without a duration -> (5, inf)
+#   512                          -> (512, 512)
+@pytest.mark.parametrize(
+    ("raw", "duration", "expected"),
+    [
+        ("Min(LogNormal(6, 0.5), 4096)", None, (0.0, 4096.0)),
+        ("Min(2*Uniform(10, 20), 30)", None, (20.0, 30.0)),
+        ("Uniform(10, 20) + Uniform(0, 5)", None, (10.0, 25.0)),
+        ("128 + Poisson(64)", None, (128.0, float("inf"))),
+        ("Abs(Normal(0, 1))", None, (0.0, float("inf"))),
+        ("Beta(2, 5)", None, (0.0, 1.0)),
+        ("5 + t/2", 60.0, (5.0, 35.0)),
+        ("5 + t/2", None, (5.0, float("inf"))),
+        ("512", None, (512.0, 512.0)),
+    ],
+)
+def test_bounds(raw: str, duration: float | None, expected: tuple[float, float]) -> None:
+    assert Expression(raw, duration=duration).bounds == expected
+
+
+# bounds is None when some node has no interval rule: a Piecewise over t. Expected: None, not a guess.
+def test_bounds_undecidable() -> None:
+    assert Expression("Piecewise((2, t < 30), (20, True))", duration=60).bounds is None
+
+
+# bounds is sound: over 20000 draws of each random expression, every sample lies inside the proven bounds.
+@pytest.mark.parametrize("raw", ["Min(LogNormal(6, 0.5), 4096)", "Min(2*Uniform(10, 20), 30)", "Abs(Normal(0, 1)) - 3"])
+def test_bounds_contain_samples(raw: str) -> None:
+    expr = Expression(raw)
+    assert expr.bounds is not None
+    lo, hi = expr.bounds
+    samples = np.asarray(expr.sample(rng=np.random.default_rng(0), size=20000))
+    assert lo <= samples.min() and samples.max() <= hi
