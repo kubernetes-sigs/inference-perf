@@ -315,6 +315,16 @@ data:
 
 Which load type to use follows from the arrangement. Timestamped independent requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the arrangement. Sessions with dependencies between requests run with `load.type: trace_session_replay`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
 
+#### Mooncake
+
+[Mooncake FAST'25 traces](https://github.com/kvcache-ai/Mooncake/tree/main/FAST25-release) are JSONL, one request per line:
+```
+{"timestamp": 27482, "input_length": 6955, "output_length": 52, "hash_ids": [46, 47, 48, 2353]}
+{"timestamp": 30535, "input_length": 6472, "output_length": 26, "hash_ids": [46, 47, 48, 2366]}
+```
+
+`timestamp` is milliseconds from the start of the trace. `hash_ids` name the request's prefix blocks, 512 tokens each: the two requests above share their first three ids, so they are sent with the same first 1536 tokens and the second can hit the server's prefix cache the way the original did. Requests are independent, so use `format: Mooncake` with `load.type: trace_replay`.
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
