@@ -13,6 +13,19 @@ output and the vice versa). This allows us to support different GenAI use cases
 like chat completion, summarization, code completion, etc. depending on the
 dataset and the benchmarking user’s inputs.
 
+### Trace replay pipeline
+
+Recorded workloads (OpenTelemetry traces, Weka traces) go through one shared
+pipeline. A trace format is a parser that turns its source into a list of
+`RawCall`s: one LLM call each, with its messages, recorded output, token counts
+and timestamps. From there everything is format-neutral and lives in
+`inference_perf/datagen/replay/replay_graph_builder.py`: `build_graph` infers
+which calls depend on which, splits each prompt into the segments a predecessor
+already sent (the KV cache reuse opportunity), tags the events whose output
+reaches the user, and produces the `ReplayGraph` the session load generator
+replays. Adding a trace format means adding a parser that produces `RawCall`s,
+not a new replay path.
+
 ## Load Generator
 
 Load Generator is the component which generates different traffic patterns based
