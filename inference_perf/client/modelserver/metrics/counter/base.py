@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import FrozenSet, List, Sequence
 from pydantic import BaseModel
 
 from ..base import Metric
@@ -44,16 +44,26 @@ class CounterMetric(Metric[CounterResult]):
             raise ValueError(f"CounterMetric does not support `{{__name__=~...}}` selector metric names: {metric_name}")
         self.metric_name = metric_name
 
-    def _spanning(self, fn: str, duration: float, filters: str) -> str:
-        # `fn` applied to the `_total`-suffixed and bare forms of the name, whichever exists;
-        # `or` unions the two so mixed fleets (old and new exporters) still sum correctly.
-        # Histogram series names (`_count`/`_sum`/`_bucket`) can never carry `_total`, so
-        # counters over them keep a single exact leg.
+    def _legs(self) -> List[str]:
+        # The exact series names the queries select: the `_total`-suffixed and bare forms of
+        # the name, whichever exists. Histogram series names (`_count`/`_sum`/`_bucket`) can
+        # never carry `_total`, so counters over them keep a single exact leg.
         base = self.metric_name.removesuffix("_total")
-        d = f"{duration:.0f}s"
         if base.endswith(("_count", "_sum", "_bucket")):
-            return f"{fn}({base}{{{filters}}}[{d}])"
-        return f"{fn}({base}_total{{{filters}}}[{d}]) or {fn}({base}{{{filters}}}[{d}])"
+            return [base]
+        return [f"{base}_total", base]
+
+    def candidate_names(self) -> Sequence[FrozenSet[str]]:
+        # The legs _spanning builds, reported as separate one-name groups: the queries `or`
+        # the legs, so either one alone resolves the metric. Both read _legs, so a drift
+        # check cannot drift from what is actually selected (#669).
+        return tuple(frozenset({leg}) for leg in self._legs())
+
+    def _spanning(self, fn: str, duration: float, filters: str) -> str:
+        # `fn` applied to each leg; `or` unions them so mixed fleets (old and new exporters)
+        # still sum correctly.
+        d = f"{duration:.0f}s"
+        return " or ".join(f"{fn}({leg}{{{filters}}}[{d}])" for leg in self._legs())
 
     def get_queries(self, duration: float, filters: str) -> List[str]:
         return [
