@@ -43,6 +43,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.system_prompt_len` | string | Length of the shared system prompt in tokens: a fixed value or a distribution. |
 | `--data.shared_prefix.question_len` | string | Length of the question part in tokens: a fixed value or a distribution. |
 | `--data.shared_prefix.output_len` | string | Requested output length in tokens: a fixed value or a distribution. |
+| `--data.shared_prefix.max_model_len` | int | Maximum model context length in tokens for multi-turn sessions. Defaults to 225000 when omitted, matching conversation_replay. |
 | `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
 | `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.question_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |

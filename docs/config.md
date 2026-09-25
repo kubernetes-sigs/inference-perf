@@ -67,6 +67,7 @@ data:
     system_prompt_len: 100    # Shared prefix length (tokens)
     question_len: 50          # Default question length (tokens), used when question_distribution is absent
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
+    max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024

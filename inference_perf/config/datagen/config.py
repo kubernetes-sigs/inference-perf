@@ -71,6 +71,14 @@ class SharedPrefix(StrictBaseModel):
     output_len: Union[int, Distribution] = Field(
         default=50, description="Requested output length in tokens: a fixed value or a distribution."
     )
+    max_model_len: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum model context length in tokens for multi-turn sessions. "
+            "Defaults to 225000 when omitted, matching conversation_replay."
+        ),
+    )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible prompt generation.")
 
     # Legacy distribution fields — kept for backward compatibility.

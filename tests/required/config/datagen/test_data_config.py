@@ -122,6 +122,33 @@ def test_shared_prefix_fixed_int_unchanged() -> None:
     assert isinstance(sp.question_len, int)
 
 
+def test_shared_prefix_max_model_len_is_optional_positive() -> None:
+    config = Config.model_validate(
+        {
+            "data": {
+                "type": DataGenType.SharedPrefix,
+                "shared_prefix": {"max_model_len": 4096},
+            }
+        }
+    )
+    assert config.data.shared_prefix is not None
+    assert config.data.shared_prefix.max_model_len == 4096
+
+    default_config = Config.model_validate({"data": {"type": DataGenType.SharedPrefix, "shared_prefix": {}}})
+    assert default_config.data.shared_prefix is not None
+    assert default_config.data.shared_prefix.max_model_len is None
+
+    with pytest.raises(ValueError):
+        Config.model_validate(
+            {
+                "data": {
+                    "type": DataGenType.SharedPrefix,
+                    "shared_prefix": {"max_model_len": 0},
+                }
+            }
+        )
+
+
 def test_shared_prefix_ambiguous_distribution_is_error() -> None:
     with pytest.raises(Exception, match="Cannot specify both"):
         Config.model_validate(
