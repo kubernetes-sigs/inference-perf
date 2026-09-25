@@ -315,6 +315,10 @@ data:
 
 Which load type to use follows from the arrangement. Timestamped independent requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the arrangement. Sessions with dependencies between requests run with `load.type: trace_session_replay`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
 
+#### TraceLab
+
+[TraceLab](https://github.com/uw-syfi/TraceLab) records real coding-agent sessions from Claude Code and Codex, one LLM round per JSONL line, with the round's whole prompt size (`input_tokens_total`), how much of it the engine served from cache (`prefix_tokens`), the output length and absolute timestamps. No text and no content hashes are recorded. Each session becomes one replay session: a round reuses the leading blocks of the previous prompt that its prefix covers and gets fresh blocks for the rest, which reproduces the recorded prefix reuse within a session (sharing between sessions is not recoverable from the corpus), and the recorded gap between rounds is the think time. Block size is a choice here since the corpus records none; the default is 64. Rounds depend on each other, so use `format: TraceLab` with `load.type: trace_session_replay`. Subagent sessions are recorded without a link to their parent and replay as independent sessions.
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
