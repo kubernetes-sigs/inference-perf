@@ -21,8 +21,11 @@ from pathlib import Path
 from typing import Dict, Optional, Type
 
 from .base import Workload, WorkloadSource
+from .mooncake import MooncakeSource
 
-SOURCES: Dict[str, Type[WorkloadSource]] = {}
+SOURCES: Dict[str, Type[WorkloadSource]] = {
+    MooncakeSource.format: MooncakeSource,
+}
 
 
 def load_workload(format: str, file: str, block_size: Optional[int] = None) -> Workload:
@@ -34,4 +37,4 @@ def load_workload(format: str, file: str, block_size: Optional[int] = None) -> W
     return source_cls(block_size=block_size).load(Path(file))
 
 
-__all__ = ["SOURCES", "Workload", "WorkloadSource", "load_workload"]
+__all__ = ["MooncakeSource", "SOURCES", "Workload", "WorkloadSource", "load_workload"]
