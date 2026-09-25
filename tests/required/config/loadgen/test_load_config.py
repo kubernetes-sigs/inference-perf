@@ -271,3 +271,12 @@ def test_trace_replay_rejects_stop_condition() -> None:
     with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
         LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, stop_condition="t >= 60")])
     LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
+
+
+# Same reasoning for rate: under TRACE_REPLAY a rate expression would be accepted and ignored. Input: a
+# TRACE_REPLAY LoadConfig with rate '5 + t/2'. Expected: rejected at load, naming the stage. A numeric rate
+# stays accepted, since the shipped trace_replay example sets one as a placeholder.
+def test_trace_replay_rejects_rate_expression() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: a rate expression has no effect under TRACE_REPLAY"):
+        LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate="5 + t/2", duration=30)])
+    LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
