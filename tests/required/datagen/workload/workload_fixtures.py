@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Helpers shared by the workload tests, imported by name like the other
+test helpers in this tree (a second conftest.py would collide with
+tests/optional's under mypy)."""
 
 from pathlib import Path
-from typing import Any, Callable, List, cast
-
-import pytest
+from typing import Any, List, cast
 
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -47,22 +48,13 @@ class WordTokenizer:
         return self
 
 
+def new_word_tokenizer(bos: int = 0) -> CustomTokenizer:
+    return cast(CustomTokenizer, WordTokenizer(bos=bos))
+
+
 # A corpus of 2000 distinct words, written to disk so the materializer loads
 # it the way it loads the default Shakespeare corpus.
-@pytest.fixture
-def corpus_path(tmp_path: Path) -> Path:
+def write_corpus(tmp_path: Path) -> Path:
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(2000)))
     return path
-
-
-@pytest.fixture
-def word_tokenizer() -> CustomTokenizer:
-    return cast(CustomTokenizer, WordTokenizer())
-
-
-# The same tokenizer with a chosen BOS count, for tests that need the token
-# count and the id list to disagree.
-@pytest.fixture
-def make_word_tokenizer() -> Callable[[int], CustomTokenizer]:
-    return lambda bos: cast(CustomTokenizer, WordTokenizer(bos=bos))
