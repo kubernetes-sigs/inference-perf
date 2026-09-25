@@ -17,7 +17,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Dict, List
+from typing import ClassVar, Dict, List, Optional
 
 from inference_perf.workload.arrangement import Arrangement
 from inference_perf.workload.record import Record
@@ -54,6 +54,12 @@ class WorkloadSource(ABC):
 
     # The name the config uses to pick this format.
     format: ClassVar[str]
+    # Tokens per prefix block when the config does not say. A format that
+    # records its block size sets it here; one that mints ids picks a default.
+    default_block_size: ClassVar[int] = 512
+
+    def __init__(self, block_size: Optional[int] = None) -> None:
+        self.block_size = block_size if block_size is not None else self.default_block_size
 
     @abstractmethod
     def load(self, path: Path) -> Workload:
