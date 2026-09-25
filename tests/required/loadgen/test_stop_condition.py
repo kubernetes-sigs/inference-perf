@@ -62,7 +62,7 @@ def test_timer_schedule_identical_for_duration_and_stop_condition() -> None:
 
     schedules = []
     for stage in (by_duration, by_condition):
-        timer = loadgen.get_timer(stage.rate, stage.effective_duration)
+        timer = loadgen.get_timer(stage.rate_schedule, stage.effective_duration)
         assert isinstance(timer, ConstantLoadTimer)
         timer._rand = np.random.default_rng(7)
         schedules.append(list(timer.start_timer(initial=0.0)))
@@ -78,7 +78,7 @@ def test_poisson_timer_receives_same_rate_and_duration() -> None:
     by_condition = StandardLoadStage(rate=4, stop_condition="t >= 10")
     loadgen = _loadgen(LoadConfig(type=LoadType.POISSON, stages=[by_duration, by_condition], num_workers=1))
 
-    timers = [loadgen.get_timer(stage.rate, stage.effective_duration) for stage in (by_duration, by_condition)]
+    timers = [loadgen.get_timer(stage.rate_schedule, stage.effective_duration) for stage in (by_duration, by_condition)]
     assert all(isinstance(t, PoissonLoadTimer) for t in timers)
     assert [(t._rate, t._duration) for t in timers if isinstance(t, PoissonLoadTimer)] == [(4.0, 10.0), (4.0, 10.0)]
 
