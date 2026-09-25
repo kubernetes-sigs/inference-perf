@@ -16,8 +16,9 @@ from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageSta
 from inference_perf.datagen.base import BaseGenerator
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .load_timer import ArrangementLoadTimer, LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
+from inference_perf.datagen.workload import WorkloadRequestDataGenerator
 from inference_perf.apis import InferenceAPIData
 from inference_perf.apis.user_session import LocalUserSession
 from inference_perf.client.modelserver import ModelServerClient
@@ -591,14 +592,20 @@ class LoadGenerator:
                 )
         if self.load_type == LoadType.TRACE_REPLAY:
             self.trace = load_config.trace
+            # A workload's arrangement carries its own send times, so it needs
+            # no load.trace; the timer reads the offsets from the generator.
+            self._arrangement_offsets_ms: Optional[List[int]] = None
+            if isinstance(datagen, WorkloadRequestDataGenerator):
+                self._arrangement_offsets_ms = datagen.send_offsets_ms()
 
-            if self.trace is None:
+            if self.trace is None and self._arrangement_offsets_ms is None:
                 raise ValueError("Trace file is required for trace replay load generator")
 
-            if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
-                self.trace_reader = AzurePublicDatasetReader()
-            else:
-                raise ValueError(f"Unsupported trace format: {self.trace.format}")
+            if self.trace is not None:
+                if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
+                    self.trace_reader = AzurePublicDatasetReader()
+                else:
+                    raise ValueError(f"Unsupported trace format: {self.trace.format}")
         self.lora_adapters: Optional[List[str]] = None
         self.lora_weights: Optional[List[float]] = None
         if load_config.lora_traffic_split is not None:
@@ -634,6 +641,8 @@ class LoadGenerator:
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
         elif self.load_type == LoadType.TRACE_REPLAY:
+            if self._arrangement_offsets_ms is not None:
+                return ArrangementLoadTimer(self._arrangement_offsets_ms)
             if self.trace is None:
                 raise ValueError("Trace configuration is required for trace replay load generator")
             return TraceReplayLoadTimer(trace_reader=self.trace_reader, trace_file=Path(self.trace.file))
@@ -1194,7 +1203,9 @@ class LoadGenerator:
         start_time_epoch = time.time()
         start_time = time.perf_counter() + 1
 
-        if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
+        if isinstance(self.datagen, DataGenerator) and (
+            self.datagen.trace is not None or isinstance(self.datagen, WorkloadRequestDataGenerator)
+        ):
             num_requests = self.datagen.get_request_count()
         else:
             num_requests = int(rate * duration)

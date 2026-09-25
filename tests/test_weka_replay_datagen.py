@@ -387,7 +387,7 @@ def test_find_weka_predecessors_matches_generic_finder() -> None:
     """_find_weka_predecessors must reproduce find_predecessors_by_text_matching
     exactly (dependency types, dict insertion order, exact-match cache,
     temporal fallbacks) across the tricky text-matching edge cases."""
-    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+    from inference_perf.datagen.replay.replay_graph_builder import (
         RawCall,
         find_predecessors_by_text_matching,
     )
@@ -457,7 +457,7 @@ def test_find_weka_predecessors_matches_generic_finder_randomized() -> None:
     """
     import random
 
-    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+    from inference_perf.datagen.replay.replay_graph_builder import (
         RawCall,
         find_predecessors_by_text_matching,
     )
@@ -502,7 +502,7 @@ def test_find_weka_predecessors_defers_on_complex_outputs() -> None:
     the fast path implements only the plain-text CAUSAL_FULL_MATCH branch, and
     handling it there would silently drop structured-match edges (e.g.
     CAUSAL_TOOL_CALL_IDS_MATCHED)."""
-    from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
+    from inference_perf.datagen.replay.replay_graph_builder import (
         DEPENDENCY_TYPE,
         RawCall,
         find_predecessors_by_text_matching,
@@ -605,7 +605,7 @@ def _build_generator(trace_files: list[str], datagen_workers: int, skip_invalid_
 def test_weka_skip_invalid_files_through_parallel_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A trace that fails session building must be skipped (skip_invalid_files=True)
     or fail the run (False), with the error marshaled across pool workers."""
-    from inference_perf.datagen.replay.otel_trace_to_replay_graph import build_graph as original_build_graph
+    from inference_perf.datagen.replay.replay_graph_builder import build_graph as original_build_graph
 
     good_files = [_write_mock_trace(tmp_path, f"good_{i}", 10 * (i + 1)) for i in range(3)]
 
