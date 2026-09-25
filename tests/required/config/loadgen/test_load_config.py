@@ -274,6 +274,15 @@ def test_trace_replay_rejects_stop_condition() -> None:
     LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
 
 
+# Same reasoning for rate: under TRACE_REPLAY a rate expression would be accepted and ignored. Input: a
+# TRACE_REPLAY LoadConfig with rate '5 + t/2'. Expected: rejected at load, naming the stage. A numeric rate
+# stays accepted, since the shipped trace_replay example sets one as a placeholder.
+def test_trace_replay_rejects_rate_expression() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: a rate expression has no effect under TRACE_REPLAY"):
+        LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate="5 + t/2", duration=30)])
+    LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
+
+
 # --- StandardLoadStage.stop_condition over measured terms ------------------------
 
 
@@ -335,3 +344,11 @@ def test_trace_replay_rejects_object_form() -> None:
             type=LoadType.TRACE_REPLAY,
             stages=[StandardLoadStage(rate=1, stop_condition={"condition": "(t >= 60) | (errors >= 1)"})],
         )
+
+
+# The _over_sent bound counts the requests a rate expression sends: '2*t' over a 10s stage integrates to 100, so
+# 'avg_over_sent(ttft, 90, 100)' loads and 'avg_over_sent(ttft, 90, 101)' is rejected.
+def test_over_sent_bound_follows_a_rate_expression() -> None:
+    StandardLoadStage(rate="2*t", stop_condition="(t >= 10) | (avg_over_sent(ttft, 90, 100) > 1)")
+    with pytest.raises(ValidationError, match="reads requests up to 101, but the stage sends 100 by its 10s deadline"):
+        StandardLoadStage(rate="2*t", stop_condition="(t >= 10) | (avg_over_sent(ttft, 90, 101) > 1)")
