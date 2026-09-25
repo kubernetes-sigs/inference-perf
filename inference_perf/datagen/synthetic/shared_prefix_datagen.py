@@ -20,13 +20,12 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
     DataConfig,
     Distribution,
-    DistributionType,
     SyntheticMultimodalDatagenConfig,
 )
 from inference_perf.datagen.multimodal_sampling import (
@@ -48,11 +47,11 @@ from inference_perf.payloads import (
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_from_distribution, sample_lengths
-from inference_perf.utils.numeric.expression import Expression
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..datagen_utils import (
     build_word_start_token_ids,
+    check_output_leaves_prompt_budget,
     converge_to_exact_length_text,
     generate_random_exact_length_text,
     init_vocab_sampling,
@@ -85,41 +84,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         if isinstance(param, int) and legacy_dist is not None:
             return legacy_dist
         return param
-
-    def _check_output_leaves_prompt_budget(self, output_spec: Union[int, Distribution, str]) -> None:
-        """Reject an output length whose ceiling leaves no room for a prompt in multi-turn chat.
-
-        An int or a Distribution has a known ceiling (the value, the fixed
-        mean, or max). An expression string has one only when its range can be
-        proven: one that provably can exceed the budget is rejected, and one
-        whose range can't be decided is accepted, since the expression author
-        owns its range.
-        """
-        limit = self.max_model_len - PROMPT_TOKEN_BUFFER
-        if isinstance(output_spec, str):
-            try:
-                Expression(output_spec, allow_time=False, maximum=limit - 1)
-            except ValueError as e:
-                raise ValueError(
-                    f"output_len {output_spec!r} can exceed {limit - 1} tokens, which leaves no room for a prompt "
-                    f"within max_model_len ({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token "
-                    f"safety buffer. Bound it, e.g. 'Min({output_spec}, {limit - 1})', or raise max_model_len."
-                ) from e
-            return
-
-        if isinstance(output_spec, int):
-            output_ceiling, ceiling_desc = output_spec, "output_len"
-        elif output_spec.type == DistributionType.FIXED:
-            output_ceiling, ceiling_desc = int(output_spec.mean), "output_len.mean"
-        else:
-            output_ceiling, ceiling_desc = output_spec.max, "output_len.max"
-
-        if output_ceiling >= limit:
-            raise ValueError(
-                f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within max_model_len "
-                f"({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. "
-                f"Lower it below {limit} or raise max_model_len."
-            )
 
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
@@ -154,7 +118,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         output_spec = self._resolve_length(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
 
         if self.enable_multi_turn_chat:
-            self._check_output_leaves_prompt_budget(output_spec)
+            check_output_leaves_prompt_budget(output_spec, "output_len", self.max_model_len)
 
         # Generate per-group system prompt lengths
         self.system_prompt_lens_per_group: List[int] = sample_lengths(system_prompt_spec, self.num_groups, self.rng).tolist()

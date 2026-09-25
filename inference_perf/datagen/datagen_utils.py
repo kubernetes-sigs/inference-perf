@@ -16,9 +16,10 @@ from typing import Callable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
-from inference_perf.config import Distribution
+from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER
+from inference_perf.config import Distribution, DistributionType
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import generate_distribution, sample_lengths
+from inference_perf.utils.numeric.distribution import generate_distribution, sample_lengths, value_ceiling
 
 
 def pregenerate_lengths(
@@ -215,3 +216,38 @@ def generate_random_exact_length_text(
         adjust_tokens_fn=adjust_tokens,
         wrap_fn=wrap_fn,
     )
+
+
+def check_output_leaves_prompt_budget(output_spec: Union[int, Distribution, str], field: str, max_model_len: int) -> None:
+    """Reject an output length whose ceiling leaves no room for a prompt in multi-turn chat.
+
+    Truncation can only clamp the prompt, so an output ceiling that consumes
+    the whole context would silently send empty prompts for the entire run.
+    The ceiling is the value itself, a fixed Distribution's mean, any other
+    Distribution's max, or an expression string's provable upper bound. An
+    expression without one (``Normal(50, 10)``, or a form the bounds walk
+    can't reason about) is rejected: the check has to hold for every draw.
+    """
+    limit = max_model_len - PROMPT_TOKEN_BUFFER
+    ceiling = value_ceiling(output_spec)
+    if isinstance(output_spec, str):
+        if ceiling is None or ceiling >= limit:
+            raise ValueError(
+                f"{field} {output_spec!r} is not provably at most {limit - 1} tokens, so it can leave no room for a "
+                f"prompt within max_model_len ({max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety "
+                f"buffer. Bound it, e.g. 'Min({output_spec}, {limit - 1})', or raise max_model_len."
+            )
+        return
+
+    assert ceiling is not None
+    if isinstance(output_spec, int):
+        desc = field
+    elif output_spec.type == DistributionType.FIXED:
+        desc, ceiling = f"{field}.mean", float(int(output_spec.mean))
+    else:
+        desc = f"{field}.max"
+    if ceiling >= limit:
+        raise ValueError(
+            f"{desc} ({int(ceiling)}) leaves no room for a prompt within max_model_len ({max_model_len}) after "
+            f"reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. Lower it below {limit} or raise max_model_len."
+        )

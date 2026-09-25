@@ -96,6 +96,12 @@ worker so its turns run strictly in order.
 
 All fields live under `data.conversation_replay`:
 
+Every distribution field below also accepts an expression string, such as
+`input_tokens_per_turn: "Min(LogNormal(7, 1), 24000)"` or `tool_call_latency_sec: "Uniform(0.1, 0.4)"`.
+Token and turn counts are rounded to whole numbers; `tool_call_latency_sec` keeps fractional seconds.
+With `max_model_len` set, `output_tokens_per_turn` must have a provable upper bound, so cap an
+unbounded expression with `Min(...)`.
+
 | Field | Type | Description |
 | :--- | :--- | :--- |
 | `seed` | int | RNG seed. Same seed → identical conversations, prompts, and turn lengths. |
