@@ -47,7 +47,7 @@ import numpy as np
 import sympy
 import sympy.stats
 from numpy.typing import NDArray
-from sympy import Interval, Symbol, oo
+from sympy import AccumBounds, Interval, Symbol, oo
 from sympy.calculus.util import function_range
 from sympy.core.function import AppliedUndef
 from sympy.core.relational import GreaterThan, LessThan, Relational, StrictGreaterThan, StrictLessThan
@@ -137,6 +137,44 @@ def _parse_raw(kind: str, raw: Union[str, int, float]) -> Any:
     raise TypeError(f"{kind} accepts str or number, got {type(raw).__name__}.")
 
 
+def _interval(expr: Any, duration: Optional[float]) -> Optional[tuple[Any, Any]]:
+    """Sound ``(lower, upper)`` sympy bounds for ``expr``, or ``None`` when undecidable."""
+    if expr.is_Number or expr.is_NumberSymbol:
+        return expr, expr
+    if _is_random_symbol(expr):
+        support = expr.pspace.distribution.set
+        try:
+            return support.inf, support.sup
+        except (AttributeError, NotImplementedError):
+            return None
+    if expr == _T:
+        return sympy.S.Zero, (sympy.Float(duration) if duration is not None else oo)
+    found = [_interval(arg, duration) for arg in expr.args]
+    parts = [part for part in found if part is not None]
+    if len(parts) != len(found):
+        return None
+    if isinstance(expr, sympy.Abs):
+        lo, hi = parts[0]
+        if lo >= 0:
+            return lo, hi
+        if hi <= 0:
+            return -hi, -lo
+        return sympy.S.Zero, sympy.Max(-lo, hi)
+    if isinstance(expr, (sympy.Min, sympy.Max)):
+        # Min/Max are monotone in every argument, and AccumBounds does not
+        # reduce them, so combine the endpoints directly.
+        return expr.func(*(lo for lo, _hi in parts)), expr.func(*(hi for _lo, hi in parts))
+    try:
+        result = expr.func(*(lo if lo == hi else AccumBounds(lo, hi) for lo, hi in parts))
+    except (TypeError, ValueError, NotImplementedError):
+        return None
+    if isinstance(result, AccumBounds):
+        return result.min, result.max
+    if result.is_number and result.is_extended_real:
+        return result, result
+    return None
+
+
 def _is_condition(expr: Any) -> bool:
     """True for a truth value or a relational/logical combination, false for a number.
 
@@ -206,6 +244,7 @@ class Expression:
         self.minimum = minimum
         self.maximum = maximum
         self.clip = clip
+        self._duration = duration
         self._expr = self._parse(raw)
         _reject_unknown_functions("Expression", raw, self._expr)
 
@@ -336,6 +375,26 @@ class Expression:
             return function_range(self._expr, _T, Interval(0, sympy.Float(duration)))
         except Exception:
             return None
+
+    @property
+    def bounds(self) -> Optional[tuple[float, float]]:
+        """Provable ``(lower, upper)`` bounds on every value the expression can take.
+
+        Worked out by interval arithmetic over the tree: each random variable
+        contributes its support, ``t`` contributes ``[0, duration]`` (or
+        ``[0, inf)`` without a duration), and ``Min``/``Max`` combine their
+        arguments' bounds. The result is sound but can be wider than the true
+        range, e.g. when one variable appears twice. An unbounded side is
+        ``inf``/``-inf``. ``None`` means some part of the tree has no interval
+        rule, so nothing can be proven.
+
+        This is what a caller needs when it must budget for the worst case,
+        e.g. ``Min(LogNormal(6, 0.5), 4096)`` is at most 4096.
+        """
+        found = _interval(self._expr, self._duration)
+        if found is None:
+            return None
+        return float(found[0]), float(found[1])
 
     @property
     def is_constant(self) -> bool:
