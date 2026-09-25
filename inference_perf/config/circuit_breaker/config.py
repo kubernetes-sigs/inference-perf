@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Literal, Union
+from typing import Annotated, List, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -28,9 +28,12 @@ class TriggerRateOverWindow(BaseModel):
     min_samples: int = Field(0, ge=0, description="Minimum samples in the window before the trigger can trip.")
 
 
-TriggerSpec = Union[
-    TriggerConsecutive,
-    TriggerRateOverWindow,
+TriggerSpec = Annotated[
+    Union[
+        TriggerConsecutive,
+        TriggerRateOverWindow,
+    ],
+    Field(discriminator="type"),
 ]
 
 

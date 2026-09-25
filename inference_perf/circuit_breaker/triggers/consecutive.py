@@ -26,8 +26,7 @@ class Consecutive(Trigger, spec_cls=TriggerConsecutive):
 
     def update(self, s: HitSample) -> None:
         self.c = self.c + 1 if s.hit else 0
-        if self.c >= self.n:
-            self._fired = True
+        self._fired = self.c >= self.n
 
     def fired(self) -> bool:
         return self._fired
