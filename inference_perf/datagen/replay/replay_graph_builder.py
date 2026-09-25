@@ -1,0 +1,1168 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Build a replay graph from a list of LLM calls, whatever recorded them.
+
+This is the format-neutral half of trace replay. A trace format (OTel spans,
+Weka traces, ...) parses its source into a list of `RawCall`s; everything from
+there on is shared: `build_graph` infers the predecessor relationships between
+calls, decomposes each call's prompt into segments relative to its ancestors,
+and tags the events whose output reaches the user.
+
+Graph structure
+---------------
+Each event contains:
+  - event_id: unique identifier
+  - call: a single LLM call
+    The call contains:
+      - call_id: original call identifier (span_id for OTel)
+      - model: model name
+      - messages: original message list (for replay)
+      - input_segments: ordered list of segments describing the prompt at message granularity
+          Each segment: {type, message_count, token_count, source_event_id (if output/shared)}
+            type = "shared"   - leading messages identical to a predecessor call's messages
+                                (KV cache hit opportunity)
+            type = "output"   - an assistant message whose content is a predecessor call's output
+                                (injected result from a predecessor)
+            type = "unique"   - messages unique to this call
+      - expected_output_tokens: how many tokens to generate
+      - total_input_tokens: total prompt token count
+      - temperature, max_tokens_recorded: original decoding params (informational)
+  - predecessor_event_ids: list of event_ids that must complete before this event starts
+  - wait_ms: delay (ms) after the last predecessor finishes before this event starts
+
+Token count estimation
+----------------------
+Uses the call's recorded prompt_tokens / completion_tokens if present.
+Falls back to len(text) // 4 (rough chars-per-token estimate) per message.
+"""
+
+import json
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+from inference_perf.datagen.replay.replay_graph_types import (
+    ComplexReplayMessage,
+    GraphCall,
+    GraphEvent,
+    InputSegment,
+    ReplayGraph,
+    ReplayMessage,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Text helpers
+# ---------------------------------------------------------------------------
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from character length (rough: 4 chars per token)."""
+    return max(1, len(text) // 4)
+
+
+def message_content_text(msg: ReplayMessage) -> str:
+    """Extract the text content of a message (handles string or list content)."""
+    content = msg.text
+    if isinstance(content, list):
+        parts = []
+        for blk in content:
+            if isinstance(blk, dict):
+                parts.append(json.dumps(blk, ensure_ascii=False, sort_keys=True))
+            else:
+                parts.append(str(blk))
+        return " ".join(parts)
+    return str(content)
+
+
+def message_tokens(msg: ReplayMessage) -> int:
+    """Estimate token count for a single message."""
+    return estimate_tokens(message_content_text(msg))
+
+
+def _coerce_text(value: Any) -> str:
+    """Flatten a text value that may be a string or a list of content blocks.
+
+    Recorded ``text`` / tool-result values are usually strings, but some traces
+    carry a list of blocks, e.g. ``[{"type": "text", "text": "..."}]``. Extract
+    the text so the wire ``content`` is always a string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        out: List[str] = []
+        for block in value:
+            if isinstance(block, dict):
+                out.append(str(block.get("text", block.get("content", "")) or ""))
+            else:
+                out.append(str(block))
+        return "".join(out)
+    return str(value)
+
+
+def _normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise a recorded tool call to OpenAI ``function`` format.
+
+    Accepts both the nested OpenAI shape
+    ``{"id", "type": "function", "function": {"name", "arguments"}}`` and the
+    "direct"/parts shape ``{"id", "name", "arguments"}``.
+
+    Raises ``ValueError`` if the tool call has no ``id``. OpenAI/vLLM reject a
+    ``tool_calls[].id`` of ``null`` with a 400, and the recorded ``role:tool``
+    result that answers this call is linked by that id — a call with no id cannot
+    be replayed faithfully. Raising here lets ``build_graph``'s caller skip the
+    whole trace with a logged reason rather than emit an invalid request.
+    """
+    fn = tc.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name")
+        arguments = fn.get("arguments")
+    else:
+        # No nested function dict (either absent or a malformed non-dict value):
+        # fall back to the direct/parts shape carrying name/arguments at top level.
+        name = tc.get("name")
+        arguments = tc.get("arguments")
+    # OpenAI/vLLM require function.arguments to be a JSON-encoded STRING. Recorded
+    # traces often carry it as a parsed object/array — serialise those so the wire
+    # request is valid (a raw object triggers a 400 unmarshalling error).
+    if arguments is None:
+        arguments = ""
+    elif not isinstance(arguments, str):
+        arguments = json.dumps(arguments)
+    tc_id = tc.get("id")
+    if tc_id is None:
+        raise ValueError(f"tool call has no id (name={name!r}); cannot replay it faithfully")
+    return {
+        "id": tc_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
+    """Convert a ReplayMessage to an OpenAI-compatible dict for the graph.
+
+    A ComplexReplayMessage carries the structured message in ``message_info``, in
+    one of two shapes:
+
+    - "parts" format: ``{"role", "parts": [{"type": "text"|"tool_call"|
+      "tool_call_response", ...}]}`` (produced by
+      ``_convert_content_and_tool_calls_to_parts`` / OTel output reconstruction).
+    - raw OpenAI dict: the original message, e.g.
+      ``{"role": "assistant", "tool_calls": [...]}``, a ``role:tool`` message
+      with ``tool_call_id``, or a ``role:tool`` message whose ``content`` is a
+      ``tool_call_response`` parts list.
+
+    We reconstruct the OpenAI wire fields (``tool_calls`` / ``tool_call_id``) from
+    ``message_info`` so tool turns replay structurally. Falling back to ``x.text``
+    would send the flattened ``<|tool_call|>...`` marker string as plain content,
+    which drops structured tool calls and tool-result linkage. ``x.text`` stays
+    the flattened form and is still used for token counting and causal dependency
+    matching; only the wire dict returned here carries structure.
+
+    A tool result's stored role varies by capture harness: OpenAI-native traces
+    put it on a ``role: "tool"`` message, while Anthropic-native traces put it on a ``role: "user"`` message.
+    Either way the OpenAI-compatible wire target this graph replays against
+    only defines tool results as ``role: "tool"`` messages, so we detect the
+    result by its part type (``tool_call_response``),
+    and normalize the emitted role to ``"tool"``.
+    """
+    if isinstance(x, ComplexReplayMessage) and isinstance(x.message_info, dict):
+        info = x.message_info
+
+        # Shape 1: "parts" format — reassemble text / tool_calls / tool result.
+        if "parts" in info:
+            role = info.get("role", x.role)
+            msg: Dict[str, Any] = {"role": role}
+            text_parts: List[str] = []
+            tool_calls: List[Dict[str, Any]] = []
+            responses = [p for p in info["parts"] if p.get("type") == "tool_call_response"]
+            if len(responses) > 1:
+                # One OpenAI wire message answers exactly one tool_call_id, so a
+                # message bundling several tool results cannot be represented
+                # faithfully. Keep the first and drop the rest.
+                logger.debug(
+                    "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
+                    len(responses),
+                    responses[0].get("id"),
+                )
+            for part in info["parts"]:
+                part_type = part.get("type")
+                if part_type == "text":
+                    text_parts.append(_coerce_text(part.get("content", "")))
+                elif part_type == "tool_call":
+                    tool_calls.append(_normalize_tool_call(part))
+            if responses:
+                first = responses[0]
+                # A tool result is identified by its part type, not the stored
+                # role (see docstring) — normalize to role:tool on the wire
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                text_parts.append(_coerce_text(first.get("result", first.get("response", ""))))
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            # Emit content for text / tool-result messages. For an assistant
+            # message that is only tool calls, omit content (matches OpenAI).
+            if text_parts or not tool_calls:
+                msg["content"] = "".join(text_parts)
+            return msg
+
+        # Shape 2: raw OpenAI dict.
+        role = info.get("role", x.role)
+        msg = {"role": role}
+        content = info.get("content")
+
+        # A tool result may carry its content as a tool_call_response parts list
+        # (rather than a plain string). Reconstruct the tool_call_id and flatten
+        # the result to string content.
+        if isinstance(content, list):
+            responses = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_call_response"]
+            if responses:
+                if len(responses) > 1:
+                    # See the parts-format branch above: multiple tool results
+                    # cannot be represented in one message; keep the first.
+                    logger.debug(
+                        "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
+                        len(responses),
+                        responses[0].get("id"),
+                    )
+                first = responses[0]
+                msg["role"] = "tool"
+                tool_call_id = first.get("id")
+                if tool_call_id:
+                    msg["tool_call_id"] = tool_call_id
+                msg["content"] = _coerce_text(first.get("result", first.get("response", "")))
+                return msg
+
+        if info.get("tool_calls") is not None:
+            msg["tool_calls"] = [_normalize_tool_call(tc) for tc in info["tool_calls"]]
+        # tool_call_id belongs on a role:tool message only.
+        if role == "tool" and info.get("tool_call_id") is not None:
+            msg["tool_call_id"] = info["tool_call_id"]
+        if content is not None:
+            # Coerce list-of-blocks content to a string; pass strings through.
+            msg["content"] = content if isinstance(content, str) else _coerce_text(content)
+        elif "tool_calls" not in msg:
+            msg["content"] = x.text
+        return msg
+
+    return {"role": x.role, "content": x.text}
+
+
+def messages_equal(a: ReplayMessage, b: ReplayMessage) -> bool:
+    """Return True if two messages have the same role and content."""
+    return a.role == b.role and message_content_text(a) == message_content_text(b)
+
+
+def output_matches_message(output_text: str, msg: ReplayMessage, allow_partial_match: bool = False) -> bool:
+    """Return True if msg is an assistant message whose content matches output_text."""
+    if msg.role != "assistant":
+        return False
+    msg_text = message_content_text(msg)
+    if msg_text == output_text:
+        return True
+    if not allow_partial_match:
+        return False
+    else:  # try partial match
+        if output_text in msg_text:  # output_text is entirely contained in msg_text
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Span extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _convert_content_and_tool_calls_to_parts(message: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert a message with both 'content' and 'tool_calls' fields into parts format.
+
+    Transforms:
+        {"role": "assistant", "content": "text", "tool_calls": [...]}
+    Into:
+        {"role": "assistant", "parts": [{"type": "text", "content": "text"}, {"type": "tool_call", ...}]}
+    """
+    parts = []
+
+    # Add content as a text part if present
+    content = message.get("content")
+    if content:
+        if isinstance(content, str):
+            parts.append({"type": "text", "content": content})
+        elif isinstance(content, list):
+            # Content is already a list of parts
+            parts.extend(content)
+
+    # Add tool_calls as tool_call parts
+    tool_calls = message.get("tool_calls", [])
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            # OpenAI format: {"id": "...", "type": "function", "function": {"name": "...", "arguments": "..."}}
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                parts.append(
+                    {
+                        "type": "tool_call",
+                        "id": tc.get("id"),  # type: ignore[dict-item]
+                        "name": fn.get("name"),  # type: ignore[dict-item]
+                        "arguments": fn.get("arguments"),  # type: ignore[dict-item]
+                    }
+                )
+            # Direct format: {"name": "...", "arguments": "..."} (also the fallback
+            # when `function` is present but malformed/non-dict).
+            elif "name" in tc:
+                parts.append(
+                    {
+                        "type": "tool_call",
+                        "id": tc.get("id"),  # type: ignore[dict-item]
+                        "name": tc.get("name"),  # type: ignore[dict-item]
+                        "arguments": tc.get("arguments"),  # type: ignore[dict-item]
+                    }
+                )
+
+    # Create new message with parts
+    result = {"role": message.get("role", "assistant"), "parts": parts}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Raw call (one per LLM span)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RawCall:
+    """A single LLM call extracted from a span."""
+
+    call_id: str  # span_id
+    trace_id: str
+    t_start_ms: int  # ms relative to earliest span in file
+    t_end_ms: int
+    model: str
+    messages: List[ReplayMessage]  # original message list (required)
+    out_message: Optional[ReplayMessage]
+    prompt_tokens: Optional[int]  # from gen_ai.usage.prompt_tokens
+    completion_tokens: Optional[int]  # from gen_ai.usage.completion_tokens
+    temperature: Optional[float]
+    max_tokens_recorded: Optional[int]
+    tool_definitions: Optional[List[Dict[str, Any]]] = None
+    extra_attributes: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Causal dependency detection (message-level)
+# ---------------------------------------------------------------------------
+
+
+class DEPENDENCY_TYPE(Enum):
+    """Types of dependencies between different llm call nodes."""
+
+    CAUSAL_FULL_MATCH = "full_match"  # full text of output a matches the full text of b
+    CAUSAL_TOOL_CALL_IDS_MATCHED = "tool_call_ids_matched"  # all tool call IDs from output a appear in b's messages
+    CAUSAL_SPLIT_PARTS_MATCHED = (
+        "split_parts_matched"  # the output of a is split into parts, each part appears in b's list of messages.
+    )
+    CAUSAL_CONTENT_AND_SPLIT_TOOLS_MATCH = "content_and_split_tools_match"  # the output of a contains [content, tool_call_1, tool_call_2, etc], b's list of messages contains [content+tool_call_1, content+tool_call_2, etc).
+    CAUSAL_DROP_CONTENT_SPLIT_PARTS = "drop_content_split_parts"  # the output of a contains [content, tool_call_1, tool_call_2, etc], b's list of message contains [tool_call_1, tool_call_2]
+    TEMPORAL = "temporal"  # outputs are not matches, this is a temporal dependency only
+
+
+# ---------------------------------------------------------------------------
+def _try_match_tool_call_ids(a_parts: List[Dict[str, Any]], b_messages: List[Dict[str, Any]]) -> bool:
+    """
+    Check if all tool call IDs from a_parts appear in b_messages.
+    Args:
+        a_parts: List of part dictionaries from output message A
+        b_messages: List of messages from call B
+
+    Returns:
+        True if all tool calls in a_parts have IDs and all those IDs appear in b_messages
+    """
+    # Extract tool call parts that have IDs
+    tool_call_parts = [p for p in a_parts if p["type"] == "tool_call"]
+    if not tool_call_parts:
+        return False
+
+    # Get all tool call IDs from a_parts
+    tool_call_ids = [p.get("id") for p in tool_call_parts]
+
+    # Check if all tool calls have IDs
+    if not all(tc_id is not None for tc_id in tool_call_ids):
+        return False
+
+    # Extract all tool call IDs from b_messages
+    b_tool_call_ids: set[str] = set()
+    for msg in b_messages:
+        # we message_info may contain parts to tool_calls.
+        if isinstance(msg, ComplexReplayMessage):
+            if "tool_calls" in msg.message_info:
+                for tool_call in msg.message_info["tool_calls"]:
+                    if tool_call.get("id"):
+                        b_tool_call_ids.add(tool_call["id"])
+            elif "parts" in msg.message_info:
+                for part in msg.message_info["parts"]:
+                    if part["type"] == "tool_call" and part.get("id"):
+                        b_tool_call_ids.add(part["id"])
+
+    # Check if all tool call IDs from a appear in b (order doesn't matter)
+    return all(tc_id in b_tool_call_ids for tc_id in tool_call_ids)
+
+
+def _extract_tool_call_ids(msg: Any) -> set[str]:
+    """Return the set of tool-call IDs referenced in a single message.
+
+    Handles ComplexReplayMessage (parts or tool_calls format) and plain dicts
+    (OpenAI tool_calls format). Used by decompose_input to pre-compute per-message
+    ID sets once, avoiding repeated extraction in the inner pred loop.
+    """
+    ids: set[str] = set()
+    if isinstance(msg, ComplexReplayMessage):
+        if "tool_calls" in msg.message_info:
+            for tc in msg.message_info["tool_calls"]:
+                if tc.get("id"):
+                    ids.add(tc["id"])
+        elif "parts" in msg.message_info:
+            for part in msg.message_info["parts"]:
+                if part.get("type") == "tool_call" and part.get("id"):
+                    ids.add(part["id"])
+    elif isinstance(msg, dict):
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("id"):
+                ids.add(tc["id"])
+    return ids
+
+
+def get_causal_dep(
+    a: RawCall, b: RawCall, output_matches_for_substitutions: Optional[Dict[tuple[str, str], List[int]]] = None
+) -> Optional[DEPENDENCY_TYPE]:
+    """Return the type of causal dependency if call B causally depends on call A, None otherwise.
+
+    A call B depends on A if any assistant message in B's message list has content
+    that matches A's output text (full content match, not a snippet).
+    This means A's output was injected into B's prompt as a prior assistant turn.
+    We start with trying to detect FULL_MATCH dependency. Then, if not detected, we proceed to TOOL_CALL_IDS_MATCHED. If this dependency is not detected either we proceed to the other options.
+
+    Args:
+        output_matches_for_substitutions: Optional cache storing message indices with EXACT output matches.
+                                         Key: (pred_call_id, curr_call_id), Value: list of matching indices
+
+    Returns:
+        FULL_MATCH: Full text of output A matches the full text in B
+        TOOL_CALL_IDS_MATCHED: All tool call IDs from output A's tool calls appear in B's messages
+                               (order doesn't matter, just presence of IDs)
+        SPLIT_PARTS_MATCHED: Output of A is split into parts, each part appears separately in B's messages
+        CONTENT_AND_SPLIT_TOOLS_MATCH: Output of A contains [content, tool_call_1, tool_call_2, etc],
+                                        B's messages contain [content+tool_call_1, content+tool_call_2, etc]
+        DROP_CONTENT_SPLIT_PARTS: Output of A contains [content, tool_call_1, tool_call_2, etc],
+                                   B's messages contain [tool_call_1, tool_call_2] (content dropped)
+        None: No causal dependency detected
+    """
+    if not a.out_message or not b.messages:
+        return None
+    a_out = a.out_message.text or ""
+    for msg_idx, msg in enumerate(b.messages):
+        if output_matches_message(a_out, msg, allow_partial_match=True):
+            # Cache only exact matches (for reuse in decompose_input)
+            if output_matches_for_substitutions is not None and output_matches_message(a_out, msg, allow_partial_match=False):
+                cache_key = (a.call_id, b.call_id)
+                if cache_key not in output_matches_for_substitutions:
+                    output_matches_for_substitutions[cache_key] = []
+                output_matches_for_substitutions[cache_key].append(msg_idx)
+            return DEPENDENCY_TYPE.CAUSAL_FULL_MATCH
+    # Try matching by tool call IDs before falling back to multi-part text comparison.
+    # This handles the common case where the output is stored in OTel "parts"
+    # format but appears in the successor's input in OpenAI "tool_calls" format —
+    # the two representations look different as text but share the same IDs.
+    # Only attempt when there are actual tool-call parts with IDs to match against.
+    if isinstance(a.out_message, ComplexReplayMessage) and "parts" in a.out_message.message_info:
+        tool_parts_with_ids = [p for p in a.out_message.message_info["parts"] if p.get("type") == "tool_call" and p.get("id")]
+        if tool_parts_with_ids and _try_match_tool_call_ids(tool_parts_with_ids, b.messages):  # type: ignore[arg-type]
+            return DEPENDENCY_TYPE.CAUSAL_TOOL_CALL_IDS_MATCHED
+    # try matching parts (only relevant when there are multiple parts that expand
+    # into separate messages in the successor — single tool calls are covered above)
+    if (
+        isinstance(a.out_message, ComplexReplayMessage)
+        and "parts" in a.out_message.message_info
+        and len(a.out_message.message_info["parts"]) > 1
+    ):
+        # this means this output message contains several parts, and will be interpreted as more than one message in the calls history
+        parts = a.out_message.message_info["parts"]
+        parts_text = a.out_message.message_info["parts_text"]
+
+        # Determine structure: check if first part is content (text) or tool_call
+        first_part_is_content = parts[0]["type"] != "tool_call"
+
+        # Case 1: Only tool calls [tool_call_1, tool_call_2, ..., tool_call_n]
+        # Case 2: Content + tool calls [content, tool_call_1, tool_call_2, ..., tool_call_n]
+
+        if not first_part_is_content:
+            # Case 1: Only tool calls - each tool call appears separately in input messages
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False):
+                return DEPENDENCY_TYPE.CAUSAL_SPLIT_PARTS_MATCHED
+        else:
+            # Case 2: Content + tool calls - try two matching strategies:
+            # Strategy A: Each part appears separately (content has offset 1, tools have offset 2)
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=False):
+                return DEPENDENCY_TYPE.CAUSAL_SPLIT_PARTS_MATCHED
+            # Strategy B: Content is combined with each tool call
+            # [content + tool_call_1, content + tool_call_2, ..., content + tool_call_n]
+            # Combined messages are treated as tool calls (offset 2)
+            if _try_match_parts(parts, parts_text, b.messages, combine_content_with_tools=True):
+                return DEPENDENCY_TYPE.CAUSAL_CONTENT_AND_SPLIT_TOOLS_MATCH
+            # Strategy C: Content is dropped, only tool calls remain
+            # Check if tool calls alone (without content) match
+            tool_call_parts = [p for p in parts if p["type"] == "tool_call"]
+            tool_call_texts = [parts_text[i] for i, p in enumerate(parts) if p["type"] == "tool_call"]
+            if tool_call_parts and _try_match_parts(
+                tool_call_parts, tool_call_texts, b.messages, combine_content_with_tools=False
+            ):
+                return DEPENDENCY_TYPE.CAUSAL_DROP_CONTENT_SPLIT_PARTS
+
+        return None
+    return None
+
+
+def _try_match_parts(
+    parts: List[Dict[str, Any]], parts_text: List[str], b_messages: List[Any], combine_content_with_tools: bool
+) -> bool:
+    """
+    Unified function to match parts in b_messages.
+
+    Args:
+        parts: List of part dictionaries with 'type' field
+        parts_text: List of text representations for each part
+        b_messages: List of messages to search in
+        combine_content_with_tools: If True and first part is content, expect content combined with each tool call
+
+    Returns:
+        True if a valid match is found
+    """
+    if not parts or not parts_text or not b_messages:
+        return False
+
+    # Determine what we're matching
+    first_part_is_content = parts[0]["type"] != "tool_call"
+
+    # For combine mode, we need content + tool calls
+    if combine_content_with_tools:
+        if not first_part_is_content or len(parts) < 2:
+            return False
+        if not all(part["type"] == "tool_call" for part in parts[1:]):
+            return False
+
+        # When combining: skip content in parts list, but check for it in each message
+        content_text = parts_text[0]
+        parts_to_match = parts[1:]
+        parts_text_to_match = parts_text[1:]
+    else:
+        # Standard mode: match all parts separately
+        content_text = None
+        parts_to_match = parts
+        parts_text_to_match = parts_text
+
+    # Find candidates for the first part to match
+    first_part_text = parts_text_to_match[0]
+    first_part_match_candidates = []
+
+    for i in range(len(b_messages)):
+        msg = b_messages[i]
+
+        # Prepare text to match for first part
+        if combine_content_with_tools:
+            # Concatenate content with first tool call text
+            text_to_match = (content_text or "") + "\n" + (first_part_text or "")
+        else:
+            # Just the first part text
+            text_to_match = first_part_text
+
+        # Check if the text matches
+        if output_matches_message(text_to_match, msg, allow_partial_match=True):
+            first_part_match_candidates.append(i)
+
+    # Try each candidate position
+    for candidate_i in first_part_match_candidates:
+        candidate_ok = True
+
+        # Calculate offset after first matched part
+        if combine_content_with_tools:
+            # Combined content+tool is treated as tool call (offset 2)
+            offset = 2
+        else:
+            # Separate parts: 1 for content, 2 for tool_call
+            offset = 1 if parts_to_match[0]["type"] != "tool_call" else 2
+
+        # Check remaining parts
+        for part, part_text in zip(parts_to_match[1:], parts_text_to_match[1:], strict=False):
+            next_index_to_check = candidate_i + offset
+            if next_index_to_check >= len(b_messages):
+                candidate_ok = False
+                break
+
+            msg = b_messages[next_index_to_check]
+
+            # Prepare text to match
+            if combine_content_with_tools:
+                # Concatenate content with tool call text
+                text_to_match = (content_text or "") + "\n" + (part_text or "")
+            else:
+                # Just the part text
+                text_to_match = part_text
+
+            # Check if the text matches the message
+            if not output_matches_message(text_to_match, msg, allow_partial_match=True):
+                candidate_ok = False
+                break
+
+            # Update offset for next part
+            if combine_content_with_tools:
+                # Combined content+tool is treated as tool call (offset 2)
+                offset += 2
+            else:
+                # Separate parts: 1 for content, 2 for tool_call
+                offset += 1 if part["type"] != "tool_call" else 2
+
+        if candidate_ok:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Input segment decomposition (message-level)
+# ---------------------------------------------------------------------------
+
+
+def decompose_input(
+    call: RawCall,
+    predecessors: List[RawCall],
+    predecessor_event_ids: List[str],
+    output_matches_for_substitutions: Optional[Dict[tuple[str, str], List[int]]] = None,
+) -> List[InputSegment]:
+    """Decompose a call's message list into segments relative to its predecessors.
+
+    Algorithm:
+    1. Find the predecessor whose message list shares the longest common prefix
+       with this call's messages (message-by-message equality).
+    2. After the shared prefix, scan remaining messages for any assistant message
+       whose content matches a predecessor's output text.
+    3. Whatever remains is "unique".
+
+    Token counts are derived from recorded prompt_tokens (proportional to message counts)
+    or estimated per-message at 4 chars/token.
+    """
+    messages = call.messages
+    total_msgs = len(messages)
+
+    if total_msgs == 0:
+        return [InputSegment(type="unique", message_count=0, token_count=0)]
+
+    # Total token count for this call's input
+    total_tokens = call.prompt_tokens if call.prompt_tokens is not None else sum(message_tokens(m) for m in messages)
+
+    def msgs_to_tokens(msg_list: List[Dict[str, Any]]) -> int:
+        """Convert a list of messages to token count proportionally."""
+        if total_msgs == 0 or total_tokens == 0:
+            return 0
+        msg_chars = sum(len(message_content_text(m)) for m in msg_list)  # type: ignore[arg-type,misc]
+        total_chars = sum(len(message_content_text(m)) for m in messages)
+        if total_chars == 0:
+            return 0
+        return max(0, round(total_tokens * msg_chars / total_chars))
+
+    if not predecessors:
+        return [InputSegment(type="unique", message_count=total_msgs, token_count=total_tokens)]
+
+    # Step 1: Find the predecessor with the longest common message prefix
+    best_pred_idx: int = -1
+    best_prefix_count: int = 0
+    for idx, pred in enumerate(predecessors):
+        prefix_len = 0
+        for _i, (ma, mb) in enumerate(zip(messages, pred.messages, strict=False)):
+            if messages_equal(ma, mb):
+                prefix_len += 1
+            else:
+                break
+        if prefix_len > best_prefix_count:
+            best_prefix_count = prefix_len
+            best_pred_idx = idx
+
+    segments: List[InputSegment] = []
+    cursor = 0  # current message index
+
+    # Segment 1: shared prefix (if at least 1 message is shared)
+    if best_prefix_count >= 1 and best_pred_idx >= 0:
+        shared_msgs = messages[:best_prefix_count]
+        segments.append(
+            InputSegment(
+                type="shared",
+                message_count=best_prefix_count,
+                token_count=msgs_to_tokens(shared_msgs),  # type: ignore[arg-type]
+                source_event_id=predecessor_event_ids[best_pred_idx],
+            )
+        )
+        cursor = best_prefix_count
+
+    # Step 2: After the shared prefix, scan for injected outputs from predecessors.
+    # Each predecessor's output may appear as an assistant message in the remaining messages.
+    # Pre-compute the tool-call ID set for each message once so the inner pred loop
+    # doesn't repeat the extraction for every (pred, msg) pair.
+    msg_tool_id_sets: List[set[str]] = [_extract_tool_call_ids(m) for m in messages]
+
+    while cursor < total_msgs:
+        # Find the earliest remaining message that matches any predecessor's output
+        best_out_pred_idx: int = -1
+        best_out_msg_idx: int = total_msgs  # position in messages[]
+
+        for pred_idx, pred in enumerate(predecessors):
+            if not pred.out_message:
+                continue
+
+            # Check cache first for exact matches
+            cache_key = (pred.call_id, call.call_id)
+            if output_matches_for_substitutions and cache_key in output_matches_for_substitutions:
+                # Use cached exact match indices
+                matched_indices = output_matches_for_substitutions[cache_key]
+                for msg_idx in matched_indices:
+                    if cursor <= msg_idx < total_msgs:
+                        if msg_idx < best_out_msg_idx:
+                            best_out_msg_idx = msg_idx
+                            best_out_pred_idx = pred_idx
+                        break
+            else:
+                # Fallback: search for exact matches or tool-call ID matches
+                pred_out = pred.out_message.text or ""
+                # Build tool-call ID set for this predecessor's output (for fallback ID matching).
+                pred_tool_ids: set[str] = set()
+                if isinstance(pred.out_message, ComplexReplayMessage) and "parts" in pred.out_message.message_info:
+                    pred_tool_ids = {
+                        p["id"] for p in pred.out_message.message_info["parts"] if p.get("type") == "tool_call" and p.get("id")
+                    }
+                for msg_idx in range(cursor, total_msgs):
+                    matched = output_matches_message(pred_out, messages[msg_idx])
+                    # Fallback: match by tool-call IDs when text representations differ
+                    if not matched and pred_tool_ids:
+                        matched = bool(pred_tool_ids <= msg_tool_id_sets[msg_idx])
+                    if matched:
+                        if msg_idx < best_out_msg_idx:
+                            best_out_msg_idx = msg_idx
+                            best_out_pred_idx = pred_idx
+                        break  # found earliest occurrence for this pred
+
+        if best_out_pred_idx == -1:
+            # No more injected outputs — rest is unique
+            remaining_msgs = messages[cursor:]
+            if remaining_msgs:
+                segments.append(
+                    InputSegment(
+                        type="unique",
+                        message_count=len(remaining_msgs),
+                        token_count=msgs_to_tokens(remaining_msgs),  # type: ignore[arg-type]
+                    )
+                )
+            break
+
+        # Gap before the output message — unique messages
+        if best_out_msg_idx > cursor:
+            gap_msgs = messages[cursor:best_out_msg_idx]
+            segments.append(
+                InputSegment(
+                    type="unique",
+                    message_count=len(gap_msgs),
+                    token_count=msgs_to_tokens(gap_msgs),  # type: ignore[arg-type]
+                )
+            )
+            cursor = best_out_msg_idx
+
+        # The injected output message
+        out_msg = messages[cursor]
+        _ct = predecessors[best_out_pred_idx].completion_tokens
+        out_tokens: int = _ct if _ct is not None else msgs_to_tokens([out_msg])  # type: ignore[list-item]
+        segments.append(
+            InputSegment(
+                type="output",
+                message_count=1,
+                token_count=out_tokens,
+                source_event_id=predecessor_event_ids[best_out_pred_idx],
+            )
+        )
+        cursor += 1
+
+    # Ensure we have at least one segment
+    if not segments:
+        segments.append(InputSegment(type="unique", message_count=total_msgs, token_count=total_tokens))
+
+    return segments
+
+
+# ---------------------------------------------------------------------------
+# Graph data structures
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Graph builder
+# ---------------------------------------------------------------------------
+
+
+# Signature shared by predecessor finders: given the chronologically sorted
+# calls, return (predecessor_indices, output_matches_for_substitutions) —
+# per-call ordered dicts of predecessor index -> dependency type, plus the
+# exact-output-match cache consumed by decompose_input.
+PredecessorFinder = Callable[
+    [List[RawCall]],
+    "tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[tuple[str, str], List[int]]]",
+]
+
+
+def find_predecessors_by_text_matching(
+    calls: List[RawCall],
+) -> "tuple[List[Dict[int, DEPENDENCY_TYPE]], Dict[tuple[str, str], List[int]]]":
+    """Find each call's direct predecessors by output→input text matching.
+
+    This is Step 1 of build_graph, factored out so callers that know their
+    calls' structure (e.g. the Weka replay generator, which synthesized the
+    calls itself) can supply a faster, semantics-identical finder.
+    """
+    n = len(calls)
+    # predecessor_indices[i] = dict mapping predecessor index to dependency type
+    predecessor_indices: List[Dict[int, DEPENDENCY_TYPE]] = [{} for _ in range(n)]
+
+    def get_causal_ancestors(node_idx: int) -> Set[int]:
+        """Get all causal ancestors of a node (excluding temporal edges)."""
+        ancestors: Set[int] = set()
+        stack = [
+            pred_idx for pred_idx, dep_type in predecessor_indices[node_idx].items() if dep_type != DEPENDENCY_TYPE.TEMPORAL
+        ]
+        while stack:
+            ancestor = stack.pop()
+            if ancestor not in ancestors:
+                ancestors.add(ancestor)
+                stack.extend(
+                    [
+                        pred_idx
+                        for pred_idx, dep_type in predecessor_indices[ancestor].items()
+                        if dep_type != DEPENDENCY_TYPE.TEMPORAL
+                    ]
+                )
+        return ancestors
+
+    def is_valid_predecessor(predecessor_candidate: Any, curr_call: Any) -> bool:
+        # checks if candidate can be a predecessor to curr_call. Make sure times are not overlapping
+        # since the events are sorted, we can assume the candidate doesn't start after curr_call
+        if curr_call.t_start_ms < predecessor_candidate.t_end_ms:
+            # curr starts before the candidate ends.
+            return False
+        return True
+
+    # Cache for exact output matches: (pred_call_id, curr_call_id) -> list of matching message indices. Is used when input segments are created.
+    output_matches_for_substitutions: Dict[tuple[str, str], List[int]] = {}
+
+    for i in range(1, n):
+        # Collect all calls that causally feed call i
+        curr_causal_preds: Dict[int, DEPENDENCY_TYPE] = {}
+        # Track indices that are transitively connected (ancestors of found predecessors)
+        transitive_preds: Set[int] = set()
+
+        for j in range(i - 1, -1, -1):
+            # If j is already known to be a transitive predecessor, skip expensive check
+            if j in transitive_preds:
+                continue
+
+            dep_type = get_causal_dep(calls[j], calls[i], output_matches_for_substitutions)
+            if dep_type is not None:
+                curr_causal_preds[j] = dep_type
+                # Add all of j's causal ancestors as transitive predecessors
+                # so we skip checking them in future iterations
+                transitive_preds.update(get_causal_ancestors(j))
+
+        # All predecessors in curr_causal_preds are direct (not transitive)
+        # because we skipped transitive ones in the loop above
+        predecessor_indices[i].update(curr_causal_preds)
+
+        """
+        Add a temporal fallback predecessor (the closest non-overlapping event) if one exists.
+        This ensures we don't have long wait times when causal predecessors are distant.
+        Causal detection (output matching) doesn't catch all dependencies, so we use
+        temporal proximity as a conservative fallback to maintain realistic timing.
+        """
+        predecessor_index = None  # Will remain None if no valid predecessor found
+        # Look for the closest possible predecessor. It's not necessarily the immediate predecessor, as they can be executed in parallel
+        for j in range(i - 1, -1, -1):
+            if is_valid_predecessor(calls[j], calls[i]):
+                predecessor_index = j
+                break
+        # Only add temporal predecessor if one was found and it's not already a predecessor
+        if predecessor_index is not None and predecessor_index not in predecessor_indices[i]:
+            predecessor_indices[i][predecessor_index] = DEPENDENCY_TYPE.TEMPORAL
+
+    return predecessor_indices, output_matches_for_substitutions
+
+
+def build_graph(
+    calls: List[RawCall],
+    source_file: str = "",
+    predecessor_finder: Optional[PredecessorFinder] = None,
+) -> ReplayGraph:
+    """Build a ReplayGraph from a list of raw calls.
+
+    Each RawCall becomes exactly one GraphEvent. Predecessor relationships are
+    inferred from causal dependencies (output→input message matching) with a
+    fallback to the immediately preceding call for timing-only chains.
+
+    Steps:
+    1. For each call, find its direct predecessor calls (causal dep or timing
+       fallback). Runs find_predecessors_by_text_matching unless the caller
+       supplies a semantics-identical predecessor_finder.
+    2. Apply transitive reduction: remove predecessors that are already ancestors
+       of another predecessor (keep only direct edges).
+    3. Decompose each call's messages into segments relative to all ancestor calls.
+    4. Build GraphEvent objects with predecessor_event_ids and wait_ms.
+    """
+    if not calls:
+        return ReplayGraph(events={}, root_event_ids=[], source_file=source_file)
+
+    n = len(calls)
+    # Assign event IDs 1:1 with calls, incorporating span_id for traceability
+    event_ids = [f"event_{i:03d}_{calls[i].call_id}" for i in range(n)]
+
+    # ---------------------------------------------------------------------------
+    # Step 1: Find direct predecessors for each call
+    # ---------------------------------------------------------------------------
+    finder = predecessor_finder if predecessor_finder is not None else find_predecessors_by_text_matching
+    predecessor_indices, output_matches_for_substitutions = finder(calls)
+
+    # ---------------------------------------------------------------------------
+    # Step 2: Compute all ancestors per call (for segment decomposition)
+    # ---------------------------------------------------------------------------
+    def all_ancestor_indices(call_idx: int) -> List[int]:
+        """Return all ancestor call indices (transitive closure of predecessors)."""
+        visited: Set[int] = set()
+        stack = list(predecessor_indices[call_idx].keys())
+        while stack:
+            node = stack.pop()
+            if node not in visited:
+                visited.add(node)
+                stack.extend(predecessor_indices[node].keys())
+        return list(visited)
+
+    # ---------------------------------------------------------------------------
+    # Step 3: Build GraphEvents
+    # ---------------------------------------------------------------------------
+    events: Dict[str, GraphEvent] = {}
+    for i, (eid, rc) in enumerate(zip(event_ids, calls, strict=False)):
+        # All ancestor calls (for segment decomposition — includes transitive predecessors)
+        ancestor_idxs = all_ancestor_indices(i)
+        ancestor_calls = [calls[j] for j in ancestor_idxs]
+        ancestor_event_ids = [event_ids[j] for j in ancestor_idxs]
+
+        # Decompose input into message-level segments
+        segments = decompose_input(rc, ancestor_calls, ancestor_event_ids, output_matches_for_substitutions)
+
+        # Validate that segment message counts sum to total messages
+        total_segment_messages = sum(seg.message_count for seg in segments)
+        actual_message_count = len(rc.messages)
+        if total_segment_messages != actual_message_count:
+            logger.warning(
+                f"Segment validation failed for call {rc.call_id}: "
+                f"segment messages ({total_segment_messages}) != actual messages ({actual_message_count})"
+            )
+
+        total_input_tokens = rc.prompt_tokens if rc.prompt_tokens is not None else sum(message_tokens(m) for m in rc.messages)
+        expected_output_tokens = (
+            rc.completion_tokens
+            if rc.completion_tokens is not None
+            else estimate_tokens(rc.out_message.text or "" if rc.out_message else "")
+        )
+
+        # Detect whether the recorded output was a tool call and collect names.
+        # ComplexReplayMessage.message_info uses OTel "parts" format after
+        # reconstruct_each_part_in_message_info, or OpenAI "tool_calls" format
+        # when passed through _convert_content_and_tool_calls_to_parts.
+        expected_output_tool_names: List[str] = []
+        if isinstance(rc.out_message, ComplexReplayMessage):
+            info = rc.out_message.message_info
+            # OTel parts format: {"parts": [{"type": "tool_call", "name": ...}, ...]}
+            for part in info.get("parts", []):
+                if part.get("type") == "tool_call" and part.get("name"):
+                    expected_output_tool_names.append(part["name"])
+            # OpenAI tool_calls format: {"tool_calls": [{"function": {"name": ...}}, ...]}
+            if not expected_output_tool_names:
+                for tc in info.get("tool_calls", []):
+                    name = tc.get("function", {}).get("name") or tc.get("name")
+                    if name:
+                        expected_output_tool_names.append(name)
+
+        # If the recorded output was a tool call but no tool definitions were captured,
+        # we cannot inject tool_choice at replay time. Treat it as a plain-text output
+        # so substitution does not fail-fast when the live model returns text.
+        has_tool_definitions = bool(rc.tool_definitions)
+        effective_is_tool_call = bool(expected_output_tool_names) and has_tool_definitions
+        if bool(expected_output_tool_names) and not has_tool_definitions:
+            logger.warning(
+                f"Span {rc.call_id}: recorded output is a tool call "
+                f"({expected_output_tool_names}) but no tool definitions were captured "
+                f"in the span (gen_ai.tool.definitions missing). "
+                f"tool_choice cannot be forced at replay time, so the live model will "
+                f"return plain text. expected_output_is_tool_call is being set to False "
+                f"so that substitution treats the live response as plain text rather than "
+                f"failing the session chain with a dangling tool_call_id error."
+            )
+
+        graph_call = GraphCall(
+            call_id=rc.call_id,
+            model=rc.model,
+            messages=[
+                _replay_message_to_dict(x) for x in rc.messages
+            ],  # convert to a list of dictionaries representing a message with role and content only.
+            expected_output=(rc.out_message.text or "" if rc.out_message else ""),
+            input_segments=segments,
+            total_input_tokens=total_input_tokens,
+            expected_output_tokens=expected_output_tokens,
+            temperature=rc.temperature,
+            max_tokens_recorded=rc.max_tokens_recorded,
+            tool_definitions=rc.tool_definitions,
+            expected_output_is_tool_call=effective_is_tool_call,
+            expected_output_tool_names=expected_output_tool_names or None,
+            attributes=rc.extra_attributes or None,
+        )
+
+        # Compute wait_ms: gap between when the last predecessor ends and this call starts
+        pred_idxs = predecessor_indices[i]
+        if pred_idxs:
+            last_pred_end_ms = max(calls[j].t_end_ms for j in pred_idxs.keys())
+            wait_ms = max(0, rc.t_start_ms - last_pred_end_ms)
+        else:
+            wait_ms = 0
+
+        # Build predecessor dependency types mapping
+        predecessor_dependency_types = {event_ids[j]: dep_type.value for j, dep_type in pred_idxs.items()}
+
+        events[eid] = GraphEvent(
+            event_id=eid,
+            call=graph_call,
+            predecessor_event_ids=list(predecessor_dependency_types.keys()),
+            predecessor_dependency_types=predecessor_dependency_types,
+            wait_ms=wait_ms,
+            t_start_ms=rc.t_start_ms,
+            t_end_ms=rc.t_end_ms,
+        )
+
+    root_event_ids = [event_ids[i] for i in range(n) if not predecessor_indices[i]]
+
+    graph = ReplayGraph(events=events, root_event_ids=root_event_ids, source_file=source_file)
+    tag_user_facing_events(graph)
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# User-facing event tagging (TFUT)
+# ---------------------------------------------------------------------------
+
+
+def tag_user_facing_events(graph: ReplayGraph, all_spans: Optional[List[Dict[str, Any]]] = None) -> None:
+    """Tag each event with is_user_facing, is_structured_output_call, is_tool_internal.
+
+    A user-facing event is one whose output reaches the end user — used as
+    the anchor for Time to First User Token (TFUT). Three conditions must all hold:
+      1. Not a tool call (expected_output_is_tool_call == False AND
+         finish_reason not in {tool_use, tool_calls}; either signal excludes)
+      2. Not a structured-output call (no output_schema, output.type != "json")
+      3. Not tool-internal — detected via two strategies:
+         - Structural (primary): event's span is nested under a tool.execution span.
+         - Fallback (no span data): event outputs a tool call AND has a causal
+           successor. Prose events with successors (multi-turn) are NOT tool-internal.
+    """
+    # Build successor map
+    successors: Dict[str, List[Tuple[str, str]]] = {eid: [] for eid in graph.events}
+    for eid, event in graph.events.items():
+        for pred_id, dep_type in event.predecessor_dependency_types.items():
+            if pred_id in successors:
+                successors[pred_id].append((eid, dep_type))
+
+    # Build set of span_ids nested under tool-execution spans (structural tool-internal detection)
+    tool_internal_span_ids: Set[str] = set()
+    tool_exec_span_ids: Set[str] = set()
+    if all_spans:
+        span_by_id: Dict[str, Dict[str, Any]] = {}
+        for span in all_spans:
+            sid = span.get("span_id", "")
+            span_by_id[sid] = span
+            name = span.get("name", "") or ""
+            if "tool.execution" in name or "tool_execution" in name:
+                tool_exec_span_ids.add(sid)
+
+        if tool_exec_span_ids:
+            for span in all_spans:
+                parent = span.get("parent_span_id")
+                if parent and parent in tool_exec_span_ids:
+                    tool_internal_span_ids.add(span.get("span_id", ""))
+                # Walk up the parent chain for deeper nesting
+                visited: Set[str] = set()
+                current_parent = parent
+                while current_parent and current_parent not in visited:
+                    visited.add(current_parent)
+                    if current_parent in tool_exec_span_ids:
+                        tool_internal_span_ids.add(span.get("span_id", ""))
+                        break
+                    parent_span = span_by_id.get(current_parent)
+                    current_parent = parent_span.get("parent_span_id") if parent_span else None
+
+    has_structural_tool_info = bool(tool_exec_span_ids)
+
+    _TOOL_CALL_FINISH_REASONS = {"tool_use", "tool_calls"}
+
+    for eid, event in graph.events.items():
+        gc = event.call
+        attrs = gc.attributes or {}
+
+        # Condition 2: structured-output call detection
+        # A call with an output schema answers a programmatic consumer, not the user.
+        has_output_schema = "gen_ai.request.output_schema" in attrs
+        output_type = attrs.get("gen_ai.output.type", "")
+        is_structured_output = has_output_schema or (isinstance(output_type, str) and output_type.lower() == "json")
+        event.is_structured_output_call = is_structured_output
+
+        # Condition 3: tool-internal detection
+        # Primary: structural (span nested under tool execution)
+        span_id = gc.call_id
+        is_tool_internal_structural = span_id in tool_internal_span_ids
+        # Fallback (no span info): an event is tool-internal when its output is a
+        # tool call consumed by a successor. A prose-output event with successors is
+        # just multi-turn context sharing, not tool-internal.
+        is_tool_internal_fallback = gc.expected_output_is_tool_call and any(
+            dep_type != "temporal" for _, dep_type in successors[eid]
+        )
+        is_tool_internal = is_tool_internal_structural or (not has_structural_tool_info and is_tool_internal_fallback)
+        event.is_tool_internal = is_tool_internal
+
+        # Condition 1: not a tool call (two independent signals, either excludes)
+        finish_reasons_raw = attrs.get("gen_ai.response.finish_reasons", [])
+        if isinstance(finish_reasons_raw, str):
+            finish_reasons_raw = [finish_reasons_raw]
+        has_tool_call_finish_reason = bool(finish_reasons_raw) and any(
+            (fr.lower() if isinstance(fr, str) else "") in _TOOL_CALL_FINISH_REASONS for fr in finish_reasons_raw
+        )
+        not_tool_call = not gc.expected_output_is_tool_call and not has_tool_call_finish_reason
+
+        event.is_user_facing = not_tool_call and not is_structured_output and not is_tool_internal
