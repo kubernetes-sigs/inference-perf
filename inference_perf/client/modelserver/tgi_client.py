@@ -37,6 +37,8 @@ class TGImodelServerClient(openAIModelServerClient):
         timeout: Optional[float] = None,
         request_retries: int = 0,
         request_retry_backoff_sec: float = 0.5,
+        cert_path: Optional[str] = None,
+        key_path: Optional[str] = None,
         lora_config: Optional[List[MultiLoRAConfig]] = None,
     ) -> None:
         super().__init__(
@@ -50,6 +52,8 @@ class TGImodelServerClient(openAIModelServerClient):
             ignore_eos,
             api_key,
             timeout,
+            cert_path,
+            key_path,
             lora_config=lora_config,
             request_retries=request_retries,
             request_retry_backoff_sec=request_retry_backoff_sec,

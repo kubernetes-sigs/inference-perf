@@ -234,6 +234,8 @@ def main_cli() -> None:
                 timeout=config.load.request_timeout,
                 request_retries=config.load.request_retries,
                 request_retry_backoff_sec=config.load.request_retry_backoff_sec,
+                cert_path=config.server.cert_path,
+                key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
             )
             # sglang_client supports inferring the tokenizer
@@ -252,6 +254,8 @@ def main_cli() -> None:
                 timeout=config.load.request_timeout,
                 request_retries=config.load.request_retries,
                 request_retry_backoff_sec=config.load.request_retry_backoff_sec,
+                cert_path=config.server.cert_path,
+                key_path=config.server.key_path,
                 lora_config=config.load.lora_traffic_split,
             )
             # tgi_client supports inferring the tokenizer
