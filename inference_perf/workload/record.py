@@ -94,16 +94,27 @@ ContentPart = Annotated[Union[TextPart, MediaPart, SyntheticPart], Field(discrim
 class Turn(StrictBaseModel):
     """One message of the conversation. An assistant turn is the reference
     output for the request that elicits it: its `output_tokens` is the length
-    to ask the server for, and its parts (if any) are what was recorded."""
+    to ask the server for, and its parts (if any) are what was recorded.
+
+    A self-contained turn's parts are the whole prompt of the request that
+    elicits the next assistant turn; the turns before it are context the
+    source already folded in, so they are not sent again. That is how a
+    trace that recorded each round's full prompt size (TraceLab, Weka) is
+    stated without inventing per-turn splits it never recorded. A turn that
+    is not self-contained is one message, and the prompt is it plus the
+    turns before it."""
 
     role: Literal["system", "user", "assistant", "tool"]
     parts: List[ContentPart] = []
     output_tokens: Optional[int] = Field(default=None, ge=0)
+    self_contained: bool = False
 
     @model_validator(mode="after")
-    def _output_tokens_on_assistant(self) -> Turn:
+    def _fields_match_role(self) -> Turn:
         if self.output_tokens is not None and self.role != "assistant":
             raise ValueError(f"output_tokens is only meaningful on an assistant turn, not {self.role!r}")
+        if self.self_contained and self.role == "assistant":
+            raise ValueError("an assistant turn is an output, it cannot be a self-contained prompt")
         return self
 
 

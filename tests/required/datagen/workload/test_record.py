@@ -40,6 +40,16 @@ def test_output_tokens_only_on_assistant_turns() -> None:
     assert turn.parts == []
 
 
+# A user turn can declare itself the whole prompt (self_contained); an
+# assistant turn is an output, so marking it self-contained is rejected.
+# The default is False: a plain message that rides on the turns before it.
+def test_self_contained_is_for_prompt_turns() -> None:
+    assert Turn(role="user", parts=[TextPart(text="all of it")], self_contained=True).self_contained
+    assert not Turn(role="user", parts=[TextPart(text="one message")]).self_contained
+    with pytest.raises(ValidationError, match="self-contained"):
+        Turn(role="assistant", output_tokens=1, self_contained=True)
+
+
 # A record with a user turn, an assistant turn and a second user turn has
 # exactly one assistant turn, at index 1. Zero turns is rejected.
 def test_record_assistant_turn_indices() -> None:
