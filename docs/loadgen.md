@@ -315,6 +315,10 @@ data:
 
 Which load type to use follows from the arrangement. Timestamped independent requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the arrangement. Sessions with dependencies between requests run with `load.type: trace_session_replay`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
 
+#### AzurePublicDataset
+
+The Azure trace above is also a workload format: `format: AzurePublicDataset` with `load.type: trace_replay` and no `load.trace` block replays it with the same timing and lengths. The `data.type: random` spelling with `trace` blocks on `data` and `load` keeps working; the two differ only in where the prompt text comes from (random vocabulary tokens there, the prompt corpus here).
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
