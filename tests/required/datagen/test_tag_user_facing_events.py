@@ -15,7 +15,7 @@
 """Tests for tag_user_facing_events (TFUT user-facing event tagging)."""
 
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, ReplayGraph
-from inference_perf.datagen.replay.otel_trace_to_replay_graph import tag_user_facing_events
+from inference_perf.datagen.replay.replay_graph_builder import tag_user_facing_events
 
 
 def _make_call(
