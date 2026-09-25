@@ -47,3 +47,12 @@ def test_count_sampling_keeps_integer_semantics(kind: DistributionType) -> None:
         expected = np.round(np.clip(rng.uniform(0, 5, 100), 0, 4)).astype(int)
     assert np.issubdtype(actual.dtype, np.integer)
     np.testing.assert_array_equal(actual, expected)
+
+
+# An expression insertion_point is sampled as a fraction. Input: 'Beta(2, 5)' over 200 draws. Expected: every
+# draw in [0, 1], and the mean near Beta(2, 5)'s 2/7 (within 0.05).
+def test_expression_insertion_point_is_fractional() -> None:
+    rng = np.random.default_rng(0)
+    draws = [sample_insertion_point("Beta(2, 5)", rng) for _ in range(200)]
+    assert all(0.0 <= d <= 1.0 for d in draws)
+    assert abs(float(np.mean(draws)) - 2 / 7) < 0.05

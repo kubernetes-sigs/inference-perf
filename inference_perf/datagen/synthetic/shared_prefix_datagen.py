@@ -46,7 +46,7 @@ from inference_perf.payloads import (
     VideoSpecUnion,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution, sample_lengths
+from inference_perf.utils.numeric.distribution import sample_lengths, sample_values
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..datagen_utils import (
@@ -369,7 +369,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     img_cfg = cfg.image
     if img_cfg and img_cfg.count:
-        count = int(sample_from_distribution(img_cfg.count, 1, rng)[0])
+        count = int(sample_values(img_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             w, h = sample_image_resolution(img_cfg, rng)
             spec.images.append(
@@ -383,7 +383,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     vid_cfg = cfg.video
     if vid_cfg and vid_cfg.count:
-        count = int(sample_from_distribution(vid_cfg.count, 1, rng)[0])
+        count = int(sample_values(vid_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             profile = sample_video_profile(vid_cfg, rng)
             w, h = resolution_to_wh(profile.resolution)
@@ -407,7 +407,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     aud_cfg = cfg.audio
     if aud_cfg and aud_cfg.count:
-        count = int(sample_from_distribution(aud_cfg.count, 1, rng)[0])
+        count = int(sample_values(aud_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             spec.audios.append(
                 SyntheticAudioSpec(
