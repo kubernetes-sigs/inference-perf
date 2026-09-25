@@ -661,7 +661,7 @@ class TestCausalDepToolCallIds:
     matches OpenAI tool_calls format via shared tool-call IDs."""
 
     def _make_raw_call(self, out_message: Any, messages: List[Any]) -> "Any":
-        from inference_perf.datagen.replay.otel_trace_to_replay_graph import RawCall
+        from inference_perf.datagen.replay.replay_graph_builder import RawCall
 
         return RawCall(
             call_id="span1",
@@ -679,7 +679,7 @@ class TestCausalDepToolCallIds:
 
     def test_otel_parts_format_matched_by_id_in_openai_format(self) -> None:
         """OTel parts output (a) is matched against OpenAI tool_calls input (b) via IDs."""
-        from inference_perf.datagen.replay.otel_trace_to_replay_graph import get_causal_dep, DEPENDENCY_TYPE
+        from inference_perf.datagen.replay.replay_graph_builder import get_causal_dep, DEPENDENCY_TYPE
         from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage, ReplayMessage
 
         # Call A output: OTel "parts" format with a tool call carrying an ID
@@ -708,7 +708,7 @@ class TestCausalDepToolCallIds:
 
     def test_no_match_when_ids_differ(self) -> None:
         """No dependency when tool-call IDs don't overlap."""
-        from inference_perf.datagen.replay.otel_trace_to_replay_graph import get_causal_dep
+        from inference_perf.datagen.replay.replay_graph_builder import get_causal_dep
         from inference_perf.datagen.replay.replay_graph_types import ComplexReplayMessage
 
         out_parts = [{"type": "tool_call", "name": "bash", "id": "call_aaa", "arguments": "{}"}]
