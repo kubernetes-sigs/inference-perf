@@ -167,7 +167,7 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
