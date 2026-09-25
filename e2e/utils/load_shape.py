@@ -13,17 +13,16 @@
 # limitations under the License.
 """Shared load-shape assertions: was the configured load actually offered (#633).
 
-The golden accuracy helpers in ``utils.accuracy`` check the measurement side
-(what the tool reports about each response). These check the stimulus side:
-the request rate and the in-flight concurrency the load generator actually
-delivered.
+The golden accuracy helpers in ``utils.accuracy`` check what the tool reports
+about each response. These check the other side: the request rate and the
+in-flight concurrency the load generator actually delivered.
 
 Everything here works off the raw ``start_time`` / ``end_time`` pairs in
-``per_request_lifecycle_metrics.json``, deliberately not off the numbers
+``per_request_lifecycle_metrics.json``, not off the numbers
 ``summarize_requests`` prints, so the reconstruction is independent of
 reportgen and can be used to check reportgen's own derivation.
 
-Honest limits of this oracle, stated once so callers do not overclaim:
+Limits, stated once so callers do not overclaim:
 
 - The timestamps are recorded by the client around its own send and receive,
   so this is the load generator's view of what it offered. It catches a
@@ -42,27 +41,29 @@ Segment = Tuple[float, float, int]
 
 
 def rate_tolerance(n: int, arrival: str) -> float:
-    """Relative tolerance on achieved_rate for a stage of ``n`` requests.
+    """How far achieved_rate may sit from the configured rate, for n requests.
 
-    Sized from the arrival process rather than picked to make a run pass.
+    ``constant`` stages get 12/n, ``poisson`` stages get 4/sqrt(n), and
+    neither goes below 5%. More requests means a tighter check; the check is
+    never loosened by hand to make a run pass.
+
+    Where the numbers come from:
 
     ``constant``: ``ConstantLoadTimer`` draws n exponential gaps and rescales
-    them so they sum to exactly ``duration``, so the schedule carries no
-    cumulative drift. The only stochastic term left in reportgen's
-    ``send_duration = max(start) - min(start)`` is the first gap, which n
-    points do not span (n points bound n-1 gaps). That gap is Exp(1/rate), so
-    the relative error is Exp(1)/n and P(error > k/n) = e^-k. k = 12 puts the
-    statistical false-failure rate near 1e-5.
+    them to sum to exactly ``duration``, so the schedule has no cumulative
+    drift. The only random term left in reportgen's
+    ``send_duration = max(start) - min(start)`` is the one gap that n points
+    do not span. That gap is Exp(1/rate), so the relative error is Exp(1)/n
+    and P(error > k/n) = e^-k. k = 12 puts the false-failure rate near 1e-5.
 
     ``poisson``: ``PoissonLoadTimer`` draws a Poisson(rate) count per second,
-    so the wall-clock time to emit n requests is a renewal time with standard
-    deviation sqrt(n)/rate against a mean of n/rate. The coefficient of
-    variation of the achieved rate is therefore 1/sqrt(n), and 4 sigma is
-    4/sqrt(n): tighten it by raising n, never by shrinking the multiplier.
+    so the time to emit n requests has standard deviation sqrt(n)/rate around
+    a mean of n/rate. The relative spread of the achieved rate is therefore
+    1/sqrt(n), and 4 sigma is 4/sqrt(n).
 
-    Both are floored at 5% so ordinary scheduler and socket jitter on a busy
-    shared runner cannot fail the gate. At the request counts used by the e2e
-    tier the floor binds only for ``constant``.
+    The 5% floor keeps scheduler and socket jitter on a busy shared runner
+    from failing the gate. At the request counts the e2e tier uses, the floor
+    binds only for ``constant``.
     """
     if n < 2:
         raise ValueError(f"a rate tolerance is meaningless for n={n} requests")
@@ -77,9 +78,12 @@ def rate_tolerance(n: int, arrival: str) -> float:
 def observed_send_rate(entries: Sequence[Dict[str, Any]]) -> Tuple[float, float]:
     """Recompute (send_duration, achieved_rate) from raw per-request starts.
 
-    Mirrors ``summarize_requests`` exactly (count over the span of send
-    times), so the result can be diffed against the reported value to check
-    reportgen rather than to restate it.
+    Same arithmetic as reportgen's ``summarize_requests``: request count over
+    the span from first send to last send. Because it is the same arithmetic,
+    the reported value can be diffed against it to check reportgen.
+
+    It only sees the first and last send. What happens between them is
+    ``assert_arrivals_spread``'s job.
     """
     starts = sorted(float(e["start_time"]) for e in entries)
     if len(starts) < 2:
@@ -90,12 +94,74 @@ def observed_send_rate(entries: Sequence[Dict[str, Any]]) -> Tuple[float, float]
     return send_duration, len(starts) / send_duration
 
 
-def inflight_segments(entries: Sequence[Dict[str, Any]]) -> List[Segment]:
-    """Reconstruct the in-flight request count over time as a step function.
+def arrival_bin_counts(entries: Sequence[Dict[str, Any]], bins: int) -> List[int]:
+    """Count request starts in each of ``bins`` equal slices of the send window.
 
-    A sweep line over request starts and ends. Ends are applied before starts
-    at an identical timestamp, so a tie never credits an extra concurrent
-    slot: the reconstruction under-reports rather than over-reports.
+    The window runs from the first start to the last, and the last start lands
+    in the final slice. A well-spread stage puts about n/bins starts in every
+    slice; a burst puts nearly all of them in one.
+    """
+    if bins < 2:
+        raise ValueError(f"need at least two bins to see a spread, got {bins}")
+    starts = sorted(float(e["start_time"]) for e in entries)
+    if len(starts) < 2:
+        raise ValueError("need at least two requests to bin arrivals")
+    lo, hi = starts[0], starts[-1]
+    if hi <= lo:
+        raise ValueError("all requests share one send timestamp; nothing to bin")
+    width = (hi - lo) / bins
+    counts = [0] * bins
+    for t in starts:
+        counts[min(int((t - lo) / width), bins - 1)] += 1
+    return counts
+
+
+def spread_tolerance(n: int, bins: int) -> float:
+    """How far one slice's count may sit from n/bins, as a fraction of n/bins.
+
+    4.5/sqrt(n/bins). A slice holds a Poisson-like count with mean m = n/bins
+    and standard deviation sqrt(m), so this is 4.5 sigma per slice. It applies
+    to both timers: ``constant`` also draws exponential gaps, it only pins
+    their total, which makes its slice counts slightly less variable than
+    Poisson. With 5 slices, the chance that any slice trips this on a correct
+    run is about 3e-5.
+    """
+    if bins < 2:
+        raise ValueError(f"need at least two bins to see a spread, got {bins}")
+    m = n / bins
+    if m < 1:
+        raise ValueError(f"n={n} requests is too few for {bins} bins")
+    return 4.5 / math.sqrt(m)
+
+
+def assert_arrivals_spread(entries: Sequence[Dict[str, Any]], *, bins: int = 5) -> None:
+    """Requests must be spread across the send window, not bunched.
+
+    ``observed_send_rate`` only sees the first and last send, so one request
+    at t=0 and all the rest at t=duration still reads as the configured rate.
+    This closes that hole: each of ``bins`` equal slices of the send window
+    must hold n/bins requests within ``spread_tolerance``. It catches a stall
+    or burst of roughly half a slice or longer; finer unevenness is the
+    timer's normal randomness.
+    """
+    counts = arrival_bin_counts(entries, bins)
+    n = sum(counts)
+    expected = n / bins
+    tolerance = spread_tolerance(n, bins)
+    worst = max(counts, key=lambda c: abs(c - expected))
+    error = abs(worst - expected) / expected
+    assert error <= tolerance, (
+        f"requests are not spread over the send window: per-slice counts {counts}, "
+        f"expected about {expected:.0f} each, worst slice is {error:.0%} off (tolerance {tolerance:.0%})"
+    )
+
+
+def inflight_segments(entries: Sequence[Dict[str, Any]]) -> List[Segment]:
+    """Turn start/end pairs into a step function of how many requests were in flight.
+
+    A sweep line over request starts and ends. At an identical timestamp the
+    end is applied before the start, so a handoff never counts as an extra
+    concurrent slot: the reconstruction under-reports rather than over-reports.
     """
     events: List[Tuple[float, int]] = []
     for entry in entries:
@@ -123,13 +189,13 @@ def max_inflight(segments: Sequence[Segment]) -> int:
 
 
 def plateau_window(entries: Sequence[Dict[str, Any]], concurrency: int) -> Tuple[float, float]:
-    """Steady-state window of a closed-loop stage, derived not guessed.
+    """The part of a closed-loop run where the pipeline is full.
 
-    Under a concurrency limit of C, request k cannot start until request k-C
-    has finished, so the pipeline is full from the C-th earliest start and
-    stays full until the last start, after which only the drain remains.
-    ``[C-th earliest start, latest start]`` therefore excludes ramp-up and
-    drain by construction, with no hand-tuned margin to tune away a failure.
+    The window is ``[C-th earliest start, latest start]``. Under a concurrency
+    limit of C, request k cannot start until request k-C has finished, so the
+    pipeline is full from the C-th start and stays full until the last start,
+    after which only the drain remains. That excludes ramp-up and drain by
+    construction, with no hand-tuned margin to tune away a failure.
     """
     if concurrency < 1:
         raise ValueError(f"concurrency must be positive, got {concurrency}")
@@ -179,19 +245,19 @@ def fraction_at_level(segments: Sequence[Segment], window: Tuple[float, float], 
 
 
 def assert_delivered_concurrency(entries: Sequence[Dict[str, Any]], concurrency: int, *, slack: float = 0.5) -> None:
-    """Delivered in-flight concurrency must match the configured level.
+    """Delivered in-flight concurrency must match the configured level C.
 
-    Two claims, both against the configured level as the known-good value:
+    Two checks: in-flight never goes above C, and the time-weighted average
+    over the plateau stays within ``slack`` of C.
 
-    - never above it: the semaphore is an upper bound, so this is exact.
-    - within ``slack`` of it on time-weighted average across the plateau. The
-      default half-slot budget fails an off-by-one distribution bug (C-1 in
-      flight) for any C, while absorbing the sub-millisecond gap between one
-      request completing and its replacement being dispatched. Measured
-      against the sim at C=5 and C=8, that handoff costs about 0.04 of a slot
-      (roughly 96% of plateau time sits at exactly C), so the default leaves
-      an order of magnitude of headroom over real behaviour and still fails a
-      deficit of a whole slot.
+    The first is exact because the semaphore is an upper bound. For the
+    second, half a slot is the default because it fails an off-by-one
+    distribution bug (C-1 in flight) for any C while absorbing the
+    sub-millisecond gap between one request completing and its replacement
+    being dispatched. Measured against the sim at C=5 and C=8, that handoff
+    costs about 0.04 of a slot (roughly 96% of plateau time sits at exactly
+    C), so the default has about 10x headroom over real behaviour and still
+    fails a deficit of a whole slot.
     """
     segments = inflight_segments(entries)
     window = plateau_window(entries, concurrency)
