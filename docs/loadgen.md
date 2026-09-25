@@ -68,7 +68,7 @@ Choose the right machine to run inference-perf on. The maximum concurrency you 
 Maximum concurrency you can reach is bounded by `num_workers * worker_max_concurrency`. You can only have as many in-flight requests. Our recommendation is to not change `num_workers` since it is automatically set by inference-perf based on number of CPUs available and change `worker_max_concurrency` when needed. It is set to `100` by default. But more powerful CPUs can handle up to 1000.
 
 **For concurrent load type (`concurrent`):**
-The tool automatically manages worker allocation based on your specified `concurrency_level`. The `worker_max_concurrency` setting is ignored for concurrent load types, as workers are dynamically allocated to achieve the exact concurrency specified.
+The tool automatically manages worker allocation based on your specified `concurrency_level`. The `worker_max_concurrency` setting is ignored for concurrent load types, as workers are dynamically allocated to achieve the exact concurrency specified. When the data generator pins requests to workers (`shared_prefix` with `enable_multi_turn_chat`, `conversation_replay`), `concurrency_level` is split across only the workers those pins can reach, so a run with a single pinned group still delivers the full `concurrency_level`.
 
 You have the following options to generate load with inference-perf.
 

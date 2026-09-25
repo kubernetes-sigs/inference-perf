@@ -179,6 +179,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     def is_preferred_worker_requested(self) -> bool:
         return True if self.enable_multi_turn_chat else False
 
+    def preferred_worker_count(self) -> Optional[int]:
+        # get_data pins request i to worker i % num_groups.
+        return self.num_groups if self.enable_multi_turn_chat else None
+
     def _sample_payload_spec(self) -> Optional[MultimodalSpec]:
         """Sample a fresh payload-side multimodal spec for one request."""
         if not self.payload_multimodal:
