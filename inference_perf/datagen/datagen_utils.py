@@ -12,11 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 
+from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER
+from inference_perf.config import Distribution, DistributionType
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.numeric.distribution import generate_distribution, sample_lengths, value_ceiling
+
+
+def pregenerate_lengths(
+    distribution: Union[Distribution, str],
+    run_count: Optional[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Pre-generate the length array for one synthetic/random IO field.
+
+    A Distribution keeps :func:`generate_distribution`'s legacy contract
+    (mean-in-bounds validation, min-shifted lognormal, clip and round into
+    the config bounds) and takes the larger of the run-derived count and its
+    own total_count. An expression string samples through
+    :func:`sample_lengths` with the run-derived count, which is then required.
+    """
+    if isinstance(distribution, str):
+        if run_count is None:
+            raise ValueError("IODistribution requires total_count to be set")
+        return sample_lengths(distribution, run_count, rng)
+    return generate_distribution(
+        distribution.min,
+        distribution.max,
+        distribution.mean,
+        distribution.std_dev,
+        effective_sample_count(run_count, distribution),
+        dist_type=distribution.type,
+        rng=rng,
+    )
+
+
+def effective_sample_count(run_count: Optional[int], distribution: Distribution) -> int:
+    """Resolve how many values to pre-generate for one IO distribution.
+
+    Both the run-level count (derived from the load stages by main) and the
+    optional user-supplied ``total_count`` on the distribution are floors; the
+    pre-generated array must satisfy whichever is larger.
+
+    Raises:
+        ValueError: If neither count is provided.
+    """
+    candidates = [c for c in (run_count, distribution.total_count) if c is not None]
+    if not candidates:
+        raise ValueError("IODistribution requires total_count to be set")
+    return max(candidates)
 
 
 def init_vocab_sampling(tokenizer: CustomTokenizer) -> Tuple[int, Set[int], np.ndarray]:
@@ -169,3 +216,38 @@ def generate_random_exact_length_text(
         adjust_tokens_fn=adjust_tokens,
         wrap_fn=wrap_fn,
     )
+
+
+def check_output_leaves_prompt_budget(output_spec: Union[int, Distribution, str], field: str, max_model_len: int) -> None:
+    """Reject an output length whose ceiling leaves no room for a prompt in multi-turn chat.
+
+    Truncation can only clamp the prompt, so an output ceiling that consumes
+    the whole context would silently send empty prompts for the entire run.
+    The ceiling is the value itself, a fixed Distribution's mean, any other
+    Distribution's max, or an expression string's provable upper bound. An
+    expression without one (``Normal(50, 10)``, or a form the bounds walk
+    can't reason about) is rejected: the check has to hold for every draw.
+    """
+    limit = max_model_len - PROMPT_TOKEN_BUFFER
+    ceiling = value_ceiling(output_spec)
+    if isinstance(output_spec, str):
+        if ceiling is None or ceiling >= limit:
+            raise ValueError(
+                f"{field} {output_spec!r} is not provably at most {limit - 1} tokens, so it can leave no room for a "
+                f"prompt within max_model_len ({max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety "
+                f"buffer. Bound it, e.g. 'Min({output_spec}, {limit - 1})', or raise max_model_len."
+            )
+        return
+
+    assert ceiling is not None
+    if isinstance(output_spec, int):
+        desc = field
+    elif output_spec.type == DistributionType.FIXED:
+        desc, ceiling = f"{field}.mean", float(int(output_spec.mean))
+    else:
+        desc = f"{field}.max"
+    if ceiling >= limit:
+        raise ValueError(
+            f"{desc} ({int(ceiling)}) leaves no room for a prompt within max_model_len ({max_model_len}) after "
+            f"reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. Lower it below {limit} or raise max_model_len."
+        )
