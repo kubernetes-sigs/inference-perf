@@ -238,6 +238,19 @@ def assemble_content(text_str: str, media_items: list[Tuple[dict[str, Any], floa
     return content
 
 
+def _extract_streamed_delta_text(data: dict[str, Any]) -> Optional[str]:
+    """Text of one streamed chunk, from whichever field holds it.
+
+    A chunk this skips gets no timestamp, so a reasoning model would lose
+    TTFT, TPOT and ITL, not just its text.
+    """
+    try:
+        delta = data.get("choices", [{}])[0].get("delta", {})
+    except IndexError:
+        return None
+    return delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content")
+
+
 class ChatCompletionAPIData(InferenceAPIData):
     messages: List[ChatMessage]
     max_tokens: int = 0
@@ -562,7 +575,7 @@ class ChatCompletionAPIData(InferenceAPIData):
     ) -> InferenceInfo:
         if config.streaming:
             output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=lambda data: data.get("choices", [{}])[0].get("delta", {}).get("content")
+                response, extract_content=_extract_streamed_delta_text
             )
             prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
