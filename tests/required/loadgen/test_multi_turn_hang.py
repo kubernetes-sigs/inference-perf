@@ -78,7 +78,15 @@ class TestMultiTurnHang(unittest.IsolatedAsyncioTestCase):
         # Simulate successful response processing for request 0
         mock_response = MagicMock()
         mock_json_fut: asyncio.Future[Any] = asyncio.Future()
-        mock_json_fut.set_result({"choices": [{"text": "bot response"}]})
+        mock_json_fut.set_result(
+            {
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [{"index": 0, "finish_reason": "stop", "text": "bot response"}],
+            }
+        )
         mock_response.json = MagicMock(return_value=mock_json_fut)
 
         await data_0.process_response(mock_response, api_config, datagen.tokenizer)
