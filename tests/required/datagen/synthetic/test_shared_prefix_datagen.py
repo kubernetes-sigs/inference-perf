@@ -470,6 +470,13 @@ async def test_multiturn_preserves_whitespace_suffix_tokens(suffix_ids: list[int
         next_body = await next_data.to_request_body("model", 1, False, False)
         assert next_body["prompt"].startswith(prior_prompt_and_response)
         assert next_body["prompt"] == prior_prompt_and_response + suffix_text
+
+        next_response = " NEXT RESPONSE"
+        next_data.user_session.update_context(next_body["prompt"] + next_response)
+        third_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=2, preferred_worker_id=0))
+        assert isinstance(third_data, UserSessionCompletionAPIData)
+        third_body = await third_data.to_request_body("model", 1, False, False)
+        assert third_body["prompt"] == next_body["prompt"] + next_response + suffix_text
     finally:
         LocalUserSession.clear_instances()
 

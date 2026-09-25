@@ -433,7 +433,11 @@ class ChatCompletionAPIData(InferenceAPIData):
                 merged["text"] = prefix_text + separator + payload_text
                 combined = list(prefix_content[:-1]) + [merged] + list(payload_content[1:])
             else:
-                combined = list(prefix_content) + [{"type": "text", "text": " "}] + list(payload_content)
+                payload_starts_with_whitespace = (
+                    payload_content[0].get("type") == "text" and payload_content[0].get("text", "")[:1].isspace()
+                )
+                separator_content = [] if payload_starts_with_whitespace else [{"type": "text", "text": " "}]
+                combined = list(prefix_content) + separator_content + list(payload_content)
         else:
             combined = list(prefix_content) + list(payload_content)
 
