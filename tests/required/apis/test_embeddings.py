@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from inference_perf.apis import EmbeddingsAPIData, RequestLifecycleMetric, UnaryResponseMetrics
-from inference_perf.config import APIConfig, APIType, EmbeddingsEncodingFormat
+from inference_perf.config import APIConfig, APIType, EmbeddingsConfig, EmbeddingsEncodingFormat
 from inference_perf.reportgen.base import compute_request_latency_metrics
 
 
@@ -40,6 +40,25 @@ def test_embeddings_api_type_and_route() -> None:
     data = EmbeddingsAPIData(input="hello")
     assert data.get_api_type() == APIType.Embeddings
     assert data.get_route() == "/v1/embeddings"
+
+
+def test_embeddings_from_texts_applies_options() -> None:
+    options = EmbeddingsConfig(batch_size=2, dimensions=128, encoding_format=EmbeddingsEncodingFormat.FLOAT)
+    batch = EmbeddingsAPIData.from_texts(["a", "b"], options)
+    assert batch.input == ["a", "b"]
+    assert batch.dimensions == 128
+    assert batch.encoding_format == EmbeddingsEncodingFormat.FLOAT
+
+    # One text is sent as a plain string; no options means server defaults.
+    single = EmbeddingsAPIData.from_texts(["a"], None)
+    assert single.input == "a"
+    assert single.dimensions is None
+    assert single.encoding_format is None
+
+
+def test_embeddings_from_texts_rejects_empty_batch() -> None:
+    with pytest.raises(ValueError, match="at least one input"):
+        EmbeddingsAPIData.from_texts([], None)
 
 
 @pytest.mark.asyncio

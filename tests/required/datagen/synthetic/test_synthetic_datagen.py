@@ -2,8 +2,18 @@ import logging
 from typing import Any, Iterator
 from unittest.mock import patch
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
+import pytest
+
+from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, LazyLoadInferenceAPIData
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    Distribution,
+    DataGenType,
+    DistributionType,
+    EmbeddingsConfig,
+)
 from inference_perf.datagen.synthetic import synthetic_datagen
 from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -139,3 +149,31 @@ def test_synthetic_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+def test_synthetic_datagen_embeddings_batches_without_output_distribution() -> None:
+    # Embeddings generate no output, so no output_distribution is needed. Each
+    # request carries batch_size inputs, each with its own sampled length.
+    api_config = APIConfig(type=APIType.Embeddings, embeddings=EmbeddingsConfig(batch_size=4))
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+
+    assert len(generator.input_lengths) == 5 * 4
+    data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1))
+    assert isinstance(data, EmbeddingsAPIData)
+    assert isinstance(data.input, list)
+    assert [tokenizer.count_tokens(text) for text in data.input] == list(generator.input_lengths[4:8])
+
+
+def test_synthetic_datagen_completion_still_requires_output_distribution() -> None:
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+    )
+    with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
+        SyntheticDataGenerator(APIConfig(type=APIType.Completion), data_config, DummyCustomTokenizer())

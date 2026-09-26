@@ -18,7 +18,7 @@ from aiohttp import ClientResponse
 from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMetrics
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.config import APIConfig, APIType, EmbeddingsEncodingFormat
+from inference_perf.config import APIConfig, APIType, EmbeddingsConfig, EmbeddingsEncodingFormat
 
 
 class EmbeddingsAPIData(InferenceAPIData):
@@ -27,6 +27,21 @@ class EmbeddingsAPIData(InferenceAPIData):
     # None leaves these out of the request so the server uses its defaults.
     dimensions: Optional[int] = None
     encoding_format: Optional[EmbeddingsEncodingFormat] = None
+
+    @classmethod
+    def from_texts(cls, texts: List[str], options: Optional[EmbeddingsConfig]) -> "EmbeddingsAPIData":
+        """Build a request for `texts` with the configured options.
+
+        A single text is sent as a plain string, the most common unbatched form.
+        """
+        if not texts:
+            raise ValueError("an embeddings request needs at least one input")
+        options = options or EmbeddingsConfig()
+        return cls(
+            input=texts[0] if len(texts) == 1 else texts,
+            dimensions=options.dimensions,
+            encoding_format=options.encoding_format,
+        )
 
     def get_api_type(self) -> APIType:
         return APIType.Embeddings
