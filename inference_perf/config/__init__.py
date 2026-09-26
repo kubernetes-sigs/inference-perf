@@ -14,6 +14,7 @@
 from inference_perf.config.apis import (
     APIConfig,
     APIType,
+    EmbeddingsEncodingFormat,
     ResponseFormat,
     ResponseFormatType,
 )
@@ -100,6 +101,7 @@ __all__ = [
     "DataGenType",
     "Distribution",
     "DistributionType",
+    "EmbeddingsEncodingFormat",
     "GoodputConfig",
     "GoogleCloudStorageConfig",
     "ImageDatagenConfig",

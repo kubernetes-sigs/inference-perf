@@ -25,6 +25,11 @@ class APIType(Enum):
     Embeddings = "embeddings"
 
 
+class EmbeddingsEncodingFormat(Enum):
+    FLOAT = "float"
+    BASE64 = "base64"
+
+
 class ResponseFormatType(Enum):
     JSON_SCHEMA = "json_schema"
     JSON_OBJECT = "json_object"
