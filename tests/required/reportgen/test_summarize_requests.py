@@ -2,7 +2,12 @@ from typing import Any
 from typing import cast
 
 import pytest
-from inference_perf.reportgen.base import summarize_requests, summarize_prompt_token_usage, ReportGenerator
+from inference_perf.reportgen.base import (
+    ReportGenerator,
+    compute_request_latency_metrics,
+    summarize_prompt_token_usage,
+    summarize_requests,
+)
 from inference_perf.apis.base import (
     RequestLifecycleMetric,
     InferenceInfo,
@@ -857,3 +862,27 @@ def test_correct_streamed_response_metrics_anthropic_calculates_ttft_tpot_itl() 
     assert metrics["time_per_output_token"] == pytest.approx(1.25)  # (3.5 - 1.0) / (3 - 1)
     assert metrics["inter_token_latency"] == pytest.approx(1.25)  # mean([1.0, 1.5])
     assert metrics["inter_token_latency_deltas"] == [pytest.approx(1.0), pytest.approx(1.5)]
+
+
+def test_ntpot_is_unset_for_requests_without_output_tokens() -> None:
+    """NTPOT divides latency by output tokens, so it does not apply to a request
+    that generated none (e.g. embeddings). Such a request must be left out of the
+    NTPOT summary instead of adding a fabricated 0.0 that drags the mean down."""
+
+    def make_metric(output_tokens: int, latency: float) -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_tokens),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=latency, request_data="r", info=info, error=None
+        )
+
+    no_output = make_metric(output_tokens=0, latency=4.0)
+    assert compute_request_latency_metrics(no_output)["normalized_time_per_output_token"] is None
+
+    mixed = summarize_requests([make_metric(output_tokens=10, latency=10.0), no_output], [50])
+    assert mixed.successes["latency"]["normalized_time_per_output_token"]["mean"] == pytest.approx(1.0)
+
+    only_no_output = summarize_requests([no_output], [50])
+    assert only_no_output.successes["latency"]["normalized_time_per_output_token"] is None
