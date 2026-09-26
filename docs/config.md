@@ -164,7 +164,7 @@ load:
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
-  num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
+  num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
   worker_max_concurrency: 10        # Max concurrent requests per worker
   worker_max_tcp_connections: 2500  # Max TCP connections per worker
   request_timeout: 900              # Optional: per-request timeout in seconds (applies per attempt)

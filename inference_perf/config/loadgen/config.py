@@ -14,13 +14,13 @@
 import logging
 import time
 from enum import Enum
-from os import cpu_count
 from typing import List, Optional, Union
 
 from inference_perf.config.common import StrictBaseModel
 from pydantic import ConfigDict, Field, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
+from inference_perf.utils.cpu_count import default_cpu_count
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +196,8 @@ class LoadConfig(StrictBaseModel):
         " Not valid for the 'concurrent' and 'trace_session_replay' load types.",
     )
     num_workers: int = Field(
-        default=max(1, cpu_count()),  # type: ignore
-        description="Number of worker processes sending requests. Defaults to the CPU count.",
+        default_factory=default_cpu_count,
+        description="Number of worker processes sending requests. Defaults to the cgroup-aware CPU count.",
     )
     worker_max_concurrency: int = Field(default=100, description="Maximum concurrent in-flight requests per worker.")
     worker_max_tcp_connections: int = Field(default=2500, description="Maximum TCP connections per worker.")
