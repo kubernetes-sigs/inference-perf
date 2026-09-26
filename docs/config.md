@@ -41,6 +41,17 @@ api:
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
 
+With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT and ITL are not reported. Request options go under `embeddings`:
+
+```yaml
+api:
+  type: embeddings
+  embeddings:                  # Optional; only valid with type: embeddings
+    batch_size: 16             # Input strings per request (default: 1)
+    dimensions: 512            # Optional embedding size; default is the model's
+    encoding_format: float     # Optional: float|base64; default is the server's
+```
+
 ### Data Generation
 
 Configures the test data generation methodology:

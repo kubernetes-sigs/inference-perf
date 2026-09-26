@@ -63,6 +63,18 @@ class ResponseFormat(StrictBaseModel):
         }
 
 
+class EmbeddingsConfig(StrictBaseModel):
+    """Request options for the embeddings API (type 'embeddings')."""
+
+    batch_size: int = Field(default=1, ge=1, description="Number of input strings sent in each embeddings request.")
+    dimensions: Optional[int] = Field(
+        default=None, gt=0, description="Embedding size requested from the server. Unset uses the model's default."
+    )
+    encoding_format: Optional[EmbeddingsEncodingFormat] = Field(
+        default=None, description="Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default."
+    )
+
+
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
         default=APIType.Completion,
@@ -86,6 +98,9 @@ class APIConfig(StrictBaseModel):
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
     )
+    embeddings: Optional[EmbeddingsConfig] = Field(
+        default=None, description="Embeddings request options. Only valid when type is 'embeddings'."
+    )
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
@@ -107,4 +122,6 @@ class APIConfig(StrictBaseModel):
                 raise ValueError("streaming is not supported for the embeddings API")
             if self.response_format is not None:
                 raise ValueError("response_format is not supported for the embeddings API")
+        elif self.embeddings is not None:
+            raise ValueError("embeddings options are only valid when type is 'embeddings'")
         return self

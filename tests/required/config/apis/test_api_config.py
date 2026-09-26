@@ -16,7 +16,15 @@
 import pytest
 from pydantic import ValidationError
 
-from inference_perf.config import APIConfig, APIType, ResponseFormat, ResponseFormatType, read_config
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    EmbeddingsConfig,
+    EmbeddingsEncodingFormat,
+    ResponseFormat,
+    ResponseFormatType,
+    read_config,
+)
 
 
 def test_api_config_defaults() -> None:
@@ -69,3 +77,29 @@ def test_embeddings_rejects_streaming_set_from_cli() -> None:
     # must also catch `--api.type embeddings --api.streaming true`.
     with pytest.raises(ValidationError, match="streaming is not supported for the embeddings API"):
         read_config(cli_overrides={"api": {"type": "embeddings", "streaming": True}})
+
+
+def test_embeddings_config_defaults() -> None:
+    cfg = EmbeddingsConfig()
+    assert cfg.batch_size == 1
+    assert cfg.dimensions is None
+    assert cfg.encoding_format is None
+
+
+def test_embeddings_config_read_from_cli() -> None:
+    config = read_config(
+        cli_overrides={"api": {"type": "embeddings", "embeddings": {"batch_size": 16, "encoding_format": "base64"}}}
+    )
+    assert config.api.embeddings == EmbeddingsConfig(batch_size=16, encoding_format=EmbeddingsEncodingFormat.BASE64)
+
+
+@pytest.mark.parametrize("field", [{"batch_size": 0}, {"dimensions": 0}])
+def test_embeddings_config_rejects_non_positive_values(field: dict[str, int]) -> None:
+    with pytest.raises(ValidationError):
+        EmbeddingsConfig(**field)
+
+
+def test_embeddings_options_rejected_for_other_api_types() -> None:
+    # Options that would be silently ignored are an error, like unknown keys.
+    with pytest.raises(ValidationError, match="embeddings options are only valid when type is 'embeddings'"):
+        APIConfig(type=APIType.Completion, embeddings=EmbeddingsConfig(batch_size=8))

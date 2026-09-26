@@ -17,6 +17,9 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
+| `--api.embeddings.batch_size` | int | Number of input strings sent in each embeddings request. |
+| `--api.embeddings.dimensions` | int | Embedding size requested from the server. Unset uses the model's default. |
+| `--api.embeddings.encoding_format` | Enum (float, base64) | Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
