@@ -61,7 +61,7 @@ class vLLMModelServerClient(openAIModelServerClient):
         self.metric_filters = [f"model_name='{self.model_name}'", *additional_filters]
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages]
+        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings]
 
     def get_prometheus_metric_metadata(self) -> OpenAIMetrics:
         return OpenAIMetrics(

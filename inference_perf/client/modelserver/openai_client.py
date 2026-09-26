@@ -501,6 +501,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             operation_name = "chat.completions"
         elif self.client.api_config.type == APIType.AnthropicMessages:
             operation_name = "messages"
+        elif self.client.api_config.type == APIType.Embeddings:
+            operation_name = "embeddings"
         else:
             operation_name = "completions"
 
