@@ -13,7 +13,10 @@
 # limitations under the License.
 """Validity rules for ``inference_perf.config.apis``."""
 
-from inference_perf.config import APIConfig, APIType, ResponseFormat, ResponseFormatType
+import pytest
+from pydantic import ValidationError
+
+from inference_perf.config import APIConfig, APIType, ResponseFormat, ResponseFormatType, read_config
 
 
 def test_api_config_defaults() -> None:
@@ -43,3 +46,26 @@ def test_response_format_custom_name_in_api_format() -> None:
 def test_response_format_json_object() -> None:
     fmt = ResponseFormat(type=ResponseFormatType.JSON_OBJECT)
     assert fmt.to_api_format() == {"type": "json_object"}
+
+
+def test_embeddings_api_type_accepted() -> None:
+    cfg = APIConfig(type=APIType.Embeddings)
+    assert cfg.type == APIType.Embeddings
+    assert cfg.streaming is False
+
+
+def test_embeddings_rejects_streaming() -> None:
+    with pytest.raises(ValidationError, match="streaming is not supported for the embeddings API"):
+        APIConfig(type=APIType.Embeddings, streaming=True)
+
+
+def test_embeddings_rejects_response_format() -> None:
+    with pytest.raises(ValidationError, match="response_format is not supported for the embeddings API"):
+        APIConfig(type=APIType.Embeddings, response_format=ResponseFormat(type=ResponseFormatType.JSON_OBJECT))
+
+
+def test_embeddings_rejects_streaming_set_from_cli() -> None:
+    # CLI overrides are merged into the config before validation, so the check
+    # must also catch `--api.type embeddings --api.streaming true`.
+    with pytest.raises(ValidationError, match="streaming is not supported for the embeddings API"):
+        read_config(cli_overrides={"api": {"type": "embeddings", "streaming": True}})

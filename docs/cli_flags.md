@@ -8,7 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
-| `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
+| `--api.type` | Enum (completion, chat, anthropic_messages, embeddings) | API endpoint to benchmark: text completion, chat completion, Anthropic messages or embeddings. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |

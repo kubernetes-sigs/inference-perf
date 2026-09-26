@@ -15,13 +15,14 @@ from enum import Enum
 from typing import Any, Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
     AnthropicMessages = "anthropic_messages"
+    Embeddings = "embeddings"
 
 
 class ResponseFormatType(Enum):
@@ -59,7 +60,8 @@ class ResponseFormat(StrictBaseModel):
 
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
-        default=APIType.Completion, description="API endpoint to benchmark: text completion or chat completion."
+        default=APIType.Completion,
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages or embeddings.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -90,3 +92,14 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
+
+    @model_validator(mode="after")
+    def validate_embeddings_options(self) -> "APIConfig":
+        # /v1/embeddings returns a single JSON body with no generated text, so it
+        # can neither stream nor constrain its output to a schema.
+        if self.type == APIType.Embeddings:
+            if self.streaming:
+                raise ValueError("streaming is not supported for the embeddings API")
+            if self.response_format is not None:
+                raise ValueError("response_format is not supported for the embeddings API")
+        return self
