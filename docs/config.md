@@ -258,6 +258,9 @@ metrics:
     url: "http://localhost:9090"  # Prometheus server URL
     scrape_interval: 15           # Metrics scrape interval (seconds)
     google_managed: false         # Whether using Google Managed Prometheus (see 'Google Managed Prometheus (GMP) Requirements' section)
+    bearer_token: ""              # Optional bearer token for authenticated Prometheus servers
+    verify_ssl: true              # Verify the server's TLS certificate (disable for self-signed certificates)
+    headers: {}                   # Optional extra HTTP headers sent with every query
     filters: []                   # List of metric names to collect
 ```
 

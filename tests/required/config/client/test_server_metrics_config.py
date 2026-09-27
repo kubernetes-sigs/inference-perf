@@ -61,3 +61,22 @@ def test_verify_ssl_can_be_disabled() -> None:
 def test_custom_headers_accepted() -> None:
     config = PrometheusClientConfig(url="http://localhost:9090", headers={"X-Scope-OrgID": "team-a"})
     assert config.headers == {"X-Scope-OrgID": "team-a"}
+
+
+def test_bearer_token_with_google_managed_is_error() -> None:
+    """The Google-managed client authenticates with ADC credentials and silently drops bearer_token."""
+    with pytest.raises(ValueError, match="cannot be combined with 'google_managed'"):
+        PrometheusClientConfig(google_managed=True, bearer_token="prom-token")
+
+
+def test_empty_bearer_token_with_google_managed_is_valid() -> None:
+    """Edge case: an empty token carries no credential (mirroring the redaction rules), so it is allowed."""
+    config = PrometheusClientConfig(google_managed=True, bearer_token="")
+    assert config.bearer_token is not None
+    assert config.bearer_token.get_secret_value() == ""
+
+
+def test_bearer_token_with_url_is_valid() -> None:
+    config = PrometheusClientConfig(url="http://localhost:9090", bearer_token="prom-token")
+    assert config.bearer_token is not None
+    assert config.bearer_token.get_secret_value() == "prom-token"

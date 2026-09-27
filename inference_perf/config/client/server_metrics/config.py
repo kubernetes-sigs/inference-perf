@@ -42,4 +42,9 @@ class PrometheusClientConfig(StrictBaseModel):
     def check_exclusive_fields(self) -> "PrometheusClientConfig":
         if bool(self.url) == bool(self.google_managed):
             raise ValueError("Exactly one of 'url' or 'google_managed' must be set.")
+        if self.google_managed and self.bearer_token is not None and self.bearer_token.get_secret_value():
+            raise ValueError(
+                "'bearer_token' cannot be combined with 'google_managed': the Google-managed client "
+                "authenticates with ADC credentials and ignores 'bearer_token'."
+            )
         return self
