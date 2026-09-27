@@ -13,7 +13,7 @@
 # limitations under the License.
 import itertools
 import logging
-from inference_perf.apis import InferenceAPIData, CompletionAPIData
+from inference_perf.apis import InferenceAPIData, CompletionAPIData, TemplateAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
@@ -91,14 +91,14 @@ class CNNDailyMailDataGenerator(DataGenerator):
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         self._ensure_dataset_loaded()
 
         assert self.tokenizer is not None
 
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type not in self.get_supported_apis():
             raise Exception("Unsupported API type")
 
         while True:
@@ -127,7 +127,10 @@ class CNNDailyMailDataGenerator(DataGenerator):
                     if completion_tokens > self.output_distribution.max:
                         continue
 
-                yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+                if self.api_config.type == APIType.Template:
+                    yield TemplateAPIData(prompt=prompt, max_tokens=completion_tokens, template=self.api_config.template)
+                else:
+                    yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
 
             except (KeyError, TypeError) as e:
                 logger.warning(f"Skipping invalid completion data: {e}")

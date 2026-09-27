@@ -8,7 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
-| `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
+| `--api.type` | Enum (completion, chat, anthropic_messages, template) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, or template. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
@@ -17,6 +17,11 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
+| `--api.template.route` | str | HTTP endpoint path to POST requests to (e.g. '/generate' or '/v1/completions'). |
+| `--api.template.request_template` | str | JSON object template for the request body, with placeholders '{{ prompt }}', '{{ max_tokens }}', '{{ model }}', '{{ ignore_eos }}', and '{{ stream }}'. |
+| `--api.template.output_path` | str | JMESPath or JSONPath expression naming where the generated text lives in the response JSON (e.g. 'generated_text' or 'choices[0].text'). |
+| `--api.template.input_tokens_path` | str | JMESPath or JSONPath expression naming the input token count in the response JSON (e.g. 'usage.prompt_tokens'). Unset falls back to client-side tokenization. |
+| `--api.template.output_tokens_path` | str | JMESPath or JSONPath expression naming the output token count in the response JSON (e.g. 'usage.completion_tokens'). Unset falls back to client-side tokenization. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |

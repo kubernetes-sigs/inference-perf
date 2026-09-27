@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
-from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage
+from inference_perf.apis import InferenceAPIData, CompletionAPIData, ChatCompletionAPIData, ChatMessage, TemplateAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
@@ -80,7 +80,7 @@ class InfinityInstructDataGenerator(DataGenerator):
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.Completion, APIType.Chat, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         self._ensure_dataset_loaded()
@@ -94,7 +94,7 @@ class InfinityInstructDataGenerator(DataGenerator):
                 if not conversations:
                     continue
 
-                if self.api_config.type == APIType.Completion:
+                if self.api_config.type in (APIType.Completion, APIType.Template):
                     try:
                         # The last message is the completion
                         completion_message = conversations[-1]
@@ -124,7 +124,14 @@ class InfinityInstructDataGenerator(DataGenerator):
                             ):
                                 continue
 
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+                        if self.api_config.type == APIType.Template:
+                            yield TemplateAPIData(
+                                prompt=prompt,
+                                max_tokens=completion_tokens,
+                                template=self.api_config.template,
+                            )
+                        else:
+                            yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue

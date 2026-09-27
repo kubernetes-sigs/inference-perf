@@ -1,10 +1,24 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import logging
 from typing import Any, Iterator
 from unittest.mock import patch
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
+from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData, TemplateAPIData
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType, TemplateConfig
 from inference_perf.datagen.synthetic import synthetic_datagen
+from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -139,3 +153,31 @@ def test_synthetic_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+def test_synthetic_and_mock_datagen_template_api() -> None:
+    template = TemplateConfig(
+        route="/generate",
+        request_template='{"prompt": {{ prompt }}, "max_tokens": {{ max_tokens }}}',
+        output_path="generated_text",
+    )
+    api_config = APIConfig(type=APIType.Template, template=template)
+
+    mock_gen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    mock_item = next(mock_gen.get_data())
+    assert isinstance(mock_item, TemplateAPIData)
+    assert mock_item.prompt == "1 2 3 1"
+    assert mock_item.get_route() == "/generate"
+
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    synth_gen = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer())
+    lazy_item = next(synth_gen.get_data())
+    assert isinstance(lazy_item, LazyLoadInferenceAPIData)
+    real_item = synth_gen.load_lazy_data(lazy_item)
+    assert isinstance(real_item, TemplateAPIData)
+    assert real_item.template == template
+    assert len(real_item.prompt) > 0

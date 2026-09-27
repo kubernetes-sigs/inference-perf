@@ -19,6 +19,7 @@ from inference_perf.apis import (
     ChatMessage,
     CompletionAPIData,
     InferenceAPIData,
+    TemplateAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from ..base import DataGenerator
@@ -102,12 +103,21 @@ class HFShareGPTDataGenerator(DataGenerator):
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages]
+        return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         self._ensure_dataset_loaded()
         if self.api_config.type == APIType.Completion:
             yield from self.get_completion_data()
+            return
+        if self.api_config.type == APIType.Template:
+            for data in self.get_completion_data():
+                if isinstance(data, CompletionAPIData):
+                    yield TemplateAPIData(
+                        prompt=data.prompt,
+                        max_tokens=data.max_tokens,
+                        template=self.api_config.template,
+                    )
             return
         if self.api_config.type == APIType.Chat:
             yield from self.get_chat_data()

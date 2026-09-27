@@ -29,7 +29,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages)
+  type: completion             # API type (completion|chat|anthropic_messages|template)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -40,6 +40,26 @@ api:
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
+
+With `type: template`, requests are sent to a custom HTTP route using a JSON request body template and JMESPath/JSONPath response extractors (`streaming` and `response_format` are not supported):
+
+```yaml
+api:
+  type: template
+  template:                    # Required when type is template
+    route: /generate           # HTTP endpoint path (must start with '/')
+    request_template: |        # JSON object template with {{ prompt }}, {{ max_tokens }}, {{ model }} placeholders
+      {
+        "model": {{ model }},
+        "inputs": {{ prompt }},
+        "parameters": {
+          "max_new_tokens": {{ max_tokens }}
+        }
+      }
+    output_path: generated_text                 # JMESPath/JSONPath to the generated text in the response JSON
+    input_tokens_path: usage.prompt_tokens      # Optional: JMESPath/JSONPath to input token count
+    output_tokens_path: usage.completion_tokens # Optional: JMESPath/JSONPath to output token count
+```
 
 ### Data Generation
 

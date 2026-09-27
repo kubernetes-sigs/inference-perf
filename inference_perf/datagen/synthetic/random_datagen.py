@@ -17,7 +17,7 @@ from typing import Callable, Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData, TemplateAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -128,7 +128,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         return min(len(self.input_lengths), len(self.output_lengths))
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Template]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -142,18 +142,25 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for RandomDataGenerator")
 
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type in (APIType.Completion, APIType.Template):
             length = self.input_lengths[n]
             text = self._generate_exact_length_text(length)
             # Templated prompts already embed their special tokens; ask the server
             # not to prepend another BOS so its prefill count matches the target.
             add_special_tokens = False if self.wrap_fn is not None else None
+            if self.api_config.type == APIType.Template:
+                return TemplateAPIData(
+                    prompt=text,
+                    max_tokens=self.output_lengths[n],
+                    add_special_tokens=add_special_tokens,
+                    template=self.api_config.template,
+                )
             return CompletionAPIData(prompt=text, max_tokens=self.output_lengths[n], add_special_tokens=add_special_tokens)
         else:
             raise Exception("Unsupported API type")
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type not in self.get_supported_apis():
             raise Exception(f"Unsupported API type: {self.api_config}. RandomDataGenerator only supports Completion.")
 
         i = 0

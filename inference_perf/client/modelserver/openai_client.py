@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -473,7 +473,10 @@ class openAIModelServerClientSession(ModelServerClientSession):
         )
 
         # Add response_format for structured output if configured.
-        if self.client.api_config.type != APIType.AnthropicMessages and self.client.api_config.response_format:
+        if (
+            self.client.api_config.type not in (APIType.AnthropicMessages, APIType.Template)
+            and self.client.api_config.response_format
+        ):
             payload["response_format"] = self.client.api_config.response_format.to_api_format()
 
         headers = _build_request_headers(self.client.api_config, self.client.api_key)
@@ -501,6 +504,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             operation_name = "chat.completions"
         elif self.client.api_config.type == APIType.AnthropicMessages:
             operation_name = "messages"
+        elif self.client.api_config.type == APIType.Template:
+            operation_name = "template"
         else:
             operation_name = "completions"
 

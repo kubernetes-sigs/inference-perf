@@ -35,9 +35,10 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     InferenceInfo,
     SessionLifecycleMetric,
+    TemplateAPIData,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
-from inference_perf.config import APIType
+from inference_perf.config import APIType, TemplateConfig
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -305,6 +306,60 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
     assert headers_passed["anthropic-version"] == ANTHROPIC_VERSION
     assert "Authorization" not in headers_passed
     assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
+async def test_template_request_round_trip(mock_client: MagicMock) -> None:
+    template = TemplateConfig(
+        route="/generate",
+        request_template='{"model": {{ model }}, "inputs": {{ prompt }}, "parameters": {"max_new_tokens": {{ max_tokens }}}}',
+        output_path="generated_text",
+        input_tokens_path="details.prefill_tokens",
+        output_tokens_path="details.generated_tokens",
+    )
+    mock_client.api_config.type = APIType.Template
+    mock_client.api_config.template = template
+    mock_client.api_config.streaming = False
+    mock_client.api_config.response_format = None
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "custom-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    body = {
+        "generated_text": "Paris is the capital of France.",
+        "details": {"prefill_tokens": 5, "generated_tokens": 6},
+    }
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    data = TemplateAPIData(prompt="What is the capital of France?", template=template)
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/generate"
+    assert json.loads(session.session.post.call_args.kwargs["data"]) == {
+        "model": "custom-model",
+        "inputs": "What is the capital of France?",
+        "parameters": {"max_new_tokens": 128},
+    }
+    assert session.session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "template"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 5
+    assert metric.info.response_metrics.output_tokens == 6
 
 
 @pytest.mark.asyncio

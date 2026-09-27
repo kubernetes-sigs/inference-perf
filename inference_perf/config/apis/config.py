@@ -12,16 +12,107 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
+import json
+import re
 from typing import Any, Optional
 
+import jmespath
+from jmespath.exceptions import JMESPathError
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
+
+_PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", re.DOTALL)
+SUPPORTED_TEMPLATE_VARS = frozenset({"prompt", "max_tokens", "model", "ignore_eos", "stream"})
 
 
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
     AnthropicMessages = "anthropic_messages"
+    Template = "template"
+
+
+def normalize_response_path(expr: str) -> str:
+    """Normalize a JMESPath or simple JSONPath expression into JMESPath syntax."""
+    stripped = expr.strip()
+    if stripped.startswith("$."):
+        return stripped[2:]
+    if stripped.startswith("$["):
+        return stripped[1:]
+    return stripped
+
+
+def compile_response_path(expr: str) -> jmespath.parser.ParsedResult:
+    """Compile a JMESPath (or JSONPath-prefixed) expression, raising ValueError if invalid."""
+    normalized = normalize_response_path(expr)
+    if not normalized:
+        raise ValueError(f"Invalid response path expression {expr!r}: expression cannot be empty")
+    try:
+        return jmespath.compile(normalized)
+    except JMESPathError as e:
+        raise ValueError(f"Invalid response path expression {expr!r}: {e}") from e
+
+
+def render_request_template(
+    template_str: str,
+    *,
+    prompt: str,
+    max_tokens: int,
+    model: str,
+    ignore_eos: bool = False,
+    stream: bool = False,
+) -> dict[str, Any]:
+    """Render a JSON body template with request placeholders and parse it as a JSON object."""
+    values: dict[str, Any] = {
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "model": model,
+        "ignore_eos": ignore_eos,
+        "stream": stream,
+    }
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    pos = 0
+
+    for match in _PLACEHOLDER_RE.finditer(template_str):
+        segment = template_str[pos : match.start()]
+        for ch in segment:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+        out.append(segment)
+
+        var_name = match.group(1).strip()
+        if var_name not in values:
+            supported = ", ".join(sorted(SUPPORTED_TEMPLATE_VARS))
+            raise ValueError(f"Unknown placeholder {var_name!r} in request_template; supported: {supported}")
+
+        val = values[var_name]
+        if in_string:
+            out.append(json.dumps(str(val))[1:-1])
+        else:
+            out.append(json.dumps(val))
+
+        pos = match.end()
+
+    out.append(template_str[pos:])
+
+    rendered = "".join(out)
+    try:
+        parsed = json.loads(rendered)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"request_template did not render to valid JSON: {e}") from e
+
+    if not isinstance(parsed, dict):
+        raise ValueError("request_template must render to a JSON object")
+    return parsed
 
 
 class ResponseFormatType(Enum):
@@ -57,9 +148,64 @@ class ResponseFormat(StrictBaseModel):
         }
 
 
+class TemplateConfig(StrictBaseModel):
+    """Request template and response extraction options for the template API (type 'template')."""
+
+    route: str = Field(
+        ...,
+        min_length=1,
+        description="HTTP endpoint path to POST requests to (e.g. '/generate' or '/v1/completions').",
+    )
+    request_template: str = Field(
+        ...,
+        min_length=1,
+        description="JSON object template for the request body, with placeholders '{{ prompt }}', '{{ max_tokens }}', '{{ model }}', '{{ ignore_eos }}', and '{{ stream }}'.",
+    )
+    output_path: str = Field(
+        ...,
+        min_length=1,
+        description="JMESPath or JSONPath expression naming where the generated text lives in the response JSON (e.g. 'generated_text' or 'choices[0].text').",
+    )
+    input_tokens_path: Optional[str] = Field(
+        default=None,
+        description="JMESPath or JSONPath expression naming the input token count in the response JSON (e.g. 'usage.prompt_tokens'). Unset falls back to client-side tokenization.",
+    )
+    output_tokens_path: Optional[str] = Field(
+        default=None,
+        description="JMESPath or JSONPath expression naming the output token count in the response JSON (e.g. 'usage.completion_tokens'). Unset falls back to client-side tokenization.",
+    )
+
+    @field_validator("route")
+    @classmethod
+    def validate_route(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError("route must start with '/'")
+        return v
+
+    @field_validator("request_template")
+    @classmethod
+    def validate_request_template(cls, v: str) -> str:
+        render_request_template(v, prompt="test", max_tokens=16, model="test-model")
+        return v
+
+    @field_validator("output_path")
+    @classmethod
+    def validate_output_path(cls, v: str) -> str:
+        compile_response_path(v)
+        return v
+
+    @field_validator("input_tokens_path", "output_tokens_path")
+    @classmethod
+    def validate_optional_token_path(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            compile_response_path(v)
+        return v
+
+
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
-        default=APIType.Completion, description="API endpoint to benchmark: text completion or chat completion."
+        default=APIType.Completion,
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages, or template.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -79,6 +225,10 @@ class APIConfig(StrictBaseModel):
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
     )
+    template: Optional[TemplateConfig] = Field(
+        default=None,
+        description="Request template and response extraction options. Required when type is 'template'.",
+    )
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
@@ -90,3 +240,16 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
+
+    @model_validator(mode="after")
+    def validate_template_options(self) -> "APIConfig":
+        if self.type == APIType.Template:
+            if self.template is None:
+                raise ValueError("template options are required when type is 'template'")
+            if self.streaming:
+                raise ValueError("streaming is not supported for the template API")
+            if self.response_format is not None:
+                raise ValueError("response_format is not supported for the template API")
+        elif self.template is not None:
+            raise ValueError("template options are only valid when type is 'template'")
+        return self

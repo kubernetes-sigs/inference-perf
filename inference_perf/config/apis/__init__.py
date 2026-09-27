@@ -16,6 +16,7 @@ from inference_perf.config.apis.config import (
     APIType,
     ResponseFormat,
     ResponseFormatType,
+    TemplateConfig,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "APIType",
     "ResponseFormat",
     "ResponseFormatType",
+    "TemplateConfig",
 ]

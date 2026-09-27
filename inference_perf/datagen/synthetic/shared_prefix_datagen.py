@@ -20,6 +20,7 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
+from inference_perf.apis.template import TemplateAPIData
 from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
@@ -168,7 +169,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._generate_prompts()
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat]
+        return [APIType.Completion, APIType.Chat, APIType.Template]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -233,6 +234,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session_id=session.user_session_id,
                 target_round=round,
             )
+        if self.api_config.type == APIType.Template:
+            return TemplateAPIData(prompt=self.prompts[i], max_tokens=output_len, template=self.api_config.template)
         return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
