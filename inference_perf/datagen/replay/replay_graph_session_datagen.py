@@ -75,7 +75,7 @@ def _expand_tool_call_max_tokens(recorded_tokens: int) -> int:
     if recorded_tokens <= 1_024:
         return max(recorded_tokens * 4, 4_096)
     if recorded_tokens <= 8_192:
-        return max((recorded_tokens * 3 + 1) // 2, 4_096)
+        return max((recorded_tokens * 3 + 1) // 2, 8_192)
     return recorded_tokens + 4_096
 
 
