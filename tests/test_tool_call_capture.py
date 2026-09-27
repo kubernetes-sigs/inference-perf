@@ -22,6 +22,7 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
     SessionAnthropicMessagesAPIData,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
+    _expand_tool_call_max_tokens,
 )
 from inference_perf.datagen.replay.replay_graph_types import InputSegment
 from inference_perf.config.datagen.replay import ToolChoiceMode
@@ -34,6 +35,23 @@ _TOOL_CALLS = [
         "function": {"name": "get_weather", "arguments": '{"location":"Paris"}'},
     }
 ]
+
+
+@pytest.mark.parametrize(
+    ("recorded_tokens", "expanded_tokens"),
+    [
+        (0, 4_096),
+        (1, 4_096),
+        (1_024, 4_096),
+        (1_025, 4_096),
+        (2_731, 4_097),
+        (8_192, 12_288),
+        (8_193, 12_289),
+        (100_000, 104_096),
+    ],
+)
+def test_expand_tool_call_max_tokens(recorded_tokens: int, expanded_tokens: int) -> None:
+    assert _expand_tool_call_max_tokens(recorded_tokens) == expanded_tokens
 
 
 class TestEventOutputRegistryStructured:
