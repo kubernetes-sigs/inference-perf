@@ -19,6 +19,8 @@ Everything else — stack configuration, run/scenario metadata — is supplied
 by the user via the partial report; see ``partial_report.py``.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 
@@ -26,12 +28,17 @@ import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, StreamedResponseMetrics
 from inference_perf.reportgen.base import effective_output_tokens
+from inference_perf.payloads import Audios, Images, Videos
 
 from .schema import (
     AggregateLatency,
     AggregateRequestPerformance,
     AggregateRequests,
     AggregateThroughput,
+    AudioPayloadStats,
+    ImagePayloadStats,
+    MultiModalRequests,
+    VideoPayloadStats,
     RequestPerformance,
     Results,
     Statistics,
@@ -103,6 +110,11 @@ def _build_aggregate(
         failures=len(failed),
         input_length=_statistics(input_lengths, Units.COUNT),
         output_length=_statistics(output_lengths, Units.COUNT),
+        request_size=_statistics(
+            (len(m.request_data.encode("utf-8")) for m in successful),
+            Units.BYTES,
+        ),
+        multimodal=_build_multimodal(successful),
     )
 
     request_latencies, ttft, tpot, itl, ntpot = _per_request_latencies(successful, tokenizer, use_server_output_tokens)
@@ -138,7 +150,78 @@ def _build_throughput(
         output_token_rate=_scalar_statistics(output_tokens / total_time, Units.TOKEN_PER_S),
         total_token_rate=_scalar_statistics((input_tokens + output_tokens) / total_time, Units.TOKEN_PER_S),
         request_rate=_scalar_statistics(len(successful) / total_time, Units.QUERY_PER_S),
+        image_rate=_media_rate(
+            (m.info.request_metrics.image for m in successful),
+            total_time,
+            Units.IMAGE_PER_S,
+        ),
+        video_rate=_media_rate(
+            (m.info.request_metrics.video for m in successful),
+            total_time,
+            Units.VIDEO_PER_S,
+        ),
+        audio_rate=_media_rate(
+            (m.info.request_metrics.audio for m in successful),
+            total_time,
+            Units.AUDIO_PER_S,
+        ),
     )
+
+
+def _media_rate(
+    payloads: Iterable[Images | Videos | Audios | None],
+    total_time: float,
+    units: Units,
+) -> Optional[Statistics]:
+    recorded = [payload for payload in payloads if payload is not None]
+    if not recorded:
+        return None
+    return _scalar_statistics(sum(payload.count for payload in recorded) / total_time, units)
+
+
+def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[MultiModalRequests]:
+    images = [m.info.request_metrics.image for m in successful]
+    videos = [m.info.request_metrics.video for m in successful]
+    audios = [m.info.request_metrics.audio for m in successful]
+    if not any(images) and not any(videos) and not any(audios):
+        return None
+
+    all_images = [instance for group in images if group is not None for instance in group.instances]
+    all_videos = [instance for group in videos if group is not None for instance in group.instances]
+    all_audios = [instance for group in audios if group is not None for instance in group.instances]
+    # Counts describe requests, including text-only requests in a mixed workload.
+    # Other distributions describe individual media instances, not request averages.
+    image = None
+    if any(images):
+        image = ImagePayloadStats(
+            count=_statistics((group.count if group else 0 for group in images), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_images), Units.BYTES),
+            pixels=_statistics((instance.pixels for instance in all_images), Units.PIXELS),
+            aspect_ratio=_statistics(
+                (instance.aspect_ratio for instance in all_images),
+                Units.RATIO,
+            ),
+        )
+    video = None
+    if any(videos):
+        video = VideoPayloadStats(
+            count=_statistics((group.count if group else 0 for group in videos), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_videos), Units.BYTES),
+            pixels=_statistics((instance.pixels for instance in all_videos), Units.PIXELS),
+            aspect_ratio=_statistics(
+                (instance.aspect_ratio for instance in all_videos),
+                Units.RATIO,
+            ),
+            frames=_statistics((instance.frames for instance in all_videos), Units.COUNT),
+        )
+    audio = None
+    if any(audios):
+        audio = AudioPayloadStats(
+            count=_statistics((group.count if group else 0 for group in audios), Units.COUNT),
+            filesize=_statistics((instance.bytes for instance in all_audios), Units.BYTES),
+            duration=_statistics((instance.seconds for instance in all_audios), Units.S),
+        )
+    return MultiModalRequests(image=image, video=video, audio=audio)
 
 
 # ---------------------------------------------------------------------------

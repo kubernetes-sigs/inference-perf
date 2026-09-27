@@ -52,6 +52,19 @@ populated with the BR0.2 percentile set (`p0p1, p1, p5, p10, p25, p50, p75,
 p90, p95, p99, p99p9`) and the unit annotations the schema validators
 require.
 
+The `requests` block also includes `request_size` in UTF-8 bytes and a `multimodal`
+block for recorded image, video, and audio measurements. Counts are distributions
+across successful requests, including zero for requests without that modality.
+Filesize, pixels, aspect ratio, video frames, and audio duration describe individual
+media instances. Failed requests are excluded from these distributions.
+
+The `throughput` block includes `image_rate`, `video_rate`, and `audio_rate` for
+recorded modalities. Each rate is the successful media count divided by the same
+first-send-to-last-completion window as the existing request and token rates,
+including failed requests when determining the window. Modalities with no recorded
+measurements are omitted; explicitly recorded zero counts remain zero. Rates are
+omitted when there are no successful requests or the window has zero duration.
+
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 
