@@ -127,6 +127,15 @@ class SessionGenerator(BaseGenerator):
         """Return total number of sessions available for replay."""
         raise NotImplementedError
 
+    def supports_corpus_cycling(self) -> bool:
+        """Whether session indices past get_session_count() resolve to further sessions.
+
+        A duration-bounded stage draws sessions until its deadline rather than running a
+        fixed slice, so it needs supply past the loaded set. Generators that cannot do that
+        leave this False, and such a stage simply ends when the corpus does.
+        """
+        return False
+
     @abstractmethod
     def get_session_info(self, session_index: int) -> Dict[str, Any]:
         """Get metadata about a specific session.
