@@ -601,6 +601,12 @@ def test_anthropic_conversion_reassembles_streamed_text(tmp_path: Path) -> None:
     assert parts == [{"type": "text", "content": "hello world"}]
 
 
+def test_anthropic_count_tokens_record_is_skipped(tmp_path: Path) -> None:
+    count = anthropic_record(path="/anthropic/v1/messages/count_tokens?beta=true")
+    f = write_jsonl(tmp_path / "calls.jsonl", [count, anthropic_record()])
+    assert convert_wire_file(f)["span_count"] == 1
+
+
 def test_anthropic_conversion_tool_use_arguments_reassembled_from_fragments(tmp_path: Path) -> None:
     """input_json_delta streams arguments as fragments that are invalid until joined."""
     block = {"type": "tool_use", "id": "toolu_1", "name": "Bash"}

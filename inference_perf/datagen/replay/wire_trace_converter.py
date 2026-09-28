@@ -824,6 +824,9 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
 def convert_wire_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one wire record to an OTel span, dispatching on its API path."""
     api_path = record.get("path", "")
+    path_without_query = api_path.partition("?")[0].rstrip("/")
+    if path_without_query.endswith("/count_tokens"):
+        return None
     if "/chat/completions" in api_path:
         return convert_chat_completions_record(record, trace_id, line_no)
     if "/responses" in api_path:
