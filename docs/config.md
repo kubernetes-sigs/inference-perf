@@ -29,7 +29,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -40,6 +40,17 @@ api:
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
+
+With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. Request options go under `embeddings`:
+
+```yaml
+api:
+  type: embeddings
+  embeddings:                  # Optional; only valid with type: embeddings
+    batch_size: 16             # Input strings per request (default: 1)
+    dimensions: 512            # Optional embedding size; default is the model's
+    encoding_format: float     # Optional: float|base64; default is the server's
+```
 
 ### Data Generation
 

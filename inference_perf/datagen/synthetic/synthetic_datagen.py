@@ -19,7 +19,7 @@ from typing import Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -45,31 +45,48 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        if self.input_distribution is None or self.output_distribution is None or self.tokenizer is None:
+        # Embeddings requests generate no output, so they take no output lengths.
+        is_embeddings = api_config.type == APIType.Embeddings
+        if (
+            self.input_distribution is None
+            or (self.output_distribution is None and not is_embeddings)
+            or self.tokenizer is None
+        ):
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
 
-        if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
+        if self.input_distribution.total_count is None or (
+            self.output_distribution is not None and self.output_distribution.total_count is None
+        ):
             raise ValueError("IODistribution requires total_count to be set")
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
+
+        # total_count counts requests. An embeddings request carries batch_size
+        # inputs, each with its own length drawn from input_distribution.
+        self.embeddings_batch_size = api_config.embeddings.batch_size if api_config.embeddings else 1
+        input_count = self.input_distribution.total_count * (self.embeddings_batch_size if is_embeddings else 1)
 
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
             self.input_distribution.max,
             self.input_distribution.mean,
             self.input_distribution.std_dev,
-            self.input_distribution.total_count,
+            input_count,
             dist_type=self.input_distribution.type,
             rng=self.rng,
         )
-        self.output_lengths = generate_distribution(
-            self.output_distribution.min,
-            self.output_distribution.max,
-            self.output_distribution.mean,
-            self.output_distribution.std_dev,
-            self.output_distribution.total_count,
-            dist_type=self.output_distribution.type,
-            rng=self.rng,
+        self.output_lengths = (
+            generate_distribution(
+                self.output_distribution.min,
+                self.output_distribution.max,
+                self.output_distribution.mean,
+                self.output_distribution.std_dev,
+                self.output_distribution.total_count,
+                dist_type=self.output_distribution.type,
+                rng=self.rng,
+            )
+            if self.output_distribution is not None and self.output_distribution.total_count is not None
+            else np.array([], dtype=np.int_)
         )
         if self.config and self.config.corpus_file_path:
             corpus_path = Path(self.config.corpus_file_path)
@@ -93,7 +110,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Embeddings]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -161,6 +178,12 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
                 prompt=prompt_text,
                 max_tokens=self.output_lengths[n],
             )
+        elif self.api_config.type == APIType.Embeddings:
+            start = n * self.embeddings_batch_size
+            lengths = self.input_lengths[start : start + self.embeddings_batch_size]
+            texts = [self._generate_exact_length_text(length) for length in lengths]
+            self._log_progress()
+            return EmbeddingsAPIData.from_texts(texts, self.api_config.embeddings)
         else:
             raise Exception("Unsupported API type")
 
@@ -178,7 +201,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type not in self.get_supported_apis():
             raise Exception("Unsupported API type")
 
         i = 0

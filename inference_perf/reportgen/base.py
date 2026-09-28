@@ -425,7 +425,7 @@ def calculate_goodput_metrics(
     goodput_config: Optional[GoodputConfig],
     ttft_values: List[Optional[float]],
     tpot_values: List[Optional[float]],
-    ntpot_values: List[float],
+    ntpot_values: List[Optional[float]],
     request_latency_values: List[float],
     itl_values: List[Optional[float]],
     use_server_output_tokens: bool = False,
@@ -667,9 +667,11 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
     request_latency = m.end_time - m.start_time
     response_metrics = m.info.response_metrics
 
-    # NTPOT: (End - Start) / Output Tokens
+    # NTPOT: (End - Start) / Output Tokens. Not measurable without output tokens
+    # (e.g. embeddings), so None rather than a fabricated 0.0, matching the
+    # llm-d benchmark report (reportgen/br/v0_2/adapter.py).
     ntpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
-    ntpot = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else 0.0
+    ntpot: Optional[float] = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else None
 
     ttft: Optional[float] = None
     tpot: Optional[float] = None
@@ -744,7 +746,7 @@ def summarize_requests(
     # --- Pre-calculate Metrics for all successful requests ---
     # We maintain 1:1 mapping with 'all_successful' to pass to SLO calculator
 
-    ntpot_values: List[float] = []
+    ntpot_values: List[Optional[float]] = []  # Optional: None without output tokens
     tpot_values: List[Optional[float]] = []  # Optional: None if not streamable
     ttft_values: List[Optional[float]] = []  # Optional: None if not streamable
     request_latency_values: List[float] = []
@@ -778,6 +780,7 @@ def summarize_requests(
 
     # --- Filter lists for summarization (remove Nones) ---
     valid_tpot = [v for v in tpot_values if v is not None]
+    valid_ntpot = [v for v in ntpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
 
     request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
@@ -806,7 +809,7 @@ def summarize_requests(
         "count": len(all_successful),
         "latency": {
             "request_latency": summarize(request_latency_values, percentiles),
-            "normalized_time_per_output_token": summarize(ntpot_values, percentiles),
+            "normalized_time_per_output_token": summarize(valid_ntpot, percentiles),
             "time_per_output_token": summarize(valid_tpot, percentiles),
             "time_to_first_token": summarize(valid_ttft, percentiles),
             "inter_token_latency": summarize(inter_token_latencies, percentiles),

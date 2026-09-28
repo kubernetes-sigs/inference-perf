@@ -25,6 +25,7 @@ from .base import (
 from .chat import ChatCompletionAPIData, ChatMessage
 from .completion import CompletionAPIData
 from .anthropic_messages import AnthropicMessagesAPIData
+from .embeddings import EmbeddingsAPIData
 
 __all__ = [
     "InferenceAPIData",
@@ -38,6 +39,7 @@ __all__ = [
     "CompletionAPIData",
     "ResponseMetrics",
     "AnthropicMessagesAPIData",
+    "EmbeddingsAPIData",
     "UnaryResponseMetrics",
     "StreamedResponseMetrics",
 ]
