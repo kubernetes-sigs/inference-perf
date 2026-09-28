@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+import logging
 import pytest
 from pydantic import ValidationError
 from unittest.mock import Mock, patch
@@ -309,3 +310,17 @@ def test_execute_query_verifies_tls_by_default() -> None:
     _, kwargs = mock_get.call_args
     assert kwargs["verify"] is True
     assert kwargs["headers"] == {}
+
+
+def test_verify_ssl_disabled_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """Disabling TLS verification is loud: the run log shows verification is off."""
+    with caplog.at_level(logging.WARNING, logger="inference_perf.client.server_metrics.prometheus_client.base"):
+        PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090", verify_ssl=False))
+    assert any("verification is disabled" in message for message in caplog.messages)
+
+
+def test_verify_ssl_enabled_logs_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """Regression: the default (verified TLS) stays quiet."""
+    with caplog.at_level(logging.WARNING, logger="inference_perf.client.server_metrics.prometheus_client.base"):
+        PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    assert caplog.messages == []
