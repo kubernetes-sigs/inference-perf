@@ -27,6 +27,7 @@ from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
+from inference_perf.client.modelserver.metrics import CounterResult, GaugeResult
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
 from inference_perf.metrics.request_collector import RequestMetricCollector
@@ -532,51 +533,76 @@ def calculate_goodput_metrics(
     return result
 
 
-def _ratio(num: float, den: float) -> float:
+def _ratio(num: Optional[float], den: Optional[float]) -> Optional[float]:
+    if num is None or den is None:
+        return None
     return (num / den) * 100.0 if den > 0 else 0.0
 
 
+def _total(metric: Optional[CounterResult]) -> Optional[float]:
+    """Read a counter total, preserving missing (None) metrics as missing (#822)."""
+    return metric.total if metric is not None else None
+
+
+def _summary(metric: Optional[GaugeResult]) -> Optional[dict[str, float]]:
+    """Project a gauge/histogram result, preserving missing (None) metrics as missing (#822)."""
+    return metric.as_summary() if metric is not None else None
+
+
 def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummary:
+    requests = metrics.requests
+    prompt_tokens = metrics.prompt_tokens
+    output_tokens = metrics.output_tokens
     return ResponsesSummary(
         benchmark_time_seconds=0.0,
         load_summary={},  # model server doesn't report failed requests
         failures={},
         successes={
-            "count": metrics.requests.total,
-            "rate": metrics.requests.per_second,
-            "prompt_len": {"mean": metrics.prompt_tokens.avg, "rate": metrics.prompt_tokens.per_second},
-            "output_len": {"mean": metrics.output_tokens.avg, "rate": metrics.output_tokens.per_second},
-            "queue_len": {"mean": metrics.queue_length.avg},
-            "request_latency": metrics.request_latency.as_summary(),
-            "time_to_first_token": metrics.time_to_first_token.as_summary(),
-            "time_per_output_token": metrics.time_per_output_token.as_summary(),
-            "kv_cache_usage_percentage": metrics.kv_cache_usage.as_summary(),
-            "num_requests_swapped": {"mean": metrics.num_requests_swapped.total},
-            "num_preemptions_total": {"mean": metrics.num_preemptions_total.total},
-            "prefix_cache_hit_percent": {"mean": _ratio(metrics.prefix_cache_hits.total, metrics.prefix_cache_queries.total)},
-            "inter_token_latency": metrics.inter_token_latency.as_summary(),
-            "num_requests_running": {"mean": metrics.num_requests_running.avg},
-            "request_queue_time": metrics.request_queue_time.as_summary(),
-            "request_inference_time": metrics.request_inference_time.as_summary(),
-            "request_prefill_time": metrics.request_prefill_time.as_summary(),
-            "request_decode_time": metrics.request_decode_time.as_summary(),
-            "request_prompt_tokens": metrics.request_prompt_tokens.as_summary(),
-            "request_generation_tokens": metrics.request_generation_tokens.as_summary(),
-            "request_max_num_generation_tokens": metrics.request_max_num_generation_tokens.as_summary(),
-            "request_params_n": metrics.request_params_n.as_summary(),
-            "request_params_max_tokens": metrics.request_params_max_tokens.as_summary(),
-            "request_success_count": metrics.request_success_count.total,
-            "iteration_tokens": metrics.iteration_tokens.as_summary(),
-            "prompt_tokens_cached": metrics.prompt_tokens_cached.total,
-            "external_prefix_cache_hit_percent": {
-                "mean": _ratio(metrics.external_prefix_cache_hits.total, metrics.external_prefix_cache_queries.total)
+            "count": _total(requests),
+            "rate": requests.per_second if requests is not None else None,
+            "prompt_len": {
+                "mean": prompt_tokens.avg if prompt_tokens is not None else None,
+                "rate": prompt_tokens.per_second if prompt_tokens is not None else None,
             },
-            "mm_cache_hit_percent": {"mean": _ratio(metrics.mm_cache_hits.total, metrics.mm_cache_queries.total)},
-            "corrupted_requests": metrics.corrupted_requests.total,
-            "request_prefill_kv_computed_tokens": metrics.request_prefill_kv_computed_tokens.as_summary(),
-            "kv_block_idle_before_evict": metrics.kv_block_idle_before_evict.as_summary(),
-            "kv_block_lifetime": metrics.kv_block_lifetime.as_summary(),
-            "kv_block_reuse_gap": metrics.kv_block_reuse_gap.as_summary(),
+            "output_len": {
+                "mean": output_tokens.avg if output_tokens is not None else None,
+                "rate": output_tokens.per_second if output_tokens is not None else None,
+            },
+            "queue_len": {"mean": metrics.queue_length.avg if metrics.queue_length is not None else None},
+            "request_latency": _summary(metrics.request_latency),
+            "time_to_first_token": _summary(metrics.time_to_first_token),
+            "time_per_output_token": _summary(metrics.time_per_output_token),
+            "kv_cache_usage_percentage": _summary(metrics.kv_cache_usage),
+            "num_requests_swapped": {"mean": _total(metrics.num_requests_swapped)},
+            "num_preemptions_total": {"mean": _total(metrics.num_preemptions_total)},
+            "prefix_cache_hit_percent": {
+                "mean": _ratio(_total(metrics.prefix_cache_hits), _total(metrics.prefix_cache_queries))
+            },
+            "inter_token_latency": _summary(metrics.inter_token_latency),
+            "num_requests_running": {
+                "mean": metrics.num_requests_running.avg if metrics.num_requests_running is not None else None
+            },
+            "request_queue_time": _summary(metrics.request_queue_time),
+            "request_inference_time": _summary(metrics.request_inference_time),
+            "request_prefill_time": _summary(metrics.request_prefill_time),
+            "request_decode_time": _summary(metrics.request_decode_time),
+            "request_prompt_tokens": _summary(metrics.request_prompt_tokens),
+            "request_generation_tokens": _summary(metrics.request_generation_tokens),
+            "request_max_num_generation_tokens": _summary(metrics.request_max_num_generation_tokens),
+            "request_params_n": _summary(metrics.request_params_n),
+            "request_params_max_tokens": _summary(metrics.request_params_max_tokens),
+            "request_success_count": _total(metrics.request_success_count),
+            "iteration_tokens": _summary(metrics.iteration_tokens),
+            "prompt_tokens_cached": _total(metrics.prompt_tokens_cached),
+            "external_prefix_cache_hit_percent": {
+                "mean": _ratio(_total(metrics.external_prefix_cache_hits), _total(metrics.external_prefix_cache_queries))
+            },
+            "mm_cache_hit_percent": {"mean": _ratio(_total(metrics.mm_cache_hits), _total(metrics.mm_cache_queries))},
+            "corrupted_requests": _total(metrics.corrupted_requests),
+            "request_prefill_kv_computed_tokens": _summary(metrics.request_prefill_kv_computed_tokens),
+            "kv_block_idle_before_evict": _summary(metrics.kv_block_idle_before_evict),
+            "kv_block_lifetime": _summary(metrics.kv_block_lifetime),
+            "kv_block_reuse_gap": _summary(metrics.kv_block_reuse_gap),
         },
     )
 

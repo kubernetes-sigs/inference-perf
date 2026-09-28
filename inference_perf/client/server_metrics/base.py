@@ -76,52 +76,54 @@ class ModelServerMetrics(BaseModel):
     # --- Common to every real model server; defaulted so a client that declares no metrics
     # (e.g. the mock client's empty BaseMetrics) still validates and reports zeros ---
     # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
-    prompt_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
-    output_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
-    requests: CounterResult = Field(default_factory=CounterResult)
-    request_latency: HistogramResult = Field(default_factory=HistogramResult)
-    queue_length: GaugeResult = Field(default_factory=GaugeResult)
-    time_per_output_token: HistogramResult = Field(default_factory=HistogramResult)
+    # Each field is Optional so a failed Prometheus query is reported as missing (None)
+    # instead of a real-looking zero (#822); omitted fields still default to zeros.
+    prompt_tokens: CounterResult | HistogramResult | None = Field(default_factory=CounterResult)
+    output_tokens: CounterResult | HistogramResult | None = Field(default_factory=CounterResult)
+    requests: CounterResult | None = Field(default_factory=CounterResult)
+    request_latency: HistogramResult | None = Field(default_factory=HistogramResult)
+    queue_length: GaugeResult | None = Field(default_factory=GaugeResult)
+    time_per_output_token: HistogramResult | None = Field(default_factory=HistogramResult)
 
     # --- Server-specific: optional (only some model servers expose these) ---
     # Latency
-    time_to_first_token: HistogramResult = Field(default_factory=HistogramResult)
-    inter_token_latency: HistogramResult = Field(default_factory=HistogramResult)
+    time_to_first_token: HistogramResult | None = Field(default_factory=HistogramResult)
+    inter_token_latency: HistogramResult | None = Field(default_factory=HistogramResult)
 
     # Gauges
-    num_requests_running: GaugeResult = Field(default_factory=GaugeResult)
-    kv_cache_usage: GaugeResult = Field(default_factory=GaugeResult)
+    num_requests_running: GaugeResult | None = Field(default_factory=GaugeResult)
+    kv_cache_usage: GaugeResult | None = Field(default_factory=GaugeResult)
 
     # Tally counters: only the windowed total (.total) is read.
-    num_requests_swapped: CounterResult = Field(default_factory=CounterResult)
-    num_preemptions_total: CounterResult = Field(default_factory=CounterResult)
-    prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)
-    prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
-    request_success_count: CounterResult = Field(default_factory=CounterResult)
-    prompt_tokens_cached: CounterResult = Field(default_factory=CounterResult)
-    external_prefix_cache_hits: CounterResult = Field(default_factory=CounterResult)
-    external_prefix_cache_queries: CounterResult = Field(default_factory=CounterResult)
-    mm_cache_hits: CounterResult = Field(default_factory=CounterResult)
-    mm_cache_queries: CounterResult = Field(default_factory=CounterResult)
-    corrupted_requests: CounterResult = Field(default_factory=CounterResult)
+    num_requests_swapped: CounterResult | None = Field(default_factory=CounterResult)
+    num_preemptions_total: CounterResult | None = Field(default_factory=CounterResult)
+    prefix_cache_hits: CounterResult | None = Field(default_factory=CounterResult)
+    prefix_cache_queries: CounterResult | None = Field(default_factory=CounterResult)
+    request_success_count: CounterResult | None = Field(default_factory=CounterResult)
+    prompt_tokens_cached: CounterResult | None = Field(default_factory=CounterResult)
+    external_prefix_cache_hits: CounterResult | None = Field(default_factory=CounterResult)
+    external_prefix_cache_queries: CounterResult | None = Field(default_factory=CounterResult)
+    mm_cache_hits: CounterResult | None = Field(default_factory=CounterResult)
+    mm_cache_queries: CounterResult | None = Field(default_factory=CounterResult)
+    corrupted_requests: CounterResult | None = Field(default_factory=CounterResult)
 
     # Request lifecycle histograms
-    request_queue_time: HistogramResult = Field(default_factory=HistogramResult)
-    request_inference_time: HistogramResult = Field(default_factory=HistogramResult)
-    request_prefill_time: HistogramResult = Field(default_factory=HistogramResult)
-    request_decode_time: HistogramResult = Field(default_factory=HistogramResult)
-    request_prompt_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    request_generation_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    request_max_num_generation_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    request_params_n: HistogramResult = Field(default_factory=HistogramResult)
-    request_params_max_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    iteration_tokens: HistogramResult = Field(default_factory=HistogramResult)
+    request_queue_time: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_inference_time: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_prefill_time: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_decode_time: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_prompt_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_generation_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_max_num_generation_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_params_n: HistogramResult | None = Field(default_factory=HistogramResult)
+    request_params_max_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
+    iteration_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
 
     # KV block stats
-    request_prefill_kv_computed_tokens: HistogramResult = Field(default_factory=HistogramResult)
-    kv_block_idle_before_evict: HistogramResult = Field(default_factory=HistogramResult)
-    kv_block_lifetime: HistogramResult = Field(default_factory=HistogramResult)
-    kv_block_reuse_gap: HistogramResult = Field(default_factory=HistogramResult)
+    request_prefill_kv_computed_tokens: HistogramResult | None = Field(default_factory=HistogramResult)
+    kv_block_idle_before_evict: HistogramResult | None = Field(default_factory=HistogramResult)
+    kv_block_lifetime: HistogramResult | None = Field(default_factory=HistogramResult)
+    kv_block_reuse_gap: HistogramResult | None = Field(default_factory=HistogramResult)
 
 
 class ServerMetricsClient(ABC):

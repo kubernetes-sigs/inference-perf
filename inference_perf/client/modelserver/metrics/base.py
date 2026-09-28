@@ -35,13 +35,20 @@ class Metric(ABC, Generic[R]):
         """Convert the ordered query results into a typed result object."""
         ...
 
-    def collect(self, execute: Callable[[str], float], duration: float, filters: str) -> R:
+    def collect(self, execute: Callable[[str], Optional[float]], duration: float, filters: str) -> Optional[R]:
         """Run this metric's queries via execute and parse them into its typed result.
 
         Keeps query execution and parsing together on the metric so callers never
         need to know the query/result shape of a particular metric type.
+
+        Returns None when any of the metric's queries has no usable result (a
+        failed query or a persistently empty result after fallback), so a failed
+        query is reported as missing instead of a real-looking zero (#822).
         """
-        return self.parse([execute(query) for query in self.get_queries(duration, filters)])
+        results = [execute(query) for query in self.get_queries(duration, filters)]
+        if any(result is None for result in results):
+            return None
+        return self.parse([result for result in results if result is not None])
 
 
 class BaseMetrics:

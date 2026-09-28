@@ -118,14 +118,14 @@ class PrometheusMetricsClient(ServerMetricsClient):
         A ModelServerMetrics object containing the summary metrics.
         """
 
-        def execute(query: str) -> float:
+        def execute(query: str) -> Optional[float]:
             eval_time = str(query_eval_time)
             result = self.execute_query(query, eval_time)
             if result is None:
                 fallback_query = _PROMQL_METRIC_SELECTOR.sub(lambda match: match.group().replace(":", "_"), query)
                 if fallback_query != query:
                     result = self.execute_query(fallback_query, eval_time)
-            return 0.0 if result is None else result
+            return result
 
         # Iterating the metadata yields (target_field, metric) pairs; each metric owns its
         # query+parse (collect), with the container's shared label filters applied. Building the
@@ -138,6 +138,22 @@ class PrometheusMetricsClient(ServerMetricsClient):
         if unknown:
             raise ValueError(f"Metrics declared for unknown ModelServerMetrics field(s): {', '.join(unknown)}")
         collected = {field: metric.collect(execute, query_duration, filters) for field, metric in pairs}
+        missing = sorted(field for field, result in collected.items() if result is None)
+        if missing and len(missing) == len(collected):
+            logger.error(
+                "all Prometheus queries failed (%d/%d metrics missing: %s); "
+                "check the Prometheus url, bearer_token, and verify_ssl settings",
+                len(missing),
+                len(collected),
+                ", ".join(missing),
+            )
+        elif missing:
+            logger.warning(
+                "some Prometheus queries failed (%d/%d metrics missing: %s)",
+                len(missing),
+                len(collected),
+                ", ".join(missing),
+            )
         return ModelServerMetrics.model_validate(collected)
 
     def execute_query(self, query: str, eval_time: str) -> Optional[float]:
@@ -149,9 +165,11 @@ class PrometheusMetricsClient(ServerMetricsClient):
         eval_time: the time at which the query is evaluated, used to ensure we are querying the correct time range
 
         Returns:
-        The first query result, or None when a successful query returns no series.
+        The first query result, or None when the query fails (HTTP error, connection
+        error, non-success status, or unparseable value) or when a successful query
+        returns no series. A failed query is reported as missing instead of a
+        real-looking zero (#822).
         """
-        query_result = 0.0
         try:
             logger.debug(f"making PromQL query: '{query}'")
             response = requests.get(
@@ -159,12 +177,12 @@ class PrometheusMetricsClient(ServerMetricsClient):
             )
             if response is None:
                 logger.error("error executing query: %s" % (query))
-                return query_result
+                return None
 
             response.raise_for_status()
         except Exception as e:
             logger.error("error executing query: %s" % (e))
-            return query_result
+            return None
 
         # Check if the response is valid
         # Sample response:
@@ -188,7 +206,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
         logger.debug(f"got result for query '{query}': {response_obj}")
         if response_obj.get("status") != "success":
             logger.error("error executing query: %s" % (response_obj))
-            return query_result
+            return None
 
         data = response_obj.get("data", {})
         result = data.get("result", [])
@@ -205,11 +223,13 @@ class PrometheusMetricsClient(ServerMetricsClient):
                 # Convert the value to float
                 try:
                     query_result = round(float(result[0]["value"][1]), 6)
-                except ValueError:
+                except (ValueError, TypeError):
                     logger.error("error converting value to float: %s" % (result[0]["value"][1]))
-                    return query_result
-        logger.debug(f"inferred result from query '{query}': {query_result}")
-        return query_result
+                    return None
+                logger.debug(f"inferred result from query '{query}': {query_result}")
+                return query_result
+        logger.error("unexpected query result shape for query '%s': %s" % (query, response_obj))
+        return None
 
     def get_headers(self) -> dict[str, Any]:
         headers: dict[str, Any] = dict(self.extra_headers)

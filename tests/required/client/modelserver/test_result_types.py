@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import List, Optional
 
 import pytest
 
@@ -97,6 +97,16 @@ def test_counter_metric_spans_both_total_and_bare_names() -> None:
             "sum(increase(vllm:request_success_total{model_name='m'}[30s])"
             " or increase(vllm:request_success{model_name='m'}[30s]))"
         )
+
+
+def test_metric_collect_returns_none_when_a_query_has_no_result() -> None:
+    """A failed query propagates as a missing metric (#822), not a parsed zero."""
+    metric = GaugeMetric(metric_name="vllm:kv_cache_usage_perc")
+
+    def execute(query: str) -> Optional[float]:
+        return None if "quantile_over_time(0.5" in query else 1.0
+
+    assert metric.collect(execute, duration=30, filters="") is None
 
 
 def test_metric_types_reject_name_selectors() -> None:

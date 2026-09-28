@@ -46,7 +46,7 @@ from inference_perf.config.reportgen.config import (
     ReportConfig,
     SessionLifecycleReportConfig,
 )
-from inference_perf.reportgen.base import ReportGenerator
+from inference_perf.reportgen.base import ReportGenerator, summarize_prometheus_metrics
 
 PERCENTILES = [50.0, 90.0]
 
@@ -574,3 +574,49 @@ class TestGeneratePrometheusMetricsReport:
 
         assert reports == []
         assert "no metrics collected by metrics client" in caplog.text
+
+
+class TestSummarizePrometheusMetricsMissing:
+    def test_missing_fields_are_reported_as_null_not_zero(self) -> None:
+        """Regression for #822: a failed query must be missing in the report, not a real-looking 0."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                requests=None,
+                queue_length=None,
+                request_latency=HistogramResult(avg=0.5, median=0.4, p90=0.9, p99=1.1),
+            )
+        ).model_dump()["successes"]
+
+        assert summary["count"] is None
+        assert summary["rate"] is None
+        assert summary["queue_len"] == {"mean": None}
+        # Healthy fields keep their values.
+        assert summary["request_latency"] == {"mean": 0.5, "median": 0.4, "p90": 0.9, "p99": 1.1}
+
+    def test_missing_cache_counts_yield_null_hit_percent(self) -> None:
+        """A missing hit/query count must not render as 0%."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(prefix_cache_hits=None, prefix_cache_queries=CounterResult(total=100.0))
+        ).model_dump()["successes"]
+
+        assert summary["prefix_cache_hit_percent"] == {"mean": None}
+
+    def test_all_missing_still_emits_a_report(self) -> None:
+        """Every query failed: the report carries nulls (the error log in collection says why)."""
+        summary = summarize_prometheus_metrics(ModelServerMetrics()).model_dump()["successes"]
+
+        # Omitted fields default to zero-results for backwards compatibility (e.g. mock-server runs).
+        assert summary["count"] == 0.0
+        assert (
+            summarize_prometheus_metrics(
+                ModelServerMetrics(
+                    requests=None,
+                    prompt_tokens=None,
+                    output_tokens=None,
+                    queue_length=None,
+                    request_latency=None,
+                    time_per_output_token=None,
+                )
+            ).model_dump()["successes"]["count"]
+            is None
+        )
