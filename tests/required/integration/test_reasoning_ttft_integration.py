@@ -61,11 +61,15 @@ async def run_request(server: FakeOpenAIServer) -> Tuple[ResponsesSummary, Reque
     return summarize_requests([metric], [50], tokenizer=tokenizer), metric, server.served[-1], start
 
 
+# Two reasoning chunks 20ms apart, a 350ms pause, then two content chunks
+# (7 words in all, server says 7). TTFT lands before the first content send,
+# TTFO at or after it, and output_tokens counts all 7 words.
 @pytest.mark.asyncio
 async def test_ttft_anchors_to_first_reasoning_token_on_the_wire() -> None:
     """The inflated-TTFT case: reasoning streams promptly, content only after a
     long reasoning phase. TTFT must land at the first reasoning chunk, not be
-    inflated by the reasoning-decode phase to the first content chunk."""
+    inflated by the reasoning-decode phase to the first content chunk. Time to
+    first output token is the one that includes that phase."""
     reasoning_phase = [StreamEvent("reasoning", "Let me", 0.02), StreamEvent("reasoning", " think.", 0.02)]
     # The pause before content is the reasoning-decode phase TTFT must NOT
     # include. Large relative to loopback parse latency so the bound is robust.
@@ -85,19 +89,25 @@ async def test_ttft_anchors_to_first_reasoning_token_on_the_wire() -> None:
     # first content chunk was even sent. Pre-#559 this read ~0.4s, not ~0.02s.
     assert ttft < served.content_send_times[0] - start
 
-    # Output length stays content-based: reasoning is thinking, not output.
+    ttfo_summary = result.successes["latency"]["time_to_first_output_token"]
+    assert ttfo_summary is not None
+    assert ttfo_summary["mean"] >= served.content_send_times[0] - start - 1e-6
+
+    # Output length counts reasoning, as the server's completion_tokens does,
+    # so the mismatch detector stays quiet.
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
-    assert metric.info.response_metrics.output_tokens == 4  # "The answer is 4."
-    # Client accounting (content + reasoning) matches the server's
-    # completion_tokens, so the mismatch detector stays quiet.
+    assert metric.info.response_metrics.output_tokens == 7  # "Let me think. The answer is 4."
     assert result.successes["token_count_mismatches"] == 0
 
 
+# Three reasoning chunks and no content (server says 3). TTFT, TPOT and ITL
+# are reported, TTFO is None, and output_tokens = 3.
 @pytest.mark.asyncio
 async def test_ttft_reported_when_output_budget_exhausted_mid_reasoning() -> None:
     """The null-TTFT case: max_tokens below the reasoning length means the
     stream ends while still in the reasoning channel, so no content token ever
-    arrives. TTFT must still be reported; TPOT and ITL stay undefined."""
+    arrives. TTFT, TPOT and ITL are still reported; time to first output token
+    is the metric that shows no content arrived."""
     script = [
         StreamEvent("reasoning", "Thinking", 0.02),
         StreamEvent("reasoning", " quite", 0.02),
@@ -111,7 +121,8 @@ async def test_ttft_reported_when_output_budget_exhausted_mid_reasoning() -> Non
     assert ttft_summary is not None, "reasoning-only stream must yield a TTFT, not null"
     assert ttft_summary["mean"] >= served.reasoning_send_times[0] - start - 1e-6
 
-    assert result.successes["latency"]["time_per_output_token"] is None
-    assert result.successes["latency"]["inter_token_latency"] is None
+    assert result.successes["latency"]["time_per_output_token"] is not None
+    assert result.successes["latency"]["inter_token_latency"] is not None
+    assert result.successes["latency"]["time_to_first_output_token"] is None
     assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
-    assert metric.info.response_metrics.output_tokens == 0
+    assert metric.info.response_metrics.output_tokens == 3

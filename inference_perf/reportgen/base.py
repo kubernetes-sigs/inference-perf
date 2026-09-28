@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import heapq
 import logging
 import json
 import re
@@ -583,21 +584,57 @@ def summarize_prometheus_metrics(metrics: ModelServerMetrics) -> ResponsesSummar
     )
 
 
+def _chunk_content(data: Any) -> Optional[str]:
+    """Content text from a parsed SSE chunk (chat/completions choices or an Anthropic text delta)."""
+    if choices := data.get("choices"):
+        delta = choices[0]
+        text = delta.get("text") or delta.get("delta", {}).get("content")
+        if text:
+            return str(text)
+    elif delta := data.get("delta"):
+        if isinstance(delta, dict) and (text := delta.get("text")):
+            return str(text)
+    return None
+
+
 def _extract_chunk_text(chunk_str: str) -> Optional[str]:
     """Extract text content from an SSE streaming response JSON chunk."""
     try:
-        data = json.loads(chunk_str)
-        if choices := data.get("choices"):
-            delta = choices[0]
-            text = delta.get("text") or delta.get("delta", {}).get("content")
-            if text:
-                return str(text)
-        elif delta := data.get("delta"):
-            if isinstance(delta, dict) and (text := delta.get("text")):
-                return str(text)
+        return _chunk_content(json.loads(chunk_str))
     except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
-        pass
+        return None
+
+
+def _extract_chunk_reasoning(data: dict[str, Any]) -> Optional[str]:
+    """Reasoning text from a parsed SSE chunk: OpenAI-style delta fields or an Anthropic thinking event."""
+    if choices := data.get("choices"):
+        delta = choices[0].get("delta") or {}
+        if isinstance(delta, dict) and (reasoning := delta.get("reasoning_content") or delta.get("reasoning")):
+            return str(reasoning)
+        return None
+    event_type = data.get("type")
+    if event_type == "content_block_delta":
+        delta = data.get("delta") or {}
+        if isinstance(delta, dict) and delta.get("type") == "thinking_delta" and (thinking := delta.get("thinking")):
+            return str(thinking)
+    elif event_type == "content_block_start":
+        block = data.get("content_block") or {}
+        if isinstance(block, dict) and block.get("type") == "thinking" and (thinking := block.get("thinking")):
+            return str(thinking)
     return None
+
+
+def _extract_chunk_generated_text(chunk_str: str) -> Optional[str]:
+    """All generated text in an SSE chunk: reasoning first, then content (#559)."""
+    try:
+        data = json.loads(chunk_str)
+        reasoning = _extract_chunk_reasoning(data)
+        content = _chunk_content(data)
+    except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
+        return None
+    if reasoning and content:
+        return reasoning + content
+    return reasoning or content
 
 
 def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Optional[CustomTokenizer]) -> bool:
@@ -609,7 +646,9 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     server-reported completion_tokens.
     """
     if not (
-        isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.response_chunks and tokenizer
+        isinstance(m.info.response_metrics, StreamedResponseMetrics)
+        and (m.info.response_metrics.response_chunks or m.info.response_metrics.reasoning_chunks)
+        and tokenizer
     ):
         return False
 
@@ -627,10 +666,17 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
         except Exception:
             token_cache = None
 
-    for chunk_str, chunk_time in zip(
-        m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
-    ):
-        text = _extract_chunk_text(chunk_str)
+    # Content and reasoning-only chunks, in arrival order. The server counts
+    # reasoning tokens in completion_tokens, so they belong on the timeline
+    # and in the mismatch accounting alike (#559).
+    response_metrics = m.info.response_metrics
+    chunks = heapq.merge(
+        zip(response_metrics.chunk_times, response_metrics.response_chunks, strict=True),
+        zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=True),
+        key=lambda pair: pair[0],
+    )
+    for chunk_time, chunk_str in chunks:
+        text = _extract_chunk_generated_text(chunk_str)
         if not text:
             continue
 
@@ -656,22 +702,20 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
     # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
-    # The server's completion_tokens counts reasoning tokens too, so the
-    # client-side accounting must include them or every reasoning-model
-    # request would flag as mismatched. They stay out of
-    # output_token_times: reasoning anchors TTFT only (#559).
-    for chunk_str in m.info.response_metrics.reasoning_chunks:
-        try:
-            data = json.loads(chunk_str)
-            if choices := data.get("choices"):
-                delta = choices[0].get("delta", {})
-                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                if reasoning:
-                    accumulated_tokens += tokenizer.count_tokens(reasoning, add_special_tokens=False)
-        except json.JSONDecodeError:
-            continue
-
     return expected_output_tokens is not None and accumulated_tokens != expected_output_tokens
+
+
+def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optional[float]:
+    """Arrival time of the first content chunk, skipping reasoning.
+
+    chunk_times is the content channel alone. A record with no chunk_times
+    and no reasoning predates the split, so its output_token_times is content.
+    """
+    if response_metrics.chunk_times:
+        return response_metrics.chunk_times[0]
+    if response_metrics.output_token_times and not response_metrics.reasoning_chunk_times:
+        return response_metrics.output_token_times[0]
+    return None
 
 
 def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output_tokens: bool = False) -> dict[str, Any]:
@@ -691,35 +735,24 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
     ntpot: Optional[float] = request_latency / ntpot_output_tokens if ntpot_output_tokens > 0 else None
 
     ttft: Optional[float] = None
+    ttfo: Optional[float] = None
     tpot: Optional[float] = None
     itl: Optional[float] = None
     itl_deltas: List[float] = []
 
-    # Check if streamable: must have more than 1 timestamped generation
-    # event across both channels.
-    if isinstance(response_metrics, StreamedResponseMetrics):
-        first_token_candidates = [
-            times[0] for times in (response_metrics.output_token_times, response_metrics.reasoning_chunk_times) if times
-        ]
-        ttft_streamable = len(response_metrics.output_token_times) + len(response_metrics.reasoning_chunk_times) > 1
-    else:
-        first_token_candidates = []
-        ttft_streamable = False
-
-    if ttft_streamable and first_token_candidates:
-        # TTFT: First Token Time - Start Time, where the first token is the
-        # first generated token of ANY channel (#559): reasoning models
-        # stream reasoning deltas before (and, when the output budget is
-        # exhausted, instead of) content, and the server generates from the
-        # first reasoning token (vllm:time_to_first_token counts it).
-        # Anchoring to content would inflate TTFT by the whole
-        # reasoning-decode phase, or yield null when no content ever
-        # arrives. TPOT and ITL stay content-based below: reasoning is
-        # "thinking", not user-facing output.
-        ttft = min(first_token_candidates) - m.start_time
-
-    # TPOT and ITL stay content-based, so they keep the content-only gate.
+    # output_token_times holds every generated token, reasoning included
+    # (#559): the server generates and counts reasoning tokens like any other,
+    # so TTFT, TPOT and ITL do too. Streamable means more than one timestamp.
     if isinstance(response_metrics, StreamedResponseMetrics) and len(response_metrics.output_token_times) > 1:
+        # TTFT: First Token Time - Start Time
+        ttft = response_metrics.output_token_times[0] - m.start_time
+
+        # Time to first output token: the first content token, after any
+        # reasoning. Equals TTFT when the model emits no reasoning; None when
+        # the output budget ran out before any content arrived.
+        if (first_content := first_content_token_time(response_metrics)) is not None:
+            ttfo = first_content - m.start_time
+
         # TPOT: (Last Token Time - First Token Time) / (Num Output Tokens - 1)
         duration = response_metrics.output_token_times[-1] - response_metrics.output_token_times[0]
         tpot_output_tokens = effective_output_tokens(response_metrics, use_server_output_tokens)
@@ -737,6 +770,7 @@ def compute_request_latency_metrics(m: RequestLifecycleMetric, use_server_output
         "request_latency": request_latency,
         "normalized_time_per_output_token": ntpot,
         "time_to_first_token": ttft,
+        "time_to_first_output_token": ttfo,
         "time_per_output_token": tpot,
         "inter_token_latency": itl,
         "inter_token_latency_deltas": itl_deltas,
@@ -786,6 +820,7 @@ def summarize_requests(
     ntpot_values: List[Optional[float]] = []  # Optional: None without output tokens
     tpot_values: List[Optional[float]] = []  # Optional: None if not streamable
     ttft_values: List[Optional[float]] = []  # Optional: None if not streamable
+    ttfo_values: List[Optional[float]] = []  # Optional: None if not streamable or no content
     request_latency_values: List[float] = []
     itl_values: List[Optional[float]] = []
     inter_token_latencies: List[float] = []
@@ -799,6 +834,7 @@ def summarize_requests(
         request_latency_values.append(latency["request_latency"])
         ntpot_values.append(latency["normalized_time_per_output_token"])
         ttft_values.append(latency["time_to_first_token"])
+        ttfo_values.append(latency["time_to_first_output_token"])
         tpot_values.append(latency["time_per_output_token"])
         itl_values.append(latency["inter_token_latency"])
         inter_token_latencies.extend(latency["inter_token_latency_deltas"])
@@ -819,6 +855,7 @@ def summarize_requests(
     valid_tpot = [v for v in tpot_values if v is not None]
     valid_ntpot = [v for v in ntpot_values if v is not None]
     valid_ttft = [v for v in ttft_values if v is not None]
+    valid_ttfo = [v for v in ttfo_values if v is not None]
 
     request_sizes = [len(x.request_data.encode("utf-8")) for x in all_successful]
     all_images = []
@@ -849,6 +886,7 @@ def summarize_requests(
             "normalized_time_per_output_token": summarize(valid_ntpot, percentiles),
             "time_per_output_token": summarize(valid_tpot, percentiles),
             "time_to_first_token": summarize(valid_ttft, percentiles),
+            "time_to_first_output_token": summarize(valid_ttfo, percentiles),
             "inter_token_latency": summarize(inter_token_latencies, percentiles),
         },
         "throughput": {
@@ -978,6 +1016,7 @@ def build_per_request_lifecycle_entry(
             "request_latency": latency["request_latency"],
             "normalized_time_per_output_token": latency["normalized_time_per_output_token"],
             "time_to_first_token": latency["time_to_first_token"],
+            "time_to_first_output_token": latency["time_to_first_output_token"],
             "time_per_output_token": latency["time_per_output_token"],
             "inter_token_latency": latency["inter_token_latency"],
             "inter_token_latencies": latency["inter_token_latency_deltas"],
@@ -1483,10 +1522,13 @@ class ReportGenerator:
             if not isinstance(response_metrics, StreamedResponseMetrics):
                 has_non_streaming = True
                 continue
-            if len(response_metrics.output_token_times) < 1:
+            # User-visible means content: reasoning tokens are in
+            # output_token_times but never reach the user (#559).
+            first_content = first_content_token_time(response_metrics)
+            if first_content is None:
                 has_no_output_tokens = True
                 continue
-            tfut = response_metrics.output_token_times[0] - sm.dispatch_perf_counter
+            tfut = first_content - sm.dispatch_perf_counter
             candidates.append(tfut)
 
         # TFUT is the minimum across user-facing events (earliest user-visible output)

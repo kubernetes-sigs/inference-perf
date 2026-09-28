@@ -85,6 +85,7 @@ def test_per_request_fields_computed_metrics_can_be_enabled() -> None:
         "request_latency": 1.0,
         "normalized_time_per_output_token": 0.5,
         "time_to_first_token": None,
+        "time_to_first_output_token": None,
         "time_per_output_token": None,
         "inter_token_latency": None,
         "inter_token_latencies": [],
