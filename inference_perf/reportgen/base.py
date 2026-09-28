@@ -914,7 +914,10 @@ def build_per_request_lifecycle_entry(
     entry: dict[str, Any] = {
         "start_time": metric.start_time,
         "end_time": metric.end_time,
+        "scheduled_time": metric.scheduled_time,
     }
+    if metric.stage_id is not None:
+        entry["stage_id"] = metric.stage_id
     if metric.session_id is not None:
         entry["session_id"] = metric.session_id
 

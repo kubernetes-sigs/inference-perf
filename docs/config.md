@@ -344,6 +344,10 @@ report:
 Setting `info: false` removes the entire `info` block, including
 `response_chunks`; in that case `response_chunks` has no effect.
 
+Each entry includes `scheduled_time`, the request's scheduled timestamp, alongside
+`start_time` and `end_time`. It also includes `stage_id` when set, so requests can
+be grouped by load stage. These fields are included regardless of `per_request_fields`.
+
 In `trace_session_replay` runs, each entry also carries a top-level
 `session_id` naming the session the request belongs to, regardless of
 `per_request_fields`. Other workloads do not set it.
