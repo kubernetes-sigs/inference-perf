@@ -57,9 +57,11 @@ SessionChatCompletionAPIData holds refs to WorkerSessionTracker and completion_q
 """
 
 import glob
+import heapq
 import json
 import logging
 import random
+from datetime import datetime, timezone
 from multiprocessing.managers import SyncManager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
@@ -73,6 +75,7 @@ from inference_perf.datagen.replay.otel_trace_utils import _compile_filter
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
     build_raw_calls,
     build_graph,
+    is_llm_span,
     tag_user_facing_events,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -144,6 +147,60 @@ def _validate_dataset_schema(dataset: Any, dataset_path: str) -> None:
         raise ValueError(f"Dataset '{dataset_path}' is missing the required 'spans' field.")
 
     logger.info(f"Schema validation passed for dataset '{dataset_path}'")
+
+
+def _derive_session_duration_ms(spans: List[Dict[str, Any]]) -> int:
+    """Derive session duration from LLM span timestamps, falling back to all spans."""
+    llm_timestamps: List[float] = []
+    all_timestamps: List[float] = []
+    for span in spans:
+        for ts_key in ("start_time", "end_time"):
+            ts_val = span.get(ts_key)
+            if ts_val:
+                try:
+                    dt = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    ts = dt.timestamp()
+                except (ValueError, AttributeError):
+                    continue
+                all_timestamps.append(ts)
+                if is_llm_span(span, include_errors=True):
+                    llm_timestamps.append(ts)
+    timestamps = llm_timestamps if llm_timestamps else all_timestamps
+    return int((max(timestamps) - min(timestamps)) * 1000) if timestamps else 0
+
+
+def _simulate_stage_duration(
+    durations_sec: List[float],
+    concurrent_sessions: int,
+    session_rate: Optional[float],
+) -> float:
+    """Simulate the work-conserving session scheduler to estimate stage wall-clock time."""
+    active: List[float] = []
+    next_dispatch = 0.0
+    last_finish = 0.0
+
+    for duration in durations_sec:
+        dispatch = next_dispatch
+
+        if 0 < concurrent_sessions <= len(active):
+            earliest_finish = heapq.heappop(active)
+            dispatch = max(dispatch, earliest_finish)
+
+        while active and active[0] <= dispatch:
+            heapq.heappop(active)
+
+        finish = dispatch + duration
+        heapq.heappush(active, finish)
+        last_finish = max(last_finish, finish)
+
+        if session_rate:
+            next_dispatch = dispatch + 1.0 / session_rate
+        else:
+            next_dispatch = dispatch
+
+    return last_finish
 
 
 def _normalize_file_trace(data: Dict[str, Any], source_name: str, source_path: str) -> Dict[str, Any]:
@@ -402,6 +459,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         cols = dataset.column_names
         session_id_col = list(dataset["session_id"]) if "session_id" in cols else [None] * num_rows
         source_id_col = list(dataset["source_id"]) if "source_id" in cols else [None] * num_rows
+        duration_col = [_derive_session_duration_ms(dataset[i]["spans"]) for i in range(num_rows)]
+        models_col = list(dataset["models"]) if "models" in cols else [[] for _ in range(num_rows)]
 
         # Shuffle a permutation of row indices (not the rows themselves) so order is stable
         # and reproducible without holding any span data.
@@ -415,6 +474,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         # works immediately and duplicate_sessions_target can expand at the ID level.
         base_ids = [f"trace{slot}_{session_id_col[row] or f'session_{slot}'}" for slot, row in enumerate(order)]
         self._source_ids = [source_id_col[row] for row in order]  # slot -> source_id (or None)
+        self._session_durations_ms: List[int] = [duration_col[row] for row in order]
+        self._session_models: List[List[str]] = [models_col[row] for row in order]
 
         # Expand for duplicate_sessions_target: append (id, source_slot) pairs.
         # _source_indices[i] is None for real slots, or the source slot to copy for duplicates.
@@ -429,6 +490,8 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 dup_count += 1
                 session_ids.append(f"{base_ids[src]}_dup{dup_count}")
                 self._source_indices.append(src)
+                self._session_durations_ms.append(self._session_durations_ms[src])
+                self._session_models.append(self._session_models[src])
             logger.warning(
                 f"Session corpus small: {original_count} sessions available. "
                 f"Duplicating to reach {target} sessions for stress testing."
@@ -438,6 +501,40 @@ class OTelTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             logger.info(f"Session corpus sufficient: {len(base_ids)} sessions available (target: {target})")
 
         self.initialize_sessions_lazy(session_ids)
+
+    def get_stage_time_estimate(
+        self,
+        start_cursor: int,
+        num_sessions: int,
+        concurrent_sessions: int,
+        session_rate: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        end = min(start_cursor + num_sessions, len(self._session_durations_ms))
+        durations = self._session_durations_ms[start_cursor:end]
+        if not durations or all(d == 0 for d in durations):
+            return None
+
+        durations_sec = [d / 1000.0 for d in durations]
+        estimated_seconds = _simulate_stage_duration(durations_sec, concurrent_sessions, session_rate)
+
+        recorded: set[str] = set()
+        for m_list in self._session_models[start_cursor:end]:
+            recorded.update(m_list)
+
+        replay: set[str] = set()
+        if self.replay_config and self.replay_config.use_static_model:
+            replay.add(self.replay_config.static_model_name)
+        elif self.replay_config and self.replay_config.model_mapping:
+            for m in recorded:
+                replay.add(self.replay_config.model_mapping.get(m, m))
+        else:
+            replay = set(recorded)
+
+        return {
+            "estimated_seconds": estimated_seconds,
+            "recorded_models": sorted(recorded) if recorded else ["unknown"],
+            "replay_models": sorted(replay) if replay else ["unknown"],
+        }
 
     def _build_session(self, session_index: int) -> Optional[ReplaySession]:
         """Build one session's graph on demand (called by _ensure_session_built).

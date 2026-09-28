@@ -1464,6 +1464,58 @@ class LoadGenerator:
                         f"to duplicate sessions to meet the total required across all stages."
                     )
 
+                def _fmt_time(secs: float) -> str:
+                    h, rem = divmod(int(secs), 3600)
+                    m, s = divmod(rem, 60)
+                    parts = []
+                    if h:
+                        parts.append(f"{h}h")
+                    if m:
+                        parts.append(f"{m}m")
+                    parts.append(f"{s}s")
+                    return " ".join(parts)
+
+                cursor = 0
+                total_estimate_sec = 0.0
+                stage_lines: list[str] = []
+                all_recorded: set[str] = set()
+                all_replay: set[str] = set()
+                has_estimate = False
+                for sid, s in enumerate(self.stages):
+                    if not isinstance(s, TraceSessionReplayLoadStage):
+                        continue
+                    available = total_sessions - cursor
+                    if available <= 0:
+                        break
+                    n = min(s.num_sessions, available) if s.num_sessions is not None else available
+                    est = self.datagen.get_stage_time_estimate(cursor, n, s.concurrent_sessions, s.session_rate)
+                    if est is not None:
+                        has_estimate = True
+                        total_estimate_sec += est["estimated_seconds"]
+                        all_recorded.update(est["recorded_models"])
+                        all_replay.update(est["replay_models"])
+                        stage_lines.append(
+                            f"  Stage {sid}: ~{_fmt_time(est['estimated_seconds'])} "
+                            f"({n} sessions, concurrency {s.concurrent_sessions})"
+                        )
+                    cursor += n
+
+                if has_estimate:
+                    interval_sec = self.stageInterval * max(len(stage_lines) - 1, 0)
+                    total_estimate_sec += interval_sec
+                    recorded_str = ", ".join(sorted(all_recorded))
+                    replay_str = ", ".join(sorted(all_replay))
+                    logger.info(
+                        "Estimated replay time per stage:\n%s\n"
+                        "Estimated total replay time: ~%s "
+                        "(based on recorded session timing from model(s): %s; "
+                        "replay model: %s; actual times may differ)",
+                        "\n".join(stage_lines),
+                        _fmt_time(total_estimate_sec),
+                        recorded_str,
+                        replay_str,
+                    )
+
         # Create progress context for all stages
         with Progress(
             TextColumn("[progress.description]{task.description}"),

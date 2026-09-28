@@ -122,6 +122,19 @@ class SessionGenerator(BaseGenerator):
     conversations and agentic workflows.
     """
 
+    def get_stage_time_estimate(
+        self,
+        start_cursor: int,
+        num_sessions: int,
+        concurrent_sessions: int,
+        session_rate: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        """Return an estimated duration for a stage based on recorded trace timings.
+
+        Returns None when recorded timing data is not available (default).
+        """
+        return None
+
     @abstractmethod
     def get_session_count(self) -> int:
         """Return total number of sessions available for replay."""

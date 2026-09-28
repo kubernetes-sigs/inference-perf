@@ -46,7 +46,11 @@ from pydantic import ValidationError
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from inference_perf.datagen.replay.otel_trace_replay_datagen import (
+    OTelTraceReplayDataGenerator,
+    _derive_session_duration_ms,
+    _simulate_stage_duration,
+)
 from inference_perf.datagen.replay.replay_graph_session_datagen import (
     EventFailedError,
     EventOutputRegistry,
@@ -2522,3 +2526,69 @@ class TestDisableOutputSubstitutionValidation:
             duplicate_sessions_target=10,
         )
         assert cfg.disable_output_substitution is False
+
+
+class TestStageTimeEstimate:
+    """Tests for stage time estimation: scheduler simulation and duration derivation."""
+
+    # -- _simulate_stage_duration --
+
+    def test_simulate_unlimited_concurrency_no_rate(self) -> None:
+        result = _simulate_stage_duration([1.0, 2.0, 3.0], concurrent_sessions=0, session_rate=None)
+        assert result == pytest.approx(3.0)
+
+    def test_simulate_bounded_concurrency_equal_durations(self) -> None:
+        result = _simulate_stage_duration([10.0, 10.0, 10.0, 10.0], concurrent_sessions=2, session_rate=None)
+        assert result == pytest.approx(20.0)
+
+    def test_simulate_skewed_durations(self) -> None:
+        result = _simulate_stage_duration([100.0, 1.0, 1.0], concurrent_sessions=2, session_rate=None)
+        assert result == pytest.approx(100.0)
+
+    def test_simulate_rate_limited_unlimited_concurrency(self) -> None:
+        result = _simulate_stage_duration([1.0, 1.0, 1.0], concurrent_sessions=0, session_rate=0.5)
+        assert result == pytest.approx(5.0)
+
+    def test_simulate_rate_and_concurrency(self) -> None:
+        result = _simulate_stage_duration([10.0, 10.0, 10.0], concurrent_sessions=1, session_rate=0.5)
+        assert result == pytest.approx(30.0)
+
+    def test_simulate_empty(self) -> None:
+        result = _simulate_stage_duration([], concurrent_sessions=2, session_rate=None)
+        assert result == pytest.approx(0.0)
+
+    # -- _derive_session_duration_ms --
+
+    def test_derive_llm_spans_only(self) -> None:
+        spans = [
+            {
+                "name": "agent_setup",
+                "start_time": "2024-01-01T00:00:00Z",
+                "end_time": "2024-01-01T00:02:00Z",
+                "attributes": {},
+            },
+            {
+                "name": "chat gpt-4",
+                "start_time": "2024-01-01T00:00:10Z",
+                "end_time": "2024-01-01T00:00:20Z",
+                "attributes": {"gen_ai.operation.name": "chat", "gen_ai.input.messages": "[{}]"},
+            },
+            {
+                "name": "chat gpt-4",
+                "start_time": "2024-01-01T00:00:30Z",
+                "end_time": "2024-01-01T00:00:40Z",
+                "attributes": {"gen_ai.operation.name": "chat", "gen_ai.input.messages": "[{}]"},
+            },
+        ]
+        result = _derive_session_duration_ms(spans)
+        assert result == 30000
+
+    def test_derive_falls_back_to_all_spans(self) -> None:
+        spans = [
+            {"name": "setup", "start_time": "2024-01-01T00:00:00Z", "end_time": "2024-01-01T00:01:00Z", "attributes": {}},
+        ]
+        result = _derive_session_duration_ms(spans)
+        assert result == 60000
+
+    def test_derive_empty_spans(self) -> None:
+        assert _derive_session_duration_ms([]) == 0
