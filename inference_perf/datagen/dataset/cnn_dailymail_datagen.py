@@ -11,10 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from functools import partial
 import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.dataset import load_dataset_with_deadline
 from ..base import DataGenerator
 from inference_perf.config import APIConfig, APIType, DataConfig
 from typing import Any, Dict, Generator, Iterator, List, Optional
@@ -54,11 +56,16 @@ class CNNDailyMailDataGenerator(DataGenerator):
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
             return itertools.cycle(
-                load_dataset(
+                load_dataset_with_deadline(
+                    partial(
+                        load_dataset,
+                        "abisee/cnn_dailymail",
+                        "3.0.0",
+                        streaming=True,
+                        split="train",
+                    ),
                     "abisee/cnn_dailymail",
-                    "3.0.0",
-                    streaming=True,
-                    split="train",
+                    config.load_timeout,
                 )
             )
 

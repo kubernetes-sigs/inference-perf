@@ -49,6 +49,7 @@ Configures the test data generation methodology:
 data:
   type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct|otel_trace_replay|visionarena # Data generation type
   path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
+  load_timeout: 300.0                                  # Dataset loading deadline (seconds); null disables
   input_distribution:                                 # For synthetic/random types
     min: 10                                           # Minimum prompt length (tokens)
     max: 100                                          # Maximum prompt length
@@ -79,6 +80,15 @@ data:
       mean: 50
       std_dev: 5
 ```
+
+`data.load_timeout` bounds each Hub `load_dataset()` call for ShareGPT, CNN/DailyMail,
+VisionArena, and OTel trace replay. It must be positive and finite; YAML `null` disables
+the deadline. The `--data.load_timeout` CLI flag accepts a number, not `null`.
+Local JSON streaming loaders are unchanged. For streaming datasets, only the loading
+call is bounded: fetching rows afterward, including startup priming and VisionArena
+pool construction, has no deadline. A timed-out loader runs in a daemon thread and
+cannot be cancelled. As with tokenizer loading, the deadline applies to waits that
+release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
