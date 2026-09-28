@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, cast
 
 import pytest
 
+import inference_perf.datagen.replay.trace_source as trace_source_module
 from inference_perf.datagen.replay.otel_trace_replay_datagen import (
     _normalize_file_trace,
     _rows_for_file,
@@ -150,16 +151,18 @@ def test_json_file_is_one_record(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("count", [1, 3])
 def test_jsonl_session_ids_match_eager_path(tmp_path: Path, count: int) -> None:
-    """Single-record files keep a plain id; multi-record files get row suffixes."""
+    """Loaded records and scheduler metadata use the same fallback identities."""
     docs = [otel_trace(trace_id=None) for _ in range(count)]
     path = write_jsonl(tmp_path / "traces.jsonl", docs)
 
     source = source_for([path])
-    lazy = [source.load_record(i)["session_id"] for i in range(count)]
+    loaded_ids = [source.load_record(i)["session_id"] for i in range(count)]
     eager = [row["session_id"] for row in _rows_for_file(path, skip_invalid=False)]
+    scheduler_suffixes = [record.session_id_suffix for record in source.list_records()]
 
-    assert lazy == eager
-    assert len(set(lazy)) == count
+    assert loaded_ids == eager
+    assert scheduler_suffixes == eager
+    assert len(set(scheduler_suffixes)) == count
 
 
 def test_json_record_matches_eager_path_exactly(tmp_path: Path) -> None:
@@ -244,6 +247,14 @@ def test_jsonl_identity_prefers_each_records_embedded_id(tmp_path: Path) -> None
     suffixes = [r.session_id_suffix for r in source_for([path]).list_records()]
 
     assert suffixes == ["session-a", "trace-b"]
+
+
+def test_jsonl_empty_session_id_uses_filename_fallback(tmp_path: Path) -> None:
+    record = otel_trace(trace_id=None)
+    record["session_id"] = ""
+    path = write_jsonl(tmp_path / "traces.jsonl", [record])
+
+    assert source_for([path]).list_records()[0].session_id_suffix == "traces"
 
 
 def test_single_record_source_id_is_the_bare_path(tmp_path: Path) -> None:
@@ -440,6 +451,19 @@ def test_wire_file_with_no_convertible_records_raises_on_load_when_lazy(tmp_path
     source = LocalTraceSource([path], False, _normalize_file_trace, validate_at_startup=False)
 
     with pytest.raises(InvalidTraceError, match="no convertible spans"):
+        source.load_record(0)
+
+
+def test_unexpected_wire_conversion_error_is_wrapped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = write_jsonl(tmp_path / "calls.jsonl", [chat_record()])
+    source = LocalTraceSource([path], False, _normalize_file_trace, validate_at_startup=False)
+
+    def fail_conversion(_path: Path) -> Dict[str, Any]:
+        raise RuntimeError("unexpected converter failure")
+
+    monkeypatch.setattr(trace_source_module, "convert_wire_file", fail_conversion)
+
+    with pytest.raises(InvalidTraceError, match="wire conversion failed.*unexpected converter failure"):
         source.load_record(0)
 
 

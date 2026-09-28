@@ -389,6 +389,8 @@ class LocalTraceSource:
                 raise InvalidTraceError(str(e)) from e
             except OSError as e:
                 raise TraceReadError(f"{path}: {e}") from e
+            except Exception as e:
+                raise InvalidTraceError(f"{path}: wire conversion failed: {e}") from e
             if not converted["spans"]:
                 raise InvalidTraceError(f"{path}: wire capture produced no convertible spans")
             return converted
@@ -411,7 +413,7 @@ def _otel_session_id(document: Dict[str, Any], fallback: str) -> str:
 
 
 def _indexed_session_id(embedded_id: Optional[str], fallback: str) -> str:
-    return embedded_id if embedded_id is not None else fallback
+    return embedded_id or fallback
 
 
 def _scan_jsonl_records(path: Path, validate: bool) -> List[Tuple[int, int, Optional[str]]]:

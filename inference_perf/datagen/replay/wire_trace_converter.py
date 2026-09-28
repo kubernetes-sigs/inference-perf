@@ -35,6 +35,7 @@ docs/superpowers/notes/reasoning-content-dropped-in-wire-replay.md.
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,8 @@ WIRE_FORMATS = (FORMAT_RESPONSES_WIRE, FORMAT_CHAT_COMPLETIONS_WIRE, FORMAT_ANTH
 # OTel status codes.
 _STATUS_OK = 1
 _STATUS_ERROR = 2
+
+logger = logging.getLogger(__name__)
 
 
 def _span_id(trace_id: str, line_no: int) -> str:
@@ -170,6 +173,17 @@ def _parse_sse_completed(response_text: str) -> Optional[Dict[str, Any]]:
             response = event.get("response")
             return response if isinstance(response, dict) else None
     return None
+
+
+def _parse_json_object(response_text: Any) -> Optional[Dict[str, Any]]:
+    """Parse a complete non-streaming JSON response body."""
+    if not response_text:
+        return None
+    try:
+        response = json.loads(response_text) if isinstance(response_text, str) else response_text
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return response if isinstance(response, dict) else None
 
 
 def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, Any]]:
@@ -314,7 +328,7 @@ def _text_parts(content: Any) -> List[Dict[str, Any]]:
     converted message mirrors what the harness actually sent.
     """
     if isinstance(content, str):
-        return [{"type": "text", "content": content}] if content else []
+        return [{"type": "text", "content": content}]
     if isinstance(content, list):
         parts = []
         for part in content:
@@ -326,11 +340,16 @@ def _text_parts(content: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _convert_responses_input(input_items: List[Any]) -> List[Dict[str, Any]]:
+def _convert_responses_input(input_items: Any) -> List[Dict[str, Any]]:
     """Convert Responses API input[] items to OTel messages in parts format.
 
     Item types: message, function_call, function_call_output. Reasoning items are skipped.
     """
+    if isinstance(input_items, str):
+        return [{"role": "user", "parts": [{"type": "text", "content": input_items}]}]
+    if not isinstance(input_items, list):
+        return []
+
     messages: List[Dict[str, Any]] = []
     for item in input_items:
         if not isinstance(item, dict):
@@ -466,7 +485,7 @@ def _anthropic_blocks_to_parts(content: Any) -> List[Dict[str, Any]]:
     treat reasoning (see the module docstring).
     """
     if isinstance(content, str):
-        return [{"type": "text", "content": content}] if content else []
+        return [{"type": "text", "content": content}]
     if not isinstance(content, list):
         return []
 
@@ -624,8 +643,9 @@ def _timestamps(record: Dict[str, Any]) -> Tuple[str, str]:
     """Return (start_time, end_time) as ISO strings from the wire record's timing."""
     start_unix = record.get("start_unix")
     total_ms = record.get("total_ms") or 0
-    if start_unix:
+    if start_unix is not None:
         return _unix_to_iso(start_unix), _unix_to_iso(start_unix + total_ms / 1000.0)
+    logger.warning("Wire record has no start_unix; using conversion time with zero duration")
     now = datetime.now(tz=timezone.utc).isoformat()
     return now, now
 
@@ -663,6 +683,7 @@ def _build_span(
             "gen_ai.response.model": model,
             "gen_ai.usage.input_tokens": input_tokens,
             "gen_ai.usage.output_tokens": output_tokens,
+            "http.response.status_code": http_status,
         },
         "resource_attributes": {
             "service.name": "wire-capture",
@@ -708,14 +729,28 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
     request = _load_request(record)
     if request is None:
         return None
+    previous_response_id = request.get("previous_response_id")
+    if previous_response_id is not None:
+        logger.warning(
+            "Skipping Responses API wire record at line %d: "
+            "previous_response_id is not supported because wire replay "
+            "cannot reconstruct the referenced conversation context",
+            line_no,
+        )
+        return None
 
-    completed = _parse_sse_completed(record.get("response") or "") or {}
+    response_body = record.get("response") or ""
+    completed = _parse_sse_completed(response_body) or _parse_json_object(response_body) or {}
     usage = completed.get("usage") or {}
 
     response_status = completed.get("status", "")
     finish_reason = "stop" if response_status == "completed" else response_status
 
     start_time, end_time = _timestamps(record)
+    instruction_parts = _text_parts(request.get("instructions"))
+    input_messages = (
+        [{"role": "system", "parts": instruction_parts}] if instruction_parts else []
+    ) + _convert_responses_input(request.get("input") or [])
 
     return _build_span(
         trace_id=trace_id,
@@ -729,7 +764,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
         cached_tokens=(usage.get("input_tokens_details") or {}).get("cached_tokens", 0),
         response_id=completed.get("id", ""),
         finish_reason=finish_reason,
-        input_messages=_convert_responses_input(request.get("input") or []),
+        input_messages=input_messages,
         output_msg=_convert_responses_output(completed.get("output") or [], finish_reason),
         tool_defs=_extract_tool_defs(request.get("tools") or [], nested=False),
     )
@@ -790,7 +825,8 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
     if request is None:
         return None
 
-    resp = _parse_anthropic_sse(record.get("response") or "") or {}
+    response_body = record.get("response") or ""
+    resp = _parse_anthropic_sse(response_body) or _parse_json_object(response_body) or {}
     usage = resp.get("usage") or {}
 
     stop_reason = resp.get("stop_reason")
@@ -801,7 +837,8 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
     # Anthropic reports input_tokens net of cache hits, so the cached count has to be added
     # back to get the full prompt size the other converters report.
     cached_tokens = usage.get("cache_read_input_tokens", 0) or 0
-    input_tokens = (usage.get("input_tokens", 0) or 0) + cached_tokens
+    cache_creation_tokens = usage.get("cache_creation_input_tokens", 0) or 0
+    input_tokens = (usage.get("input_tokens", 0) or 0) + cached_tokens + cache_creation_tokens
 
     return _build_span(
         trace_id=trace_id,

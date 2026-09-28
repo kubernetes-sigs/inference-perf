@@ -22,10 +22,11 @@ response.completed event carries usage and output.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pytest
 
+import inference_perf.datagen.replay.wire_trace_converter as wire_trace_converter
 from inference_perf.datagen.replay.otel_trace_replay_datagen import (
     _load_files_to_dataset,
     _normalize_file_trace,
@@ -126,13 +127,14 @@ def _sse(events: List[Dict[str, Any]]) -> str:
 def responses_record(
     *,
     status: int = 200,
-    input_items: Optional[List[Dict[str, Any]]] = None,
+    input_items: Optional[Union[str, List[Dict[str, Any]]]] = None,
     output_items: Optional[List[Dict[str, Any]]] = None,
     input_tokens: int = 20,
     output_tokens: int = 7,
     reasoning_tokens: int = 0,
     session_id: Optional[str] = "sess-resp-1",
     tools: Optional[List[Dict[str, Any]]] = None,
+    previous_response_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """One Responses API wire record; the response body is an SSE stream."""
     if input_items is None:
@@ -160,6 +162,8 @@ def responses_record(
     request: Dict[str, Any] = {"model": "test/model", "input": input_items, "store": True, "stream": True}
     if tools is not None:
         request["tools"] = tools
+    if previous_response_id is not None:
+        request["previous_response_id"] = previous_response_id
 
     headers = {"content-type": "application/json"}
     if session_id:
@@ -432,6 +436,36 @@ def test_chat_conversion_basic_span_shape(tmp_path: Path) -> None:
     assert span["start_time"] != span["end_time"]
 
 
+def test_zero_start_unix_is_preserved_and_missing_value_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: List[str] = []
+    monkeypatch.setattr(
+        wire_trace_converter.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    record = chat_record()
+    record["start_unix"] = 0
+    span = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]
+    assert span["start_time"].startswith("1970-01-01T00:00:00")
+
+    record.pop("start_unix")
+    convert_wire_file(write_jsonl(tmp_path / "missing.jsonl", [record]))
+    assert any("no start_unix" in warning for warning in warnings)
+
+
+def test_empty_string_input_messages_are_preserved(tmp_path: Path) -> None:
+    chat = chat_record()
+    chat_request = json.loads(chat["request"])
+    chat_request["messages"] = [{"role": "user", "content": ""}]
+    chat["request"] = json.dumps(chat_request)
+
+    anthropic = anthropic_record(messages=[{"role": "user", "content": ""}])
+
+    for index, record in enumerate((chat, anthropic)):
+        attrs = convert_wire_file(write_jsonl(tmp_path / f"calls-{index}.jsonl", [record]))["spans"][0]["attributes"]
+        assert json.loads(attrs["gen_ai.input.messages"]) == [{"role": "user", "parts": [{"type": "text", "content": ""}]}]
+
+
 def test_chat_conversion_drops_reasoning(tmp_path: Path) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [chat_record(reasoning="secret chain of thought")])
     trace = convert_wire_file(f)
@@ -530,6 +564,53 @@ def test_responses_conversion_parses_sse_completed(tmp_path: Path) -> None:
     assert parts == [{"type": "text", "content": "answer"}]
 
 
+def test_responses_conversion_non_streaming_string_input_and_instructions(tmp_path: Path) -> None:
+    record = responses_record(input_items="question")
+    request = json.loads(record["request"])
+    request.update({"stream": False, "instructions": "be concise"})
+    record["request"] = json.dumps(request)
+    record["response"] = json.dumps(
+        {
+            "id": "resp-json",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "answer"}]}],
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        }
+    )
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert attrs["gen_ai.usage.input_tokens"] == 12
+    assert attrs["gen_ai.usage.output_tokens"] == 3
+    assert attrs["gen_ai.response.id"] == "resp-json"
+    assert json.loads(attrs["gen_ai.input.messages"]) == [
+        {"role": "system", "parts": [{"type": "text", "content": "be concise"}]},
+        {"role": "user", "parts": [{"type": "text", "content": "question"}]},
+    ]
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [{"type": "text", "content": "answer"}]
+
+
+def test_responses_previous_response_id_is_skipped_with_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: List[str] = []
+    monkeypatch.setattr(
+        wire_trace_converter.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    trace = convert_wire_file(
+        write_jsonl(
+            tmp_path / "calls.jsonl",
+            [responses_record(), responses_record(previous_response_id="resp-prior")],
+        )
+    )
+
+    assert trace["span_count"] == 1
+    assert warnings == [
+        "Skipping Responses API wire record at line 2: previous_response_id is not supported because wire replay "
+        "cannot reconstruct the referenced conversation context"
+    ]
+
+
 def test_responses_conversion_input_item_types(tmp_path: Path) -> None:
     input_items: List[Dict[str, Any]] = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "ask"}]},
@@ -599,6 +680,34 @@ def test_anthropic_conversion_reassembles_streamed_text(tmp_path: Path) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [anthropic_record(content_blocks=[{"type": "text", "text": "hello world"}])])
     parts = json.loads(convert_wire_file(f)["spans"][0]["attributes"]["gen_ai.output.messages"])[0]["parts"]
     assert parts == [{"type": "text", "content": "hello world"}]
+
+
+def test_anthropic_conversion_non_streaming_with_cache_creation_tokens(tmp_path: Path) -> None:
+    record = anthropic_record()
+    request = json.loads(record["request"])
+    request["stream"] = False
+    record["request"] = json.dumps(request)
+    record["response"] = json.dumps(
+        {
+            "id": "msg-json",
+            "content": [{"type": "text", "text": "answer"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 30,
+                "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 40,
+                "output_tokens": 9,
+            },
+        }
+    )
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert attrs["gen_ai.usage.input_tokens"] == 90
+    assert attrs["gen_ai.usage.output_tokens"] == 9
+    assert attrs["gen_ai.usage.cache_read_tokens"] == 20
+    assert attrs["gen_ai.response.id"] == "msg-json"
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [{"type": "text", "content": "answer"}]
 
 
 def test_anthropic_count_tokens_record_is_skipped(tmp_path: Path) -> None:
@@ -755,6 +864,7 @@ def test_http_error_marks_span_as_error(tmp_path: Path, status: int) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [chat_record(status=status)])
     span = convert_wire_file(f)["spans"][0]
     assert span["status"] == {"code": 2, "message": f"HTTP {status}"}
+    assert span["attributes"]["http.response.status_code"] == status
 
 
 def test_error_spans_excluded_from_replay_calls(tmp_path: Path) -> None:
