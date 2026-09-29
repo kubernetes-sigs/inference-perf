@@ -2522,3 +2522,156 @@ class TestDisableOutputSubstitutionValidation:
             duplicate_sessions_target=10,
         )
         assert cfg.disable_output_substitution is False
+
+
+# ---------------------------------------------------------------------------
+# Parallel tool results: one recorded message can bundle N tool results (how a
+# provider answers parallel tool calls). OpenAI represents those as N
+# consecutive role:tool messages, one per tool_call_id, so _replay_message_to_dict
+# must fan them out rather than keep the first and drop the rest.
+#
+# vLLM and OpenAI-compatible simulators do not validate call/response
+# cardinality, so dropping results replays a silently truncated conversation and
+# understates prompt tokens. Vertex/Gemini does validate it and rejects the
+# payload with "the number of function response parts is equal to the number of
+# function call parts of the function call turn".
+# ---------------------------------------------------------------------------
+
+
+def _assistant_with_tool_calls(ids: List[str]) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {"id": tc_id, "type": "function", "function": {"name": f"fn_{i}", "arguments": "{}"}}
+            for i, tc_id in enumerate(ids)
+        ],
+    }
+
+
+class TestParallelToolResultsFanOut:
+    """A message bundling N tool results must become N role:tool messages."""
+
+    def test_two_parallel_tool_results_become_two_tool_messages(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "list and read"},
+                _assistant_with_tool_calls(["call_a", "call_b"]),
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_call_response", "id": "call_a", "result": "result A"},
+                        {"type": "tool_call_response", "id": "call_b", "result": "result B"},
+                    ],
+                },
+            ]
+        )
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert len(tool_msgs) == 2, f"expected 2 role:tool messages, got {len(tool_msgs)}: {msgs}"
+        assert [m["tool_call_id"] for m in tool_msgs] == ["call_a", "call_b"]
+        assert [m["content"] for m in tool_msgs] == ["result A", "result B"]
+
+    def test_three_parallel_tool_results_preserve_recorded_order(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "fan out"},
+                _assistant_with_tool_calls(["call_1", "call_2", "call_3"]),
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_call_response", "id": "call_1", "result": "r1"},
+                        {"type": "tool_call_response", "id": "call_2", "result": "r2"},
+                        {"type": "tool_call_response", "id": "call_3", "result": "r3"},
+                    ],
+                },
+            ]
+        )
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert [m["tool_call_id"] for m in tool_msgs] == ["call_1", "call_2", "call_3"]
+
+    def test_tool_result_count_matches_tool_call_count(self) -> None:
+        """The cardinality invariant Vertex/Gemini enforces on the wire."""
+        ids = ["call_x", "call_y"]
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "go"},
+                _assistant_with_tool_calls(ids),
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_call_response", "id": i, "result": f"r-{i}"} for i in ids],
+                },
+            ]
+        )
+        assistant = next(m for m in msgs if m.get("role") == "assistant")
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert len(tool_msgs) == len(assistant["tool_calls"])
+        assert [m["tool_call_id"] for m in tool_msgs] == [c["id"] for c in assistant["tool_calls"]]
+
+    def test_tool_messages_directly_follow_their_assistant_message(self) -> None:
+        """Results must be positionally adjacent to the call that produced them."""
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "go"},
+                _assistant_with_tool_calls(["call_a", "call_b"]),
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_call_response", "id": "call_a", "result": "A"},
+                        {"type": "tool_call_response", "id": "call_b", "result": "B"},
+                    ],
+                },
+            ]
+        )
+        idx = next(i for i, m in enumerate(msgs) if m.get("role") == "assistant")
+        assert msgs[idx + 1]["role"] == "tool"
+        assert msgs[idx + 2]["role"] == "tool"
+
+    def test_text_bundled_with_tool_results_is_not_lost(self) -> None:
+        """Text sharing a message with results has no role:tool slot of its own."""
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "go"},
+                _assistant_with_tool_calls(["call_a", "call_b"]),
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "content": "here you go: "},
+                        {"type": "tool_call_response", "id": "call_a", "result": "A"},
+                        {"type": "tool_call_response", "id": "call_b", "result": "B"},
+                    ],
+                },
+            ]
+        )
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert len(tool_msgs) == 2
+        assert "here you go: " in tool_msgs[0]["content"]
+        assert tool_msgs[1]["content"] == "B"
+
+
+class TestSingleToolResultUnchanged:
+    """Regression guard: the 1-result and 0-result paths must not shift."""
+
+    def test_single_tool_result_still_one_tool_message(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "user", "content": "go"},
+                _assistant_with_tool_calls(["call_only"]),
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_call_response", "id": "call_only", "result": "just one"}],
+                },
+            ]
+        )
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0] == {"role": "tool", "tool_call_id": "call_only", "content": "just one"}
+
+    def test_plain_conversation_has_no_tool_messages(self) -> None:
+        msgs = _graph_messages_from_input(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+            ]
+        )
+        assert [m["role"] for m in msgs] == ["system", "user", "assistant"]
+        assert all("tool_call_id" not in m for m in msgs)
