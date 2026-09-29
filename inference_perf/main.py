@@ -24,6 +24,7 @@ from inference_perf.datagen.base import BaseGenerator
 from inference_perf.loadgen import LoadGenerator
 from inference_perf.metrics import SessionMetricsCollector
 from inference_perf.config import (
+    APIType,
     Config,
     DataGenType,
     LoadType,
@@ -317,7 +318,8 @@ def main_cli() -> None:
                     raise Exception(
                         f"{config.data.type.value} data generator requires 'input_distribution' to be configured if no trace config is provided"
                     )
-                if config.data.output_distribution is None:
+                # Embeddings requests generate no output, so they need no output lengths.
+                if config.data.output_distribution is None and config.api.type != APIType.Embeddings:
                     raise Exception(
                         f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
                     )
@@ -335,7 +337,7 @@ def main_cli() -> None:
                     or config.data.input_distribution.total_count < total_count
                 ):
                     config.data.input_distribution.total_count = total_count
-                if (
+                if config.data.output_distribution is not None and (
                     config.data.output_distribution.total_count is None
                     or config.data.output_distribution.total_count < total_count
                 ):

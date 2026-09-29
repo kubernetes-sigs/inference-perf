@@ -15,13 +15,19 @@ from enum import Enum
 from typing import Any, Optional
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class APIType(Enum):
     Completion = "completion"
     Chat = "chat"
     AnthropicMessages = "anthropic_messages"
+    Embeddings = "embeddings"
+
+
+class EmbeddingsEncodingFormat(Enum):
+    FLOAT = "float"
+    BASE64 = "base64"
 
 
 class ResponseFormatType(Enum):
@@ -57,9 +63,22 @@ class ResponseFormat(StrictBaseModel):
         }
 
 
+class EmbeddingsConfig(StrictBaseModel):
+    """Request options for the embeddings API (type 'embeddings')."""
+
+    batch_size: int = Field(default=1, ge=1, description="Number of input strings sent in each embeddings request.")
+    dimensions: Optional[int] = Field(
+        default=None, gt=0, description="Embedding size requested from the server. Unset uses the model's default."
+    )
+    encoding_format: Optional[EmbeddingsEncodingFormat] = Field(
+        default=None, description="Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default."
+    )
+
+
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
-        default=APIType.Completion, description="API endpoint to benchmark: text completion or chat completion."
+        default=APIType.Completion,
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages or embeddings.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -79,6 +98,9 @@ class APIConfig(StrictBaseModel):
     response_format: Optional[ResponseFormat] = Field(
         default=None, description="Structured output settings sent as the 'response_format' request parameter."
     )
+    embeddings: Optional[EmbeddingsConfig] = Field(
+        default=None, description="Embeddings request options. Only valid when type is 'embeddings'."
+    )
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
     )
@@ -90,3 +112,16 @@ class APIConfig(StrictBaseModel):
         default=None,
         description="Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity.",
     )
+
+    @model_validator(mode="after")
+    def validate_embeddings_options(self) -> "APIConfig":
+        # /v1/embeddings returns a single JSON body with no generated text, so it
+        # can neither stream nor constrain its output to a schema.
+        if self.type == APIType.Embeddings:
+            if self.streaming:
+                raise ValueError("streaming is not supported for the embeddings API")
+            if self.response_format is not None:
+                raise ValueError("response_format is not supported for the embeddings API")
+        elif self.embeddings is not None:
+            raise ValueError("embeddings options are only valid when type is 'embeddings'")
+        return self

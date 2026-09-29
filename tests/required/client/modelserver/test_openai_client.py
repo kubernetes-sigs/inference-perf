@@ -32,6 +32,7 @@ from inference_perf.client.modelserver.metrics import Metric, CounterResult
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
     ChatMessage,
+    EmbeddingsAPIData,
     ErrorResponseInfo,
     InferenceInfo,
     SessionLifecycleMetric,
@@ -305,6 +306,48 @@ async def test_anthropic_messages_request_uses_messages_route_and_headers(mock_c
     assert headers_passed["anthropic-version"] == ANTHROPIC_VERSION
     assert "Authorization" not in headers_passed
     assert '"ignore_eos"' not in session.session.post.call_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
+async def test_embeddings_request_round_trip(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "embed-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    body = {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+        "usage": {"prompt_tokens": 4, "total_tokens": 4},
+    }
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    data = EmbeddingsAPIData(input=["hello world"])
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/v1/embeddings"
+    assert json.loads(session.session.post.call_args.kwargs["data"]) == {"model": "embed-model", "input": ["hello world"]}
+    assert session.session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "embeddings"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 4
+    assert metric.info.response_metrics.output_tokens == 0
 
 
 @pytest.mark.asyncio

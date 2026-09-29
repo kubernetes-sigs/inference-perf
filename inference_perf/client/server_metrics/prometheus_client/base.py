@@ -37,6 +37,8 @@ class PrometheusMetricsClient(ServerMetricsClient):
             self.scrape_interval = config.scrape_interval or 30
             self.bearer_token = config.bearer_token.get_secret_value() if config.bearer_token else None
             self.verify_ssl = config.verify_ssl
+            if not self.verify_ssl:
+                logger.warning("TLS certificate verification is disabled for Prometheus queries (verify_ssl=false).")
             self.extra_headers = dict(config.headers) if config.headers else {}
         else:
             raise Exception("prometheus config missing")

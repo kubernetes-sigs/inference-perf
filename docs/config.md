@@ -29,7 +29,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -40,6 +40,17 @@ api:
   slo_tpot_header: "x-slo-tpot-ms"        # Optional header name for TPOT SLO Header, default is x-slo-tpot-ms
   slo_ttft_header: "x-slo-ttft-ms"        # Optional header name for TTFT SLO Header, default is x-slo-ttft-ms
 ```  
+
+With `type: embeddings`, requests go to `/v1/embeddings`. Embeddings responses have no generated tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. Request options go under `embeddings`:
+
+```yaml
+api:
+  type: embeddings
+  embeddings:                  # Optional; only valid with type: embeddings
+    batch_size: 16             # Input strings per request (default: 1)
+    dimensions: 512            # Optional embedding size; default is the model's
+    encoding_format: float     # Optional: float|base64; default is the server's
+```
 
 ### Data Generation
 
@@ -258,6 +269,9 @@ metrics:
     url: "http://localhost:9090"  # Prometheus server URL
     scrape_interval: 15           # Metrics scrape interval (seconds)
     google_managed: false         # Whether using Google Managed Prometheus (see 'Google Managed Prometheus (GMP) Requirements' section)
+    bearer_token: ""              # Optional bearer token for authenticated Prometheus servers
+    verify_ssl: true              # Verify the server's TLS certificate (disable for self-signed certificates)
+    headers: {}                   # Optional extra HTTP headers sent with every query
     filters: []                   # List of metric names to collect
 ```
 
@@ -329,6 +343,10 @@ report:
 
 Setting `info: false` removes the entire `info` block, including
 `response_chunks`; in that case `response_chunks` has no effect.
+
+Each entry includes `scheduled_time`, the request's scheduled timestamp, alongside
+`start_time` and `end_time`. It also includes `stage_id` when set, so requests can
+be grouped by load stage. These fields are included regardless of `per_request_fields`.
 
 In `trace_session_replay` runs, each entry also carries a top-level
 `session_id` naming the session the request belongs to, regardless of
