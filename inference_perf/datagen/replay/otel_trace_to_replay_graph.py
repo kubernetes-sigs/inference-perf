@@ -53,7 +53,7 @@ import argparse
 import json
 import logging
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -174,8 +174,48 @@ def _normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
-    """Convert a ReplayMessage to an OpenAI-compatible dict for the graph.
+def _tool_result_messages(responses: List[Dict[str, Any]], leading_text: str = "") -> List[Dict[str, Any]]:
+    """Build one ``role:tool`` wire message per recorded tool result.
+
+    A single recorded message can bundle several tool results — that is how a
+    provider answers parallel tool calls. OpenAI represents them as N consecutive
+    ``role:tool`` messages, one per ``tool_call_id``, so a bundle expands to N
+    messages rather than collapsing to one. Recorded order is preserved so the
+    results line up positionally with the assistant's ``tool_calls`` as well as
+    by id.
+
+    A tool result is identified by its part type rather than its stored role
+    (see :func:`_replay_message_to_dict`) — Anthropic-native captures put it on a
+    ``role: "user"`` message — so the emitted role is normalized to ``"tool"``.
+
+    ``leading_text`` is any text recorded alongside the results in the same
+    message. It has no ``role:tool`` message of its own to ride on, so it is
+    prepended to the first result's content rather than dropped.
+    """
+    messages: List[Dict[str, Any]] = []
+    for response in responses:
+        message: Dict[str, Any] = {"role": "tool"}
+        tool_call_id = response.get("id")
+        if tool_call_id:
+            message["tool_call_id"] = tool_call_id
+        # "result" is the legacy field name; "response" is the current one. Prefer
+        # the legacy key when present so an explicit empty result is not silently
+        # replaced by the other field (see the field-precedence tests).
+        message["content"] = _coerce_text(response.get("result", response.get("response", "")))
+        messages.append(message)
+    if leading_text and messages:
+        messages[0]["content"] = leading_text + messages[0]["content"]
+    return messages
+
+
+def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
+    """Convert a ReplayMessage to OpenAI-compatible wire messages for the graph.
+
+    Returns a LIST because one recorded message can expand to several wire
+    messages: a message bundling N parallel tool results becomes N consecutive
+    ``role:tool`` messages, one per ``tool_call_id`` (see
+    :func:`_tool_result_messages`). Every other message yields a single-element
+    list. Callers must flatten.
 
     A ComplexReplayMessage carries the structured message in ``message_info``, in
     one of two shapes:
@@ -212,15 +252,6 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
             text_parts: List[str] = []
             tool_calls: List[Dict[str, Any]] = []
             responses = [p for p in info["parts"] if p.get("type") == "tool_call_response"]
-            if len(responses) > 1:
-                # One OpenAI wire message answers exactly one tool_call_id, so a
-                # message bundling several tool results cannot be represented
-                # faithfully. Keep the first and drop the rest.
-                logger.debug(
-                    "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
-                    len(responses),
-                    responses[0].get("id"),
-                )
             for part in info["parts"]:
                 part_type = part.get("type")
                 if part_type == "text":
@@ -228,21 +259,15 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
                 elif part_type == "tool_call":
                     tool_calls.append(_normalize_tool_call(part))
             if responses:
-                first = responses[0]
-                # A tool result is identified by its part type, not the stored
-                # role (see docstring) — normalize to role:tool on the wire
-                msg["role"] = "tool"
-                tool_call_id = first.get("id")
-                if tool_call_id:
-                    msg["tool_call_id"] = tool_call_id
-                text_parts.append(_coerce_text(first.get("result", first.get("response", ""))))
+                # Parallel tool results expand to one role:tool message each.
+                return _tool_result_messages(responses, leading_text="".join(text_parts))
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             # Emit content for text / tool-result messages. For an assistant
             # message that is only tool calls, omit content (matches OpenAI).
             if text_parts or not tool_calls:
                 msg["content"] = "".join(text_parts)
-            return msg
+            return [msg]
 
         # Shape 2: raw OpenAI dict.
         role = info.get("role", x.role)
@@ -255,21 +280,15 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
         if isinstance(content, list):
             responses = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_call_response"]
             if responses:
-                if len(responses) > 1:
-                    # See the parts-format branch above: multiple tool results
-                    # cannot be represented in one message; keep the first.
-                    logger.debug(
-                        "Message has %d tool_call_response parts; keeping only the first (id=%s) and dropping the rest.",
-                        len(responses),
-                        responses[0].get("id"),
-                    )
-                first = responses[0]
-                msg["role"] = "tool"
-                tool_call_id = first.get("id")
-                if tool_call_id:
-                    msg["tool_call_id"] = tool_call_id
-                msg["content"] = _coerce_text(first.get("result", first.get("response", "")))
-                return msg
+                # See the parts-format branch above: parallel tool results expand
+                # to one role:tool message each. Text recorded in the same content
+                # list is carried along rather than dropped.
+                sibling_text = "".join(
+                    _coerce_text(p.get("content", p.get("text", "")))
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+                return _tool_result_messages(responses, leading_text=sibling_text)
 
         if info.get("tool_calls") is not None:
             msg["tool_calls"] = [_normalize_tool_call(tc) for tc in info["tool_calls"]]
@@ -281,9 +300,9 @@ def _replay_message_to_dict(x: ReplayMessage) -> Dict[str, Any]:
             msg["content"] = content if isinstance(content, str) else _coerce_text(content)
         elif "tool_calls" not in msg:
             msg["content"] = x.text
-        return msg
+        return [msg]
 
-    return {"role": x.role, "content": x.text}
+    return [{"role": x.role, "content": x.text}]
 
 
 def messages_equal(a: ReplayMessage, b: ReplayMessage) -> bool:
@@ -902,6 +921,36 @@ def _try_match_parts(
 # ---------------------------------------------------------------------------
 
 
+def _rescale_segments_to_wire(
+    segments: List[InputSegment],
+    expansion: List[int],
+) -> List[InputSegment]:
+    """Restate segment ``message_count`` in POST-expansion wire messages.
+
+    ``decompose_input`` counts recorded messages, but ``GraphCall.messages`` is the
+    flattened wire list: a message bundling N parallel tool results becomes N
+    ``role:tool`` messages (see :func:`_replay_message_to_dict`). ``expansion[i]`` is
+    how many wire messages recorded message ``i`` produced, so each segment's count
+    becomes the sum of the expansions of the recorded messages it covers.
+
+    Segments are consumed positionally, so the walk mirrors how callers slice: the
+    cursor advances through the recorded list while the rescaled count accumulates
+    wire messages.
+    """
+    if not segments:
+        return segments
+
+    rescaled: List[InputSegment] = []
+    cursor = 0
+    for seg in segments:
+        recorded_span = expansion[cursor : cursor + seg.message_count]
+        wire_count = sum(recorded_span)
+        rescaled.append(replace(seg, message_count=wire_count))
+        cursor += seg.message_count
+
+    return rescaled
+
+
 def decompose_input(
     call: RawCall,
     predecessors: List[RawCall],
@@ -1228,9 +1277,22 @@ def build_graph(
         # Decompose input into message-level segments
         segments = decompose_input(rc, ancestor_calls, ancestor_event_ids, output_matches_for_substitutions)
 
+        # `decompose_input` counts RECORDED messages, but GraphCall.messages below is
+        # the flattened wire list, where one message bundling N parallel tool results
+        # expands to N `role:tool` messages (see `_replay_message_to_dict`). Rescale
+        # each segment to post-expansion counts so consumers that slice
+        # GraphCall.messages by `message_count` stay aligned; without this the
+        # trailing results fall past the last segment and their recorded
+        # tool_call_ids are never rewritten during substitution.
+        # Expand once and reuse for both the rescale and GraphCall.messages below;
+        # these payloads can be very large, so converting twice is wasteful.
+        expanded_messages = [_replay_message_to_dict(x) for x in rc.messages]
+        expansion = [len(group) for group in expanded_messages]
+        segments = _rescale_segments_to_wire(segments, expansion)
+
         # Validate that segment message counts sum to total messages
         total_segment_messages = sum(seg.message_count for seg in segments)
-        actual_message_count = len(rc.messages)
+        actual_message_count = sum(expansion)
         if total_segment_messages != actual_message_count:
             logger.warning(
                 f"Segment validation failed for call {rc.call_id}: "
@@ -1281,9 +1343,9 @@ def build_graph(
         graph_call = GraphCall(
             call_id=rc.call_id,
             model=rc.model,
-            messages=[
-                _replay_message_to_dict(x) for x in rc.messages
-            ],  # convert to a list of dictionaries representing a message with role and content only.
+            # One recorded message can expand to several wire messages: a bundle of
+            # parallel tool results becomes one role:tool message per tool_call_id.
+            messages=[wire_msg for group in expanded_messages for wire_msg in group],
             expected_output=(rc.out_message.text or "" if rc.out_message else ""),
             input_segments=segments,
             total_input_tokens=total_input_tokens,

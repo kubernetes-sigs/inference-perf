@@ -64,6 +64,21 @@ from inference_perf.utils.custom_tokenizer import CustomTokenizer
 logger = logging.getLogger(__name__)
 
 
+def _expand_tool_call_max_tokens(recorded_tokens: int) -> int:
+    """Add bounded headroom for replaying a recorded tool call.
+
+    Small structured outputs need a generous floor because tool-call wrappers and
+    tokenizer differences can dominate their size.  Applying the same 4x factor
+    to already-large calls needlessly consumes the model's context window, so the
+    expansion becomes progressively less aggressive as the recording grows.
+    """
+    if recorded_tokens <= 1_024:
+        return max(recorded_tokens * 4, 4_096)
+    if recorded_tokens <= 8_192:
+        return max((recorded_tokens * 3 + 1) // 2, 8_192)
+    return recorded_tokens + 4_096
+
+
 class SessionReplayLazyLoadData(LazyLoadInferenceAPIData):
     """LazyLoadInferenceAPIData extended with per-session addressing for OTel trace replay.
 
@@ -437,10 +452,9 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             payload["ignore_eos"] = False
             if self.override_tool_call_max_tokens:
                 # The recorded output_tokens might come from a different model/tokenizer.
-                # The replay model may need significantly more tokens to express the
-                # same tool call (different tokenizer, different tool-call preamble).
-                # Use a generous cap and let ignore_eos=False stop generation naturally.
-                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+                # Add tiered headroom for a different tool-call preamble or encoding,
+                # without multiplying already-large calls beyond the context window.
+                payload["max_tokens"] = _expand_tool_call_max_tokens(payload.get("max_tokens", 0))
 
             if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
                 # Send no tool_choice: the model chooses, and "required" is never
@@ -1223,7 +1237,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
 
         if self.expected_output_is_tool_call and self.tool_definitions:
             if self.override_tool_call_max_tokens:
-                payload["max_tokens"] = max(payload.get("max_tokens", 0) * 4, 4096)
+                payload["max_tokens"] = _expand_tool_call_max_tokens(payload.get("max_tokens", 0))
 
             if self.tool_choice_mode == ToolChoiceMode.AS_RECORDED:
                 # Inject nothing, as above.

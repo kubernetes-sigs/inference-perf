@@ -167,3 +167,32 @@ def test_per_request_fields_omit_session_id_when_absent() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
 
     assert "session_id" not in entry
+
+
+@pytest.mark.parametrize("include_raw", [True, False])
+@pytest.mark.parametrize("failed", [True, False])
+def test_per_request_entries_preserve_stage_and_schedule(include_raw: bool, failed: bool) -> None:
+    fields = PerRequestFieldsConfig(request=include_raw, response=include_raw, info=include_raw)
+    entries = []
+    for stage_id, scheduled_time in [(0, 0.0), (2, 0.125)]:
+        metric = _metric()
+        metric.stage_id = stage_id
+        metric.scheduled_time = scheduled_time
+        if failed:
+            metric.error = ErrorResponseInfo(error_type="test", error_msg="request failed")
+        entries.append(build_per_request_lifecycle_entry(metric, fields))
+
+    # Identical send times cannot identify the stage or recover its scheduled time.
+    assert [entry["start_time"] for entry in entries] == [1.0, 1.0]
+    assert [entry["stage_id"] for entry in entries] == [0, 2]
+    assert [entry["scheduled_time"] for entry in entries] == [0.0, 0.125]
+
+
+def test_per_request_fields_omit_stage_id_when_absent() -> None:
+    metric = _metric()
+    metric.stage_id = None
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig())
+
+    assert "stage_id" not in entry
+    assert entry["scheduled_time"] == metric.scheduled_time

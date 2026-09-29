@@ -38,7 +38,8 @@ data:
     bad_tool_call_handling: use_recorded
     # Keep only sessions whose largest call fits the served context window.
     # Qwen2.5-72B-Instruct serves 32k natively (max_position_embeddings=32768, no
-    # rope_scaling); tool-call events add up to 4096 completion tokens on top of the
-    # input, so cap the input below 32k. Raise to 120000 only if you serve 128k
-    # (YaRN enabled) — check `GET /v1/models` for max_model_len.
-    filter: "lambda x: x.get('max_tokens', 0) < 28000"
+    # rope_scaling); tiered tool-call expansion adds at most 7167 tokens to the
+    # recorded input+output total, so 25000 keeps the worst case below 32k. Raise
+    # to 120000 only if you serve 128k (YaRN enabled) — check `GET /v1/models` for
+    # max_model_len.
+    filter: "lambda x: x.get('max_tokens', 0) < 25000"

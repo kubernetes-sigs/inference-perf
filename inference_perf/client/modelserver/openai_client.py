@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -501,6 +501,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             operation_name = "chat.completions"
         elif self.client.api_config.type == APIType.AnthropicMessages:
             operation_name = "messages"
+        elif self.client.api_config.type == APIType.Embeddings:
+            operation_name = "embeddings"
         else:
             operation_name = "completions"
 

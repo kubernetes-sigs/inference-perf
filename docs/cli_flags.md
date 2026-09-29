@@ -8,7 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
-| `--api.type` | Enum (completion, chat, anthropic_messages) | API endpoint to benchmark: text completion or chat completion. |
+| `--api.type` | Enum (completion, chat, anthropic_messages, embeddings) | API endpoint to benchmark: text completion, chat completion, Anthropic messages or embeddings. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
@@ -17,6 +17,9 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.response_format.type` | Enum (json_schema, json_object) | Structured output mode: a full JSON schema or any JSON object. |
 | `--api.response_format.name` | str | Name given to the JSON schema in the request payload. |
 | `--api.response_format.json_schema` | JSON | JSON schema the model output must conform to when type is 'json_schema'. |
+| `--api.embeddings.batch_size` | int | Number of input strings sent in each embeddings request. |
+| `--api.embeddings.dimensions` | int | Embedding size requested from the server. Unset uses the model's default. |
+| `--api.embeddings.encoding_format` | Enum (float, base64) | Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
@@ -132,7 +135,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.otel_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.otel_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.otel_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.otel_trace_replay.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
 | `--data.otel_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.otel_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.otel_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
@@ -157,7 +160,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.weka_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.weka_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Override tool call max_tokens to 4096 instead of using trace recorded length |
+| `--data.weka_trace_replay.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
 | `--data.weka_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.weka_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
 | `--data.weka_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
@@ -238,7 +241,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.synthetic_agentic.static_model_name` | str | Static model name (required if use_static_model=True) |
 | `--data.synthetic_agentic.model_mapping` | JSON | Map recorded model names to target models |
 | `--data.synthetic_agentic.default_max_tokens` | int | Default max_tokens if not specified in trace |
-| `--data.synthetic_agentic.override_tool_call_max_tokens` | boolean | Override tool-call max_tokens to 4096 instead of using the generated call's own length. Defaults False here (unlike trace replay) because the generator sizes each tool call itself, so the generated length is already correct for this model. |
+| `--data.synthetic_agentic.override_tool_call_max_tokens` | boolean | Add tiered headroom to the generated tool call's own max_tokens. Defaults False here (unlike trace replay) because the generator sizes each tool call itself, so the generated length is already correct for this model. |
 | `--data.synthetic_agentic.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
 | `--data.synthetic_agentic.inject_random_session_id` | boolean | Not applicable to synthetic generation (pinned False): sessions are already generated with distinct content per session index, so there is no recorded session ID to randomize. |
 | `--data.synthetic_agentic.duplicate_sessions_target` | int | Not applicable to synthetic generation (pinned None): raise num_sessions to generate more sessions instead of duplicating existing ones. |
