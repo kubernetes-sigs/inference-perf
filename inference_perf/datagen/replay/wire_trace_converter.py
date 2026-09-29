@@ -175,6 +175,27 @@ def _parse_sse_completed(response_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _has_sse_terminal_event(response_text: Any, success_type: str) -> bool:
+    """Return whether an SSE stream reached its API-specific success event.
+
+    A successful HTTP status only confirms that streaming started. Wire captures that
+    end in an SSE error, or are truncated before their terminal event, must not be
+    replayed as successful generations.
+    """
+    if not isinstance(response_text, str):
+        return False
+    for line in response_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            event = json.loads(line[6:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("type") == success_type:
+            return True
+    return False
+
+
 def _parse_json_object(response_text: Any) -> Optional[Dict[str, Any]]:
     """Parse a complete non-streaming JSON response body."""
     if not response_text:
@@ -730,7 +751,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
     if request is None:
         return None
     previous_response_id = request.get("previous_response_id")
-    if previous_response_id is not None:
+    if previous_response_id:
         logger.warning(
             "Skipping Responses API wire record at line %d: "
             "previous_response_id is not supported because wire replay "
@@ -740,6 +761,14 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
         return None
 
     response_body = record.get("response") or ""
+    http_status = int(record.get("status", 200))
+    if (
+        request.get("stream") is True
+        and 200 <= http_status < 300
+        and not _has_sse_terminal_event(response_body, "response.completed")
+    ):
+        logger.warning("Skipping incomplete Responses API SSE wire record at line %d", line_no)
+        return None
     completed = _parse_sse_completed(response_body) or _parse_json_object(response_body) or {}
     usage = completed.get("usage") or {}
 
@@ -747,7 +776,8 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
     finish_reason = "stop" if response_status == "completed" else response_status
 
     start_time, end_time = _timestamps(record)
-    instruction_parts = _text_parts(request.get("instructions"))
+    instructions = request.get("instructions")
+    instruction_parts = _text_parts(instructions) if isinstance(instructions, str) and instructions.strip() else []
     input_messages = (
         [{"role": "system", "parts": instruction_parts}] if instruction_parts else []
     ) + _convert_responses_input(request.get("input") or [])
@@ -758,7 +788,7 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
-        http_status=int(record.get("status", 200)),
+        http_status=http_status,
         input_tokens=usage.get("input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
         cached_tokens=(usage.get("input_tokens_details") or {}).get("cached_tokens", 0),
@@ -826,6 +856,14 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
         return None
 
     response_body = record.get("response") or ""
+    http_status = int(record.get("status", 200))
+    if (
+        request.get("stream") is True
+        and 200 <= http_status < 300
+        and not _has_sse_terminal_event(response_body, "message_stop")
+    ):
+        logger.warning("Skipping incomplete Anthropic SSE wire record at line %d", line_no)
+        return None
     resp = _parse_anthropic_sse(response_body) or _parse_json_object(response_body) or {}
     usage = resp.get("usage") or {}
 
@@ -846,7 +884,7 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
-        http_status=int(record.get("status", 200)),
+        http_status=http_status,
         input_tokens=input_tokens,
         output_tokens=usage.get("output_tokens", 0) or 0,
         cached_tokens=cached_tokens,

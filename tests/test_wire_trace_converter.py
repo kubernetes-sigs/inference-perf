@@ -590,6 +590,19 @@ def test_responses_conversion_non_streaming_string_input_and_instructions(tmp_pa
     assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [{"type": "text", "content": "answer"}]
 
 
+@pytest.mark.parametrize("instructions", ["", "   ", ["not", "a", "string"], {"text": "not a string"}])
+def test_responses_invalid_or_blank_instructions_are_ignored(tmp_path: Path, instructions: Any) -> None:
+    record = responses_record()
+    request = json.loads(record["request"])
+    request["instructions"] = instructions
+    record["request"] = json.dumps(request)
+
+    messages = json.loads(
+        convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]["gen_ai.input.messages"]
+    )
+    assert [message["role"] for message in messages] == ["user"]
+
+
 def test_responses_previous_response_id_is_skipped_with_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     warnings: List[str] = []
     monkeypatch.setattr(
@@ -600,13 +613,17 @@ def test_responses_previous_response_id_is_skipped_with_warning(tmp_path: Path, 
     trace = convert_wire_file(
         write_jsonl(
             tmp_path / "calls.jsonl",
-            [responses_record(), responses_record(previous_response_id="resp-prior")],
+            [
+                responses_record(),
+                responses_record(previous_response_id=""),
+                responses_record(previous_response_id="resp-prior"),
+            ],
         )
     )
 
-    assert trace["span_count"] == 1
+    assert trace["span_count"] == 2
     assert warnings == [
-        "Skipping Responses API wire record at line 2: previous_response_id is not supported because wire replay "
+        "Skipping Responses API wire record at line 3: previous_response_id is not supported because wire replay "
         "cannot reconstruct the referenced conversation context"
     ]
 
@@ -844,14 +861,52 @@ def test_anthropic_conversion_blocks_keep_source_order(tmp_path: Path) -> None:
     assert parts[1]["arguments"] == {"file": "a.py"}
 
 
-def test_anthropic_conversion_empty_response_body_yields_no_output(tmp_path: Path) -> None:
-    """A truncated capture has no message_start; the span still converts."""
+def test_anthropic_conversion_truncated_stream_is_skipped(tmp_path: Path) -> None:
     record = anthropic_record()
     record["response"] = ""
     f = write_jsonl(tmp_path / "calls.jsonl", [record])
-    attrs = convert_wire_file(f)["spans"][0]["attributes"]
-    assert "gen_ai.output.messages" not in attrs
-    assert json.loads(attrs["gen_ai.input.messages"])[0]["role"] == "user"
+    assert convert_wire_file(f)["span_count"] == 0
+
+
+@pytest.mark.parametrize("api", ["responses", "anthropic"])
+def test_successful_http_sse_error_is_skipped(tmp_path: Path, api: str) -> None:
+    record = responses_record() if api == "responses" else anthropic_record()
+    events: List[Dict[str, Any]] = []
+    if api == "anthropic":
+        events.extend(
+            [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg-partial",
+                        "content": [],
+                        "usage": {"input_tokens": 160_242},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "partial output"},
+                },
+            ]
+        )
+    events.append({"type": "error", "error": {"type": "api_error", "message": "provider_connection_failed"}})
+    record["response"] = _sse(events)
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+@pytest.mark.parametrize("api", ["responses", "anthropic"])
+def test_non_2xx_stream_remains_an_error_span(tmp_path: Path, api: str) -> None:
+    record = responses_record(status=502) if api == "responses" else anthropic_record(status=502)
+    trace = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))
+
+    assert trace["span_count"] == 1
+    assert trace["spans"][0]["status"]["code"] == 2
 
 
 # --------------------------------------------------------------------------------------
