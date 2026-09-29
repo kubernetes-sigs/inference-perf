@@ -1,0 +1,36 @@
+# Example config for benchmarking the rerank API (POST /v1/rerank).
+# See README.md in this directory for how to run it and sweep document counts.
+
+load:
+  type: concurrent
+  stages:
+  - concurrency_level: 8
+    num_requests: 400
+
+api:
+  type: rerank
+  rerank:
+    document_count: 20         # Documents scored against the query per request
+
+server:
+  type: vllm
+  model_name: BAAI/bge-reranker-base
+  base_url: http://0.0.0.0:8000
+
+tokenizer:
+  pretrained_model_name_or_path: BAAI/bge-reranker-base
+
+data:
+  type: synthetic
+  input_distribution:         # Length in tokens of the query and each document
+    min: 20
+    max: 400
+    mean: 128
+    std_dev: 64
+  # No output_distribution: rerank requests generate no output.
+
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: false

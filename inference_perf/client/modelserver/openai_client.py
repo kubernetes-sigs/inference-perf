@@ -503,6 +503,8 @@ class openAIModelServerClientSession(ModelServerClientSession):
             operation_name = "messages"
         elif self.client.api_config.type == APIType.Embeddings:
             operation_name = "embeddings"
+        elif self.client.api_config.type == APIType.Rerank:
+            operation_name = "rerank"
         else:
             operation_name = "completions"
 

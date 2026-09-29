@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, LazyLoadInferenceAPIData, RerankAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -26,6 +26,7 @@ from inference_perf.config import (
     DataGenType,
     DistributionType,
     EmbeddingsConfig,
+    RerankConfig,
 )
 from inference_perf.datagen.synthetic import synthetic_datagen
 from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
@@ -181,6 +182,41 @@ def test_synthetic_datagen_embeddings_batches_without_output_distribution() -> N
     assert isinstance(data, EmbeddingsAPIData)
     assert isinstance(data.input, list)
     assert [tokenizer.count_tokens(text) for text in data.input] == list(generator.input_lengths[4:8])
+
+
+def test_synthetic_datagen_rerank_batches_without_output_distribution() -> None:
+    # Rerank generates no output, so no output_distribution is needed. Each
+    # request carries one query plus document_count documents, each with its
+    # own sampled length: 1 + document_count lengths per request.
+    api_config = APIConfig(type=APIType.Rerank, rerank=RerankConfig(document_count=3))
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = SyntheticDataGenerator(api_config, data_config, tokenizer)
+
+    assert len(generator.input_lengths) == 5 * 4
+    data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=1))
+    assert isinstance(data, RerankAPIData)
+    assert tokenizer.count_tokens(data.query) == generator.input_lengths[4]
+    assert [tokenizer.count_tokens(doc) for doc in data.documents] == list(generator.input_lengths[5:8])
+
+
+def test_synthetic_datagen_rerank_default_document_count() -> None:
+    api_config = APIConfig(type=APIType.Rerank)
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+    )
+    generator = SyntheticDataGenerator(api_config, data_config, DummyCustomTokenizer())
+
+    # Default document_count is 10, so each request samples 1 + 10 = 11 lengths.
+    assert len(generator.input_lengths) == 5 * 11
+    data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
+    assert isinstance(data, RerankAPIData)
+    assert len(data.documents) == 10
 
 
 def test_synthetic_datagen_completion_still_requires_output_distribution() -> None:

@@ -16,6 +16,7 @@ from inference_perf.config.apis import (
     APIType,
     EmbeddingsConfig,
     EmbeddingsEncodingFormat,
+    RerankConfig,
     ResponseFormat,
     ResponseFormatType,
 )
@@ -123,6 +124,7 @@ __all__ = [
     "PrometheusMetricsReportConfig",
     "ReportConfig",
     "RequestLifecycleMetricsReportConfig",
+    "RerankConfig",
     "Resolution",
     "ResolutionPreset",
     "ResponseFormat",
