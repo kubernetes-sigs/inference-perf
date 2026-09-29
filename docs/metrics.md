@@ -93,4 +93,6 @@ Both metrics use the server-reported `prompt_tokens` as the denominator and `pro
 
 **Server requirement:** vLLM must be started with `--enable-prompt-tokens-details` for the server to populate `prompt_tokens_details.cached_tokens` in the usage response.
 
+**Note on all-zero readings:** an all-zero `cached_tokens` run is ambiguous — it can mean a genuinely cold cache, or usage counters normalized to `0` by a gateway or sidecar in front of the engine (e.g. llm-d's prefill/decode sidecar, see [#818](https://github.com/kubernetes-sigs/inference-perf/issues/818)). The reported rate stays `0%` as the server sent it, and the run logs a one-time warning suggesting verification against server-side cache metrics before treating `0%` as fact.
+
 **Note:** vLLM's `cached_tokens` is block-granular — the reported value is quantized by the KV cache block size, so the hit rate may not reflect exact token-level precision.

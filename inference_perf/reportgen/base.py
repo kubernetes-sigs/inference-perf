@@ -239,6 +239,19 @@ def extract_cached_prompt_tokens(server_usage: Optional[dict[str, Any]]) -> Opti
     return min(max(cached, 0), prompt), prompt
 
 
+def all_sessions_report_zero_cached_tokens(metrics: List[SessionLifecycleMetric]) -> bool:
+    """Whether every session that reported cache info shows zero cached tokens.
+
+    A gateway or sidecar in front of the engine (e.g. llm-d's P/D sidecar, see
+    #818) may normalize a missing usage.prompt_tokens_details.cached_tokens to
+    an explicit 0, so an all-zero reading is ambiguous: genuinely cold cache
+    or a normalized signal. Callers keep the reported 0% number and surface
+    this as a diagnostic warning instead of deleting it.
+    """
+    infos = [m for m in metrics if m.total_cached_tokens is not None and m.total_cacheable_input_tokens]
+    return bool(infos) and all(m.total_cached_tokens == 0 for m in infos)
+
+
 # Which usage keys carry token counts depends on the API: OpenAI-compatible servers report
 # prompt_tokens / completion_tokens, the Anthropic Messages API reports input_tokens /
 # output_tokens.
@@ -1472,6 +1485,18 @@ class ReportGenerator:
         )
         if not session_metrics and not any_stranded_sessions:
             return reports
+
+        # Run-level, fired once: summarize_sessions also runs per stage, so the
+        # warning must not live there. The reported 0% numbers are kept as the
+        # server sent them; this only flags that the signal may be normalized.
+        if (
+            report_config.summary or report_config.per_stage or report_config.per_session
+        ) and all_sessions_report_zero_cached_tokens(session_metrics):
+            logger.warning(
+                "All sessions report 0 cached prompt tokens, so kv_cache_hit_percent is 0%. This can mean a "
+                "genuinely cold cache, or usage counters normalized by a gateway or sidecar in front of the "
+                "engine (see #818). Verify against server-side cache metrics before treating 0% as fact."
+            )
 
         if report_config.summary:
             stage_infos = runtime_parameters.stages.values()
