@@ -100,13 +100,21 @@ def test_counter_metric_spans_both_total_and_bare_names() -> None:
 
 
 def test_metric_collect_returns_none_when_a_query_has_no_result() -> None:
-    """A failed query propagates as a missing metric (#822), not a parsed zero."""
+    """A failed query passes through parse as a missing value (#822), not a parsed zero."""
     metric = GaugeMetric(metric_name="vllm:kv_cache_usage_perc")
 
     def execute(query: str) -> Optional[float]:
         return None if "quantile_over_time(0.5" in query else 1.0
 
-    assert metric.collect(execute, duration=30, filters="") is None
+    assert metric.collect(execute, duration=30, filters="") == GaugeResult(avg=1.0, median=None, p90=1.0, p99=1.0)
+
+
+def test_metric_result_is_missing_only_when_all_values_are_missing() -> None:
+    """A partially collected metric still carries data; only an all-None result counts as missing."""
+    assert GaugeResult().is_missing() is False
+    assert GaugeResult(avg=None, median=None, p90=None, p99=None).is_missing() is True
+    assert GaugeResult(avg=1.0, median=None, p90=1.0, p99=1.0).is_missing() is False
+    assert CounterResult(total=None, avg=None, per_second=None).is_missing() is True
 
 
 def test_metric_types_reject_name_selectors() -> None:

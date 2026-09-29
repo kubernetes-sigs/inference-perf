@@ -581,8 +581,8 @@ class TestSummarizePrometheusMetricsMissing:
         """Regression for #822: a failed query must be missing in the report, not a real-looking 0."""
         summary = summarize_prometheus_metrics(
             ModelServerMetrics(
-                requests=None,
-                queue_length=None,
+                requests=CounterResult(total=None, avg=None, per_second=None),
+                queue_length=GaugeResult(avg=None, median=None, p90=None, p99=None),
                 request_latency=HistogramResult(avg=0.5, median=0.4, p90=0.9, p99=1.1),
             )
         ).model_dump()["successes"]
@@ -596,27 +596,20 @@ class TestSummarizePrometheusMetricsMissing:
     def test_missing_cache_counts_yield_null_hit_percent(self) -> None:
         """A missing hit/query count must not render as 0%."""
         summary = summarize_prometheus_metrics(
-            ModelServerMetrics(prefix_cache_hits=None, prefix_cache_queries=CounterResult(total=100.0))
+            ModelServerMetrics(
+                prefix_cache_hits=CounterResult(total=None, avg=None, per_second=None),
+                prefix_cache_queries=CounterResult(total=100.0),
+            )
         ).model_dump()["successes"]
 
         assert summary["prefix_cache_hit_percent"] == {"mean": None}
 
-    def test_all_missing_still_emits_a_report(self) -> None:
-        """Every query failed: the report carries nulls (the error log in collection says why)."""
-        summary = summarize_prometheus_metrics(ModelServerMetrics()).model_dump()["successes"]
+    def test_partially_missing_quantile_reports_null_value(self) -> None:
+        """One failed quantile reports that value as null while the rest of the metric stays."""
+        summary = summarize_prometheus_metrics(
+            ModelServerMetrics(
+                request_latency=HistogramResult(avg=0.5, median=None, p90=0.9, p99=1.1),
+            )
+        ).model_dump()["successes"]
 
-        # Omitted fields default to zero-results for backwards compatibility (e.g. mock-server runs).
-        assert summary["count"] == 0.0
-        assert (
-            summarize_prometheus_metrics(
-                ModelServerMetrics(
-                    requests=None,
-                    prompt_tokens=None,
-                    output_tokens=None,
-                    queue_length=None,
-                    request_latency=None,
-                    time_per_output_token=None,
-                )
-            ).model_dump()["successes"]["count"]
-            is None
-        )
+        assert summary["request_latency"] == {"mean": 0.5, "median": None, "p90": 0.9, "p99": 1.1}

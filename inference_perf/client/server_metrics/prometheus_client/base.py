@@ -138,10 +138,14 @@ class PrometheusMetricsClient(ServerMetricsClient):
         if unknown:
             raise ValueError(f"Metrics declared for unknown ModelServerMetrics field(s): {', '.join(unknown)}")
         collected = {field: metric.collect(execute, query_duration, filters) for field, metric in pairs}
-        missing = sorted(field for field, result in collected.items() if result is None)
+        # A metric with no usable query result reports its values as missing
+        # (None). "No result" covers both failed queries and successful queries
+        # with no series (e.g. conditional metrics the server does not expose),
+        # so the warning never claims a failure it cannot prove (#822).
+        missing = sorted(field for field, result in collected.items() if result.is_missing())
         if missing and len(missing) == len(collected):
             logger.error(
-                "all Prometheus queries failed (%d/%d metrics missing: %s); "
+                "all Prometheus queries returned no result (%d/%d metrics missing: %s); "
                 "check the Prometheus url, bearer_token, and verify_ssl settings",
                 len(missing),
                 len(collected),
@@ -149,7 +153,7 @@ class PrometheusMetricsClient(ServerMetricsClient):
             )
         elif missing:
             logger.warning(
-                "some Prometheus queries failed (%d/%d metrics missing: %s)",
+                "some Prometheus queries returned no result (%d/%d metrics missing: %s)",
                 len(missing),
                 len(collected),
                 ", ".join(missing),

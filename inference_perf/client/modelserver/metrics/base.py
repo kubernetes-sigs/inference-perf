@@ -15,7 +15,21 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Tuple, TypeVar
 from pydantic import BaseModel
 
-R = TypeVar("R", bound=BaseModel)
+
+class MetricResult(BaseModel):
+    """Shared base for typed Prometheus query results.
+
+    Value fields are Optional so a failed query is reported as missing (None)
+    instead of a real-looking zero (#822); the 0.0 defaults are kept so
+    directly-constructed results still read as zeros.
+    """
+
+    def is_missing(self) -> bool:
+        """True when no query behind this result produced a value."""
+        return all(value is None for value in self.model_dump().values())
+
+
+R = TypeVar("R", bound=MetricResult)
 
 
 class Metric(ABC, Generic[R]):
@@ -31,24 +45,22 @@ class Metric(ABC, Generic[R]):
         ...
 
     @abstractmethod
-    def parse(self, results: List[float]) -> R:
-        """Convert the ordered query results into a typed result object."""
+    def parse(self, results: List[Optional[float]]) -> R:
+        """Convert the ordered query results into a typed result object.
+
+        A None entry is a query with no usable result (failed or persistently
+        empty after fallback); it passes through so the report shows that
+        value as missing instead of a real-looking zero (#822).
+        """
         ...
 
-    def collect(self, execute: Callable[[str], Optional[float]], duration: float, filters: str) -> Optional[R]:
+    def collect(self, execute: Callable[[str], Optional[float]], duration: float, filters: str) -> R:
         """Run this metric's queries via execute and parse them into its typed result.
 
         Keeps query execution and parsing together on the metric so callers never
         need to know the query/result shape of a particular metric type.
-
-        Returns None when any of the metric's queries has no usable result (a
-        failed query or a persistently empty result after fallback), so a failed
-        query is reported as missing instead of a real-looking zero (#822).
         """
-        results = [execute(query) for query in self.get_queries(duration, filters)]
-        if any(result is None for result in results):
-            return None
-        return self.parse([result for result in results if result is not None])
+        return self.parse([execute(query) for query in self.get_queries(duration, filters)])
 
 
 class BaseMetrics:

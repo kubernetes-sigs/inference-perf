@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List
+from typing import List, Optional
 
 from ..base import Metric
 from ..gauge.base import GaugeResult
@@ -20,7 +20,7 @@ from ..gauge.base import GaugeResult
 class HistogramResult(GaugeResult):
     """Distribution (avg/median/p90/p99 + as_summary, from GaugeResult) plus a per-second rate."""
 
-    per_second: float = 0.0
+    per_second: Optional[float] = 0.0
 
 
 class HistogramMetric(Metric[HistogramResult]):
@@ -42,5 +42,5 @@ class HistogramMetric(Metric[HistogramResult]):
             f"sum(rate({m}_count{{{f}}}[{duration:.0f}s]))",
         ]
 
-    def parse(self, results: List[float]) -> HistogramResult:
+    def parse(self, results: List[Optional[float]]) -> HistogramResult:
         return HistogramResult(avg=results[0], median=results[1], p90=results[2], p99=results[3], per_second=results[4])

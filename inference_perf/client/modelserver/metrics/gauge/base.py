@@ -11,23 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Dict, List
-from pydantic import BaseModel
+from typing import Dict, List, Optional
 
-from ..base import Metric
+from ..base import Metric, MetricResult
 
 
-class GaugeResult(BaseModel):
-    avg: float = 0.0
-    median: float = 0.0
-    p90: float = 0.0
-    p99: float = 0.0
+class GaugeResult(MetricResult):
+    avg: Optional[float] = 0.0
+    median: Optional[float] = 0.0
+    p90: Optional[float] = 0.0
+    p99: Optional[float] = 0.0
 
-    def as_summary(self) -> Dict[str, float]:
+    def as_summary(self) -> Dict[str, Optional[float]]:
         """Project to the report's mean/median/p90/p99 shape.
 
         HistogramResult inherits this and is intentionally narrowed to the same
         four keys (its per_second field is not part of the per-metric summary).
+        A missing value stays missing (None) instead of a real-looking zero (#822).
         """
         return {"mean": self.avg, "median": self.median, "p90": self.p90, "p99": self.p99}
 
@@ -50,5 +50,5 @@ class GaugeMetric(Metric[GaugeResult]):
             f"quantile_over_time(0.99, {m}{{{f}}}[{duration:.0f}s])",
         ]
 
-    def parse(self, results: List[float]) -> GaugeResult:
+    def parse(self, results: List[Optional[float]]) -> GaugeResult:
         return GaugeResult(avg=results[0], median=results[1], p90=results[2], p99=results[3])

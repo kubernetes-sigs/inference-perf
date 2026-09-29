@@ -21,7 +21,7 @@ from aiohttp.client_reqrep import ConnectionKey
 import pytest
 import asyncio
 import aiohttp
-from typing import Any, cast
+from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import (
     is_retryable_transport_error,
@@ -418,7 +418,7 @@ def test_openai_metrics_iteration_yields_each_field_once() -> None:
         def get_queries(self, duration: float, filters: str) -> list[str]:
             return []
 
-        def parse(self, results: list[float]) -> CounterResult:
+        def parse(self, results: list[Optional[float]]) -> CounterResult:
             return CounterResult()
 
     metrics = OpenAIMetrics(

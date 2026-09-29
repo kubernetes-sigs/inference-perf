@@ -23,6 +23,7 @@ from inference_perf.client.modelserver.metrics import (
     CounterMetric,
     CounterResult,
     GaugeMetric,
+    GaugeResult,
     HistogramMetric,
     Metric,
 )
@@ -61,9 +62,7 @@ def test_get_model_server_metrics_base_metrics() -> None:
         result = client.get_model_server_metrics(FakeBaseMetrics(), query_duration=30, query_eval_time=100)
 
     assert isinstance(result, ModelServerMetrics)
-    assert result.inter_token_latency is not None
     assert result.inter_token_latency.avg == 1.23
-    assert result.time_per_output_token is not None
     assert result.time_per_output_token.avg == 4.56
 
 
@@ -78,7 +77,6 @@ def test_get_model_server_metrics_uses_custom_metrics_by_default() -> None:
         result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
 
     assert isinstance(result, ModelServerMetrics)
-    assert result.inter_token_latency is not None
     assert result.inter_token_latency.avg == 1.23
 
 
@@ -149,7 +147,6 @@ def test_get_model_server_metrics_does_not_retry_a_zero_value() -> None:
 
     assert seen_queries == metric.get_queries(30, metadata.filters)
     assert result is not None
-    assert result.queue_length is not None
     assert result.queue_length.model_dump() == {"avg": 0.0, "median": 0.0, "p90": 0.0, "p99": 0.0}
 
 
@@ -233,7 +230,7 @@ def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
         def get_queries(self, duration: float, filters: str) -> List[str]:
             return ["q"]
 
-        def parse(self, results: List[float]) -> CounterResult:
+        def parse(self, results: List[Optional[float]]) -> CounterResult:
             return CounterResult(total=1.0)
 
     # request_latency is declared HistogramResult; supplying a CounterResult there is the only
@@ -400,14 +397,13 @@ def test_failed_query_retries_underscored_fallback() -> None:
         query_variant for query in expected_queries for query_variant in (query, query.replace("sglang:", "sglang_"))
     ]
     assert result is not None
-    assert result.queue_length is not None
     assert result.queue_length.avg == 7.0
 
 
 def test_partially_failed_collection_marks_field_missing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """One failed metric is None in the result (not 0.0) with a warning; the healthy metric keeps its value."""
+    """One failed metric reports missing values (not 0.0) with a warning; the healthy metric keeps its value."""
     config = PrometheusClientConfig(url="http://localhost:9090")
     client = PrometheusMetricsClient(config)
     metadata = BaseMetrics(
@@ -428,11 +424,30 @@ def test_partially_failed_collection_marks_field_missing(
         result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
 
     assert result is not None
-    assert result.queue_length is None
-    assert result.request_latency is not None
+    assert result.queue_length.is_missing()
+    assert not result.request_latency.is_missing()
     assert result.request_latency.avg == 2.0
     assert "1/2 metrics missing" in caplog.text
     assert "queue_length" in caplog.text
+
+
+def test_partially_failed_quantile_reports_null_value_not_dropped_metric() -> None:
+    """A metric with one failed quantile keeps its other values; only that value is null."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+    metric = GaugeMetric("fake_queue")
+    metadata = BaseMetrics(custom_metrics={"queue_length": metric})
+    queries = metric.get_queries(30, metadata.filters)
+
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
+        return None if query == queries[1] else 1.0
+
+    with patch.object(PrometheusMetricsClient, "execute_query", side_effect=mock_execute):
+        result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    assert result is not None
+    assert result.queue_length == GaugeResult(avg=1.0, median=None, p90=1.0, p99=1.0)
+    assert not result.queue_length.is_missing()
 
 
 def test_all_failed_collection_logs_error_and_reports_missing(
@@ -450,6 +465,6 @@ def test_all_failed_collection_logs_error_and_reports_missing(
         result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
 
     assert result is not None
-    assert result.queue_length is None
-    assert result.requests is None
-    assert "all Prometheus queries failed" in caplog.text
+    assert result.queue_length.is_missing()
+    assert result.requests.is_missing()
+    assert "all Prometheus queries returned no result" in caplog.text
