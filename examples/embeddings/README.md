@@ -37,7 +37,7 @@ each input string, and each request carries `batch_size` of them. No
 `output_distribution` is needed. The `mock` data generator also supports
 embeddings.
 
-Embeddings are supported by the `vllm` and `mock` server types.
+Embeddings are supported by the `vllm`, `sglang` and `mock` server types.
 
 ## Running the example
 
@@ -51,6 +51,25 @@ Then run the benchmark:
 
 ```bash
 inference-perf --config_file examples/embeddings/config.yml
+```
+
+### With SGLang
+
+Start SGLang in embedding mode with `--is-embedding`:
+
+```bash
+python3 -m sglang.launch_server --model-path BAAI/bge-small-en-v1.5 \
+  --is-embedding --port 8000 --attention-backend triton
+```
+
+`--attention-backend triton` is needed for this model: SGLang's default
+FlashInfer backend fails on its small attention heads. Larger embedding models
+may not need it.
+
+Then run the benchmark with the server type set to `sglang`:
+
+```bash
+inference-perf --config_file examples/embeddings/config.yml --server.type sglang
 ```
 
 ## Sweeping batch sizes
