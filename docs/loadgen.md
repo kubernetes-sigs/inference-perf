@@ -315,6 +315,10 @@ data:
 
 Which load type to use follows from the arrangement. Timestamped independent requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the arrangement. Sessions with dependencies between requests run with `load.type: trace_session_replay`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
 
+#### Weka
+
+`format: Weka` replays Weka agentic traces as sessions, with `load.type: trace_session_replay`; see [Weka Trace Replay](weka_trace_replay.md#replaying-through-the-workload-record-layer-alpha) for what it covers so far. The `data.type: weka_trace_replay` spelling keeps working.
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
