@@ -14,10 +14,27 @@
 """SGLang client subclass tests: BackendClientSuite run against a transcription
 of SGLang's wire format (matched_stop in every choice, unprefixed request ids)."""
 
-from backend_client_suite import CHAT_TEXT, COMPLETION_TEXT, MODEL, Backend, BackendClientSuite
+import json
+from typing import cast
+from unittest.mock import MagicMock
 
+import pytest
+from backend_client_suite import (
+    BASE_URI,
+    CHAT_TEXT,
+    COMPLETION_TEXT,
+    MODEL,
+    Backend,
+    BackendClientSuite,
+    FakeUnaryResponse,
+    make_client,
+    make_session,
+    recorded_metric,
+)
+
+from inference_perf.apis import EmbeddingsAPIData
 from inference_perf.client.modelserver.sglang_client import SGlangModelServerClient
-from inference_perf.config import APIType
+from inference_perf.config import APIConfig, APIType
 
 BACKEND = Backend(
     client_cls=SGlangModelServerClient,
@@ -178,5 +195,41 @@ BACKEND = Backend(
 )
 
 
+# Captured from SGLang 0.5.20 started with --is-embedding, with the 384-dim
+# vectors cut to 3 values.
+EMBEDDINGS_RESPONSE = {
+    "data": [
+        {"embedding": [-0.035430908203125, 0.01334381103515625, 0.02154541015625], "index": 0, "object": "embedding"},
+        {"embedding": [-0.03680419921875, 0.015625, 0.03289794921875], "index": 1, "object": "embedding"},
+    ],
+    "model": MODEL,
+    "object": "list",
+    "usage": {
+        "prompt_tokens": 13,
+        "total_tokens": 13,
+        "completion_tokens": 0,
+        "prompt_tokens_details": None,
+        "reasoning_tokens": 0,
+    },
+}
+
+
 class TestSGLangClient(BackendClientSuite):
     backend = BACKEND
+
+    @pytest.mark.asyncio
+    async def test_embeddings_request(self) -> None:
+        client = make_client(self.backend, APIConfig(type=APIType.Embeddings, streaming=False))
+        session = await make_session(client, FakeUnaryResponse(json.dumps(EMBEDDINGS_RESPONSE)))
+
+        inputs = ["hello world", "embeddings on sglang"]
+        await session.process_request(EmbeddingsAPIData(input=inputs), stage_id=0, scheduled_time=0.0)
+
+        call = cast(MagicMock, session.session).post.call_args
+        assert call.args[0] == f"{BASE_URI}/v1/embeddings"
+        assert json.loads(call.kwargs["data"]) == {"model": MODEL, "input": inputs}
+
+        metric = recorded_metric(client)
+        assert metric.error is None
+        assert metric.info.request_metrics.text.input_tokens == 13  # server count, not the stub tokenizer's 5
+        assert metric.info.response_metrics.output_tokens == 0
