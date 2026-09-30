@@ -97,14 +97,6 @@ def _sess(
     )
 
 
-def _zero_cache_session(session_id: str, stage_id: int) -> SessionLifecycleMetric:
-    """A session whose server usage explicitly reported zero cached tokens (the #818 shape)."""
-    session = _sess(session_id=session_id, stage_id=stage_id)
-    session.total_cached_tokens = 0
-    session.total_cacheable_input_tokens = 100
-    return session
-
-
 def _runtime(stages: Dict[int, StageRuntimeInfo]) -> PerfRuntimeParameters:
     return PerfRuntimeParameters(
         start_time=0.0,
@@ -284,45 +276,6 @@ class TestGenerateSessionReports:
         by_name = {r.name: r.contents for r in reports}
         assert by_name["stage_0_session_lifecycle_metrics"]["num_sessions_completed"] == 1
         assert by_name["stage_1_session_lifecycle_metrics"]["num_sessions_completed"] == 2
-
-    def test_all_zero_cache_warns_once_per_run_and_keeps_zero(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Ambiguous all-zero cache readings warn once per run without deleting the 0% (see #818)."""
-        gen = _make_generator()
-        sessions = [_zero_cache_session("s1", 0), _zero_cache_session("s2", 1)]
-        runtime = _runtime({0: _stage_info(0), 1: _stage_info(1)})
-
-        with caplog.at_level("WARNING", logger="inference_perf.reportgen.base"):
-            reports = gen.generate_session_reports(
-                sessions,
-                SessionLifecycleReportConfig(summary=True, per_stage=True, per_session=True),
-                PERCENTILES,
-                runtime,
-                100,
-            )
-
-        by_name = {r.name: r.contents for r in reports}
-        assert by_name["summary_session_lifecycle_metrics"]["kv_cache_hit_percent"] == pytest.approx(0.0)
-        assert by_name["stage_0_session_lifecycle_metrics"]["kv_cache_hit_percent"] == pytest.approx(0.0)
-        assert by_name["stage_1_session_lifecycle_metrics"]["kv_cache_hit_percent"] == pytest.approx(0.0)
-        assert caplog.text.count("All sessions report 0 cached prompt tokens") == 1
-
-    def test_nonzero_cache_warns_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A run with real cache hits emits no all-zero warning."""
-        gen = _make_generator()
-        sessions = [_zero_cache_session("s1", 0)]
-        sessions[0].total_cached_tokens = 40
-        runtime = _runtime({0: _stage_info(0)})
-
-        with caplog.at_level("WARNING", logger="inference_perf.reportgen.base"):
-            gen.generate_session_reports(
-                sessions,
-                SessionLifecycleReportConfig(summary=True, per_stage=False, per_session=False),
-                PERCENTILES,
-                runtime,
-                100,
-            )
-
-        assert "All sessions report 0 cached prompt tokens" not in caplog.text
 
     def test_stage_metadata_leads_the_report_and_carries_the_run_shape(self) -> None:
         """`stage_metadata` is prepended so the report reads as configuration first,

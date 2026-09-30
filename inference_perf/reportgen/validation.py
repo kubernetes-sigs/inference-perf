@@ -43,10 +43,10 @@ their assertion interface.
 
 Each report family owns its checks in a ``validation.py`` next to (or named
 for) the reports it validates: ``summary/``, ``per_stage/``, ``per_request/``,
-``cross_report/`` (multi-file consistency), and ``br/v0_2/`` for the BR0.2
-partials. Checks run sequentially within a validator; a check may raise
-:class:`StopValidation` to halt its validator's remaining checks. Session,
-Prometheus, and per-adapter reports do not have validators yet.
+``session/``, ``cross_report/`` (multi-file consistency), and ``br/v0_2/`` for
+the BR0.2 partials. Checks run sequentially within a validator; a check may raise
+:class:`StopValidation` to halt its validator's remaining checks. Prometheus
+and per-adapter reports do not have validators yet.
 """
 
 from __future__ import annotations
@@ -68,6 +68,7 @@ _STAGE_LIFECYCLE_RE = re.compile(r"^stage_(\d+)_lifecycle_metrics\.json$")
 _BR_PARTIAL_RE = re.compile(r"^inference-perf\.partial\.stage_(\d+)\.yaml$")
 
 SUMMARY_LIFECYCLE_FILENAME = "summary_lifecycle_metrics.json"
+SESSION_SUMMARY_FILENAME = "summary_session_lifecycle_metrics.json"
 PER_REQUEST_FILENAME = "per_request_lifecycle_metrics.json"
 CONFIG_FILENAME = "config.yaml"
 VALIDATION_REPORT_NAME = "validation"
@@ -369,12 +370,14 @@ def default_validators() -> List[ReportSetValidator]:
     from inference_perf.reportgen.cross_report.validation import CrossReportValidator
     from inference_perf.reportgen.per_request.validation import PerRequestLifecycleValidator
     from inference_perf.reportgen.per_stage.validation import PerStageLifecycleValidator
+    from inference_perf.reportgen.session.validation import SessionLifecycleValidator
     from inference_perf.reportgen.summary.validation import SummaryLifecycleValidator
 
     return [
         SummaryLifecycleValidator(),
         PerStageLifecycleValidator(),
         PerRequestLifecycleValidator(),
+        SessionLifecycleValidator(),
         CrossReportValidator(),
         BrPartialValidator(),
     ]

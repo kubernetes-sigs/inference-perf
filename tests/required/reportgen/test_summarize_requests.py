@@ -17,7 +17,6 @@ from typing import cast
 import pytest
 from inference_perf.reportgen.base import (
     ReportGenerator,
-    all_sessions_report_zero_cached_tokens,
     compute_request_latency_metrics,
     summarize_prompt_token_usage,
     summarize_requests,
@@ -675,8 +674,8 @@ def test_summarize_sessions_kv_cache_hit_rate_zero_when_all_zero() -> None:
 
     Explicit zeros are ambiguous (genuinely cold cache, or usage counters
     normalized by a gateway/sidecar), but the number itself is kept as the
-    server sent it; the ambiguity is surfaced with a run-level warning in
-    generate_session_reports instead of deleting the rate.
+    server sent it; the ambiguity is surfaced by the session validator as a
+    validation.json warning instead.
     """
     s1 = _cache_session("s1")
     s1.total_cached_tokens = 0
@@ -693,11 +692,7 @@ def test_summarize_sessions_kv_cache_hit_rate_zero_when_all_zero() -> None:
 
 
 def test_summarize_sessions_kv_cache_hit_rate_kept_when_partially_zero() -> None:
-    """A mix of zero and nonzero sessions still reports a real rate.
-
-    The all-zero rule only fires when no cached tokens were observed at all;
-    a single nonzero session keeps the pooled and per-session rates.
-    """
+    """A mix of zero and nonzero sessions still reports a real rate."""
     cold = _cache_session("cold")
     cold.total_cached_tokens, cold.total_cacheable_input_tokens = 0, 100
     warm = _cache_session("warm")
@@ -708,23 +703,6 @@ def test_summarize_sessions_kv_cache_hit_rate_kept_when_partially_zero() -> None
     assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * 50 / 200)
     assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(25.0)
     assert summary["sessions_with_cache_info"] == 2
-
-
-def test_all_sessions_report_zero_cached_tokens() -> None:
-    """The #818 warning helper fires only on ambiguous all-zero readings."""
-    zero = _cache_session("zero")
-    zero.total_cached_tokens, zero.total_cacheable_input_tokens = 0, 100
-    assert all_sessions_report_zero_cached_tokens([zero]) is True
-
-    # A single nonzero session means the signal is real: no warning.
-    warm = _cache_session("warm")
-    warm.total_cached_tokens, warm.total_cacheable_input_tokens = 5, 100
-    assert all_sessions_report_zero_cached_tokens([zero, warm]) is False
-
-    # No cache info at all is already reported as None: no warning.
-    unknown = _cache_session("unknown")
-    assert all_sessions_report_zero_cached_tokens([unknown]) is False
-    assert all_sessions_report_zero_cached_tokens([]) is False
 
 
 def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
