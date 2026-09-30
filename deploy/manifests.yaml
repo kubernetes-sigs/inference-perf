@@ -9,6 +9,12 @@ spec:
     metadata:
       labels:
         app: inference-perf
+      # inference-perf serves its runtime metrics on :9464/metrics by default
+      # (config.observability.metrics). Keep the port here in sync if you change it.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: inference-perf
@@ -16,6 +22,10 @@ spec:
           imagePullPolicy: Always
           command: ["inference-perf"]
           args: ["--config_file", "/etc/config/config.yml"]
+          ports:
+            - name: metrics
+              containerPort: 9464
+              protocol: TCP
           env:
             - name: HF_TOKEN
               valueFrom:

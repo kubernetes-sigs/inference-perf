@@ -1,0 +1,18 @@
+# inference-perf/templates/podmonitoring.yaml
+# Scrape config for Google Cloud Managed Service for Prometheus (GKE).
+{{- if and (eq (include "inference-perf.metricsEnabled" .) "true") .Values.metrics.podMonitoring.enabled }}
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "inference-perf.fullname" . }}
+  labels:
+    {{- include "inference-perf.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "inference-perf.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.interval }}
+{{- end }}

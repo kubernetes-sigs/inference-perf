@@ -89,6 +89,27 @@ The identity executing the workload (e.g., the associated Kubernetes Service Acc
 
 ---
 
+#### Runtime Metrics Parameters
+
+inference-perf serves its own runtime metrics (stage state, request counts, latencies) on `/metrics` while the run is active; see [`docs/runtime_metrics.md`](../../docs/runtime_metrics.md) for the metric set. Whether the endpoint runs, and on which port, is set in the benchmark config under `config.observability.metrics` (`enabled`, default `true`; `port`, default `9464`). The chart reads the same fields, so the container port and scrape configs always match what the process serves. Port `0` (ephemeral) cannot be scraped and fails the install.
+
+The keys below only decide how Prometheus finds the pod.
+
+| Key | Description | Default |
+| :--- | :--- | :--- |
+| `metrics.annotations` | Add `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` pod annotations, for Prometheus setups that discover pods by annotation. | `true` |
+| `metrics.interval` | Scrape interval for the `PodMonitor` and `PodMonitoring`. The pod stops serving when the run ends, so keep it short relative to the run. | `15s` |
+| `metrics.podMonitor.enabled` | Create a `PodMonitor` for the Prometheus Operator. Requires the `monitoring.coreos.com` CRDs. | `false` |
+| `metrics.podMonitor.labels` | Extra labels on the `PodMonitor`, e.g. the `release` label your Prometheus selects on. | `{}` |
+| `metrics.podMonitoring.enabled` | Create a `PodMonitoring` for Google Cloud Managed Service for Prometheus on GKE. | `false` |
+---
+
+To check the endpoint by hand while a run is active:
+```bash
+kubectl port-forward job/<release>-inference-perf-job 9464:9464
+curl -s localhost:9464/metrics | grep '^inference_perf_'
+```
+
 ### 3. Run Deployment
 
 Use the **`helm install`** command from the **`deploy/inference-perf`** directory to deploy the chart.
