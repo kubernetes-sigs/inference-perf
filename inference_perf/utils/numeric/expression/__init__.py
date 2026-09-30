@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .expression import Expression, Predicate
+from .piecewise_linear import PiecewiseLinear, Segment
 
-__all__ = ["Expression", "Predicate"]
+__all__ = ["Expression", "PiecewiseLinear", "Predicate", "Segment"]

@@ -100,6 +100,33 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
 | `requests >= 1000` | `requests` is not a known symbol. |
 
+## Piecewise-linear expressions
+
+Some fields hold a set point that the load generator changes at exact times, such as a concurrency level. They accept only piecewise-linear expressions: a straight line in `t` between breakpoints. The expression is split into its lines when the config loads, so every breakpoint, and every time the value crosses a threshold, is exact.
+
+Allowed: numbers, `t`, `+ -`, multiplying or dividing by a constant, `Min`, `Max`, `Abs`, `Heaviside`, and `Piecewise` whose conditions compare lines in `t`. A product of two terms in `t` is allowed where one of them is constant, so `t*Heaviside(t - 30)` (0, then `t`) is fine. Functions of constants are fine anywhere: `sqrt(2)*t` is a line.
+
+| Piecewise-linear expression | Breakpoints |
+| --- | --- |
+| `12` | 0 |
+| `Min(1 + t/6, 64)` | 0, 378 |
+| `Piecewise((8, t < 60), (32, True))` | 0, 60 |
+| `Max(1, Min(t/2, 120 - t/2))` | 0, 2, 120, 238 |
+| `4 * (1 + Heaviside(t - 30) + Heaviside(t - 60))` | 0, 30, 60 |
+| `64 - Abs(t - 60)` | 0, 60 |
+| `t*Heaviside(t - 30)` | 0, 30 |
+
+At a breakpoint the new line applies. What an expression does at the single instant of a jump (`Heaviside(0)` is 1/2) is ignored.
+
+| Rejected piecewise-linear expression | Why |
+| --- | --- |
+| `t**2` | A power of `t` bends the line. |
+| `1/t` | So does dividing by `t`. |
+| `sin(t)` | `sin` is not allowed on `t`. |
+| `t*Min(t, 5)` | `t` times `t` before `t = 5`. |
+| `Normal(10, 2)` | Random. A set point must be the same on every run. |
+| `Piecewise((8, t < 60))` | No value from `t = 60` on. End with a `True` branch. |
+
 ## Value ranges
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
