@@ -14,9 +14,10 @@
 """Per-request latency histograms, observed once per successful request.
 
 Runtime values are derived exactly as the report derives them from the same
-RequestLifecycleMetric (see reportgen/base.py): TTFT is the first
-content-bearing chunk minus request start, TPOT is (last chunk - first chunk)
-divided by (output tokens - 1). Inter-token latency is deliberately absent:
+RequestLifecycleMetric (see reportgen/base.py): TTFT is the first entry of
+output_token_times minus request start, TPOT is (last entry - first entry)
+divided by (output tokens - 1). Both follow whatever the API layer records
+as a generated token, so they track the report if that definition changes. Inter-token latency is deliberately absent:
 the report expands chunk timestamps to per-token timestamps at report time
 (#564), and a runtime ITL over raw chunk gaps would be a second, different
 number under the same name.
@@ -75,7 +76,7 @@ LATENCY_SPECS: tuple[MetricSpec[Any], ...] = (
     ),
     MetricSpec(
         name="inference_perf_time_to_first_token_seconds",
-        documentation="Time to first token of successful streaming requests by stage: first content chunk minus request start.",
+        documentation="Time to first token of successful streaming requests by stage: first generated token minus request start.",
         metric_type=Histogram,
         labelnames=("stage",),
         buckets=TTFT_BUCKETS,
