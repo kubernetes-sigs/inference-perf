@@ -8,10 +8,11 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
+Fields are listed here as they are added, each linking to its own docs.
 
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| `concurrency_level` (concurrent stages) | Yes | No | [Piecewise linear](#piecewise-linear-expressions), rounded down, at least 1, bounded. See [Concurrency Expressions](config.md#concurrency-expressions). |
 
 ## Grammar
 
