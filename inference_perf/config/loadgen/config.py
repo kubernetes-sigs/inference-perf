@@ -17,10 +17,11 @@ from enum import Enum
 from typing import List, Optional, Union
 
 from inference_perf.config.common import StrictBaseModel
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
 from inference_perf.utils.cpu_count import default_cpu_count
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,40 @@ class ConcurrentLoadStage(LoadStage):
     """Load stage for CONCURRENT load type."""
 
     num_requests: int = Field(..., gt=0, description="Number of requests to send")
-    concurrency_level: int = Field(..., gt=0, description="Concurrency level")
+    concurrency_level: Union[int, str] = Field(
+        ...,
+        description="Concurrency level: an integer, or a piecewise-linear expression of stage time t such as "
+        "'Min(1 + t/6, 64)', rounded down. See docs/expressions.md.",
+    )
 
     # These fields are set at runtime for load generation but should not be configured
     rate: Optional[float] = Field(None, description="Set at runtime for load generation")
     duration: Optional[int] = Field(None, description="Set at runtime for load generation")
 
+    # Compiled from concurrency_level, and rebuilt if it is reassigned (pydantic
+    # does not re-validate on assignment).
+    _schedule: Optional[ConcurrencySchedule] = PrivateAttr(default=None)
+
     @model_validator(mode="after")
     def validate_concurrent_fields(self) -> "ConcurrentLoadStage":
         # Allow rate and duration to be set at runtime, but they should start as None
         # No validation needed here since they're set dynamically
+        if isinstance(self.concurrency_level, int) and self.concurrency_level < 1:
+            raise ValueError(f"concurrency_level must be greater than 0, got {self.concurrency_level}")
+        self._schedule = ConcurrencySchedule(self.concurrency_level)
         return self
+
+    @property
+    def concurrency_schedule(self) -> ConcurrencySchedule:
+        """The concurrency level over stage time; constant for an integer ``concurrency_level``."""
+        if self._schedule is None or self._schedule.raw != self.concurrency_level:
+            self._schedule = ConcurrencySchedule(self.concurrency_level)
+        return self._schedule
+
+    @property
+    def peak_concurrency(self) -> int:
+        """The highest level the stage reaches; the stage's ``concurrency_level`` when it is an integer."""
+        return self.concurrency_schedule.peak
 
 
 class TraceSessionReplayLoadStage(LoadStage):
