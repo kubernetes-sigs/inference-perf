@@ -24,6 +24,7 @@ from inference_perf.client.modelserver.metrics import (
     CounterMetric,
     CounterResult,
     GaugeMetric,
+    GaugeResult,
     HistogramMetric,
     Metric,
 )
@@ -51,7 +52,7 @@ def test_get_model_server_metrics_base_metrics() -> None:
             yield from _required_metrics().items()
             yield "inter_token_latency", HistogramMetric("fake:itl")
 
-    def mock_execute(query: str, eval_time: str) -> float:
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
         if "fake:itl" in query and "_sum" in query and "/" in query:
             return 1.23
         if "fake:tpot" in query and "_sum" in query and "/" in query:
@@ -95,7 +96,7 @@ def test_get_model_server_metrics_retries_underscored_metric_names(field: str, m
     metadata = BaseMetrics(custom_metrics={field: metric})
     seen_queries: List[str] = []
 
-    def mock_execute(query: str, eval_time: str) -> Any:
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
         seen_queries.append(query)
         if "sglang:" in query:
             return None  # Successful Prometheus query with no matching series.
@@ -138,7 +139,7 @@ def test_get_model_server_metrics_does_not_retry_a_zero_value() -> None:
     metadata = BaseMetrics(custom_metrics={"queue_length": metric})
     seen_queries: List[str] = []
 
-    def mock_execute(query: str, eval_time: str) -> float:
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
         seen_queries.append(query)
         return 0.0 if "sglang:" in query else 12.0
 
@@ -230,7 +231,7 @@ def test_get_model_server_metrics_rejects_wrong_result_type() -> None:
         def get_queries(self, duration: float, filters: str) -> List[str]:
             return ["q"]
 
-        def parse(self, results: List[float]) -> CounterResult:
+        def parse(self, results: List[Optional[float]]) -> CounterResult:
             return CounterResult(total=1.0)
 
     # request_latency is declared HistogramResult; supplying a CounterResult there is the only
@@ -312,6 +313,162 @@ def test_execute_query_verifies_tls_by_default() -> None:
     assert kwargs["headers"] == {}
 
 
+def _failed_response(status: str = "success", payload: object = None) -> Mock:
+    """A canned Prometheus HTTP response carrying the given JSON payload."""
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = payload if payload is not None else {"status": status, "data": {"result": []}}
+    return response
+
+
+def test_execute_query_returns_none_on_http_error() -> None:
+    """Bug scenario from #822: a 401/403 from a bad bearer_token must be missing, not 0.0."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    response = Mock()
+    response.raise_for_status.side_effect = Exception("401 Client Error: Unauthorized")
+    with patch(
+        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
+        return_value=response,
+    ):
+        assert client.execute_query("up{}", "100") is None
+
+
+def test_execute_query_returns_none_on_connection_error() -> None:
+    """A refused connection must be missing, not 0.0."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    with patch(
+        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
+        side_effect=ConnectionError("refused"),
+    ):
+        assert client.execute_query("up{}", "100") is None
+
+
+def test_execute_query_returns_none_on_error_status() -> None:
+    """A 200 carrying status other than success must be missing, not 0.0."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    with patch(
+        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
+        return_value=_failed_response(payload={"status": "error", "error": "bad token"}),
+    ):
+        assert client.execute_query("up{}", "100") is None
+
+
+def test_execute_query_returns_none_on_unparseable_value() -> None:
+    """A non-numeric sample must be missing, not 0.0."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    with patch(
+        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
+        return_value=_failed_response(
+            payload={"status": "success", "data": {"result": [{"metric": {}, "value": [100, "NaN-ish"]}]}}
+        ),
+    ):
+        # float("NaN-ish") raises ValueError; "+Inf" would parse, so use a truly invalid token.
+        assert client.execute_query("up{}", "100") is None
+
+
+def test_execute_query_returns_none_on_malformed_result_shape() -> None:
+    """A result entry without a value must be missing, not a silent 0.0."""
+    client = PrometheusMetricsClient(PrometheusClientConfig(url="http://localhost:9090"))
+    with patch(
+        "inference_perf.client.server_metrics.prometheus_client.base.requests.get",
+        return_value=_failed_response(payload={"status": "success", "data": {"result": [{"metric": {}}]}}),
+    ):
+        assert client.execute_query("up{}", "100") is None
+
+
+def test_failed_query_retries_underscored_fallback() -> None:
+    """The #815 colon-name fallback must also run when the first query fails, not only on empty results."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+    metric = GaugeMetric("sglang:num_queue_reqs")
+    metadata = BaseMetrics(custom_metrics={"queue_length": metric})
+    seen_queries: List[str] = []
+
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
+        seen_queries.append(query)
+        if "sglang:" in query:
+            return None  # e.g. 401 on the first attempt.
+        return 7.0
+
+    with patch.object(PrometheusMetricsClient, "execute_query", side_effect=mock_execute):
+        result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    expected_queries = metric.get_queries(30, metadata.filters)
+    assert seen_queries == [
+        query_variant for query in expected_queries for query_variant in (query, query.replace("sglang:", "sglang_"))
+    ]
+    assert result is not None
+    assert result.queue_length.avg == 7.0
+
+
+def test_partially_failed_collection_marks_field_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One failed metric reports missing values (not 0.0) with a warning; the healthy metric keeps its value."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+    metadata = BaseMetrics(
+        custom_metrics={
+            # No colon in the name, so no underscore fallback applies and the failure sticks.
+            "queue_length": GaugeMetric("fake_queue"),
+            "request_latency": HistogramMetric("fake:lat"),
+        }
+    )
+
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
+        return None if "fake_queue" in query else 2.0
+
+    with (
+        patch.object(PrometheusMetricsClient, "execute_query", side_effect=mock_execute),
+        caplog.at_level("WARNING"),
+    ):
+        result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    assert result is not None
+    assert result.queue_length.is_missing()
+    assert not result.request_latency.is_missing()
+    assert result.request_latency.avg == 2.0
+    assert "1/2 metrics missing" in caplog.text
+    assert "queue_length" in caplog.text
+
+
+def test_partially_failed_quantile_reports_null_value_not_dropped_metric() -> None:
+    """A metric with one failed quantile keeps its other values; only that value is null."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+    metric = GaugeMetric("fake_queue")
+    metadata = BaseMetrics(custom_metrics={"queue_length": metric})
+    queries = metric.get_queries(30, metadata.filters)
+
+    def mock_execute(query: str, eval_time: str) -> Optional[float]:
+        return None if query == queries[1] else 1.0
+
+    with patch.object(PrometheusMetricsClient, "execute_query", side_effect=mock_execute):
+        result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    assert result is not None
+    assert result.queue_length == GaugeResult(avg=1.0, median=None, p90=1.0, p99=1.0)
+    assert not result.queue_length.is_missing()
+
+
+def test_all_failed_collection_logs_error_and_reports_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A run where every query fails (e.g. bad token) reports every field missing and says so at the end."""
+    config = PrometheusClientConfig(url="http://localhost:9090")
+    client = PrometheusMetricsClient(config)
+    metadata = BaseMetrics(custom_metrics={**_required_metrics()})
+
+    with (
+        patch.object(PrometheusMetricsClient, "execute_query", return_value=None),
+        caplog.at_level("ERROR"),
+    ):
+        result = client.get_model_server_metrics(metadata, query_duration=30, query_eval_time=100)
+
+    assert result is not None
+    assert result.queue_length.is_missing()
+    assert result.requests.is_missing()
+    assert "all Prometheus queries returned no result" in caplog.text
 def test_verify_ssl_disabled_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
     """Disabling TLS verification is loud: the run log shows verification is off."""
     with caplog.at_level(logging.WARNING, logger="inference_perf.client.server_metrics.prometheus_client.base"):

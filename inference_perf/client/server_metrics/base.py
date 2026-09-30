@@ -76,6 +76,8 @@ class ModelServerMetrics(BaseModel):
     # --- Common to every real model server; defaulted so a client that declares no metrics
     # (e.g. the mock client's empty BaseMetrics) still validates and reports zeros ---
     # prompt/output tokens are a counter on vllm/sglang but a histogram on tgi; only avg/per_second are read.
+    # A failed Prometheus query is reported as missing inside the result (None
+    # value fields) instead of a real-looking zero (#822).
     prompt_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
     output_tokens: CounterResult | HistogramResult = Field(default_factory=CounterResult)
     requests: CounterResult = Field(default_factory=CounterResult)

@@ -532,7 +532,9 @@ def calculate_goodput_metrics(
     return result
 
 
-def _ratio(num: float, den: float) -> float:
+def _ratio(num: Optional[float], den: Optional[float]) -> Optional[float]:
+    if num is None or den is None:
+        return None
     return (num / den) * 100.0 if den > 0 else 0.0
 
 
