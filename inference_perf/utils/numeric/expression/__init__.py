@@ -14,6 +14,7 @@
 from .distributions import DISTRIBUTIONS, Distribution, DistributionUse
 from .expression import Expression, ParameterConditionError, Predicate, parse_distribution_use, prove_parameter_conditions
 from .measured import SERIES, SIGNALS, MeasuredState, Observation, Series, Term
+from .piecewise_linear import PiecewiseLinear, Segment
 
 __all__ = [
     "DISTRIBUTIONS",
@@ -21,7 +22,9 @@ __all__ = [
     "DistributionUse",
     "Expression",
     "ParameterConditionError",
+    "PiecewiseLinear",
     "Predicate",
+    "Segment",
     "MeasuredState",
     "Observation",
     "Series",
