@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from inference_perf.config import LoadConfig, LoadType, StandardLoadStage
 from inference_perf.datagen import DataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 from inference_perf.utils.request_queue import RequestQueue
 
 
@@ -75,7 +76,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         stage_id: int = 0,
         rate: float = 1,
         duration: int = 1,
-        concurrency_level: Optional[int] = None,
+        concurrency: Optional[ConcurrencySchedule] = None,
     ) -> None:
         async def finish_all(*_args: Any, **_kwargs: Any) -> None:
             self.finished_counter.value = num_requests
@@ -92,7 +93,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
                 skipped_requests_counter=self.skipped_counter,
                 request_phase=self.request_phase,
                 cancel_signal=self.cancel_signal,
-                concurrency_level=concurrency_level,
+                concurrency=concurrency,
             )
 
     # Stage 5 at rate=5 for duration=2 over 10 unpinned requests. Expects 10 puts on channel -1, each tagged stage 5,
@@ -124,7 +125,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
     # Expects channels [0, 1, 0, 1, 0, 1]: affinity wraps onto the active workers, not all 4.
     async def test_affinity_remaps_onto_active_workers_under_concurrency_level(self) -> None:
         self.load_generator.datagen.get_data.return_value = _mock_requests([0, 1, 2, 3, 4, 5])  # type: ignore[attr-defined]
-        await self._run_stage(num_requests=6, rate=6, duration=1, concurrency_level=2)
+        await self._run_stage(num_requests=6, rate=6, duration=1, concurrency=ConcurrencySchedule(2))
 
         channels = [channel for _, channel in self._put_calls()]
         self.assertEqual(channels, [0, 1, 0, 1, 0, 1], "affinity must wrap modulo min(num_workers, concurrency_level)")
