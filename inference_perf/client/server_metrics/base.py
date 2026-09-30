@@ -42,7 +42,9 @@ class StageRuntimeInfo(BaseModel):
     end_time: float
     start_time: float
     status: StageStatus
+    # The peak level for a concurrency expression, which is also recorded.
     concurrency_level: Optional[int] = None
+    concurrency_expression: Optional[str] = None
 
     # Configured wall-clock duration cap for the stage: run_stage's own `timeout` for
     # standard stages, or TraceSessionReplayLoadStage.max_stage_duration for session stages.
