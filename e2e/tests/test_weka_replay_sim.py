@@ -159,6 +159,18 @@ def weka_trace_config(trace_files: List[str]) -> Dict[str, Any]:
     }
 
 
+def weka_workload_config(trace_files: List[str]) -> Dict[str, Any]:
+    """The record-layer spelling: the Weka format named once over the
+    directory of traces, run on the same session runner."""
+    return {
+        "data": {
+            "type": "workload_replay",
+            "workload": {"format": "Weka", "file": str(Path(trace_files[0]).parent)},
+        },
+        "load": {"type": "trace_session_replay", "stages": [{"concurrent_sessions": 2}], "num_workers": 2},
+    }
+
+
 def own_messages(entry: Dict[str, Any]) -> List[Dict[str, str]]:
     """The request's system and user messages: the text the trace fixed."""
     return [m for m in request_body(entry)["messages"] if m["role"] != "assistant"]
@@ -230,7 +242,13 @@ def assert_replays_the_trace(entries: List[Dict[str, Any]], tokenizer: CustomTok
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not LLMDInferenceSimRunner.is_available(), reason="local environment missing llm-d-inference-sim")
-@pytest.mark.parametrize("make_config", [pytest.param(weka_trace_config, id="weka_trace_replay")])
+@pytest.mark.parametrize(
+    "make_config",
+    [
+        pytest.param(weka_trace_config, id="weka_trace_replay"),
+        pytest.param(weka_workload_config, id="weka_workload_format"),
+    ],
+)
 async def test_weka_trace_replay(tmp_path: Path, make_config: Any) -> None:
     model_path = extract_tarball(TEST_MODEL_TARBALL)
     trace_files = write_traces(tmp_path)
