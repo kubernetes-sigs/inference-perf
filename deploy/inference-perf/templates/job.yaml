@@ -12,6 +12,12 @@ spec:
       labels:
         {{- include "inference-perf.selectorLabels" . | nindent 8 }}
         app: inference-perf
+{{- if and (eq (include "inference-perf.metricsEnabled" .) "true") .Values.metrics.annotations }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ include "inference-perf.metricsPort" . | quote }}
+        prometheus.io/path: /metrics
+{{- end }}
     spec:
       restartPolicy: Never
       serviceAccountName: {{ .Values.job.serviceAccountName }}
@@ -46,6 +52,12 @@ spec:
             - "{{ include "inference-perf.configMount" . }}/config.yml"
             - "--log-level"
             - {{ .Values.logLevel }}
+{{- if eq (include "inference-perf.metricsEnabled" .) "true" }}
+          ports:
+            - name: metrics
+              containerPort: {{ include "inference-perf.metricsPort" . }}
+              protocol: TCP
+{{- end }}
           env:
 {{- if and .Values.token.hfSecret.name .Values.token.hfSecret.key }}
             - name: HF_TOKEN
