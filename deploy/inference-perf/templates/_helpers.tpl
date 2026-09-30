@@ -70,3 +70,26 @@ Mount path for config map
 {{- define "inference-perf.configMount" -}}
 /cfg
 {{- end -}}
+
+{{/*
+Whether inference-perf serves its runtime metrics endpoint. Read from
+config.observability.metrics.enabled, the same field the tool reads, so the
+chart and the process cannot disagree. The tool defaults it to true.
+*/}}
+{{- define "inference-perf.metricsEnabled" -}}
+{{- dig "observability" "metrics" "enabled" true .Values.config -}}
+{{- end -}}
+
+{{/*
+Port of the runtime metrics endpoint, from config.observability.metrics.port.
+9464 is the tool's default (inference_perf.observability.metrics.prometheus.DEFAULT_PORT;
+a test pins the two). Port 0 asks the tool for an ephemeral port, which no
+container port or scrape config can name, so the chart refuses it.
+*/}}
+{{- define "inference-perf.metricsPort" -}}
+{{- $port := dig "observability" "metrics" "port" 9464 .Values.config | int -}}
+{{- if eq $port 0 -}}
+{{- fail "config.observability.metrics.port is 0 (ephemeral), which cannot be scraped in-cluster. Set a fixed port or set config.observability.metrics.enabled to false." -}}
+{{- end -}}
+{{- $port -}}
+{{- end -}}
