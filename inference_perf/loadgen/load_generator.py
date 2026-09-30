@@ -82,6 +82,7 @@ from rich.progress import (
 import signal
 
 from inference_perf.observability.logging import get_console
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 
 logger = logging.getLogger(__name__)
 
@@ -1213,7 +1214,7 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
-        concurrency_level: Optional[int] = None,
+        concurrency: Optional[ConcurrencySchedule] = None,
         progress_ctx: Optional[Progress] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
@@ -1243,10 +1244,12 @@ class LoadGenerator:
             data_generator = self.datagen.get_data()
         else:
             raise TypeError("run_stage requires DataGenerator, use run_session_stage for SessionGenerator")
-        active_workers = self.num_workers
-        if concurrency_level:
-            # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.
-            active_workers = min(self.num_workers, concurrency_level)
+        active_workers = self._routable_workers(concurrency)
+        follower = (
+            create_task(self._follow_concurrency_schedule(concurrency, start_time))
+            if concurrency is not None and not concurrency.is_constant
+            else None
+        )
 
         for _ in range(num_requests):
             request_data = next(data_generator)
@@ -1295,6 +1298,9 @@ class LoadGenerator:
         if progress_ctx and stage_task:
             progress_ctx.remove_task(stage_task)
 
+        if follower is not None:
+            follower.cancel()
+
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
@@ -1316,12 +1322,47 @@ class LoadGenerator:
             start_time=start_time_epoch,
             end_time=end_time_epoch,
             status=stage_status,
-            concurrency_level=concurrency_level,
+            concurrency_level=concurrency.peak if concurrency is not None else None,
+            concurrency_expression=None if concurrency is None or concurrency.is_constant else str(concurrency.raw),
             max_stage_duration=timeout,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
         )
         logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
+
+    def _routable_workers(self, concurrency: Optional[ConcurrencySchedule]) -> int:
+        """How many workers preferred-worker requests are spread over.
+
+        A level below num_workers gives some workers 0 (see
+        _set_worker_concurrency), so requests pinned to them would never run.
+        Count the workers that get a share at the peak level: a varying level
+        reaches its peak later, and counting at the starting level would pin
+        every request to the first few workers for the whole stage.
+        """
+        if concurrency is None:
+            return self.num_workers
+        return min(self.num_workers, concurrency.peak)
+
+    async def _follow_concurrency_schedule(self, concurrency: ConcurrencySchedule, start_time: float) -> None:
+        """Move the workers' limits at each time the stage's concurrency level changes.
+
+        ``start_time`` is the stage's ``t = 0`` on the ``perf_counter`` clock.
+        The level only changes at exact times, so this sleeps until the next one
+        instead of polling. After a late wake-up it applies the level in effect
+        now, skipping any it overslept.
+        """
+        t = 0.0
+        while True:
+            change = concurrency.next_change_after(t)
+            if change is None:
+                return
+            delay = start_time + change - time.perf_counter()
+            if delay > 0:
+                await sleep(delay)
+            t = max(change, time.perf_counter() - start_time)
+            level = concurrency.level_at(t)
+            logger.debug(f"Stage concurrency -> {level} at t={t:.3f}s")
+            self._set_worker_concurrency(level)
 
     async def preprocess(
         self,
@@ -1529,13 +1570,13 @@ class LoadGenerator:
                     )
                 # Update worker concurrency for concurrent load type
                 elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
-                    logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
-                    self._set_worker_concurrency(stage.concurrency_level)
+                    concurrency = stage.concurrency_schedule
+                    logger.debug(f"Setting worker concurrency to {concurrency.initial} for stage {stage_id}")
+                    self._set_worker_concurrency(concurrency.initial)
 
                     # Use the dynamically set rate/duration from main.py
                     rate = getattr(stage, "rate", stage.num_requests)
                     duration = getattr(stage, "duration", 1)
-                    concurrency_level = stage.concurrency_level
                     await self.run_stage(
                         stage_id,
                         rate,
@@ -1545,13 +1586,12 @@ class LoadGenerator:
                         finished_requests_counter,
                         request_phase,
                         cancel_signal,
-                        concurrency_level=concurrency_level,
+                        concurrency=concurrency,
                         progress_ctx=progress,
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
                     duration = stage.duration
-                    concurrency_level = None
                     await self.run_stage(
                         stage_id,
                         rate,
@@ -1561,7 +1601,6 @@ class LoadGenerator:
                         finished_requests_counter,
                         request_phase,
                         cancel_signal,
-                        concurrency_level=concurrency_level,
                         progress_ctx=progress,
                     )
                 else:

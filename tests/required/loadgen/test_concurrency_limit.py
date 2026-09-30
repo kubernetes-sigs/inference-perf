@@ -33,6 +33,7 @@ from inference_perf.client.modelserver.metrics import BaseMetrics
 from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, LoadConfig, LoadType, StandardLoadStage
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, Worker, _ConcurrencyLimit
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 from inference_perf.utils.request_queue import RequestQueue
 
 
@@ -192,7 +193,7 @@ class _WorkerHarness:
     def in_flight(self) -> int:
         return int(self.active_counter.value)
 
-    async def run_stage(self, num_requests: int) -> None:
+    async def run_stage(self, num_requests: int, concurrency: Optional[ConcurrencySchedule] = None) -> None:
         # Same shape main.py gives a concurrent stage: rate = num_requests over 1s.
         await self.loadgen.run_stage(
             0,
@@ -204,6 +205,7 @@ class _WorkerHarness:
             request_phase=self.request_phase,
             cancel_signal=self.cancel_signal,
             timeout=60.0,
+            concurrency=concurrency,
         )
 
     def shutdown(self) -> None:
@@ -307,5 +309,30 @@ async def test_worker_at_zero_resumes_when_the_limit_rises() -> None:
         assert max(resumed) == 2
         await stage
         assert harness.finished_counter.value == 10
+    finally:
+        harness.shutdown()
+
+
+# The full path: a stage whose level is an expression, 1 before t=1.5s and 4
+# after, run by the load generator against a real worker.
+# Expected: 1 in flight before the step, 4 after it (the load generator moves
+# the worker's limit on its own), all 40 requests finish, and the stage
+# records its peak (4) and the expression.
+async def test_stage_follows_a_concurrency_expression() -> None:
+    raw = "Piecewise((1, t < 1.5), (4, True))"
+    schedule = ConcurrencySchedule(raw)
+    harness = _WorkerHarness(initial_limit=schedule.initial)
+    try:
+        stage = asyncio.ensure_future(harness.run_stage(40, concurrency=schedule))
+        # t=0 is 1s after run_stage starts, so the step lands at about 2.5s.
+        before_step = await _sample(harness, 2.3)
+        await asyncio.sleep(0.3)
+        after_step = await _sample(harness, 1.0)
+        await stage
+        assert max(before_step) == 1
+        assert max(after_step) == 4
+        assert harness.finished_counter.value == 40
+        info = harness.loadgen.stage_runtime_info[0]
+        assert (info.concurrency_level, info.concurrency_expression) == (4, raw)
     finally:
         harness.shutdown()
