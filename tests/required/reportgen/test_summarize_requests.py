@@ -669,6 +669,42 @@ def test_summarize_sessions_kv_cache_hit_rate_none_when_no_cache_info() -> None:
     assert summary["sessions_with_cache_info"] == 0
 
 
+def test_summarize_sessions_kv_cache_hit_rate_zero_when_all_zero() -> None:
+    """All-zero cached readings keep the reported 0% (see #818).
+
+    Explicit zeros are ambiguous (genuinely cold cache, or usage counters
+    normalized by a gateway/sidecar), but the number itself is kept as the
+    server sent it; the ambiguity is surfaced by the session validator as a
+    validation.json warning instead.
+    """
+    s1 = _cache_session("s1")
+    s1.total_cached_tokens = 0
+    s1.total_cacheable_input_tokens = 100
+    s2 = _cache_session("s2")
+    s2.total_cached_tokens = 0
+    s2.total_cacheable_input_tokens = 200
+
+    summary = ReportGenerator.summarize_sessions(None, [s1, s2], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_percent"] == pytest.approx(0.0)
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(0.0)
+    assert summary["sessions_with_cache_info"] == 2
+
+
+def test_summarize_sessions_kv_cache_hit_rate_kept_when_partially_zero() -> None:
+    """A mix of zero and nonzero sessions still reports a real rate."""
+    cold = _cache_session("cold")
+    cold.total_cached_tokens, cold.total_cacheable_input_tokens = 0, 100
+    warm = _cache_session("warm")
+    warm.total_cached_tokens, warm.total_cacheable_input_tokens = 50, 100
+
+    summary = ReportGenerator.summarize_sessions(None, [cold, warm], [], DEFAULT_PERCENTILES)  # type: ignore[arg-type]
+
+    assert summary["kv_cache_hit_percent"] == pytest.approx(100.0 * 50 / 200)
+    assert summary["kv_cache_hit_per_session_percent"]["mean"] == pytest.approx(25.0)
+    assert summary["sessions_with_cache_info"] == 2
+
+
 def test_summarize_sessions_kv_cache_aggregate_is_token_weighted() -> None:
     """The aggregate rate weights sessions by tokens; the percentile mean does not.
 

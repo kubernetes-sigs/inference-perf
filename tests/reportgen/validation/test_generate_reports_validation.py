@@ -27,10 +27,12 @@ from unittest.mock import Mock
 
 from inference_perf.client.server_metrics import PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
+from inference_perf.apis.base import SessionLifecycleMetric
 from inference_perf.config import Config
 from inference_perf.config.reportgen.config import ReportConfig, RequestLifecycleMetricsReportConfig
 from inference_perf.metrics.request_collector import RequestMetricCollector
 from inference_perf.reportgen import ReportGenerator
+from inference_perf.reportgen.validation import validate_reports
 from inference_perf.utils import ReportFile
 
 from .helpers import STAGE_DISPATCH_LEAD, STAGE_TEARDOWN_OVERHANG, make_stage_metrics
@@ -98,3 +100,44 @@ def test_generate_reports_validation_covers_the_emitted_files() -> None:
     assert "per_request_lifecycle_metrics.json" in covered
     assert "inference-perf.partial.stage_0.yaml" in covered
     assert "inference-perf.partial.stage_1.yaml" in covered
+
+
+def _all_zero_session_summary() -> ReportFile:
+    """summary_session_lifecycle_metrics.json as the real generator emits it
+    when every session's server usage explicitly reported zero cached tokens
+    (the #818 shape: ambiguous, suspicious, not wrong)."""
+    sessions = [
+        SessionLifecycleMetric(
+            session_id=f"s{i}",
+            stage_id=0,
+            file_path=f"s{i}.json",
+            start_time=0.0,
+            end_time=1.0,
+            duration_sec=1.0,
+            num_events=1,
+            num_events_completed=1,
+            total_cached_tokens=0,
+            total_cacheable_input_tokens=100,
+            total_input_tokens=100,
+            total_output_tokens=0,
+            success=True,
+        )
+        for i in range(2)
+    ]
+    contents = ReportGenerator.summarize_sessions(None, sessions, [], [50])  # type: ignore[arg-type]
+    assert contents["kv_cache_hit_percent"] == 0.0
+    return ReportFile(name="summary_session_lifecycle_metrics", contents=contents)
+
+
+def test_validate_reports_flags_all_zero_session_cache_hit_rate() -> None:
+    """The session validator is wired into default_validators().
+
+    Goes through validate_reports() (the real default_validators() entry
+    point) rather than the validator class directly, so removing
+    SessionLifecycleValidator from default_validators() fails this test.
+    """
+    validation = validate_reports([_all_zero_session_summary()]).get_contents()
+
+    group = validation["reports"]["summary_session_lifecycle_metrics.json"]
+    assert group["errors"] == []
+    assert [w["check"] for w in group["warnings"]] == ["session.cache"]
