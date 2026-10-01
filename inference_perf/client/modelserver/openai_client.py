@@ -756,8 +756,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
         if data.graph_event_id:
             info.graph_event_id = data.graph_event_id
 
-        # Error bodies are kept whole: they carry the server's error message.
-        if self.client.api_config.type == APIType.Embeddings and response is not None and response.status == 200:
+        # Only a successful body is stripped. A failed one is kept whole because it
+        # carries the server's error message, including a 200 recorded as a failure.
+        if self.client.api_config.type == APIType.Embeddings and error is None:
             response_content = _strip_embeddings_vectors(response_content)
 
         metric = RequestLifecycleMetric(

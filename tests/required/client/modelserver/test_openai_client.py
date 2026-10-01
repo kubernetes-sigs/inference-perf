@@ -384,6 +384,36 @@ async def test_embeddings_error_body_kept_whole(mock_client: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_embeddings_200_recorded_as_failure_keeps_body(mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_client.api_config.type = APIType.Embeddings
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.model_name = "embed-model"
+
+    # Stands in for an in-band error check: process_response rejects a 200 error payload.
+    monkeypatch.setattr(EmbeddingsAPIData, "process_response", AsyncMock(side_effect=ValueError("in-band error")))
+    error_body = json.dumps({"error": {"message": "input too long", "type": "invalid_request_error"}})
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=error_body)
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(EmbeddingsAPIData(input="hello"), stage_id=1, scheduled_time=0.0)
+
+    # A 200 recorded as a failure keeps its body, so the error message is not lost.
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.response_data == error_body
+
+
+@pytest.mark.asyncio
 async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = "trace0_test_session"
     mock_client.api_config.session_id_header_key = "x-session-id"
