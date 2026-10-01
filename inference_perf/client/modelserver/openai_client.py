@@ -218,6 +218,22 @@ def _build_request_headers(api_config: APIConfig, api_key: Optional[str]) -> dic
     return headers
 
 
+def _strip_embeddings_vectors(response_content: str) -> str:
+    """Keep only `model` and `usage` from a successful embeddings response body.
+
+    The body is stored on every request's metric, and for embeddings it is mostly
+    the vectors, which nothing reads. Keeping them grows memory with every request.
+    A body that is not a JSON object is returned unchanged.
+    """
+    try:
+        body = json.loads(response_content)
+    except ValueError:
+        return response_content
+    if not isinstance(body, dict):
+        return response_content
+    return json.dumps({key: body[key] for key in ("model", "usage") if key in body})
+
+
 def is_retryable_transport_error(exc: BaseException) -> bool:
     """True for a connection fault raised before response headers were obtained.
 
@@ -739,6 +755,11 @@ class openAIModelServerClientSession(ModelServerClientSession):
             info.labels = data.labels
         if data.graph_event_id:
             info.graph_event_id = data.graph_event_id
+
+        # Only a successful body is stripped. A failed one is kept whole because it
+        # carries the server's error message, including a 200 recorded as a failure.
+        if self.client.api_config.type == APIType.Embeddings and error is None:
+            response_content = _strip_embeddings_vectors(response_content)
 
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
