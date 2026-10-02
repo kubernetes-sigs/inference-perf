@@ -12,8 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Trace formats. Each one is a parser that produces records and an
-arrangement; none of them schedules, tokenizes or builds payloads."""
+arrangement; none of them schedules, tokenizes or builds payloads.
+
+A format is added by registering its class in `SOURCES` under the name the
+config uses to pick it."""
+
+from pathlib import Path
+from typing import Dict, Optional, Type
 
 from .base import Workload, WorkloadSource
 
-__all__ = ["Workload", "WorkloadSource"]
+SOURCES: Dict[str, Type[WorkloadSource]] = {}
+
+
+def load_workload(format: str, file: str, block_size: Optional[int] = None) -> Workload:
+    """Parse `file` with the registered source named `format`."""
+    source_cls = SOURCES.get(format)
+    if source_cls is None:
+        known = ", ".join(sorted(SOURCES)) or "none"
+        raise ValueError(f"Unknown workload format {format!r}; registered formats: {known}")
+    return source_cls(block_size=block_size).load(Path(file))
+
+
+__all__ = ["SOURCES", "Workload", "WorkloadSource", "load_workload"]
