@@ -190,7 +190,7 @@ class TestClipPolicy:
         # Transformed randomness is statically undecidable, so construction
         # succeeds; every draw lands in [10, 11] and violates maximum=5.
         expr = Expression("Uniform(0, 1) + 10", maximum=5)
-        with pytest.raises(ValueError, match="clip=True"):
+        with pytest.raises(ValueError, match="outside the permitted range .* Keep it in range"):
             expr.sample(size=10, rng=np.random.default_rng(0))
 
     def test_random_undecided_without_clip_in_range_ok(self) -> None:
