@@ -109,8 +109,8 @@ read from.
 
 | What you are pinning | inference-perf | `vllm bench serve` v0.10.0 | `aiperf profile` v0.12.0 |
 | :--- | :--- | :--- | :---
-| Evenly spaced arrivals at a rate | `load.type: constant`, `stages[].rate` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
-| Poisson arrivals at a rate | `load.type: poisson`, `stages[].rate` | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
+| Evenly spaced arrivals at a rate `r` | `stages[].request_interval: 1/r` | `--request-rate` with `--burstiness` above 1 (approximate) | `--request-rate` with `--arrival-pattern constant` |
+| Poisson arrivals at a rate `r` | `stages[].request_interval: "Exponential(r)"` (or `load.type: poisson`, `stages[].rate`, deprecated) | `--request-rate` (default `--burstiness 1.0`) | `--request-rate` (default `--arrival-pattern poisson`) |
 | Fixed requests in flight | `load.type: concurrent`, `stages[].concurrency_level` | `--max-concurrency` | `--concurrency` |
 | How much load to send | `stages[].duration`, or `num_requests` under `concurrent` | `--num-prompts` | `--request-count`, or `--benchmark-duration` |
 | Input length | `data.input_distribution` (`type: fixed`, `mean`) | `--random-input-len` with `--random-range-ratio 0` | `--isl` with `--isl-stddev 0` |
@@ -129,9 +129,12 @@ a converted config still needs reading:
 
 - **Arrival spacing defaults disagree.** Both peers default to Poisson at a given rate
   (`--burstiness 1.0`, `--arrival-pattern poisson`), so "rate 40" on either side is not the
-  evenly spaced stimulus `load.type: constant` produces. Set the pattern explicitly on both
-  sides or compare only average offered rate. vLLM has no exactly even setting: burstiness
-  above 1 draws intervals from a gamma distribution that only approaches even spacing.
+  evenly spaced stimulus `request_interval: 0.025` produces, and `load.type: constant` with
+  `rate: 40` is not evenly spaced either: it sends exactly 40 per second but spaces them like
+  a Poisson process. Set the pattern explicitly on both sides or compare only average offered
+  rate. vLLM has no exactly even setting: `--burstiness b` draws intervals from a gamma
+  distribution with shape `b` and scale `1/(b*r)`, which `request_interval: "Gamma(b, 1/(b*r))"`
+  reproduces, and which only approaches even spacing as `b` grows.
 - **vLLM sends everything at once unless you ask otherwise.** `--request-rate` defaults to
   `inf`, which also disables `--burstiness`, so the default run offers all `--num-prompts`
   immediately. The nearest inference-perf equivalent is `load.type: concurrent` with

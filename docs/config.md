@@ -72,6 +72,10 @@ data:
     mean: 50
     std_dev: 10
     total_count: 100
+  # Alternatively (synthetic/random only), either field takes an expression
+  # string (see expressions.md). The expression owns its value range: nothing is clamped.
+  # output_distribution: "LogNormal(5.0, 0.5)"
+  # output_distribution: "100 + Uniform(0, 400)"
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
@@ -79,6 +83,8 @@ data:
     question_len: 50          # Default question length (tokens), used when question_distribution is absent
     output_len: 50            # Default output length (tokens), used when output_distribution is absent
     max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
+    # system_prompt_len, question_len, and output_len also accept an inline
+    # distribution or an expression string (see expressions.md), e.g. question_len: "Normal(50, 10)"
     question_distribution:    # Optional: distribution for question lengths (overrides question_len)
       min: 10
       max: 1024
@@ -92,6 +98,20 @@ data:
 ```
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
+
+With `enable_multi_turn_chat`, a shared-prefix `output_len` must leave room for a prompt within `max_model_len`. An expression needs a finite upper bound for that check (see [Value ranges](./expressions.md#value-ranges)): `Min(Normal(50, 10), 99)` fits a 300-token context, a bare `Normal(50, 10)` is rejected.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2
+    num_prompts_per_group: 4
+    enable_multi_turn_chat: true
+    max_model_len: 300
+    output_len: "Min(Normal(50, 10), 99)"
+```
 
 #### Multimodal Data Generation
 
@@ -133,6 +153,27 @@ Its `min` and `max` must be within `[0, 1]`; for distributions other than
 throughout the prompt. Token and media count distributions continue to produce
 integers.
 
+`count` and `insertion_point` also take [expression](./expressions.md) strings. An `insertion_point`
+expression must be provably within `[0, 1]` (see [Value ranges](./expressions.md#value-ranges)); bound
+one that isn't with `Min(Max(..., 0), 1)`.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: synthetic
+  input_distribution: "Min(LogNormal(6, 0.5), 4096)"
+  output_distribution: "Uniform(64, 256)"
+  multimodal:
+    image:
+      count: "Poisson(2)"
+      insertion_point: "Beta(2, 5)"
+```
+
+| Rejected insertion_point | Why |
+| --- | --- |
+| `Normal(0.5, 0.1)` | Unbounded, so not provably within [0, 1]. |
+| `Uniform(0, 2)` | Can reach 2. |
+
 The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
 
 ##### Wire formats
@@ -171,8 +212,10 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean)
+      request_interval: "Exponential(1)" # Alternative to rate: seconds between consecutive requests, a number or a distribution; it is the arrival process, so leave load.type out
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: CPU_cores)
@@ -190,6 +233,99 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Rate Expressions
+
+A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md) over stage time `t`. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: "Min(5 + t/2, 40)"         # ramp to 40 req/s, then hold
+    stop_condition: "t >= 120"
+  - rate: "10 + 5*sin(2*pi*t/60)"    # one full cycle around 10 req/s
+    duration: 60
+```
+
+| Rate | Window (s) | Requests | Mean req/s |
+| --- | --- | --- | --- |
+| `10` | 60 | 600 | 10.00 |
+| `5 + t/2` | 60 | 1200 | 20.00 |
+| `Min(5 + t/2, 40)` | 120 | 3575 | 29.79 |
+| `10 + 5*sin(2*pi*t/60)` | 60 | 600 | 10.00 |
+| `2 + 18*Heaviside(t - 30)` | 60 | 660 | 11.00 |
+| `Piecewise((2, t < 30), (20, True))` | 60 | 660 | 11.00 |
+| `40*exp(-t/30)` | 90 | 1140 | 12.67 |
+| `Max(0, 20 - t/3)` | 90 | 600 | 6.67 |
+| `2**(t/10)` | 60 | 908 | 15.15 |
+
+The constant load type spreads requests by how much the rate has built up, so they bunch where the rate is high. The Poisson load type draws each second's count from the rate over that second. A Poisson stage can run past its window, since its counts are random; past the window it holds the window's mean rate.
+
+| Rejected rate | Why |
+| --- | --- |
+| `10 - t` | Goes negative during a 60s stage. |
+| `Normal(10, 1)` | Random. A rate must be the same on every run. |
+| `requests/10` | `requests` is not a known symbol. |
+| `0*t` | Zero over the whole stage, so the stage would send nothing. |
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
+
+#### Request interval
+
+A stage may set `request_interval` instead of `rate`: the gap, in seconds, between one request and the next, as a number or an [expression](./expressions.md) that draws from a distribution. The gap distribution is the arrival process, so `load.type` is left out (it is rejected alongside `request_interval`). `load.type: poisson` is deprecated: `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second, and a number is the evenly spaced stimulus the constant type only approximates.
+
+<!-- checked-example -->
+```yaml
+load:
+  stages:
+  - request_interval: 0.1                    # one request every 100ms, exactly
+    duration: 60
+  - request_interval: "Exponential(10)"      # Poisson arrivals, 10 per second on average
+    duration: 60
+  - request_interval: "Gamma(0.25, 0.4)"     # the same average, arriving in bursts
+    stop_condition: "t >= 60"
+```
+
+| Request interval | Mean gap (s) | Spread / mean | Arrivals |
+| --- | --- | --- | --- |
+| `0.1` | 0.10 | 0.00 | Evenly spaced, 10 per second. |
+| `Exponential(10)` | 0.10 | 1.00 | Poisson process, 10 per second. |
+| `Gamma(0.25, 0.4)` | 0.10 | 2.00 | 10 per second in bursts: twice the spread of Poisson. |
+| `Gamma(4, 0.025)` | 0.10 | 0.50 | 10 per second, steadier than Poisson. |
+| `Uniform(0.05, 0.15)` | 0.10 | 0.29 | 10 per second with bounded jitter: no gap outside 50 to 150 ms. |
+| `0.05 + Exponential(20)` | 0.10 | 0.50 | Poisson with a 50 ms floor: never two requests closer than that. |
+| `LogNormal(-2.55, 0.7)` | 0.10 | 0.79 | 10 per second with a long tail: most gaps short, a few long. |
+
+The stage sends however many requests fit in its window, so the count is not known from the config when the gap is random; the arrivals are drawn once when the config loads and reports carry the configured `request_interval` in place of `requested_rate`, next to the measured `achieved_rate`. A number is exact: `0.1` over 60 s is 600 requests.
+
+| Rejected request_interval | Why |
+| --- | --- |
+| `Normal(0.1, 0.05)` | Can go negative. Add `Max(0, ...)` or pick a nonnegative distribution. |
+| `0.1*t` | Gaps cannot depend on `t` yet; use `rate` for a time-varying load. |
+| `0` | Not positive. |
+| `100` | Longer than a 60 s stage, so the stage would send nothing. |
+| `Exponential(1e9)` | Over ten million requests in 60 s. |
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 

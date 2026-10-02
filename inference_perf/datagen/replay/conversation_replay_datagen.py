@@ -40,7 +40,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Union
 
 import numpy as np
 
@@ -48,19 +48,19 @@ from aiohttp import ClientResponse
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, LazyLoadInferenceAPIData
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.completion import CompletionAPIData
-from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
     ConversationReplayConfig,
     DataConfig,
     Distribution,
-    DistributionType,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_values
 
 from ..base import DataGenerator, LazyLoadDataMixin
+from ..datagen_utils import check_output_leaves_prompt_budget
 
 logger = logging.getLogger(__name__)
 
@@ -185,24 +185,12 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.rng = np.random.default_rng(self.cr_config.seed)
         self.max_model_len = self.cr_config.max_model_len or 225000
 
-        # Fail here rather than mid-run: truncation can only clamp, so an output ceiling that
-        # consumes the whole context would silently send empty prompts for the entire benchmark.
-        out_dist = self.cr_config.output_tokens_per_turn
-        if out_dist is None:
-            output_ceiling, ceiling_desc = DEFAULT_OUTPUT_TOKENS_PER_TURN, "the default output length"
-        elif out_dist.type == DistributionType.FIXED:
-            # Fixed sampling returns int(mean) directly and is never clipped to max.
-            output_ceiling, ceiling_desc = int(out_dist.mean), "output_tokens_per_turn.mean"
-        else:
-            output_ceiling, ceiling_desc = out_dist.max, "output_tokens_per_turn.max"
-
-        if output_ceiling + PROMPT_TOKEN_BUFFER >= self.max_model_len:
-            raise ValueError(
-                f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within "
-                f"max_model_len ({self.max_model_len}) after reserving the "
-                f"{PROMPT_TOKEN_BUFFER} token safety buffer. Lower it below "
-                f"{self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
-            )
+        out_spec = self.cr_config.output_tokens_per_turn
+        check_output_leaves_prompt_budget(
+            DEFAULT_OUTPUT_TOKENS_PER_TURN if out_spec is None else out_spec,
+            "the default output length" if out_spec is None else "output_tokens_per_turn",
+            self.max_model_len,
+        )
 
         # Cache for the currently active stage's shared system prompt
         self._current_stage_id: Optional[int] = None
@@ -331,10 +319,9 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Combine shared prompt prefix and dynamic prompt suffix with a space."""
         return f"{shared_prompt} {dynamic_prompt}" if dynamic_prompt else shared_prompt
 
-    def _sample_distribution(self, dist: Distribution, count: int) -> List[int]:
-        """Sample ``count`` values from a Distribution."""
-        arr = sample_from_distribution(dist, count, rng=self.rng)
-        return [int(v) for v in arr]
+    def _sample_distribution(self, dist: Union[Distribution, str], count: int) -> List[int]:
+        """Sample ``count`` integers from a Distribution or an expression string."""
+        return [int(v) for v in sample_values(dist, count, self.rng, integer=True)]
 
     def _generate_random_token_text(self, num_tokens: int, rng: Optional[np.random.Generator] = None) -> str:
         """Generate random text that is approximately ``num_tokens`` long."""
@@ -385,11 +372,10 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
             all_output_lens = [DEFAULT_OUTPUT_TOKENS_PER_TURN] * total_turns
 
         if cfg.tool_call_latency_sec is not None:
-            # Sample latencies as floats (seconds); re-use the same distribution
-            # machinery but convert from the integer output to float seconds.
-            all_tool_latencies: List[float] = [
-                float(v) for v in self._sample_distribution(cfg.tool_call_latency_sec, total_turns)
-            ]
+            # Latencies are seconds, so keep fractions: 0.3s must not round to 0.
+            all_tool_latencies: List[float] = sample_values(
+                cfg.tool_call_latency_sec, total_turns, self.rng, integer=False
+            ).tolist()
         else:
             all_tool_latencies = []
 

@@ -30,6 +30,21 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def validate_length_expression(value: str) -> str:
+    """Validate an expression-string length field at config-load time.
+
+    Constructing the Expression is the validation: it raises ValueError for
+    unparseable input, unknown functions or symbols, and the time variable
+    ``t`` (a length never varies with stage time), which pydantic surfaces as
+    a field validation error. The value itself is returned unchanged; sampling
+    sites construct their own Expression from it.
+    """
+    from inference_perf.utils.numeric.expression import Expression
+
+    Expression(value, allow_time=False)
+    return value
+
+
 class DistributionType(str, Enum):
     NORMAL = "normal"
     SKEW_NORMAL = "skew_normal"
@@ -67,8 +82,18 @@ class Distribution(StrictBaseModel):
         return self
 
 
-def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Optional[Union[float, Distribution]]:
-    if isinstance(value, Distribution):
+def _validate_insertion_point(
+    value: Optional[Union[float, Distribution, str]],
+) -> Optional[Union[float, Distribution, str]]:
+    if isinstance(value, str):
+        from inference_perf.utils.numeric.expression import Expression
+
+        bounds = Expression(value, allow_time=False).bounds
+        if bounds is None or bounds[0] < 0 or bounds[1] > 1:
+            raise ValueError(
+                f"insertion_point {value!r} must be provably within [0, 1], e.g. 'Beta(2, 5)' or 'Min(Max({value}, 0), 1)'."
+            )
+    elif isinstance(value, Distribution):
         if value.min < 0 or value.max > 1:
             raise ValueError("insertion_point distribution min and max must be within [0, 1].")
         if value.type != DistributionType.UNIFORM and not value.min <= value.mean <= value.max:
@@ -78,4 +103,4 @@ def _validate_insertion_point(value: Optional[Union[float, Distribution]]) -> Op
     return value
 
 
-InsertionPoint = Annotated[Optional[Union[float, Distribution]], AfterValidator(_validate_insertion_point)]
+InsertionPoint = Annotated[Optional[Union[float, Distribution, str]], AfterValidator(_validate_insertion_point)]
