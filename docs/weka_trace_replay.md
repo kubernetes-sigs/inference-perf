@@ -102,6 +102,28 @@ report shape are identical between the two datagens.
 
 ---
 
+## Replaying through the workload record layer (alpha)
+
+The same traces are also a workload format, `format: Weka` under `data.type: workload_replay` (see [Workload replay](loadgen.md#workload-replay-alpha)). `file` is a directory of trace JSON files, one trace JSON file, or a `.jsonl` file with one trace per line.
+
+```yaml
+data:
+  type: workload_replay
+  workload:
+    format: Weka
+    file: ./traces/
+load:
+  type: trace_session_replay
+  stages:
+    - concurrent_sessions: 16
+```
+
+Each trace is one session. Prompts, output lengths, subagent streams, dependencies and the recorded gaps between calls are the ones described above, and a recorded assistant turn is replaced by the live reply of the call it followed. What this spelling does not have yet: the Hugging Face download (`hf_dataset_path`), `filter`, model mapping (requests go to `server.model_name`), `ignore_trace_delays`, `use_think_time_only`, parallel session building, session shuffling and `trace_idle_gap_cap_seconds`. Long waits are capped by `data.workload.session.max_wait_ms` (15 s by default) instead. Prompt text comes from the prompt corpus, so it differs from the `weka_trace_replay` generator's, while lengths and prefix reuse are the same.
+
+`data.type: weka_trace_replay` keeps working unchanged.
+
+---
+
 ## 🏃 Running the Benchmark
 
 Run the benchmark with the following command:
