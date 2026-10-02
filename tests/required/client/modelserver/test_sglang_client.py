@@ -189,7 +189,7 @@ BACKEND = Backend(
             }
         ],
     },
-    expected_supported_apis=[APIType.Completion, APIType.Chat, APIType.Embeddings],
+    expected_supported_apis=[APIType.Completion, APIType.Chat, APIType.Embeddings, APIType.Template],
     expected_metric_filters=[f"model_name='{MODEL}'"],
     queue_metric_name="sglang:num_queue_reqs",
 )

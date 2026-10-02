@@ -1,6 +1,8 @@
 import json
 import pytest
-from inference_perf.apis import CompletionAPIData
+from unittest.mock import MagicMock
+from inference_perf.apis import CompletionAPIData, TemplateAPIData
+from inference_perf.config import APIConfig, APIType, TemplateConfig
 from inference_perf.datagen.dataset.hf_sharegpt_datagen import HFShareGPTDataGenerator
 
 
@@ -64,3 +66,28 @@ def test_get_anthropic_messages_data_rejects_unexpected_chat_data() -> None:
 
     with pytest.raises(Exception, match="Expected ChatCompletionAPIData, got CompletionAPIData"):
         next(generator.get_anthropic_messages_data())
+
+
+def test_completion_prompt_sent_through_a_template() -> None:
+    generator = HFShareGPTDataGenerator.__new__(HFShareGPTDataGenerator)
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    generator.api_config = APIConfig(type=APIType.Template, template=template)
+    generator.data_key = "conversations"
+    generator.content_key = "value"
+    generator.min_num_turns = 2
+    generator.input_distribution = None
+    generator.output_distribution = None
+    generator._dataset_ready = True
+    generator.sharegpt_dataset = iter(
+        [{"conversations": [{"from": "human", "value": "madoka"}, {"from": "gpt", "value": "magika"}]}]
+    )
+    tokenizer = MagicMock()
+    tokenizer.get_tokenizer.return_value.encode.return_value = [1]
+    tokenizer.count_tokens.return_value = 1
+    generator.tokenizer = tokenizer
+
+    data = next(generator.get_data())
+
+    assert isinstance(data, TemplateAPIData)
+    assert data.prompt == "madoka"
+    assert data.max_tokens == 1

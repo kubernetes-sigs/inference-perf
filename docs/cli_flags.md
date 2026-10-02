@@ -8,7 +8,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `-a`, `--analyze` | list of str | Path to a report directories to analyze |
 | `-u`, `--unified_analysis_dir` | str | Unified analysis directory path |
 | `--log-level` | Enum (DEBUG, INFO, WARNING, ERROR, CRITICAL) | Logging level (default: INFO) |
-| `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or rerank. |
+| `--api.type` | Enum (completion, chat, anthropic_messages, embeddings, rerank, template) | API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings, rerank or a request template. |
 | `--api.streaming` | boolean | Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics. |
 | `--api.headers` | JSON | Additional HTTP headers to send with every request. |
 | `--api.slo_unit` | str | Time unit for SLO header values: 's', 'ms' or 'us'. Defaults to 'ms'. |
@@ -25,6 +25,11 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.rerank.query_field` | str | Request field name carrying the query text. |
 | `--api.rerank.documents_field` | str | Request field name carrying the list of candidate documents. |
 | `--api.rerank.top_n` | int | Optional top_n sent to the server to limit the number of results returned. 0 means all results. |
+| `--api.template.route` | str | Path the request is sent to, appended to the server base URL, e.g. '/generate'. |
+| `--api.template.body` | JSON | JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request. |
+| `--api.template.text_path` | str | JMESPath expression that selects the generated text in the response body. |
+| `--api.template.input_tokens_path` | str | JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer. |
+| `--api.template.output_tokens_path` | str | JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |

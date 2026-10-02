@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from inference_perf.apis import InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData, TemplateAPIData
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, SharedPrefix, TraceConfig
 from abc import ABC, abstractmethod
@@ -45,6 +45,15 @@ class BaseGenerator(ABC):
     def get_supported_apis(self) -> List[APIType]:
         """Return list of supported API types (Chat, Completion, etc.)."""
         raise NotImplementedError
+
+    def prompt_data(self, prompt: str, max_tokens: int = 0, add_special_tokens: Optional[bool] = None) -> InferenceAPIData:
+        """The request for one text prompt: a template request for type 'template', a completion otherwise."""
+        if self.api_config.type == APIType.Template:
+            assert self.api_config.template is not None
+            return TemplateAPIData(
+                prompt=prompt, max_tokens=max_tokens, add_special_tokens=add_special_tokens, template=self.api_config.template
+            )
+        return CompletionAPIData(prompt=prompt, max_tokens=max_tokens, add_special_tokens=add_special_tokens)
 
     def is_preferred_worker_requested(self) -> bool:
         """Whether this generator requests preferred worker routing.

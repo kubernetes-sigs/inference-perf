@@ -19,7 +19,7 @@ from typing import Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData, RerankAPIData
+from inference_perf.apis import EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData, RerankAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, RerankConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -119,7 +119,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Embeddings, APIType.Rerank]
+        return [APIType.Completion, APIType.Embeddings, APIType.Rerank, APIType.Template]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -179,14 +179,11 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
 
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type in (APIType.Completion, APIType.Template):
             length = self.input_lengths[n]
             prompt_text = self._generate_exact_length_text(length)
             self._log_progress()
-            return CompletionAPIData(
-                prompt=prompt_text,
-                max_tokens=self.output_lengths[n],
-            )
+            return self.prompt_data(prompt_text, self.output_lengths[n])
         elif self.api_config.type == APIType.Embeddings:
             start = n * self.embeddings_batch_size
             lengths = self.input_lengths[start : start + self.embeddings_batch_size]

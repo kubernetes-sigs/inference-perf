@@ -16,7 +16,7 @@ import os
 from typing import Any, Dict, Generator, List, Optional
 
 from datasets import load_dataset
-from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAPIData, InferenceAPIData
+from inference_perf.apis import ChatCompletionAPIData, ChatMessage, InferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -88,7 +88,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion]
+        return [APIType.Chat, APIType.Completion, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         self._ensure_dataset_loaded()
@@ -108,7 +108,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
                 ):
                     continue
 
-                if self.api_config.type == APIType.Completion:
+                if self.api_config.type in (APIType.Completion, APIType.Template):
                     try:
                         prompt = data[self.data_key][0].get(self.content_key)
                         completion = data[self.data_key][1].get(self.content_key)
@@ -129,7 +129,7 @@ class BillsumConversationsDataGenerator(DataGenerator):
                             ):
                                 continue
 
-                        yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+                        yield self.prompt_data(prompt, completion_tokens)
                     except (KeyError, TypeError) as e:
                         logger.warning(f"Skipping invalid completion data: {e}")
                         continue
