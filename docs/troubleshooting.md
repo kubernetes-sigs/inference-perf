@@ -32,7 +32,9 @@ Note the deliberate scope of "error" here: it flags a bug in inference-perf, nev
 
 All of these use fields already in the reports (see [reports.md](./reports.md)) and the metric definitions in [metrics.md](./metrics.md). No rerun needed.
 
-**Token accounting.** For a sample of entries in `per_request_lifecycle_metrics.json`, compare the client-derived count against the server-reported count:
+**Token accounting.** Start with the aggregate. The `successes` block of each stage and summary report carries `token_count_mismatches` (streamed requests where the client and server output counts disagree) and `client_fallback_requests` (requests where the server reported no count, so there was nothing to compare against). Both should be zero or close to it; see [Token Accounting and Provenance](./metrics.md#token-accounting-and-provenance) for how each field is derived. Note the naming in that block: `output_len` is the client count and `output_tokens` is the server count.
+
+Then, for a sample of entries in `per_request_lifecycle_metrics.json`, compare the client-derived count against the server-reported count:
 
 - client: `info.response_metrics.output_tokens` (re-tokenization of the received text)
 - server: `info.response_metrics.server_usage.completion_tokens` (the server's own `usage` block, when the server sends one)
@@ -41,7 +43,7 @@ These should agree within a few tokens. (Known caveat: models that emit reasonin
 
 **Latency identities.** Per request, end-to-end latency decomposes as `e2e ≈ TTFT + ITL × (output_tokens − 1)` (see [metrics.md](./metrics.md) for the exact definitions). If the reported aggregates cannot be reconciled with this identity even approximately, some component was mismeasured.
 
-**Recompute a throughput from raw data.** Output token throughput is `total output tokens / duration`. Sum `output_tokens` over the per-request entries of one stage and divide by the stage duration; it should match the stage report's throughput block. A mismatch means aggregation is broken, not the server.
+**Recompute a throughput from raw data.** Output token throughput is `total output tokens / duration`. Sum `output_tokens` over the per-request entries of one stage (group by `stage_id`) and divide by the stage duration; it should match the stage report's throughput block. A mismatch means aggregation is broken, not the server.
 
 **Physical floors and ceilings.** Two back-of-envelope bounds catch most impossible numbers:
 
@@ -93,5 +95,7 @@ The distinguishing property of bucket 3 is reproducibility under variation: the 
 A comparison set imposes constraints beyond validity, because comparability is always relative to a spec: which dataset and seed, whether `ignore_eos` is set, the sweep shape (a single axis swept upward monotonically), stage durations long enough for stable tails and equal across runs, hardware metadata recorded so the runs can be grouped at all.
 
 A run that fails one of these is not wrong. Its numbers stand as a measurement of what it measured. It just cannot sit in that comparison, and downstream consumers that aggregate benchmark reports across runs (dashboards, regression gates) may exclude or flag it. The remedy is to rerun under the comparison's constraints, not to adjust the data.
+
+The most common instance is comparing against another benchmarking tool, where default settings alone move headline numbers by tens of percent. [comparability.md](./comparability.md) lists what has to agree in that case and how to verify it did.
 
 If you are producing runs for such a consumer, check its constraints before the run, not after: every constraint above is a config decision, and all of them are cheaper to set than to discover in a chart.
