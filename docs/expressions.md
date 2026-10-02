@@ -12,6 +12,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 | --- | --- | --- | --- |
 | [`load.stages[].rate`](./config.md#rate-expressions) (constant, poisson) | yes | no | Nonnegative over the stage and not zero everywhere. |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
+| [`load.stages[].request_interval`](./config.md#request-interval) | no | yes | Nonnegative; set instead of `rate`, with no `load.type`. |
 | [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
 | [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
 | [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts rounded; `tool_call_latency_sec` keeps fractions. |
