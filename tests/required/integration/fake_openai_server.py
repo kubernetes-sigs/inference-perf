@@ -52,16 +52,32 @@ class ServedStream:
     tightly without trusting ``asyncio.sleep`` accuracy.
     """
 
+    # Stamped when the handler starts, before the stream is opened.
+    arrival_time: float = 0.0
     reasoning_send_times: List[float] = field(default_factory=list)
     content_send_times: List[float] = field(default_factory=list)
 
 
 class FakeOpenAIServer:
     """Serves /v1/chat/completions, streaming the configured script for every
-    request. Use as an async context manager; ``url`` is the endpoint."""
+    request. Use as an async context manager; ``url`` is the endpoint.
 
-    def __init__(self, script: List[StreamEvent], completion_tokens: Optional[int] = None) -> None:
+    ``reasoning_key`` is the delta field that carries reasoning text: vLLM has
+    shipped both ``reasoning_content`` and ``reasoning``. /health and
+    /v1/models answer too, so benchmark tools that probe the server before
+    sending load (the e2e cross-tool parity test) can run against it."""
+
+    def __init__(
+        self,
+        script: List[StreamEvent],
+        completion_tokens: Optional[int] = None,
+        *,
+        reasoning_key: str = "reasoning_content",
+        model: str = "fake-model",
+    ) -> None:
         self.script = script
+        self.reasoning_key = reasoning_key
+        self.model = model
         # Emitted as a trailing usage chunk (stream_options.include_usage
         # style) when set.
         self.completion_tokens = completion_tokens
@@ -70,12 +86,18 @@ class FakeOpenAIServer:
         self.port = 0
 
     @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/v1/chat/completions"
+        return f"{self.base_url}/v1/chat/completions"
 
     async def __aenter__(self) -> "FakeOpenAIServer":
         app = web.Application()
         app.router.add_post("/v1/chat/completions", self._handle)
+        app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/v1/models", self._handle_models)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -89,15 +111,21 @@ class FakeOpenAIServer:
         if self._runner is not None:
             await self._runner.cleanup()
 
+    async def _handle_health(self, request: web.Request) -> web.Response:
+        return web.Response(status=200)
+
+    async def _handle_models(self, request: web.Request) -> web.Response:
+        return web.json_response({"object": "list", "data": [{"id": self.model, "object": "model"}]})
+
     async def _handle(self, request: web.Request) -> web.StreamResponse:
+        record = ServedStream(arrival_time=time.perf_counter())
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
-        record = ServedStream()
         self.served.append(record)
         for event in self.script:
             if event.delay_before > 0:
                 await asyncio.sleep(event.delay_before)
-            key = "reasoning_content" if event.channel == "reasoning" else "content"
+            key = self.reasoning_key if event.channel == "reasoning" else "content"
             payload = {"choices": [{"delta": {key: event.text}}]}
             await response.write(f"data: {json.dumps(payload)}\n\n".encode())
             stamp = time.perf_counter()
