@@ -80,7 +80,12 @@ class Config(StrictBaseModel):
     @model_validator(mode="after")
     def validate_trace_replay_load_type(self) -> "Config":
         """Validate that trace replay data types use trace_session_replay load type."""
-        if self.data.type in (DataGenType.OTelTraceReplay, DataGenType.WekaTraceReplay, DataGenType.SyntheticAgentic):
+        if self.data.type in (
+            DataGenType.OTelTraceReplay,
+            DataGenType.WekaTraceReplay,
+            DataGenType.TraceLabTraceReplay,
+            DataGenType.SyntheticAgentic,
+        ):
             if self.load.type != LoadType.TRACE_SESSION_REPLAY:
                 raise ValueError(
                     f"data.type '{self.data.type.value}' requires load.type 'trace_session_replay', "
