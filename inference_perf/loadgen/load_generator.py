@@ -1778,7 +1778,11 @@ class LoadGenerator:
         else:
             num_requests = rate.expected_requests if not isinstance(rate, (float, int)) else int(rate * duration)
         # Reports carry one rate per stage; a time-varying rate reports its mean.
-        report_rate = rate.mean_rate if not isinstance(rate, (float, int)) else rate
+        # A request_interval stage reports the gap it was configured with instead.
+        report_rate: Optional[float] = rate.mean_rate if not isinstance(rate, (float, int)) else rate
+        report_request_interval: Optional[str] = None
+        if isinstance(rate, RequestSchedule):
+            report_rate, report_request_interval = None, str(rate.request_interval.raw)
         # A stage that sends nothing has no request to wait on, so it holds its
         # window open instead and still ends at its duration or stop condition.
         idle_until: Optional[float] = None
@@ -1892,6 +1896,7 @@ class LoadGenerator:
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
             rate=report_rate,
+            request_interval=report_request_interval,
             start_time=start_time_epoch,
             end_time=end_time_epoch,
             status=stage_status,
@@ -2329,7 +2334,8 @@ class LoadGenerator:
         logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
-            rate=stage.mean_rate,
+            rate=stage.mean_rate if stage.request_interval is None else None,
+            request_interval=None if stage.request_interval is None else str(stage.request_interval),
             start_time=start_time_epoch,
             end_time=time.time(),
             status=stage_status,
