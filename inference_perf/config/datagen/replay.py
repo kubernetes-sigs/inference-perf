@@ -358,6 +358,61 @@ class WekaTraceReplayConfig(SessionReplayConfig):
         return self
 
 
+class TraceLabTraceReplayConfig(SessionReplayConfig):
+    """Configuration for TraceLab trace replay data generator.
+
+    Replays UW TraceLab coding-agent traces (Claude Code / Codex), where each
+    JSONL row is one LLM invocation with serving-relevant token accounting
+    (``input_tokens_total`` / ``prefix_tokens`` / ``newly_append_tokens`` /
+    ``output_tokens``), tool-call metadata, and timing. See
+    https://tracelab.cs.washington.edu and https://arxiv.org/abs/2606.30560.
+    """
+
+    trace_directory: Optional[str] = Field(None, description="Directory containing TraceLab JSONL trace files")
+    trace_files: Optional[List[str]] = Field(None, description="List of paths to specific TraceLab JSONL trace files")
+    hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "HuggingFace dataset path. Can be:\n"
+            "  - String: 'username/dataset-name'\n"
+            "  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}\n"
+            "Any extra keys in the dict are passed as kwargs to datasets.load_dataset()."
+        ),
+    )
+    filter: Optional[str] = Field(
+        None,
+        description=(
+            "Lambda expression to filter sessions. Applied uniformly to all data sources.\n"
+            "Receives the session dict plus derived aggregates: max_tokens (largest\n"
+            "single-round input+output), total_tokens, and num_rounds.\n"
+            "Example: \"lambda x: x['max_tokens'] < 262144\"\n"
+            "Security: Filter expressions use eval() and should only contain trusted input."
+        ),
+    )
+    num_dataset_entries: int = Field(100, description="Max number of sessions to load from HuggingFace")
+    trace_idle_gap_cap_seconds: float = Field(60.0, description="Cap idle timing gaps between rounds in seconds")
+    ignore_trace_delays: bool = Field(False, description="Ignore delays from original trace and run back-to-back")
+
+    @model_validator(mode="after")
+    def validate_trace_sources(self) -> "TraceLabTraceReplayConfig":
+        # Validate that exactly one of trace_directory, trace_files, or hf_dataset_path is provided
+        sources_provided = sum(
+            [
+                self.trace_directory is not None,
+                self.trace_files is not None,
+                self.hf_dataset_path is not None,
+            ]
+        )
+
+        if sources_provided == 0:
+            raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
+        if sources_provided > 1:
+            raise ValueError(
+                "Cannot specify multiple trace sources; choose one of: trace_directory, trace_files, or hf_dataset_path"
+            )
+        return self
+
+
 class ContextCompactionConfig(BaseModel):
     """Context compaction policy: model long-horizon agents that COMPACT
     instead of growing the transcript forever.

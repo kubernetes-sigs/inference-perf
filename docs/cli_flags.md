@@ -22,7 +22,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.embeddings.encoding_format` | Enum (float, base64) | Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
-| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
+| `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, tracelab_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |
 | `--data.path` | str | Path to the downloaded ShareGPT dataset. Only used by the 'shareGPT' type. |
 | `--data.corpus_file_path` | str | Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet |
 | `--data.input_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
@@ -187,6 +187,33 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.default_block_size` | int | Default block size if not specified in trace |
 | `--data.weka_trace_replay.num_dataset_entries` | int | Max number of dataset traces to load from HuggingFace |
 | `--data.weka_trace_replay.datagen_workers` | int | Number of processes used to reconstruct trace sessions during data generation. Defaults to the number of CPUs available to the process (the minimum of the scheduling affinity and the cgroup CPU quota), capped at the trace count. Set to 1 to disable multiprocessing. Parallel building requires Linux; other platforms build serially. Output is deterministic and identical regardless of this value. |
+| `--data.tracelab_trace_replay.use_static_model` | boolean | Use a single static model for all requests |
+| `--data.tracelab_trace_replay.static_model_name` | str | Static model name (required if use_static_model=True) |
+| `--data.tracelab_trace_replay.model_mapping` | JSON | Map recorded model names to target models |
+| `--data.tracelab_trace_replay.default_max_tokens` | int | Default max_tokens if not specified in trace |
+| `--data.tracelab_trace_replay.override_tool_call_max_tokens` | boolean | Add tiered headroom to recorded tool-call max_tokens |
+| `--data.tracelab_trace_replay.tool_choice_mode` | Enum (force_recorded, as_recorded) | Whether to inject a tool_choice policy on recorded tool-call turns. 'force_recorded' (default) forces the recorded function, or 'required' when the recorded turn made several calls or named a tool absent from this turn's list. 'as_recorded' injects nothing, leaving the choice to the model, at the cost of turns where it answers in prose and the recorded tool results no longer match. |
+| `--data.tracelab_trace_replay.inject_random_session_id` | boolean | Inject random string into unique segments to invalidate KV-cache between sessions |
+| `--data.tracelab_trace_replay.duplicate_sessions_target` | int | Target number of sessions to reach by duplicating existing sessions. If None, no duplication occurs. |
+| `--data.tracelab_trace_replay.max_wait_ms` | int | Maximum inter-event wait time in milliseconds. Caps the delay between predecessor completion and event dispatch to avoid reproducing unusually long tool/agent execution times from the original trace. |
+| `--data.tracelab_trace_replay.predecessor_wait_timeout_sec` | float | Seconds to wait for predecessor events to complete before failing. 0 waits indefinitely; use with care because a genuinely stuck predecessor will then never time out and successors will wait forever. |
+| `--data.tracelab_trace_replay.include_errors` | boolean | Include spans with error status |
+| `--data.tracelab_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
+| `--data.tracelab_trace_replay.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
+| `--data.tracelab_trace_replay.trace_directory` | str | Directory containing TraceLab JSONL trace files |
+| `--data.tracelab_trace_replay.trace_files` | JSON | List of paths to specific TraceLab JSONL trace files |
+| `--data.tracelab_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:
+  - String: 'username/dataset-name'
+  - Dict: {'path': 'username/dataset-name', 'revision': 'main', 'split': 'train'}
+Any extra keys in the dict are passed as kwargs to datasets.load_dataset(). |
+| `--data.tracelab_trace_replay.filter` | str | Lambda expression to filter sessions. Applied uniformly to all data sources.
+Receives the session dict plus derived aggregates: max_tokens (largest
+single-round input+output), total_tokens, and num_rounds.
+Example: "lambda x: x['max_tokens'] < 262144"
+Security: Filter expressions use eval() and should only contain trusted input. |
+| `--data.tracelab_trace_replay.num_dataset_entries` | int | Max number of sessions to load from HuggingFace |
+| `--data.tracelab_trace_replay.trace_idle_gap_cap_seconds` | float | Cap idle timing gaps between rounds in seconds |
+| `--data.tracelab_trace_replay.ignore_trace_delays` | boolean | Ignore delays from original trace and run back-to-back |
 | `--data.conversation_replay.seed` | int | Random seed for deterministic generation |
 | `--data.conversation_replay.num_conversations` | int | Number of conversation blueprints to generate |
 | `--data.conversation_replay.shared_system_prompt_len` | int | Fixed shared system prompt length in tokens |
