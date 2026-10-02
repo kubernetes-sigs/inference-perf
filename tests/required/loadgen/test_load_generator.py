@@ -23,6 +23,7 @@ from typing import Any
 
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.apis import InferenceAPIData
 from inference_perf.utils.request_queue import RequestQueue
@@ -109,6 +110,14 @@ class TestLoadGeneratorConcurrency(unittest.TestCase):
         self.assertEqual(self.load_generator.workers[1].shared_max_concurrency.value, 1)  # type: ignore
         self.assertEqual(self.load_generator.workers[2].shared_max_concurrency.value, 1)  # type: ignore
         self.assertEqual(self.load_generator.workers[3].shared_max_concurrency.value, 0)  # type: ignore
+
+    # 4 workers. Preferred-worker requests are spread over the workers that get
+    # a share of the level: all 4 with no level, 3 at a fixed level of 3, and
+    # 4 for a ramp from 1 to 8, because it counts the peak (8), not the start (1).
+    def test_routable_workers_counts_the_peak_level(self) -> None:
+        self.assertEqual(self.load_generator._routable_workers(None), 4)
+        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule(3)), 3)
+        self.assertEqual(self.load_generator._routable_workers(ConcurrencySchedule("Min(1 + t, 8)")), 4)
 
 
 class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):

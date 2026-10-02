@@ -11,12 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from transformers.tokenization_utils_base import VERY_LARGE_INTEGER
-from inference_perf.config import CustomTokenizerConfig
+
+# Type-only: ``inference_perf.utils.__init__`` imports this module eagerly, so a
+# runtime import of ``inference_perf.config`` here would make config unable to
+# import anything under ``inference_perf.utils`` (e.g. ``utils.numeric``).
+if TYPE_CHECKING:
+    from inference_perf.config import CustomTokenizerConfig
 
 logger = logging.getLogger(__name__)
 
