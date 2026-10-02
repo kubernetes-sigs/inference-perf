@@ -19,6 +19,7 @@ itself, so ``load.type`` is not set alongside it, and the stage sends however
 many requests fit in its window.
 """
 
+import logging
 import unittest.mock
 from typing import Any
 
@@ -90,6 +91,22 @@ def test_load_type_cannot_be_set_with_request_interval() -> None:
     LoadConfig(stages=[stage, StandardLoadStage(rate=10, duration=60)])
     with pytest.raises(ValidationError, match="sweep generates rate stages"):
         LoadConfig(stages=[stage], sweep=SweepConfig(type=StageGenType.LINEAR))
+
+
+# load.type: poisson logs a deprecation warning naming the replacement (request_interval
+# Exponential) when the config loads; the config still works. load.type: constant does not warn.
+def test_poisson_load_type_warns_deprecated(caplog: pytest.LogCaptureFixture) -> None:
+    stage = StandardLoadStage(rate=10, duration=60)
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        LoadConfig(type=LoadType.POISSON, stages=[stage])
+    assert [r.message for r in caplog.records if "deprecated" in r.message] == [
+        'load.type: poisson is deprecated. Set request_interval: "Exponential(<rate>)" on each stage instead of rate, '
+        "and remove load.type."
+    ]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="inference_perf.config.loadgen.config"):
+        LoadConfig(type=LoadType.CONSTANT, stages=[stage])
+    assert not [r for r in caplog.records if "deprecated" in r.message]
 
 
 # The arrivals are drawn once: reading the stage twice gives the same schedule object,
