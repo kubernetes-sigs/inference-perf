@@ -14,10 +14,11 @@
 from pathlib import Path
 from inference_perf.client.server_metrics.base import StageRuntimeInfo, StageStatus
 from inference_perf.datagen.base import BaseGenerator
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
 from inference_perf.utils.numeric.rate_schedule import RateSchedule
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from inference_perf.utils.request_queue import RequestQueue
-from .load_timer import LoadTimer, ConstantLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
+from .load_timer import LoadTimer, ConstantLoadTimer, RequestIntervalLoadTimer, PoissonLoadTimer, TraceReplayLoadTimer
 from inference_perf.datagen import DataGenerator, SessionGenerator, LazyLoadDataMixin
 from inference_perf.apis import InferenceAPIData, RequestLifecycleMetric
 from inference_perf.apis.user_session import LocalUserSession
@@ -877,7 +878,11 @@ class LoadGenerator:
             return str(np.random.choice(self.lora_adapters, p=self.lora_weights))
         return None
 
-    def get_timer(self, rate: Union[float, RateSchedule], duration: float) -> LoadTimer:
+    def get_timer(self, rate: Union[float, RateSchedule, RequestSchedule], duration: float) -> LoadTimer:
+        # A request_interval stage carries its own arrival process; load.type is
+        # not set alongside it.
+        if isinstance(rate, RequestSchedule):
+            return RequestIntervalLoadTimer(rate)
         if self.load_type == LoadType.POISSON:
             return PoissonLoadTimer(rate=rate, duration=duration)
         elif self.load_type == LoadType.TRACE_REPLAY:
@@ -1622,7 +1627,7 @@ class LoadGenerator:
     async def run_stage(
         self,
         stage_id: int,
-        rate: Union[float, RateSchedule],
+        rate: Union[float, RateSchedule, RequestSchedule],
         duration: float,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
@@ -1659,9 +1664,9 @@ class LoadGenerator:
         if isinstance(self.datagen, DataGenerator) and self.datagen.trace is not None:
             num_requests = self.datagen.get_request_count()
         else:
-            num_requests = rate.expected_requests if isinstance(rate, RateSchedule) else int(rate * duration)
+            num_requests = rate.expected_requests if not isinstance(rate, (float, int)) else int(rate * duration)
         # Reports carry one rate per stage; a time-varying rate reports its mean.
-        report_rate = rate.mean_rate if isinstance(rate, RateSchedule) else rate
+        report_rate = rate.mean_rate if not isinstance(rate, (float, int)) else rate
 
         stage_status = StageStatus.RUNNING
         # Reported from here, not from the driver loop, because the planned
@@ -2009,7 +2014,7 @@ class LoadGenerator:
                         stage_id,
                         self.run_stage(
                             stage_id,
-                            stage.rate_schedule,
+                            stage.schedule,
                             duration,
                             request_queue,
                             active_requests_counter,
@@ -2064,7 +2069,7 @@ class LoadGenerator:
     ) -> None:
         """Send one stage's requests from this process and record its StageRuntimeInfo."""
         duration = stage.effective_duration
-        timer = self.get_timer(stage.rate_schedule, duration)
+        timer = self.get_timer(stage.schedule, duration)
         start_time_epoch = time.time()
         start_time = time.perf_counter()
         end_time = start_time + duration
