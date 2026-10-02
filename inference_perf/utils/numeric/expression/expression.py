@@ -344,7 +344,13 @@ class Expression:
         if contained is True:
             return
         if contained is False:
-            hint = " Pass clip=True to clamp random draws into range instead." if self._is_random else ""
+            # The hint is for someone editing a config, who has no clip
+            # switch: keep the value in range inside the expression.
+            hint = (
+                " Keep it in range with Min(...) or Max(...), or pick a distribution bounded to the range."
+                if self._is_random
+                else ""
+            )
             raise ValueError(
                 f"Expression {self.raw!r} can evaluate to {static_range}, which is outside the permitted range {bounds}.{hint}"
             )
@@ -492,7 +498,8 @@ class Expression:
                 offender = float(samples.reshape(-1)[np.argmax(out_of_range.reshape(-1))])
                 raise ValueError(
                     f"Expression {self.raw!r} drew {offender}, outside the permitted range "
-                    f"[{self.minimum}, {self.maximum}]. Pass clip=True to clamp draws into range instead."
+                    f"[{self.minimum}, {self.maximum}]. Keep it in range with Min(...) or Max(...), "
+                    "or pick a distribution bounded to the range."
                 )
         # The fallback yields a 0-d scalar for size==1 while the numpy fast path
         # yields a shape-(1,) array; flatten before scalarising so both work.
