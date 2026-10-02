@@ -190,7 +190,9 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         successes = contents.get("successes", {})
         failures = contents.get("failures", {})
 
+        # A stage configured by request_interval has no requested rate; show the gap instead.
         req_rate = load_summary.get("requested_rate", 0.0)
+        req_rate_text = f"{req_rate:0.1f}" if "request_interval" not in load_summary else str(load_summary["request_interval"])
         ach_rate = load_summary.get("achieved_rate", 0.0)
 
         # Error Rate calculation
@@ -296,7 +298,7 @@ def print_summary_table(reports: List[ReportFile]) -> None:
         # Populate Table 1
         summary_row = [
             str(stage_id),
-            f"{req_rate:0.1f}",
+            req_rate_text,
             f"{ach_rate:0.1f}",
             error_str,
             f"{req_per_sec:0.1f}",

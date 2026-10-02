@@ -269,9 +269,9 @@ def test_load_summary_omits_rate_fields_without_a_stage_rate() -> None:
 
     Only the cross-stage `summary_lifecycle_metrics` report calls `summarize_requests`
     without a `stage_rate`, since stages with different rates have no single requested
-    rate. Per-stage reports always pass one: `StageRuntimeInfo.rate` is a non-optional
-    float, and a trace-replay stage without `session_rate` stores 0.0 there, so it gets
-    the full block with `requested_rate: 0.0`. In the combined report the rate keys are
+    rate. Per-stage reports always pass one (or a request_interval, see below): a
+    trace-replay stage without `session_rate` stores 0.0 there, so it gets the full
+    block with `requested_rate: 0.0`. In the combined report the rate keys are
     missing, so a consumer reading `achieved_rate` unconditionally gets a KeyError rather
     than a wrong number. `schedule_delay` is still reported and still exact.
     """
@@ -281,6 +281,22 @@ def test_load_summary_omits_rate_fields_without_a_stage_rate() -> None:
     assert load["schedule_delay"]["mean"] == pytest.approx(0.5)
     assert "achieved_rate" not in load
     assert "send_duration" not in load
+    assert "requested_rate" not in load
+
+
+# A stage configured by request_interval "Exponential(10)" rather than a rate: 5 requests
+# at 0,1,2,3,4s report the request_interval string, send_duration 4.0 and the measured
+# achieved_rate 1.25, with no requested_rate (the stage never had one).
+def test_load_summary_reports_request_interval_in_place_of_requested_rate() -> None:
+    load = _load_summary(
+        _delayed(start_times=[0.0, 1.0, 2.0, 3.0, 4.0], delays=[0.0] * 5),
+        stage_request_interval="Exponential(10)",
+    )
+
+    assert load["count"] == 5
+    assert load["request_interval"] == "Exponential(10)"
+    assert load["send_duration"] == pytest.approx(4.0)
+    assert load["achieved_rate"] == pytest.approx(1.25)
     assert "requested_rate" not in load
 
 
