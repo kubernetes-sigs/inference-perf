@@ -21,6 +21,7 @@ from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 
 from inference_perf.config.datagen.replay import TraceConfig
 from inference_perf.utils.cpu_count import default_cpu_count
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
 from inference_perf.utils.numeric.expression import Expression, Predicate
 from inference_perf.utils.numeric.rate_schedule import RateSchedule
 
@@ -50,14 +51,29 @@ class StandardLoadStage(LoadStage):
     to the same :class:`Predicate`, and the load generator only ever reads the
     predicate. ``stop_condition`` is the form that will grow to reference
     request counts and measured metrics.
+
+    How requests are spaced inside the window is set by exactly one of ``rate``
+    (requests per second, spaced by ``load.type``) or ``request_interval`` (the gap
+    between consecutive requests, which may be a random variable and is the
+    arrival process itself, so ``load.type`` is not set alongside it).
     """
 
-    rate: Union[Annotated[float, Field(gt=0)], str] = Field(
-        ...,
+    rate: Optional[Union[Annotated[float, Field(gt=0)], str]] = Field(
+        default=None,
         description=(
             "Request rate (QPS): a positive number, or an expression over stage time t (seconds) such as "
             "'10 + 5*sin(2*pi*t/60)' or 'Min(5 + t/2, 40)'. An expression must be deterministic and "
-            "nonnegative over the stage."
+            "nonnegative over the stage. Exactly one of rate or request_interval is required."
+        ),
+    )
+    request_interval: Optional[Union[Annotated[float, Field(gt=0)], str]] = Field(
+        default=None,
+        description=(
+            "Seconds between consecutive requests: a positive number for even spacing, or an expression that "
+            "may draw from a distribution, such as 'Exponential(10)' (a Poisson process at 10 QPS), "
+            "'Uniform(0.05, 0.15)' or 'Gamma(0.5, 0.2)'. Must be nonnegative. The stage sends however many "
+            "requests fit in its window. Exactly one of rate or request_interval is required, and load.type is "
+            "not set with request_interval."
         ),
     )
     duration: Optional[int] = Field(
@@ -78,6 +94,7 @@ class StandardLoadStage(LoadStage):
 
     _predicate: Optional[Predicate] = PrivateAttr(default=None)
     _rate_schedule: Optional[RateSchedule] = PrivateAttr(default=None)
+    _request_schedule: Optional[RequestSchedule] = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def validate_standard_fields(self) -> "StandardLoadStage":
@@ -90,6 +107,17 @@ class StandardLoadStage(LoadStage):
         # Built here so a bad stop_condition fails at config load; Predicate raises
         # ValueError with the precise reason and pydantic surfaces it as-is.
         _ = self.predicate
+        if (self.rate is None) == (self.request_interval is None):
+            raise ValueError("Exactly one of rate or request_interval must be set for CONSTANT/POISSON load types")
+        if self.request_interval is not None:
+            # A fixed gap longer than the window never fits. A random gap is not
+            # held to this: an empty draw is a possible outcome, not a config error.
+            schedule = self.request_schedule
+            if not schedule.request_interval.is_random and schedule.expected_requests == 0:
+                raise ValueError(
+                    f"request_interval {self.request_interval!r} is longer than the stage, so the stage would send nothing"
+                )
+            return self
         # Same for the rate, which is integrated over the window the predicate
         # just fixed.
         if self.rate_schedule.total <= 0:
@@ -126,6 +154,8 @@ class StandardLoadStage(LoadStage):
         ever reads the schedule. Rebuilt whenever the rate or the window
         changes, for the same reason as :attr:`predicate`.
         """
+        if self.rate is None:
+            raise ValueError("The stage sets request_interval, not rate, so it has no rate schedule.")
         duration = self.effective_duration
         cached = self._rate_schedule
         if cached is None or cached.rate.raw != self.rate or cached.duration != duration:
@@ -135,14 +165,38 @@ class StandardLoadStage(LoadStage):
         return self._rate_schedule
 
     @property
+    def request_schedule(self) -> RequestSchedule:
+        """The stage's arrival times, drawn from ``request_interval`` over its dispatch window.
+
+        Drawn once and kept, so the request count read before the run is the
+        count the run dispatches. Redrawn only when the request_interval or the
+        window changes, for the same reason as :attr:`predicate`.
+        """
+        if self.request_interval is None:
+            raise ValueError("The stage sets rate, not request_interval, so it has no arrival schedule.")
+        duration = self.effective_duration
+        cached = self._request_schedule
+        if cached is None or cached.request_interval.raw != self.request_interval or cached.duration != duration:
+            expression = Expression(self.request_interval, allow_time=False, minimum=0)
+            self._request_schedule = RequestSchedule(expression, duration)
+        assert self._request_schedule is not None
+        return self._request_schedule
+
+    @property
+    def schedule(self) -> Union[RateSchedule, RequestSchedule]:
+        """What the load generator dispatches against: whichever of the two the stage sets."""
+        return self.request_schedule if self.request_interval is not None else self.rate_schedule
+
+    @property
     def expected_requests(self) -> int:
-        """Requests the stage dispatches: the rate integrated over the window, truncated."""
-        return self.rate_schedule.expected_requests
+        """Requests the stage dispatches: the rate integrated over the window, truncated,
+        or the number of request_interval gaps that fit in it."""
+        return self.schedule.expected_requests
 
     @property
     def mean_rate(self) -> float:
         """Average rate over the window; equals ``rate`` when the rate is a number."""
-        return self.rate_schedule.mean_rate
+        return self.schedule.mean_rate
 
 
 class ConcurrentLoadStage(LoadStage):
@@ -374,6 +428,13 @@ class LoadConfig(StrictBaseModel):
                         f"Stage {i}: a rate expression has no effect under TRACE_REPLAY, "
                         "where the trace sets when each request is sent. Use a number."
                     )
+                if stage.request_interval is not None and "type" in self.model_fields_set:
+                    raise ValueError(
+                        f"Stage {i}: request_interval is the arrival process itself, so load.type "
+                        f"({self.type.value}) cannot be set alongside it. Remove load.type, or use rate."
+                    )
+                if stage.request_interval is not None and self.sweep is not None:
+                    raise ValueError(f"Stage {i}: sweep generates rate stages and cannot be combined with request_interval.")
 
         # Validate multilora traffic split adds up to 1.0 if present
         if self.lora_traffic_split is not None:

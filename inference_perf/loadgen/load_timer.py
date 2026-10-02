@@ -15,6 +15,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Generator, Optional, Tuple, Union
 import numpy as np
+from inference_perf.utils.numeric.request_schedule import RequestSchedule
 from inference_perf.utils.numeric.rate_schedule import RateSchedule
 from inference_perf.utils.trace_reader import TraceReader
 from pathlib import Path
@@ -153,6 +154,22 @@ class PoissonLoadTimer(LoadTimer):
                 for offset in schedule.inverse(counts):
                     yield start + float(offset)
             second += 1
+
+
+class RequestIntervalLoadTimer(LoadTimer):
+    """
+    A load generator that sends each request at the time its stage's
+    request_interval gaps put it. The gaps are already drawn, so the timer is
+    finite: it yields one time per scheduled request and stops.
+    """
+
+    def __init__(self, schedule: RequestSchedule) -> None:
+        self._schedule = schedule
+
+    def start_timer(self, initial: Optional[float] = None) -> Generator[float, None, None]:
+        start = time.perf_counter() if initial is None else initial
+        for offset in self._schedule.offsets:
+            yield start + float(offset)
 
 
 class TraceReplayLoadTimer(LoadTimer):
