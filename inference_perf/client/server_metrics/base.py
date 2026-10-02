@@ -35,7 +35,10 @@ class StageStatus(Enum):
 
 class StageRuntimeInfo(BaseModel):
     stage_id: int
-    rate: float
+    # The configured request rate, or None for a stage that sets request_interval
+    # instead: its load is described by the gap distribution, not a rate.
+    rate: Optional[float]
+    request_interval: Optional[str] = None
     # End of the load window. Stage teardown (draining or cancelling in-flight
     # requests) happens after end_time and is reported in teardown_duration,
     # so metrics windows derived from [start_time, end_time] exclude it.

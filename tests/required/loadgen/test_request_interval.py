@@ -123,7 +123,8 @@ def test_timer_follows_the_drawn_arrivals() -> None:
 # In-process run of a 0.25s fixed gap over 1s (4 requests, at 0.25, 0.5, 0.75 and 1.0)
 # against the mock server: the stage completes and records 3 or 4 requests. The last one
 # is due exactly at the window's end, where the in-process loop can drop it (a known
-# pre-existing edge that rate stages share).
+# pre-existing edge that rate stages share). The stage's runtime info carries the
+# request_interval "0.25" and no rate, which is what the per-stage report then shows.
 async def test_in_process_run_sends_the_scheduled_requests() -> None:
     api_config = APIConfig(type=APIType.Chat)
     datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
@@ -131,13 +132,16 @@ async def test_in_process_run_sends_the_scheduled_requests() -> None:
     loadgen = LoadGenerator(datagen, LoadConfig(stages=[stage], num_workers=0, worker_max_concurrency=4))
     collector = LocalRequestMetricCollector()
     await loadgen.run(MockModelServerClient(collector, api_config, mock_latency=0.01))
-    assert loadgen.stage_runtime_info[0].status.name == "COMPLETED"
+    info = loadgen.stage_runtime_info[0]
+    assert info.status.name == "COMPLETED"
+    assert (info.rate, info.request_interval) == (None, "0.25")
     assert len(collector.get_metrics()) in (3, 4)
 
 
 # Multiprocess run with two workers: a random-gap stage (Exponential(8) over 1s) followed
 # by a rate stage. Both complete with nothing dropped, so a stage whose request count is
-# only known from the draw survives the real worker lifecycle.
+# only known from the draw survives the real worker lifecycle. The first stage's runtime
+# info carries the request_interval string and no rate; the second carries rate 4 as before.
 async def test_mp_run_completes_an_request_interval_stage() -> None:
     api_config = APIConfig(type=APIType.Chat)
     datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
@@ -155,5 +159,7 @@ async def test_mp_run_completes_an_request_interval_stage() -> None:
         for stage_id in (0, 1):
             assert loadgen.stage_runtime_info[stage_id].status.name == "COMPLETED"
             assert loadgen.stage_runtime_info[stage_id].dropped_requests == 0
+        assert (loadgen.stage_runtime_info[0].rate, loadgen.stage_runtime_info[0].request_interval) == (None, "Exponential(8)")
+        assert (loadgen.stage_runtime_info[1].rate, loadgen.stage_runtime_info[1].request_interval) == (4.0, None)
     finally:
         await loadgen.stop()

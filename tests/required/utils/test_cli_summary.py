@@ -49,6 +49,22 @@ class TestCliSummary(unittest.TestCase):
 
         self.assertEqual(mock_console_print.call_count, 5)
 
+    # A stage configured by request_interval carries "request_interval" in load_summary and no
+    # requested_rate: the Req Rate cell shows the gap string ("Exponential(10)") and the
+    # table still prints (same 5 console writes as a rate stage).
+    @patch("inference_perf.utils.cli_summary.Console.print")
+    def test_print_summary_table_shows_request_interval(self, mock_console_print: MagicMock) -> None:
+        contents = {
+            "load_summary": {"request_interval": "Exponential(10)", "achieved_rate": 9.5},
+            "successes": {"count": 95, "throughput": {"requests_per_sec": 9.5}},
+            "failures": {"count": 5},
+        }
+        print_summary_table([ReportFile(name="stage_0_lifecycle_metrics", contents=contents)])
+        self.assertEqual(mock_console_print.call_count, 5)
+        tables = [call.args[0] for call in mock_console_print.call_args_list]
+        cells = [str(cell) for table in tables for column in table.columns for cell in column._cells]
+        self.assertIn("Exponential(10)", cells)
+
     def test_extract_session_stage_id(self) -> None:
         self.assertEqual(extract_session_stage_id("stage_0_session_lifecycle_metrics"), 0)
         self.assertEqual(extract_session_stage_id("stage_3_session_lifecycle_metrics"), 3)
