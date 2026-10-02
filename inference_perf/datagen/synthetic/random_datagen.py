@@ -20,10 +20,14 @@ import numpy as np
 from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, TraceFormat
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import generate_distribution
 from inference_perf.utils.trace_reader import AzurePublicDatasetReader
 from ..base import DataGenerator, LazyLoadDataMixin
-from ..datagen_utils import generate_random_exact_length_text, init_vocab_sampling, random_token_ids
+from ..datagen_utils import (
+    generate_random_exact_length_text,
+    init_vocab_sampling,
+    pregenerate_lengths,
+    random_token_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,37 +41,23 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
         config: DataConfig,
         tokenizer: Optional[CustomTokenizer],
         seed: Optional[int] = None,
+        total_count: Optional[int] = None,
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
 
         if self.trace is None:
-            # let's read the trace file and get the input and output lengths
-            if self.input_distribution is None or self.output_distribution is None:
+            # Read the raw config values, not the base-class attributes: those
+            # only carry the structured Distribution view, and these fields
+            # may hold expression strings.
+            input_spec = config.input_distribution
+            output_spec = config.output_distribution
+            if input_spec is None or output_spec is None:
                 raise ValueError("Input and Output Distribution are required for RandomDataGenerator")
 
-            if self.input_distribution.total_count is None or self.output_distribution.total_count is None:
-                raise ValueError("IODistribution requires total_count to be set")
-
-            self.input_lengths = generate_distribution(
-                self.input_distribution.min,
-                self.input_distribution.max,
-                self.input_distribution.mean,
-                self.input_distribution.std_dev,
-                self.input_distribution.total_count,
-                dist_type=self.input_distribution.type,
-                rng=self.rng,
-            )
-            self.output_lengths = generate_distribution(
-                self.output_distribution.min,
-                self.output_distribution.max,
-                self.output_distribution.mean,
-                self.output_distribution.std_dev,
-                self.output_distribution.total_count,
-                dist_type=self.output_distribution.type,
-                rng=self.rng,
-            )
+            self.input_lengths = pregenerate_lengths(input_spec, total_count, self.rng)
+            self.output_lengths = pregenerate_lengths(output_spec, total_count, self.rng)
         else:
             # let's read the trace file and get the input and output lengths
             if self.trace.format == TraceFormat.AZURE_PUBLIC_DATASET:
