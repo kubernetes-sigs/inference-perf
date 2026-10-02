@@ -213,6 +213,7 @@ load:
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean)
+      request_interval: "Exponential(1)" # Alternative to rate: seconds between consecutive requests, a number or a distribution; it is the arrival process, so leave load.type out
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
       stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
@@ -270,6 +271,42 @@ The constant load type spreads requests by how much the rate has built up, so th
 | `0*t` | Zero over the whole stage, so the stage would send nothing. |
 
 Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
+
+#### Request interval
+
+A stage may set `request_interval` instead of `rate`: the gap, in seconds, between one request and the next, as a number or an [expression](./expressions.md) that draws from a distribution. The gap distribution is the arrival process, so `load.type` is left out (it is rejected alongside `request_interval`). `load.type: poisson` is deprecated: `request_interval: "Exponential(r)"` is a Poisson process at `r` requests per second, and a number is the evenly spaced stimulus the constant type only approximates.
+
+<!-- checked-example -->
+```yaml
+load:
+  stages:
+  - request_interval: 0.1                    # one request every 100ms, exactly
+    duration: 60
+  - request_interval: "Exponential(10)"      # Poisson arrivals, 10 per second on average
+    duration: 60
+  - request_interval: "Gamma(0.25, 0.4)"     # the same average, arriving in bursts
+    stop_condition: "t >= 60"
+```
+
+| Request interval | Mean gap (s) | Spread / mean | Arrivals |
+| --- | --- | --- | --- |
+| `0.1` | 0.10 | 0.00 | Evenly spaced, 10 per second. |
+| `Exponential(10)` | 0.10 | 1.00 | Poisson process, 10 per second. |
+| `Gamma(0.25, 0.4)` | 0.10 | 2.00 | 10 per second in bursts: twice the spread of Poisson. |
+| `Gamma(4, 0.025)` | 0.10 | 0.50 | 10 per second, steadier than Poisson. |
+| `Uniform(0.05, 0.15)` | 0.10 | 0.29 | 10 per second with bounded jitter: no gap outside 50 to 150 ms. |
+| `0.05 + Exponential(20)` | 0.10 | 0.50 | Poisson with a 50 ms floor: never two requests closer than that. |
+| `LogNormal(-2.55, 0.7)` | 0.10 | 0.79 | 10 per second with a long tail: most gaps short, a few long. |
+
+The stage sends however many requests fit in its window, so the count is not known from the config when the gap is random; the arrivals are drawn once when the config loads and reports carry the configured `request_interval` in place of `requested_rate`, next to the measured `achieved_rate`. A number is exact: `0.1` over 60 s is 600 requests.
+
+| Rejected request_interval | Why |
+| --- | --- |
+| `Normal(0.1, 0.05)` | Can go negative. Add `Max(0, ...)` or pick a nonnegative distribution. |
+| `0.1*t` | Gaps cannot depend on `t` yet; use `rate` for a time-varying load. |
+| `0` | Not positive. |
+| `100` | Longer than a 60 s stage, so the stage would send nothing. |
+| `Exponential(1e9)` | Over ten million requests in 60 s. |
 
 #### Stop Conditions
 

@@ -114,6 +114,17 @@ def _check_rate(row: Row) -> None:
     assert (stage.expected_requests, round(stage.mean_rate, 2)) == (requests, mean), f"{rate} over {window}s"
 
 
+# A request_interval's 20000 seeded draws must have the claimed mean gap (within 2%) and the
+# claimed spread-to-mean ratio (within 0.03). A number has no spread.
+def _check_request_interval(row: Row) -> None:
+    expr, mean, ratio = _code(row[0]), float(row[1]), float(row[2])
+    draws = np.asarray(Expression(expr, allow_time=False, minimum=0).sample(rng=np.random.default_rng(0), size=20000))
+    assert math.isclose(float(draws.mean()), mean, rel_tol=0.02), f"{expr}: mean {draws.mean():.4f}, doc says {mean}"
+    assert math.isclose(float(draws.std() / draws.mean()), ratio, abs_tol=0.03), (
+        f"{expr}: ratio {draws.std() / draws.mean():.3f}"
+    )
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -131,6 +142,8 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Rejected condition", "Why"): _rejects(Predicate),
     ("Rate", "Window (s)", "Requests", "Mean req/s"): _check_rate,
     ("Rejected rate", "Why"): _rejects(lambda raw: StandardLoadStage(rate=raw, duration=60)),
+    ("Request interval", "Mean gap (s)", "Spread / mean", "Arrivals"): _check_request_interval,
+    ("Rejected request_interval", "Why"): _rejects(lambda raw: StandardLoadStage(request_interval=raw, duration=60)),
     ("Rejected insertion_point", "Why"): _rejects(lambda raw: ImageDatagenConfig(insertion_point=raw)),
 }
 
