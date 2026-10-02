@@ -105,6 +105,7 @@ Explore detailed documentation for specific topics:
 | **Conversation Replay** | Data/load type for benchmarking concurrent multi-turn agentic conversations with configurable distributions. | [conversation_replay.md](./docs/conversation_replay.md) |
 | **BR0.2 Reports** | Always-emitted llm-d-benchmark BR0.2 partial per stage; designed for clean yq-merge with other producers. | [br_v0_2.md](./docs/br_v0_2.md) |
 | **Analysis** | Visualizations and plots for performance metrics. | [analysis.md](./docs/analysis.md) |
+| **Troubleshooting** | Diagnosing anomalous results: measurement bugs vs workload mistakes vs real system behavior. | [troubleshooting.md](./docs/troubleshooting.md) |
 | **E2E Tests** | Contributor guide to the end-to-end test tier: running and extending it. | [e2e_tests.md](./docs/e2e_tests.md) |
 
 ---
