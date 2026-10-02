@@ -12,6 +12,7 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 | --- | --- | --- | --- |
 | [`load.stages[].rate`](./config.md#rate-expressions) (constant, poisson) | yes | no | Nonnegative over the stage and not zero everywhere. |
 | [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
+| [`load.stages[].request_interval`](./config.md#request-interval) | no | yes | Nonnegative; set instead of `rate`, with no `load.type`. |
 
 ## Grammar
 
