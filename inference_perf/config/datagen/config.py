@@ -26,6 +26,7 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
+from inference_perf.config.datagen.workload import WorkloadReplayConfig
 
 
 class DataGenType(Enum):
@@ -42,6 +43,7 @@ class DataGenType(Enum):
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
     SyntheticAgentic = "synthetic_agentic"
+    WorkloadReplay = "workload_replay"
 
 
 # Configuration for shared prefix datagen which allows users to specify shared prefixes.
@@ -162,6 +164,11 @@ class DataConfig(StrictBaseModel):
         default=None, description="Synthetic agentic sessions settings. Only used by the 'synthetic_agentic' type."
     )
 
+    workload: Optional[WorkloadReplayConfig] = Field(
+        default=None,
+        description="Recorded workload to replay through the record layer (alpha). Only used by the 'workload_replay' type.",
+    )
+
     use_chat_template: bool = Field(
         default=False,
         description=(
@@ -186,4 +193,10 @@ class DataConfig(StrictBaseModel):
     def validate_synthetic_agentic_scope(self) -> "DataConfig":
         if self.type == DataGenType.SyntheticAgentic and self.synthetic_agentic is None:
             raise ValueError(f"data.type '{self.type.value}' requires 'data.synthetic_agentic' to be configured.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_workload_scope(self) -> "DataConfig":
+        if self.type == DataGenType.WorkloadReplay and self.workload is None:
+            raise ValueError(f"data.type '{self.type.value}' requires 'data.workload' to be configured.")
         return self
