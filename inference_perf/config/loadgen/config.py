@@ -413,6 +413,14 @@ class LoadConfig(StrictBaseModel):
                         f"Stage {i}: TRACE_SESSION_REPLAY load type requires TraceSessionReplayLoadStage, got {type(stage).__name__}"
                     )
         else:  # CONSTANT, POISSON, or TRACE_REPLAY
+            if self.type == LoadType.POISSON:
+                # request_interval makes the arrival process a per-stage setting;
+                # Exponential gaps are a Poisson process, so the load type is
+                # redundant. Warn now, remove in a later release.
+                logger.warning(
+                    'load.type: poisson is deprecated. Set request_interval: "Exponential(<rate>)" on each stage '
+                    "instead of rate, and remove load.type."
+                )
             for i, stage in enumerate(self.stages):
                 if not isinstance(stage, StandardLoadStage):
                     raise ValueError(
