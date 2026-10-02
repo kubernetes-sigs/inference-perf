@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
+from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData, TemplateAPIData
+from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType, TemplateConfig
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from typing import Any
@@ -217,3 +217,19 @@ def test_random_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+def test_random_datagen_template_carries_the_completion_prompt() -> None:
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    generator = RandomDataGenerator(APIConfig(type=APIType.Template, template=template), data_config, DummyCustomTokenizer())
+
+    data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=0))
+
+    assert isinstance(data, TemplateAPIData)
+    assert data.template == template
+    assert data.max_tokens == generator.output_lengths[0]

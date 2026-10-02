@@ -13,6 +13,9 @@
 # limitations under the License.
 """Validity rules for ``inference_perf.config.apis``."""
 
+import re
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -23,6 +26,7 @@ from inference_perf.config import (
     EmbeddingsEncodingFormat,
     ResponseFormat,
     ResponseFormatType,
+    TemplateConfig,
     read_config,
 )
 
@@ -103,3 +107,53 @@ def test_embeddings_options_rejected_for_other_api_types() -> None:
     # Options that would be silently ignored are an error, like unknown keys.
     with pytest.raises(ValidationError, match="embeddings options are only valid when type is 'embeddings'"):
         APIConfig(type=APIType.Completion, embeddings=EmbeddingsConfig(batch_size=8))
+
+
+def _template_options(**overrides: Any) -> dict[str, Any]:
+    options: dict[str, Any] = {"route": "/generate", "body": {"text": "${prompt}"}, "text_path": "text"}
+    options.update(overrides)
+    return options
+
+
+def test_template_api_type_requires_options() -> None:
+    with pytest.raises(ValidationError, match="template options are required when type is 'template'"):
+        APIConfig(type=APIType.Template)
+
+
+def test_template_rejects_streaming() -> None:
+    with pytest.raises(ValidationError, match="streaming is not supported for the template API"):
+        APIConfig(type=APIType.Template, template=TemplateConfig(**_template_options()), streaming=True)
+
+
+def test_template_rejects_response_format() -> None:
+    with pytest.raises(ValidationError, match="response_format is not supported for the template API"):
+        APIConfig(
+            type=APIType.Template,
+            template=TemplateConfig(**_template_options()),
+            response_format=ResponseFormat(type=ResponseFormatType.JSON_OBJECT),
+        )
+
+
+def test_template_options_rejected_for_other_api_types() -> None:
+    with pytest.raises(ValidationError, match="template options are only valid when type is 'template'"):
+        APIConfig(type=APIType.Completion, template=TemplateConfig(**_template_options()))
+
+
+def test_template_config_read_from_cli() -> None:
+    config = read_config(cli_overrides={"api": {"type": "template", "template": _template_options()}})
+    assert config.api.template == TemplateConfig(**_template_options())
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"route": "generate"}, "template route must start with '/'"),
+        ({"body": {"text": "${promt}"}}, "template body uses unknown placeholders ['promt']"),
+        ({"body": {"text": "fixed"}}, "template body must use ${prompt}"),
+        ({"body": {"text": "${prompt} costs $5"}}, "Write a literal $ as $$."),
+        ({"text_path": "choices[0"}, "template text_path is not a valid JMESPath expression"),
+    ],
+)
+def test_template_config_rejects_invalid_values(overrides: dict[str, Any], message: str) -> None:
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        TemplateConfig(**_template_options(**overrides))
