@@ -411,3 +411,11 @@ def test_over_sent_bound_follows_a_rate_expression() -> None:
     StandardLoadStage(rate="2*t", stop_condition="(t >= 10) | (avg_over_sent(ttft, 90, 100) > 1)")
     with pytest.raises(ValidationError, match="reads requests up to 101, but the stage sends 100 by its 10s deadline"):
         StandardLoadStage(rate="2*t", stop_condition="(t >= 10) | (avg_over_sent(ttft, 90, 101) > 1)")
+
+
+# A request_interval stage gets the _over_sent bound too: a 0.5s gap fits 20 requests in a 10s stage, so
+# 'avg_over_sent(ttft, 10, 20)' loads and 'avg_over_sent(ttft, 10, 21)' is rejected.
+def test_over_sent_bound_follows_request_interval() -> None:
+    StandardLoadStage(request_interval="0.5", stop_condition="(t >= 10) | (avg_over_sent(ttft, 10, 20) > 1)")
+    with pytest.raises(ValidationError, match="reads requests up to 21, but the stage sends 20 by its 10s deadline"):
+        StandardLoadStage(request_interval="0.5", stop_condition="(t >= 10) | (avg_over_sent(ttft, 10, 21) > 1)")
