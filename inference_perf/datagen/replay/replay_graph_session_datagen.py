@@ -48,9 +48,11 @@ from inference_perf.apis import (
 )
 from inference_perf.apis.anthropic_messages import (
     build_anthropic_request_body,
+    count_anthropic_output_tokens,
     count_anthropic_prompt_tokens,
     parse_anthropic_content,
     parse_anthropic_stream_response,
+    parse_anthropic_thinking,
 )
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.payloads import RequestMetrics, Text
@@ -1050,9 +1052,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
-            text_content, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-                response, extract_content=_extract_streaming_content
+            parsed = await parse_sse_stream(
+                response,
+                extract_content=_extract_streaming_content,
+                # Reasoning text itself is accumulated above (which also covers
+                # chunks carrying both channels); this extractor is what gets
+                # reasoning-only chunks timestamped into the token timeline (#559).
+                extract_reasoning=lambda data: (
+                    data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
+                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
+                ),
             )
+            text_content, chunk_times, response_chunks, server_usage = (
+                parsed.output_text,
+                parsed.chunk_times,
+                parsed.response_chunks,
+                parsed.server_usage,
+            )
+            raw_content = parsed.raw_content
 
             # Combine reasoning_content with text_content in output_text (used for token count)
             reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
@@ -1088,8 +1105,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     response_chunks=response_chunks,
                     chunk_times=chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
+                    output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
@@ -1265,17 +1284,15 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
         # parse_anthropic_content when the response carries no content blocks.
         output_message: Optional[Dict[str, Any]]
         if config.streaming:
-            (
-                output_text,
-                output_message,
-                chunk_times,
-                raw_content,
-                response_chunks,
-                server_usage,
-            ) = await parse_anthropic_stream_response(response)
+            parsed, output_message = await parse_anthropic_stream_response(response)
+            output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
             output_tokens = (server_usage or {}).get("output_tokens")
-            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            output_len = (
+                int(output_tokens)
+                if output_tokens is not None
+                else count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
+            )
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1285,14 +1302,16 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                     )
                 ),
                 response_metrics=StreamedResponseMetrics(
-                    response_chunks=response_chunks,
-                    chunk_times=chunk_times,
+                    response_chunks=parsed.response_chunks,
+                    chunk_times=parsed.chunk_times,
                     output_tokens=output_len,
-                    output_token_times=chunk_times,
+                    output_token_times=parsed.generated_chunk_times,
                     server_usage=server_usage,
+                    reasoning_chunks=parsed.reasoning_chunks,
+                    reasoning_chunk_times=parsed.reasoning_chunk_times,
                 ),
                 lora_adapter=lora_adapter,
-                extra_info={"raw_response": raw_content, "output_message": output_message, "output_text": output_text},
+                extra_info={"raw_response": parsed.raw_content, "output_message": output_message, "output_text": output_text},
             )
         else:
             data = await response.json()
@@ -1300,7 +1319,11 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
             output_tokens = usage.get("output_tokens")
-            output_len = int(output_tokens) if output_tokens is not None else tokenizer.count_tokens(output_text)
+            output_len = (
+                int(output_tokens)
+                if output_tokens is not None
+                else count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
+            )
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(

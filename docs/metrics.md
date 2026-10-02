@@ -19,10 +19,24 @@ For the Prometheus metrics inference-perf exports about its own runtime (as oppo
 | Metric | Formula | Unit | Used For
 | :--- | :--- | :--- | :---
 | **Time per request (e2e request latency)** | `request completion time - request send time` | seconds per request | Calculating how long a request takes to complete
-| **Time to first token (TTFT)** | `time first non empty output token received - request send time` | ms | Calculating the time it takes for the user to receive the first token from the response
-| **Time per output token (TPOT)** | `(e2e request latency - ttft ) / (output tokens - 1)` | ms per output token | Calculating the average time it takes for the user to receive successive tokens after the first token
+| **Time to first token (TTFT)** | `time first non empty output token received - request send time` | ms | Calculating the time it takes the server to produce the first token of the response, reasoning included
+| **Time to first output token (TTFO)** | `time first non empty content token received - request send time` | ms | Calculating the time it takes for the user to receive the first token of the answer, after any reasoning. Equals TTFT for models that do not reason; absent when the output budget runs out before any content
+| **Time per output token (TPOT)** | `(last token time - first token time) / (output tokens - 1)` | ms per output token | Calculating the average time it takes for the user to receive successive tokens after the first token
 | **Normalized time per output token** | `e2e request latency / output tokens` | ms per output token | Normalizing the request latency at the output token level for comparing different use cases
 | **Inter Token Latency (ITL)** | `time between output token generation within a request` | ms per output token | Calculating the time it takes for the user to receive successive tokens after the first token, but at a more granular level than TPOT which averages the token latency within a request
+
+### Reasoning models
+
+Reasoning models stream their reasoning on a separate channel (`reasoning_content` or
+`reasoning` on OpenAI-compatible servers, `thinking` blocks on the Anthropic Messages API)
+before the answer. The server generates and counts those tokens like any other, so TTFT, TPOT,
+ITL and output token counts include them, and TTFT is the time to the first reasoning token.
+TTFO is the time to the first token of the answer itself. The gap between TTFT and TTFO is the
+time spent reasoning before the answer started.
+
+A reasoning model served without a reasoning parser sends its reasoning inside the content,
+usually wrapped in `<think>` tags. The reasoning then counts as content: TTFO equals TTFT.
+Compare runs with and without the server's reasoning parser with that in mind.
 
 ---
 
@@ -50,7 +64,7 @@ therefore keeps both and records which is which.
 | :--- | :--- | :---
 | `prompt_tokens` | server `usage.prompt_tokens`, client tokenization when the server reports none | Resolved per request while the response is processed. Supersedes `prompt_len`. |
 | `prompt_tokens.cached` / `.uncached` | server `usage.prompt_tokens_details` | Absent when the server does not report the detail |
-| `output_len` | client | The response text re-tokenized as one whole message |
+| `output_len` | client | The response text re-tokenized as one whole message, reasoning included |
 | `output_tokens` | server `usage.completion_tokens` / `usage.output_tokens`, client `output_len` when the server reports none | Server-side this is an exact count of decode steps |
 | `client_fallback_requests` | n/a | Per side (`prompt`, `output`), how many successful requests carry a client count because the server reported none. Counts requests, not tokens. Nonzero means that distribution mixes sources |
 | `token_count_mismatches` | n/a | Streamed requests where the sum of the per-chunk client tokenization differs from the server count |

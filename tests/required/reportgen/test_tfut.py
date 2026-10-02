@@ -112,6 +112,28 @@ class TestComputeTfut:
         assert sm.tfut_sec is None
         assert sm.tfut_none_reason == "no_user_facing"
 
+    # Reasoning at 100.2, content at 100.9. TFUT = 0.9: the user sees nothing
+    # until content arrives, so reasoning on the token timeline is skipped.
+    def test_reasoning_is_not_user_visible(self) -> None:
+        sm = _make_session(start_time=100.0, user_facing_event_ids=["e1"])
+        req = _make_request(event_id="e1", output_token_times=[100.2, 100.9])
+        assert isinstance(req.info.response_metrics, StreamedResponseMetrics)
+        req.info.response_metrics.reasoning_chunk_times = [100.2]
+        req.info.response_metrics.chunk_times = [100.9]
+        ReportGenerator._compute_tfut(sm, {"e1": req})
+        assert sm.tfut_sec == pytest.approx(0.9)
+
+    # Reasoning only, at 100.2 and 100.4. No content, so TFUT is None with
+    # reason no_output_tokens.
+    def test_reasoning_only_has_no_user_visible_token(self) -> None:
+        sm = _make_session(start_time=100.0, user_facing_event_ids=["e1"])
+        req = _make_request(event_id="e1", output_token_times=[100.2, 100.4])
+        assert isinstance(req.info.response_metrics, StreamedResponseMetrics)
+        req.info.response_metrics.reasoning_chunk_times = [100.2, 100.4]
+        ReportGenerator._compute_tfut(sm, {"e1": req})
+        assert sm.tfut_sec is None
+        assert sm.tfut_none_reason == "no_output_tokens"
+
     def test_non_streaming_sets_reason(self) -> None:
         sm = _make_session(start_time=100.0, user_facing_event_ids=["e1"])
         reqs = {"e1": _make_request(event_id="e1", streaming=False)}

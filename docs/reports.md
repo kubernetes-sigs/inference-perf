@@ -29,6 +29,11 @@ Here is an example snippet from a `summary_lifecycle_metrics.json` report:
         "mean": 0.80,
         "median": 0.20,
         "p90": 2.26
+      },
+      "time_to_first_output_token": {
+        "mean": 0.80,
+        "median": 0.20,
+        "p90": 2.26
       }
     },
     "throughput": {
