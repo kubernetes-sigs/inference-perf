@@ -64,6 +64,7 @@ from inference_perf.config.datagen import (
     WeightedDuration,
     WeightedResolution,
     WeightedVideoProfile,
+    WorkloadReplayConfig,
 )
 from inference_perf.config.loadgen import (
     ConcurrentLoadStage,
@@ -151,6 +152,7 @@ __all__ = [
     "TraceFormat",
     "TraceLabTraceReplayConfig",
     "TraceSessionReplayLoadStage",
+    "WorkloadReplayConfig",
     "TriggerConsecutive",
     "TriggerRateOverWindow",
     "TriggerSpec",
