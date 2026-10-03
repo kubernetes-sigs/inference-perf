@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, LazyLoadInferenceAPIData, TemplateAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -26,6 +26,7 @@ from inference_perf.config import (
     DataGenType,
     DistributionType,
     EmbeddingsConfig,
+    TemplateConfig,
 )
 from inference_perf.datagen.synthetic import synthetic_datagen
 from inference_perf.datagen.synthetic.synthetic_datagen import SyntheticDataGenerator
@@ -190,3 +191,22 @@ def test_synthetic_datagen_completion_still_requires_output_distribution() -> No
     )
     with pytest.raises(ValueError, match="IODistribution and tokenizer are required"):
         SyntheticDataGenerator(APIConfig(type=APIType.Completion), data_config, DummyCustomTokenizer())
+
+
+def test_synthetic_datagen_template_carries_the_completion_prompt() -> None:
+    # A template request gets the same prompt and output length as a completion request.
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    data_config = DataConfig(
+        type=DataGenType.Synthetic,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = SyntheticDataGenerator(APIConfig(type=APIType.Template, template=template), data_config, tokenizer)
+    data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=2))
+
+    assert isinstance(data, TemplateAPIData)
+    assert data.template == template
+    assert tokenizer.count_tokens(data.prompt) == generator.input_lengths[2]
+    assert data.max_tokens == generator.output_lengths[2]

@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import string
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
+import jmespath
+from jmespath.exceptions import JMESPathError
 from inference_perf.config.common import StrictBaseModel
 from pydantic import Field, model_validator
 
@@ -23,6 +26,7 @@ class APIType(Enum):
     Chat = "chat"
     AnthropicMessages = "anthropic_messages"
     Embeddings = "embeddings"
+    Template = "template"
 
 
 class EmbeddingsEncodingFormat(Enum):
@@ -75,10 +79,97 @@ class EmbeddingsConfig(StrictBaseModel):
     )
 
 
+# Values a template body can use, written as ${name}.
+_TEMPLATE_PLACEHOLDERS = ("prompt", "max_tokens", "model")
+
+
+def _template_strings(node: Any) -> Iterator[str]:
+    """Every string in a template body, through nested objects and lists."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _template_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _template_strings(item)
+
+
+def _fill_template(node: Any, values: dict[str, Any]) -> Any:
+    """A copy of a template body with every placeholder replaced by its value.
+
+    A string that is only one placeholder takes the value as it is, so
+    ${max_tokens} is sent as a number and not as text.
+    """
+    if isinstance(node, str):
+        if node.startswith("${") and node.endswith("}") and node[2:-1] in values:
+            return values[node[2:-1]]
+        return string.Template(node).substitute(values)
+    if isinstance(node, dict):
+        return {key: _fill_template(value, values) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_fill_template(item, values) for item in node]
+    return node
+
+
+class TemplateConfig(StrictBaseModel):
+    """Request template and response paths for the template API (type 'template')."""
+
+    route: str = Field(description="Path the request is sent to, appended to the server base URL, e.g. '/generate'.")
+    body: dict[str, Any] = Field(
+        description="JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request."
+    )
+    text_path: str = Field(description="JMESPath expression that selects the generated text in the response body.")
+    input_tokens_path: Optional[str] = Field(
+        default=None,
+        description="JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer.",
+    )
+    output_tokens_path: Optional[str] = Field(
+        default=None,
+        description="JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens.",
+    )
+
+    @model_validator(mode="after")
+    def validate_template(self) -> "TemplateConfig":
+        if not self.route.startswith("/"):
+            raise ValueError(f"template route must start with '/', got '{self.route}'")
+        used: set[str] = set()
+        for text in _template_strings(self.body):
+            template = string.Template(text)
+            if not template.is_valid():
+                raise ValueError(f"template body has an invalid placeholder in '{text}'. Write a literal $ as $$.")
+            used.update(template.get_identifiers())
+        unknown = sorted(used.difference(_TEMPLATE_PLACEHOLDERS))
+        if unknown:
+            raise ValueError(
+                f"template body uses unknown placeholders {unknown}. "
+                "The known ones are ${prompt}, ${max_tokens} and ${model}."
+            )
+        if "prompt" not in used:
+            raise ValueError("template body must use ${prompt}")
+        for name, expression in (
+            ("text_path", self.text_path),
+            ("input_tokens_path", self.input_tokens_path),
+            ("output_tokens_path", self.output_tokens_path),
+        ):
+            if expression is None:
+                continue
+            try:
+                jmespath.compile(expression)
+            except JMESPathError as e:
+                raise ValueError(f"template {name} is not a valid JMESPath expression: {e}") from e
+        return self
+
+    def render_body(self, values: dict[str, Any]) -> dict[str, Any]:
+        """The request body with every placeholder replaced by its value."""
+        body: dict[str, Any] = _fill_template(self.body, values)
+        return body
+
+
 class APIConfig(StrictBaseModel):
     type: APIType = Field(
         default=APIType.Completion,
-        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages or embeddings.",
+        description="API endpoint to benchmark: text completion, chat completion, Anthropic messages, embeddings or a request template.",
     )
     streaming: bool = Field(
         default=False, description="Stream responses instead of waiting for the full response. Enables TTFT and TPOT metrics."
@@ -100,6 +191,9 @@ class APIConfig(StrictBaseModel):
     )
     embeddings: Optional[EmbeddingsConfig] = Field(
         default=None, description="Embeddings request options. Only valid when type is 'embeddings'."
+    )
+    template: Optional[TemplateConfig] = Field(
+        default=None, description="Request template and response paths. Required when type is 'template'."
     )
     session_id_header_key: Optional[str] = Field(
         default=None, description="Header used to send the session ID with each request in multi-turn benchmarks."
@@ -124,4 +218,19 @@ class APIConfig(StrictBaseModel):
                 raise ValueError("response_format is not supported for the embeddings API")
         elif self.embeddings is not None:
             raise ValueError("embeddings options are only valid when type is 'embeddings'")
+        return self
+
+    @model_validator(mode="after")
+    def validate_template_options(self) -> "APIConfig":
+        # The template is the whole request body, so the client cannot add
+        # response_format to it, and streamed responses are not parsed yet.
+        if self.type == APIType.Template:
+            if self.template is None:
+                raise ValueError("template options are required when type is 'template'")
+            if self.streaming:
+                raise ValueError("streaming is not supported for the template API")
+            if self.response_format is not None:
+                raise ValueError("response_format is not supported for the template API")
+        elif self.template is not None:
+            raise ValueError("template options are only valid when type is 'template'")
         return self
