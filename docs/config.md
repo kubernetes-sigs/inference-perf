@@ -29,7 +29,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages|embeddings)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings|rerank)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -50,6 +50,19 @@ api:
     batch_size: 16             # Input strings per request (default: 1)
     dimensions: 512            # Optional embedding size; default is the model's
     encoding_format: float     # Optional: float|base64; default is the server's
+```
+
+With `type: rerank`, requests go to `/v1/rerank` by default. A rerank request scores a query against a list of documents and generates no tokens, so `streaming` and `response_format` are not supported and TTFT, TPOT, ITL and NTPOT are not reported. There is no single rerank wire format across vendors, so the route and request field names are configurable under `rerank`:
+
+```yaml
+api:
+  type: rerank
+  rerank:                      # Optional; only valid with type: rerank
+    document_count: 20         # Documents scored per query (default: 10)
+    route: /v1/rerank          # Optional; vLLM also serves /rerank and /v2/rerank
+    query_field: query         # Optional request field name for the query
+    documents_field: documents # Optional request field name for the documents list
+    top_n: 5                   # Optional; ask the server to return only the top N results
 ```
 
 ### Data Generation

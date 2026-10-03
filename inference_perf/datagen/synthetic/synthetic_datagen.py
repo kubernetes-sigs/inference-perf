@@ -19,7 +19,7 @@ from typing import Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import CompletionAPIData, EmbeddingsAPIData, InferenceAPIData, LazyLoadInferenceAPIData, RerankAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -45,11 +45,12 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     ) -> None:
         super().__init__(api_config, config, tokenizer)
 
-        # Embeddings requests generate no output, so they take no output lengths.
+        # Embeddings and rerank requests generate no output, so they take no output lengths.
         is_embeddings = api_config.type == APIType.Embeddings
+        is_rerank = api_config.type == APIType.Rerank
         if (
             self.input_distribution is None
-            or (self.output_distribution is None and not is_embeddings)
+            or (self.output_distribution is None and not (is_embeddings or is_rerank))
             or self.tokenizer is None
         ):
             raise ValueError("IODistribution and tokenizer are required for SyntheticDataGenerator")
@@ -61,10 +62,18 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         self.rng: np.random.Generator = np.random.default_rng(seed)
 
-        # total_count counts requests. An embeddings request carries batch_size
-        # inputs, each with its own length drawn from input_distribution.
+        # total_count counts requests. An embeddings request carries batch_size inputs; a
+        # rerank request carries one query plus document_count documents. Each input has
+        # its own length drawn from input_distribution.
         self.embeddings_batch_size = api_config.embeddings.batch_size if api_config.embeddings else 1
-        input_count = self.input_distribution.total_count * (self.embeddings_batch_size if is_embeddings else 1)
+        self.rerank_document_count = api_config.rerank.document_count if api_config.rerank else 10
+        if is_embeddings:
+            inputs_per_request = self.embeddings_batch_size
+        elif is_rerank:
+            inputs_per_request = self.rerank_document_count + 1
+        else:
+            inputs_per_request = 1
+        input_count = self.input_distribution.total_count * inputs_per_request
 
         self.input_lengths = generate_distribution(
             self.input_distribution.min,
@@ -110,7 +119,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Embeddings]
+        return [APIType.Completion, APIType.Embeddings, APIType.Rerank]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -184,6 +193,13 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
             texts = [self._generate_exact_length_text(length) for length in lengths]
             self._log_progress()
             return EmbeddingsAPIData.from_texts(texts, self.api_config.embeddings)
+        elif self.api_config.type == APIType.Rerank:
+            inputs_per_request = self.rerank_document_count + 1
+            start = n * inputs_per_request
+            lengths = self.input_lengths[start : start + inputs_per_request]
+            texts = [self._generate_exact_length_text(length) for length in lengths]
+            self._log_progress()
+            return RerankAPIData.from_query_and_documents(texts[0], texts[1:], self.api_config.rerank)
         else:
             raise Exception("Unsupported API type")
 
