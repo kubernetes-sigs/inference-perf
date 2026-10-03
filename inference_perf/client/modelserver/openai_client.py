@@ -43,6 +43,11 @@ import ssl
 
 logger = logging.getLogger(__name__)
 
+# Bound for the /v1/models probe that backs model auto-detection. ``request_timeout``
+# is optional and defaults to None; an unresponsive server must not hang startup, so
+# the probe falls back to this bounded deadline.
+_SUPPORTED_MODELS_TIMEOUT_SEC = 30.0
+
 
 class OpenAIMetrics(BaseMetrics):
     def __init__(
@@ -116,12 +121,14 @@ class openAIModelServerClient(ModelServerClient):
         # Initialize OTEL instrumentation (configured via environment variables)
         self.otel = get_otel_instrumentation()
 
+        inferred_entry: Optional[dict[str, Any]] = None
         if model_name is None:
             supported_models = self.get_supported_models()
             if not supported_models:
                 logger.error("No supported models found")
                 raise Exception("openAI client init failed, no model_name could be found")
-            inferred_id = supported_models[0].get("id")
+            inferred_entry = supported_models[0]
+            inferred_id = inferred_entry.get("id")
             if not isinstance(inferred_id, str):
                 raise Exception(f"openAI client init failed, model entry has no string 'id': {supported_models[0]}")
             self.model_name: str = inferred_id
@@ -141,11 +148,46 @@ class openAIModelServerClient(ModelServerClient):
                 if adapter not in supported_model_names:
                     raise ValueError(f"LoRA adapter {adapter} not found in model server's available models")
 
-        if tokenizer_config and not tokenizer_config.pretrained_model_name_or_path:
-            tokenizer_config.pretrained_model_name_or_path = self.model_name
-        elif not tokenizer_config:
-            tokenizer_config = CustomTokenizerConfig(pretrained_model_name_or_path=self.model_name)
-        self.tokenizer = CustomTokenizer(tokenizer_config)
+        if tokenizer_config and tokenizer_config.pretrained_model_name_or_path:
+            self.tokenizer = CustomTokenizer(tokenizer_config)
+        else:
+            self.tokenizer = self._load_tokenizer_from_candidates(tokenizer_config, inferred_entry)
+
+    def _load_tokenizer_from_candidates(
+        self, tokenizer_config: Optional[CustomTokenizerConfig], inferred_entry: Optional[dict[str, Any]]
+    ) -> CustomTokenizer:
+        """Load the tokenizer from the first candidate that works.
+
+        Candidates are the resolved model name (``id``) and, when the client inferred it
+        from ``/v1/models``, the entry's ``root``: vLLM sets ``id`` to
+        ``--served-model-name``, which can be an alias the tokenizer cannot load under,
+        while ``root`` is the real model path. If neither loads, the error names the
+        config field the user must set.
+        """
+        candidates = [self.model_name]
+        if inferred_entry is not None:
+            root = inferred_entry.get("root")
+            if isinstance(root, str) and root != self.model_name:
+                candidates.append(root)
+        errors: list[str] = []
+        for candidate in candidates:
+            config = (
+                tokenizer_config.model_copy(update={"pretrained_model_name_or_path": candidate})
+                if tokenizer_config is not None
+                else CustomTokenizerConfig(pretrained_model_name_or_path=candidate)
+            )
+            try:
+                tokenizer = CustomTokenizer(config)
+            except Exception as e:
+                errors.append(f"'{candidate}': {e}")
+            else:
+                if tokenizer_config is not None:
+                    tokenizer_config.pretrained_model_name_or_path = candidate
+                return tokenizer
+        raise Exception(
+            "Unable to load a tokenizer for any candidate model name "
+            f"{candidates}. Set 'tokenizer.pretrained_model_name_or_path' explicitly. Errors: {errors}"
+        )
 
     def new_session(self) -> "ModelServerClientSession":
         return openAIModelServerClientSession(self)
@@ -184,7 +226,14 @@ class openAIModelServerClient(ModelServerClient):
 
     def get_supported_models(self) -> List[dict[str, Any]]:
         try:
-            response = requests.get(f"{self.uri}/v1/models", headers=_build_request_headers(self.api_config, self.api_key))
+            timeout = self.timeout if self.timeout is not None else _SUPPORTED_MODELS_TIMEOUT_SEC
+            cert = (self.cert_path, self.key_path) if self.cert_path and self.key_path else None
+            response = requests.get(
+                f"{self.uri}/v1/models",
+                headers=_build_request_headers(self.api_config, self.api_key),
+                timeout=timeout,
+                cert=cert,
+            )
             response.raise_for_status()
             data = response.json()
             if "data" in data and isinstance(data["data"], list):
