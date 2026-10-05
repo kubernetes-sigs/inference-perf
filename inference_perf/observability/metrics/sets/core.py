@@ -57,8 +57,11 @@ def _mark_run_start(gauge: Gauge, context: RunContext) -> None:
     gauge.set_function(lambda: time.monotonic() - start)
 
 
-def _set_stage_count(gauge: Gauge, context: RunContext) -> None:
-    gauge.set(len(context.config.load.stages))
+def _bind_stage_count(gauge: Gauge, context: RunContext) -> None:
+    if context.stage_count is not None:
+        gauge.set_function(context.stage_count)
+    else:
+        gauge.set(len(context.config.load.stages))
 
 
 def _bind_in_flight(gauge: Gauge, context: RunContext) -> None:
@@ -104,9 +107,11 @@ def _count_workers_lost(counter: Counter, context: StageContext) -> None:
 
 STAGES = MetricSpec[Gauge](
     name="inference_perf_stages",
-    documentation="Number of load stages configured for the run.",
+    documentation=(
+        "Number of load stages the run executes. On a sweep run this is 0 until the saturation probe has generated the stages."
+    ),
     metric_type=Gauge,
-    on_run_start=_set_stage_count,
+    on_run_start=_bind_stage_count,
 )
 
 CORE_SPECS: tuple[MetricSpec[Any], ...] = (

@@ -21,7 +21,7 @@ Every metric declares a stability level, and that level is prepended to the metr
 | Metric | Type | Stability | Labels | Exported | Description |
 | --- | --- | --- | --- | --- | --- |
 | `inference_perf_run_elapsed_seconds` | Gauge | `ALPHA` | none | Always | Wall-clock seconds elapsed since the benchmark run started; 0 until the run starts. |
-| `inference_perf_stages` | Gauge | `ALPHA` | none | Always | Number of load stages configured for the run. |
+| `inference_perf_stages` | Gauge | `ALPHA` | none | Always | Number of load stages the run executes. On a sweep run this is 0 until the saturation probe has generated the stages. |
 | `inference_perf_stage_running` | Gauge | `ALPHA` | `stage` | Always | 1 while the stage is executing, 0 once it has ended. A stage that has not started has no series. |
 | `inference_perf_stage_start_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage started. |
 | `inference_perf_stage_end_timestamp_seconds` | Gauge | `ALPHA` | `stage` | Always | Unix time at which the stage ended, whether it completed or was cut short. |

@@ -32,7 +32,7 @@ from inference_perf.apis.base import (
     StreamedResponseMetrics,
     UnaryResponseMetrics,
 )
-from inference_perf.config import APIConfig, Config, LoadConfig, StandardLoadStage
+from inference_perf.config import APIConfig, Config, LoadConfig, StageGenType, StandardLoadStage, SweepConfig
 from inference_perf.observability.metrics import MetricsHub, MetricStability, RunContext, StageContext, build_metrics
 from inference_perf.observability.metrics.sets import ALL_SPECS
 from inference_perf.observability.metrics.sets.core import output_tokens
@@ -123,6 +123,23 @@ def test_stage_count_and_in_flight_come_from_run_context() -> None:
     assert _sample(hub, "inference_perf_requests_in_flight") == 4.0
     in_flight = 0
     assert _sample(hub, "inference_perf_requests_in_flight") == 0.0
+
+
+# A sweep run: the config has no stages, and the load generator's stage count goes
+# from 0 to 4 once its saturation probe generates them. Expects stages to read 0
+# at run start and 4 afterwards, from the probe rather than from the config.
+def test_stage_count_follows_stages_generated_after_run_start() -> None:
+    hub = _streaming_hub()
+    generated: List[StandardLoadStage] = []
+    hub.on_run_start(
+        RunContext(
+            config=Config(load=LoadConfig(sweep=SweepConfig(type=StageGenType.LINEAR))),
+            stage_count=lambda: len(generated),
+        )
+    )
+    assert _sample(hub, "inference_perf_stages") == 0.0
+    generated.extend([StandardLoadStage(rate=1, duration=1)] * 4)
+    assert _sample(hub, "inference_perf_stages") == 4.0
 
 
 # Ends stage 0 having lost two workers (a RuntimeError crash and a SIGKILL) and
