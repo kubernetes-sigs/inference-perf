@@ -32,6 +32,7 @@ from prometheus_client import Counter, Gauge  # noqa: TID251 (declares each spec
 from inference_perf.apis.base import RequestLifecycleMetric, ResponseMetrics
 from inference_perf.observability.context import RunContext, StageContext
 from inference_perf.observability.metrics.registry import MetricSpec
+from inference_perf.reportgen.base import effective_output_tokens
 
 
 def stage_label(metric: RequestLifecycleMetric) -> str:
@@ -42,14 +43,10 @@ def output_tokens(response_metrics: Optional[ResponseMetrics]) -> int:
     """Output token count for runtime metrics: the server's own count when it
     reported one, else the client-side count. Prompt tokens already resolve
     this way at construction (#676); the report keeps a separate opt-in for
-    output tokens for back-compat, but a new surface has no such constraint."""
-    if response_metrics is None:
-        return 0
-    if response_metrics.server_usage:
-        completion_tokens = response_metrics.server_usage.get("completion_tokens")
-        if completion_tokens:
-            return int(completion_tokens)
-    return response_metrics.output_tokens
+    output tokens for back-compat, but a new surface has no such constraint.
+    Resolved by the report's own function with that opt-in on, so both read
+    the same usage keys and both keep a reported 0."""
+    return effective_output_tokens(response_metrics, use_server_output_tokens=True)
 
 
 def _mark_run_start(gauge: Gauge, context: RunContext) -> None:
@@ -193,7 +190,8 @@ CORE_SPECS: tuple[MetricSpec[Any], ...] = (
         name="inference_perf_output_tokens",
         documentation=(
             "Output tokens of successful requests by stage; rate() gives output throughput. "
-            "Uses the server's usage.completion_tokens when reported, else the client-side count."
+            "Uses the server's reported output count (usage.completion_tokens, or usage.output_tokens on the "
+            "Anthropic Messages API) when present, else the client-side count."
         ),
         metric_type=Counter,
         labelnames=("stage",),

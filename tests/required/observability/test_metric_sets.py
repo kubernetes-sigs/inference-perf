@@ -212,14 +212,16 @@ def test_errors_counted_by_class_and_only_for_failures() -> None:
 
 
 # Feeds the resolver a missing response, a client count of 5, a server count of 7,
-# a server payload with no completion_tokens, and a server count of 0. Expects
-# 0, 5, 7, 5, 5: the server wins only when it reported a nonzero count.
+# the Anthropic spelling of a server count of 6, a server payload with no output
+# count, and a server count of 0. Expects 0, 5, 7, 6, 5, 0: the server wins
+# whenever it reported a count, including 0, as in the report.
 def test_output_tokens_prefer_server_usage_then_client_count() -> None:
     assert output_tokens(None) == 0
     assert output_tokens(UnaryResponseMetrics(output_tokens=5)) == 5
     assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"completion_tokens": 7})) == 7
+    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"output_tokens": 6})) == 6
     assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"prompt_tokens": 9})) == 5
-    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"completion_tokens": 0})) == 5
+    assert output_tokens(UnaryResponseMetrics(output_tokens=5, server_usage={"completion_tokens": 0})) == 0
 
 
 # Stage 0 gets 11+5 tokens, then 13 prompt with the server reporting 8 output, then
