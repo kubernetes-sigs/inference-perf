@@ -92,6 +92,26 @@ class ErrorResponseInfo(BaseModel):
     error_msg: str
 
 
+# Error type of a request the load generator cancelled while it was in flight.
+# This is the stage's deadline, not the request's: the stage ended and the
+# request had still not finished when stage_teardown_grace_seconds ran out.
+# Kept apart from "TimeoutError", which means request_timeout was hit and so
+# describes the server under one fixed limit; how long a request gets before
+# teardown cancels it depends on when in the stage it was sent.
+STAGE_TEARDOWN_CANCELLED_ERROR_TYPE = "StageTeardownCancelled"
+STAGE_TEARDOWN_CANCELLED_ERROR_MSG = (
+    "Cancelled by the load generator: the stage ended and the request was still in flight "
+    "when stage_teardown_grace_seconds ran out. This is the stage's deadline, not request_timeout."
+)
+
+
+def stage_teardown_cancelled_error() -> ErrorResponseInfo:
+    return ErrorResponseInfo(
+        error_type=STAGE_TEARDOWN_CANCELLED_ERROR_TYPE,
+        error_msg=STAGE_TEARDOWN_CANCELLED_ERROR_MSG,
+    )
+
+
 class RequestLifecycleMetric(BaseModel):
     stage_id: Optional[int] = None
     session_id: Optional[str] = None

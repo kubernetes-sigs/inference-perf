@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel, model_serializer
 
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
@@ -79,6 +80,10 @@ _HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"model.?not.?found|no such model", re.I), "Model Not Found"),
 ]
 
+# Report label for requests cancelled in flight when the stage's teardown grace ran
+# out. Deliberately not "Timeout": that label means request_timeout was hit.
+STAGE_TEARDOWN_CANCELLED_LABEL = "Cancelled at Stage Teardown"
+
 _NON_HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"timeout|timed.?out", re.I), "Timeout"),
     (re.compile(r"connection.?refused|connect", re.I), "Connection Error"),
@@ -111,7 +116,8 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     (_HTTP_CODE_LABELS), then message-specific patterns (_HTTP_ERROR_LABELS),
     else "other".
     For non-HTTP errors, matches against _NON_HTTP_ERROR_LABELS, falling back to a
-    lowercased error_type.
+    lowercased error_type. A request cancelled at stage teardown is the exception:
+    it arrives pre-classified and keeps its own label.
     """
     if error_type.startswith("HTTP Error "):
         try:
@@ -125,6 +131,11 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
             if pattern.search(error_msg):
                 return f"{code} - {label}"
         return f"{code} - other"
+    if error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE:
+        # Raised by our own code and already classified. Checked before the message
+        # patterns because its message names request_timeout to say it is not one,
+        # which the timeout pattern would otherwise file under "Timeout".
+        return STAGE_TEARDOWN_CANCELLED_LABEL
     for pattern, label in _NON_HTTP_ERROR_LABELS:
         if pattern.search(error_msg):
             return label
