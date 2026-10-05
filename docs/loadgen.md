@@ -1,6 +1,6 @@
 # Load Generation Guide
 
-Inference Perf generates load at the specified request rate based on a multi-process architecture where it uses the total CPUs available to spin off as many processes as denoted by [`num_workers`](CONFIG.md#load-configuration) and within each process, it spins off as many threads as denoted by [`worker_max_concurrency`](CONFIG.md#load-configuration) to achieve the specified request rate. This multi-process archictecture allows inference-perf to scale to 10k+ QPS which is not possible otherwise.
+Inference Perf generates load at the specified request rate based on a multi-process architecture where it uses the CPUs available to the process to spin off as many processes as denoted by [`num_workers`](CONFIG.md#load-configuration) and within each process, it spins off as many threads as denoted by [`worker_max_concurrency`](CONFIG.md#load-configuration) to achieve the specified request rate. By default `num_workers` is `min(CPU affinity, cgroup CPU quota when present, host CPUs)`, so container CPU limits and cpuset/taskset pinning are honored. This multi-process archictecture allows inference-perf to scale to 10k+ QPS which is not possible otherwise.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ graph TD
 Choose the right machine to run inference-perf on. The maximum concurrency you can get from the benchmarking tool and the ability to hit the desired QPS relies on the machine on which you are running on. Especially the number of CPUs / cores and the clock speed help with the concurrency. 
 
 **For rate-based load types (`constant`, `poisson`):**
-Maximum concurrency you can reach is bounded by `num_workers * worker_max_concurrency`. You can only have as many in-flight requests. Our recommendation is to not change `num_workers` since it is automatically set by inference-perf based on number of CPUs available and change `worker_max_concurrency` when needed. It is set to `100` by default. But more powerful CPUs can handle up to 1000.
+Maximum concurrency you can reach is bounded by `num_workers * worker_max_concurrency`. You can only have as many in-flight requests. Our recommendation is to not change `num_workers` since it is automatically set by inference-perf to `min(CPU affinity, cgroup CPU quota when present, host CPUs)` and change `worker_max_concurrency` when needed. It is set to `100` by default. But more powerful CPUs can handle up to 1000. Note that a fractional CPU quota (e.g. `limits.cpu: "500m"`) yields `num_workers=1`, which lowers the `num_workers * worker_max_concurrency` ceiling; the resolved value and its source are logged at debug level on startup, and the effective config is printed on startup.
 
 **For concurrent load type (`concurrent`):**
 The tool automatically manages worker allocation based on your specified `concurrency_level`. The `worker_max_concurrency` setting is ignored for concurrent load types, as workers are dynamically allocated to achieve the exact concurrency specified.
