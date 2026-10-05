@@ -642,7 +642,15 @@ async def test_multiturn_process_response_truncates_context_and_keeps_prefix_onc
             assert prompt.count(prefix) == 1
 
             response = MagicMock()
-            response.json = AsyncMock(return_value={"choices": [{"text": "RESPONSE"}]})
+            response.json = AsyncMock(
+                return_value={
+                    "id": "cmpl-1",
+                    "object": "text_completion",
+                    "created": 0,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "finish_reason": "stop", "text": "RESPONSE"}],
+                }
+            )
             await data.process_response(response, api_config, tokenizer)
             assert tokenizer.count_tokens(session.context) <= generator.max_model_len
 
@@ -684,7 +692,15 @@ async def test_multiturn_zero_prefix_accumulates_process_response() -> None:
         assert first_body["prompt"] == generator.prompts[0]
 
         response = MagicMock()
-        response.json = AsyncMock(return_value={"choices": [{"text": "RESPONSE"}]})
+        response.json = AsyncMock(
+            return_value={
+                "id": "cmpl-1",
+                "object": "text_completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [{"index": 0, "finish_reason": "stop", "text": "RESPONSE"}],
+            }
+        )
         await first.process_response(response, api_config, tokenizer)
         assert session.history == [f"{first.prompt} RESPONSE"]
 
