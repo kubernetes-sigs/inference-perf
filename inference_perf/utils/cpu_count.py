@@ -34,6 +34,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Assume private cgroup namespace (default Docker/Kubernetes); otherwise reads fail and fall back to host count.
 CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 CGROUP_V1_QUOTA_US = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
 CGROUP_V1_PERIOD_US = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
