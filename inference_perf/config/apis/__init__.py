@@ -19,6 +19,7 @@ from inference_perf.config.apis.config import (
     ResponseFormat,
     ResponseFormatType,
     TemplateConfig,
+    TemplateResponseConfig,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "ResponseFormat",
     "ResponseFormatType",
     "TemplateConfig",
+    "TemplateResponseConfig",
 ]

@@ -11,13 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from inference_perf.apis import TemplateAPIData, UnaryResponseMetrics
-from inference_perf.config import APIConfig, APIType, TemplateConfig
+from inference_perf.apis import template as template_module
+from inference_perf.config import APIConfig, APIType, TemplateConfig, TemplateResponseConfig
 
 
 def _make_tokenizer() -> MagicMock:
@@ -36,17 +38,35 @@ def _make_response(body: Any) -> MagicMock:
 _TEMPLATE = TemplateConfig(
     route="/generate",
     body={"text": "${prompt}", "sampling_params": {"max_new_tokens": "${max_tokens}", "ignore_eos": True}},
-    text_path="text",
-    input_tokens_path="meta_info.prompt_tokens",
-    output_tokens_path="meta_info.completion_tokens",
+    ignore_eos=True,
+    response=TemplateResponseConfig(
+        text_path="text",
+        input_tokens_path="meta_info.prompt_tokens",
+        output_tokens_path="meta_info.completion_tokens",
+    ),
 )
 _CONFIG = APIConfig(type=APIType.Template, template=_TEMPLATE)
 
 
-def test_template_api_type_and_route() -> None:
-    data = TemplateAPIData(prompt="hello", template=_TEMPLATE)
+@pytest.mark.asyncio
+async def test_template_route_is_filled_with_the_model() -> None:
+    template = TemplateConfig(
+        route="/predictions/${model}", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text")
+    )
+    data = TemplateAPIData(prompt="hello", template=template)
+
+    await data.to_request_body("test-model", 100, False, False)
+
     assert data.get_api_type() == APIType.Template
-    assert data.get_route() == "/generate"
+    assert data.get_route() == "/predictions/test-model"
+
+
+def test_template_route_needs_the_request_body_first() -> None:
+    # The model name, and with it the route, is only known once the body is built.
+    data = TemplateAPIData(prompt="hello", template=_TEMPLATE)
+
+    with pytest.raises(RuntimeError, match="to_request_body"):
+        data.get_route()
 
 
 @pytest.mark.asyncio
@@ -64,7 +84,7 @@ async def test_template_request_body_fills_model_lists_and_embedded_text() -> No
     template = TemplateConfig(
         route="/v1/generate",
         body={"model": "${model}", "inputs": ["Question: ${prompt}"], "limit": "${max_tokens}", "note": "costs $$5"},
-        text_path="output",
+        response=TemplateResponseConfig(text_path="output"),
     )
     # max_tokens falls back to the client default when the request does not set one.
     data = TemplateAPIData(prompt="hi there", template=template)
@@ -109,6 +129,25 @@ async def test_template_process_response_counts_tokens_without_usable_counts(bod
     assert info.response_metrics is not None
     assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage is None
+
+
+@pytest.mark.asyncio
+async def test_template_warns_once_about_a_count_that_is_not_an_integer(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(template_module, "_warned_count_paths", set())
+    data = TemplateAPIData(prompt="one two three", template=_TEMPLATE)
+    body = {"text": "a b", "meta_info": {"prompt_tokens": 9.0, "completion_tokens": 2}}
+
+    with caplog.at_level(logging.WARNING, logger="inference_perf.apis.template"):
+        for _ in range(2):
+            info = await data.process_response(_make_response(body), _CONFIG, _make_tokenizer())
+
+    warnings = [record.getMessage() for record in caplog.records if "meta_info.prompt_tokens" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "selected a float, not an integer" in warnings[0]
+    # The float is dropped, so the prompt is counted with the tokenizer.
+    assert info.request_metrics.text.input_tokens == 3
 
 
 @pytest.mark.asyncio

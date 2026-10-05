@@ -2,7 +2,16 @@ import numpy as np
 import pytest
 
 from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData, TemplateAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType, TemplateConfig
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    Distribution,
+    DataGenType,
+    DistributionType,
+    TemplateConfig,
+    TemplateResponseConfig,
+)
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from typing import Any
@@ -220,7 +229,7 @@ def test_random_datagen_distribution_types() -> None:
 
 
 def test_random_datagen_template_carries_the_completion_prompt() -> None:
-    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text"))
     data_config = DataConfig(
         type=DataGenType.Random,
         input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),

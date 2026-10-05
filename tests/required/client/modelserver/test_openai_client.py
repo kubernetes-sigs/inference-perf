@@ -39,7 +39,7 @@ from inference_perf.apis import (
     TemplateAPIData,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
-from inference_perf.config import APIType, TemplateConfig
+from inference_perf.config import APIType, TemplateConfig, TemplateResponseConfig
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -1224,8 +1224,7 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
 _GENERATE_TEMPLATE = TemplateConfig(
     route="/generate",
     body={"text": "${prompt}", "sampling_params": {"max_new_tokens": "${max_tokens}"}},
-    text_path="text",
-    output_tokens_path="meta_info.completion_tokens",
+    response=TemplateResponseConfig(text_path="text", output_tokens_path="meta_info.completion_tokens"),
 )
 
 
@@ -1265,6 +1264,7 @@ async def test_template_request_round_trip(mock_client: MagicMock) -> None:
     assert post.args[0] == "http://test-uri/generate"
     assert json.loads(post.kwargs["data"]) == {"text": "hello world", "sampling_params": {"max_new_tokens": 16}}
     assert post.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "template"
 
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert metric.error is None
@@ -1285,3 +1285,15 @@ async def test_template_response_without_text_is_recorded_as_failed(mock_client:
     assert metric.error is not None
     assert metric.error.error_type == "ValueError"
     assert "text_path 'text' did not select a string" in metric.error.error_msg
+
+
+@pytest.mark.asyncio
+async def test_template_route_names_the_model(mock_client: MagicMock) -> None:
+    template = TemplateConfig(
+        route="/predictions/${model}", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text")
+    )
+    session = _template_session(mock_client, {"text": "a b c"})
+
+    await session.process_request(TemplateAPIData(prompt="hello world", template=template), stage_id=1, scheduled_time=0.0)
+
+    assert _post(session).call_args.args[0] == "http://test-uri/predictions/test-model"

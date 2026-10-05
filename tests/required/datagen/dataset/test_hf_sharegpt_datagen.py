@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import MagicMock
 from inference_perf.apis import CompletionAPIData, TemplateAPIData
-from inference_perf.config import APIConfig, APIType, TemplateConfig
+from inference_perf.config import APIConfig, APIType, TemplateConfig, TemplateResponseConfig
 from inference_perf.datagen.dataset.hf_sharegpt_datagen import HFShareGPTDataGenerator
 
 
@@ -70,7 +70,7 @@ def test_get_anthropic_messages_data_rejects_unexpected_chat_data() -> None:
 
 def test_completion_prompt_sent_through_a_template() -> None:
     generator = HFShareGPTDataGenerator.__new__(HFShareGPTDataGenerator)
-    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text"))
     generator.api_config = APIConfig(type=APIType.Template, template=template)
     generator.data_key = "conversations"
     generator.content_key = "value"

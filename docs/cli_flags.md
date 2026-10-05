@@ -20,11 +20,12 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.embeddings.batch_size` | int | Number of input strings sent in each embeddings request. |
 | `--api.embeddings.dimensions` | int | Embedding size requested from the server. Unset uses the model's default. |
 | `--api.embeddings.encoding_format` | Enum (float, base64) | Format of the returned embeddings: 'float' or 'base64'. Unset uses the server's default. |
-| `--api.template.route` | str | Path the request is sent to, appended to the server base URL, e.g. '/generate'. |
+| `--api.template.route` | str | Path the request is sent to, appended to the server base URL, e.g. '/generate'. It can use ${model}. |
 | `--api.template.body` | JSON | JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request. |
-| `--api.template.text_path` | str | JMESPath expression that selects the generated text in the response body. |
-| `--api.template.input_tokens_path` | str | JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer. |
-| `--api.template.output_tokens_path` | str | JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens. |
+| `--api.template.ignore_eos` | boolean | Declares that the body asks the server to ignore EOS and generate all ${max_tokens} tokens. The body still sets the server's own field for this. |
+| `--api.template.response.text_path` | str | JMESPath expression that selects the generated text in the response body. It must select only the generated text, without the prompt. |
+| `--api.template.response.input_tokens_path` | str | JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer. |
+| `--api.template.response.output_tokens_path` | str | JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |

@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from inference_perf.apis import EmbeddingsAPIData, TemplateAPIData
-from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType, EmbeddingsConfig, TemplateConfig
+from inference_perf.config import (
+    APIConfig,
+    APIType,
+    DataConfig,
+    DataGenType,
+    EmbeddingsConfig,
+    TemplateConfig,
+    TemplateResponseConfig,
+)
 from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 
 
@@ -37,7 +45,7 @@ def test_mock_datagen_embeddings_batch_and_options() -> None:
 
 
 def test_mock_datagen_template() -> None:
-    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, text_path="text")
+    template = TemplateConfig(route="/generate", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text"))
     generator = MockDataGenerator(APIConfig(type=APIType.Template, template=template), DataConfig(type=DataGenType.Mock), None)
 
     data = next(generator.get_data())

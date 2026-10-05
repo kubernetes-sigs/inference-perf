@@ -110,7 +110,7 @@ def test_embeddings_options_rejected_for_other_api_types() -> None:
 
 
 def _template_options(**overrides: Any) -> dict[str, Any]:
-    options: dict[str, Any] = {"route": "/generate", "body": {"text": "${prompt}"}, "text_path": "text"}
+    options: dict[str, Any] = {"route": "/generate", "body": {"text": "${prompt}"}, "response": {"text_path": "text"}}
     options.update(overrides)
     return options
 
@@ -144,14 +144,28 @@ def test_template_config_read_from_cli() -> None:
     assert config.api.template == TemplateConfig(**_template_options())
 
 
+def test_template_route_can_name_the_model() -> None:
+    template = TemplateConfig(**_template_options(route="/v1/models/${model}:predict"))
+    assert template.render_route("llama") == "/v1/models/llama:predict"
+
+
+def test_template_ignore_eos_defaults_to_false() -> None:
+    assert TemplateConfig(**_template_options()).ignore_eos is False
+    template = TemplateConfig(**_template_options(body={"text": "${prompt}", "n": "${max_tokens}"}, ignore_eos=True))
+    assert template.ignore_eos is True
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
         ({"route": "generate"}, "template route must start with '/'"),
+        ({"route": "/generate/${prompt}"}, "template route can only use ${model}, got ['prompt']"),
+        ({"route": "/generate?n=${max_tokens}"}, "template route can only use ${model}, got ['max_tokens']"),
         ({"body": {"text": "${promt}"}}, "template body uses unknown placeholders ['promt']"),
         ({"body": {"text": "fixed"}}, "template body must use ${prompt}"),
         ({"body": {"text": "${prompt} costs $5"}}, "Write a literal $ as $$."),
-        ({"text_path": "choices[0"}, "template text_path is not a valid JMESPath expression"),
+        ({"ignore_eos": True}, "template ignore_eos needs the body to use ${max_tokens}"),
+        ({"response": {"text_path": "choices[0"}}, "template response text_path is not a valid JMESPath expression"),
     ],
 )
 def test_template_config_rejects_invalid_values(overrides: dict[str, Any], message: str) -> None:

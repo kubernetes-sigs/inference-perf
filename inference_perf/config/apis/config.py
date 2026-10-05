@@ -95,6 +95,14 @@ def _template_strings(node: Any) -> Iterator[str]:
             yield from _template_strings(item)
 
 
+def _placeholders(text: str, where: str) -> set[str]:
+    """The placeholder names in text, after checking that every $ is well formed."""
+    template = string.Template(text)
+    if not template.is_valid():
+        raise ValueError(f"template {where} has an invalid placeholder in '{text}'. Write a literal $ as $$.")
+    return set(template.get_identifiers())
+
+
 def _fill_template(node: Any, values: dict[str, Any]) -> Any:
     """A copy of a template body with every placeholder replaced by its value.
 
@@ -112,14 +120,12 @@ def _fill_template(node: Any, values: dict[str, Any]) -> Any:
     return node
 
 
-class TemplateConfig(StrictBaseModel):
-    """Request template and response paths for the template API (type 'template')."""
+class TemplateResponseConfig(StrictBaseModel):
+    """Where the template API finds the generated text and token counts in a response."""
 
-    route: str = Field(description="Path the request is sent to, appended to the server base URL, e.g. '/generate'.")
-    body: dict[str, Any] = Field(
-        description="JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request."
+    text_path: str = Field(
+        description="JMESPath expression that selects the generated text in the response body. It must select only the generated text, without the prompt."
     )
-    text_path: str = Field(description="JMESPath expression that selects the generated text in the response body.")
     input_tokens_path: Optional[str] = Field(
         default=None,
         description="JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer.",
@@ -130,23 +136,7 @@ class TemplateConfig(StrictBaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_template(self) -> "TemplateConfig":
-        if not self.route.startswith("/"):
-            raise ValueError(f"template route must start with '/', got '{self.route}'")
-        used: set[str] = set()
-        for text in _template_strings(self.body):
-            template = string.Template(text)
-            if not template.is_valid():
-                raise ValueError(f"template body has an invalid placeholder in '{text}'. Write a literal $ as $$.")
-            used.update(template.get_identifiers())
-        unknown = sorted(used.difference(_TEMPLATE_PLACEHOLDERS))
-        if unknown:
-            raise ValueError(
-                f"template body uses unknown placeholders {unknown}. "
-                "The known ones are ${prompt}, ${max_tokens} and ${model}."
-            )
-        if "prompt" not in used:
-            raise ValueError("template body must use ${prompt}")
+    def validate_paths(self) -> "TemplateResponseConfig":
         for name, expression in (
             ("text_path", self.text_path),
             ("input_tokens_path", self.input_tokens_path),
@@ -157,8 +147,51 @@ class TemplateConfig(StrictBaseModel):
             try:
                 jmespath.compile(expression)
             except JMESPathError as e:
-                raise ValueError(f"template {name} is not a valid JMESPath expression: {e}") from e
+                raise ValueError(f"template response {name} is not a valid JMESPath expression: {e}") from e
         return self
+
+
+class TemplateConfig(StrictBaseModel):
+    """Request template and response paths for the template API (type 'template')."""
+
+    route: str = Field(
+        description="Path the request is sent to, appended to the server base URL, e.g. '/generate'. It can use ${model}."
+    )
+    body: dict[str, Any] = Field(
+        description="JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request."
+    )
+    ignore_eos: bool = Field(
+        default=False,
+        description="Declares that the body asks the server to ignore EOS and generate all ${max_tokens} tokens. The body still sets the server's own field for this.",
+    )
+    response: TemplateResponseConfig = Field(description="Where the generated text and token counts are in the response body.")
+
+    @model_validator(mode="after")
+    def validate_template(self) -> "TemplateConfig":
+        if not self.route.startswith("/"):
+            raise ValueError(f"template route must start with '/', got '{self.route}'")
+        route_unknown = sorted(_placeholders(self.route, "route").difference({"model"}))
+        if route_unknown:
+            raise ValueError(f"template route can only use ${{model}}, got {route_unknown}")
+        used: set[str] = set()
+        for text in _template_strings(self.body):
+            used.update(_placeholders(text, "body"))
+        unknown = sorted(used.difference(_TEMPLATE_PLACEHOLDERS))
+        if unknown:
+            raise ValueError(
+                f"template body uses unknown placeholders {unknown}. "
+                "The known ones are ${prompt}, ${max_tokens} and ${model}."
+            )
+        if "prompt" not in used:
+            raise ValueError("template body must use ${prompt}")
+        # ignore_eos means the server generates the full max_tokens, so the body has to send it.
+        if self.ignore_eos and "max_tokens" not in used:
+            raise ValueError("template ignore_eos needs the body to use ${max_tokens}")
+        return self
+
+    def render_route(self, model: str) -> str:
+        """The route with ${model} replaced by the model name."""
+        return string.Template(self.route).substitute(model=model)
 
     def render_body(self, values: dict[str, Any]) -> dict[str, Any]:
         """The request body with every placeholder replaced by its value."""
