@@ -49,6 +49,10 @@ class RunContext:
 
     config: "Config"
     in_flight_requests: Callable[[], int] = _no_requests_in_flight
+    # The load generator's live stage count. None reads the configured stages,
+    # which are final on every run except a sweep: that configures none and
+    # generates them once its saturation probe finishes, after the run starts.
+    stage_count: Optional[Callable[[], int]] = None
 
 
 @dataclass(frozen=True)

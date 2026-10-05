@@ -666,6 +666,10 @@ class LoadGenerator:
             return int(self._active_requests_counter.value)
         return self._local_in_flight
 
+    def stage_count(self) -> int:
+        """Stages this run executes, sampled live: a sweep replaces them after preprocess."""
+        return len(self.stages)
+
     async def _track_in_flight(self, request: Awaitable[None]) -> None:
         self._local_in_flight += 1
         try:

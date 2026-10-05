@@ -468,7 +468,9 @@ def main_cli() -> None:
             metrics_server = None
 
     start_time = time.time()
-    metrics_hub.on_run_start(RunContext(config=config, in_flight_requests=loadgen.in_flight_requests))
+    metrics_hub.on_run_start(
+        RunContext(config=config, in_flight_requests=loadgen.in_flight_requests, stage_count=loadgen.stage_count)
+    )
 
     # Run Perf Test
     try:
