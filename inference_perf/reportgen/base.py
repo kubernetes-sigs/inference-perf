@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 import numpy as np
 from pydantic import BaseModel, model_serializer
 
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.apis.chat import reasoning_field
 from inference_perf.apis.response_errors import InBandError
@@ -82,6 +83,10 @@ _HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"model.?not.?found|no such model", re.I), "Model Not Found"),
 ]
 
+# Report label for requests cancelled in flight when the stage's teardown grace ran
+# out. Deliberately not "Timeout": that label means request_timeout was hit.
+STAGE_TEARDOWN_CANCELLED_LABEL = "Cancelled at Stage Teardown"
+
 _NON_HTTP_ERROR_LABELS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"timeout|timed.?out", re.I), "Timeout"),
     (re.compile(r"connection.?refused|connect", re.I), "Connection Error"),
@@ -115,7 +120,8 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     else "other".
     For non-HTTP errors, matches against _NON_HTTP_ERROR_LABELS, falling back to a
     lowercased error_type. An InBandError skips the patterns: its label is always
-    ``inbanderror``.
+    ``inbanderror``. A request cancelled at stage teardown skips them too: it
+    arrives pre-classified and keeps its own label.
     """
     if error_type.startswith("HTTP Error "):
         try:
@@ -133,6 +139,11 @@ def make_concise_label(error_type: str, error_msg: str) -> str:
     # in it must not file the failure with the client's transport errors.
     if error_type == InBandError.__name__:
         return error_type.lower()
+    if error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE:
+        # Raised by our own code and already classified. Checked before the message
+        # patterns because its message names request_timeout to say it is not one,
+        # which the timeout pattern would otherwise file under "Timeout".
+        return STAGE_TEARDOWN_CANCELLED_LABEL
     for pattern, label in _NON_HTTP_ERROR_LABELS:
         if pattern.search(error_msg):
             return label
