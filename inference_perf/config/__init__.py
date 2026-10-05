@@ -20,6 +20,7 @@ from inference_perf.config.apis import (
     ResponseFormat,
     ResponseFormatType,
     TemplateConfig,
+    TemplateResponseConfig,
 )
 from inference_perf.config.circuit_breaker import (
     CircuitBreakerConfig,
@@ -148,6 +149,7 @@ __all__ = [
     "SyntheticAgenticConfig",
     "SyntheticMultimodalDatagenConfig",
     "TemplateConfig",
+    "TemplateResponseConfig",
     "TraceConfig",
     "TraceFormat",
     "TraceSessionReplayLoadStage",
