@@ -13,11 +13,15 @@
 # limitations under the License.
 """Per-request latency histograms, observed once per successful request.
 
-Runtime values are derived exactly as the report derives them from the same
+Runtime values use the report's derivations over the same
 RequestLifecycleMetric (see reportgen/base.py): TTFT is the first entry of
 output_token_times minus request start, TPOT is (last entry - first entry)
 divided by (output tokens - 1). Both follow whatever the API layer records
-as a generated token, so they track the report if that definition changes. Inter-token latency is deliberately absent:
+as a generated token, so they track the report if that definition changes.
+TTFT matches the report exactly. TPOT matches it only when the output counts
+agree: the runtime takes the server's count whenever one was reported (see
+core.output_tokens), while the report does so only under
+report.request_lifecycle.use_server_output_tokens, which is off by default. Inter-token latency is deliberately absent:
 the report expands chunk timestamps to per-token timestamps at report time
 (#564), and a runtime ITL over raw chunk gaps would be a second, different
 number under the same name.
