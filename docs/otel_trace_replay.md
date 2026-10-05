@@ -303,6 +303,8 @@ An optional wall-clock cap on the stage's session-dispatch loop. Omit it to run 
 
 After *any* stage ends — whether it completed normally, hit `max_stage_duration`, or was interrupted — in-flight requests are given this many seconds to finish before being force-cancelled. This grace period is a separate, later phase: it starts only once the stage's dispatch loop has already stopped, and it applies uniformly to every load type, not just session replay.
 
+A request still in flight when the grace runs out is cancelled and reported as a failure with error type `StageTeardownCancelled` (label `Cancelled at Stage Teardown`). This is the stage's deadline, not the request's: a request that hits `request_timeout` is reported as `TimeoutError` instead.
+
 **How they interact — a worked timeline:**
 
 ```yaml
