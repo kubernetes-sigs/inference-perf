@@ -378,12 +378,6 @@ class Worker(mp.Process):
                             logger.debug(
                                 f"Skipping request - session failure detected: {getattr(request_data, 'event_id', 'unknown')}"
                             )
-                            # Retired without being sent, so no lifecycle metric will
-                            # exist for it. Counted here so the finished total the
-                            # progress bar reads can still be reconciled against the
-                            # outcome counters the report is built from.
-                            with self.skipped_requests_counter.get_lock():
-                                self.skipped_requests_counter.value += 1
                             return  # Exit this task, finally block will clean up
 
                         # Stage is winding down: in-flight requests may finish,
@@ -409,6 +403,16 @@ class Worker(mp.Process):
                         with self.active_requests_counter.get_lock():
                             if inflight:
                                 self.active_requests_counter.value -= 1
+                        if not inflight:
+                            # Retired without being sent: the session had already
+                            # failed, the stage was winding down, or the task was
+                            # cancelled while waiting for its scheduled time or its
+                            # predecessors. No lifecycle metric will exist for it, so
+                            # it is counted here, on every such path, so the finished
+                            # total the progress bar reads still reconciles against
+                            # the outcome counters the report is built from.
+                            with self.skipped_requests_counter.get_lock():
+                                self.skipped_requests_counter.value += 1
                         with self.finished_requests_counter.get_lock():
                             self.finished_requests_counter.value += 1
                         semaphore.release()
