@@ -72,7 +72,10 @@ class StageContext:
     The ``*_skipped`` probes are the subset of finished work that was
     abandoned before it reached the server and so produced no lifecycle
     metric. They are what makes the two metric families reconcilable: at stage
-    end, ``finished`` equals ``skipped`` plus the outcome counters.
+    end, ``finished`` equals ``skipped`` plus the outcome counters. The one
+    exception is a request still in flight when the teardown grace expires:
+    it is cancelled after being sent, so it is finished but neither skipped
+    nor an outcome, and it is absent from the report as well.
 
     ``workers_lost`` reports one cause string per worker process that died
     during this stage, so it is only meaningful once the stage has ended. It

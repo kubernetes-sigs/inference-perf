@@ -465,6 +465,9 @@ async def test_respawned_worker_resyncs_stage_rendezvous(tmp_path: object) -> No
         harness.shutdown()
 
 
+# Request A dispatches and raises the flag request B waits on 3s later; teardown
+# starts first. Expects B to wake while draining and exit without dispatching:
+# 1 dispatch, 2 finished, 1 skipped.
 async def test_draining_gate_blocks_dependent_dispatch(tmp_path: object) -> None:
     """Session-replay dependency chains: a request parked on its predecessor
     that wakes up during teardown must exit without dispatching (draining
@@ -488,7 +491,31 @@ async def test_draining_gate_blocks_dependent_dispatch(tmp_path: object) -> None
         assert 3.5 <= elapsed < 10.0, f"teardown window violated: {elapsed:.1f}s"
         assert _line_count(dispatch_log) == 1, "dependent request must not dispatch during teardown"
         assert harness.finished_counter.value == 2  # A completed, B exited via the gate
+        assert harness.skipped_counter.value == 1  # B was never sent, so no lifecycle metric covers it
         assert harness.worker_pids() == pids_before
+    finally:
+        harness.shutdown()
+
+
+# Request A dispatches and completes within the 4s grace; request B waits on a
+# flag nobody raises. Expects B to be cancelled at grace expiry and counted as
+# skipped: 1 dispatch, 2 finished, 1 skipped.
+async def test_request_cancelled_while_waiting_counts_as_skipped(tmp_path: object) -> None:
+    """A request cancelled at grace expiry before it was sent produces no
+    lifecycle metric, so it must be counted as skipped for finished to
+    reconcile with skipped plus the outcome counters."""
+    dispatch_log = os.path.join(str(tmp_path), "dispatch.log")
+    never_raised = os.path.join(str(tmp_path), "never.flag")
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = ChainDataGenerator(api_config, DataConfig(type=DataGenType.Mock), never_raised)
+    client = ChainClient(dispatch_log, os.path.join(str(tmp_path), "done.flag"))
+    harness = _Harness(client, teardown_grace_seconds=4.0, datagen=datagen)
+    try:
+        await harness.run_stage(0, timeout=1.0)
+
+        assert _line_count(dispatch_log) == 1
+        assert harness.finished_counter.value == 2
+        assert harness.skipped_counter.value == 1
     finally:
         harness.shutdown()
 

@@ -142,9 +142,9 @@ STAGE_REQUESTS_FINISHED = MetricSpec[Gauge](
 STAGE_REQUESTS_SKIPPED = MetricSpec[Gauge](
     name="inference_perf_stage_requests_skipped",
     documentation=(
-        "Requests counted as finished that were never sent, because the session had already failed or the "
-        "request could not be built. These produce no lifecycle metric, so they appear in no outcome counter "
-        "and in no report."
+        "Requests counted as finished that were never sent, because the session had already failed, the "
+        "request could not be built, or the stage ended before they were dispatched. These produce no "
+        "lifecycle metric, so they appear in no outcome counter and in no report."
     ),
     metric_type=Gauge,
     labelnames=("stage",),
