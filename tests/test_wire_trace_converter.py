@@ -15,9 +15,9 @@
 """Tests for wire capture detection and conversion to OTel traces.
 
 Fixtures are synthetic but mirror the structure of real captures: the wire record
-envelope (path/headers/request/response/status/start_unix/total_ms), the Chat
-Completions plain-JSON response, and the Responses API SSE stream whose
-response.completed event carries usage and output.
+envelope (path/headers/request/response/status/start_unix/total_ms), Chat Completions
+JSON and SSE responses, and the Responses API SSE stream whose response.completed
+event carries usage and output.
 """
 
 import json
@@ -118,6 +118,74 @@ def chat_record(
         "response": json.dumps(response) if status == 200 else "",
         "total_ms": 250.0,
     }
+
+
+def streaming_chat_record(
+    *,
+    content_fragments: Optional[List[str]] = None,
+    tool_call_fragments: Optional[List[Dict[str, Any]]] = None,
+    prompt_tokens: int = 11,
+    completion_tokens: int = 5,
+    include_done: bool = True,
+) -> Dict[str, Any]:
+    """One streaming Chat Completions record with usage in its final chunk."""
+    record = chat_record(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    request = json.loads(record["request"])
+    request["stream"] = True
+    record["request"] = json.dumps(request)
+
+    events: List[Dict[str, Any]] = []
+    for content in content_fragments or []:
+        events.append(
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "model": "test/model",
+                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                "usage": None,
+            }
+        )
+    for tool_call in tool_call_fragments or []:
+        events.append(
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "model": "test/model",
+                "choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}, "finish_reason": None}],
+                "usage": None,
+            }
+        )
+    events.extend(
+        [
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "model": "test/model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls" if tool_call_fragments else "stop",
+                    }
+                ],
+                "usage": None,
+            },
+            {
+                "id": "chatcmpl-stream",
+                "object": "chat.completion.chunk",
+                "model": "test/model",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                },
+            },
+        ]
+    )
+    record["response"] = _sse(events) + ("data: [DONE]\n\n" if include_done else "")
+    return record
 
 
 def _sse(events: List[Dict[str, Any]]) -> str:
@@ -544,6 +612,215 @@ def test_chat_conversion_cached_tokens_recorded(tmp_path: Path) -> None:
     f = write_jsonl(tmp_path / "calls.jsonl", [chat_record(cached_tokens=7)])
     attrs = convert_wire_file(f)["spans"][0]["attributes"]
     assert attrs["gen_ai.usage.cache_read_tokens"] == 7
+
+
+def test_chat_conversion_reassembles_streamed_text_and_usage(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["hello", " world"], prompt_tokens=21, completion_tokens=7)
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert attrs["gen_ai.usage.input_tokens"] == 21
+    assert attrs["gen_ai.usage.output_tokens"] == 7
+    assert attrs["gen_ai.usage.cache_read_tokens"] == 3
+    assert attrs["gen_ai.response.id"] == "chatcmpl-stream"
+    assert attrs["gen_ai.response.finish_reasons"] == ["stop"]
+    assert json.loads(attrs["gen_ai.output.messages"]) == [
+        {"role": "assistant", "parts": [{"type": "text", "content": "hello world"}], "finish_reason": "stop"}
+    ]
+
+
+def test_chat_conversion_reassembles_streamed_tool_call(tmp_path: Path) -> None:
+    fragments = [
+        {
+            "index": 0,
+            "type": "function",
+            "id": "call-1",
+            "function": {"name": "list_files", "arguments": '{"dire'},
+        },
+        {"index": 0, "function": {"name": None, "arguments": 'ctory":"/tmp"}'}},
+    ]
+    record = streaming_chat_record(tool_call_fragments=fragments)
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    parts = json.loads(attrs["gen_ai.output.messages"])[0]["parts"]
+    assert parts == [{"type": "tool_call", "id": "call-1", "name": "list_files", "arguments": {"directory": "/tmp"}}]
+    assert attrs["gen_ai.response.finish_reasons"] == ["tool_calls"]
+
+
+def test_chat_conversion_allows_repeated_tool_metadata(tmp_path: Path) -> None:
+    fragments = [
+        {
+            "index": 0,
+            "id": "call-1",
+            "function": {"name": "list_files", "arguments": '{"dire'},
+        },
+        {
+            "index": 0,
+            "id": "call-1",
+            "function": {"name": "list_files", "arguments": 'ctory":"/tmp"}'},
+        },
+    ]
+    record = streaming_chat_record(tool_call_fragments=fragments)
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [
+        {"type": "tool_call", "id": "call-1", "name": "list_files", "arguments": {"directory": "/tmp"}}
+    ]
+
+
+@pytest.mark.parametrize(
+    "second_fragment",
+    [
+        {"index": 0, "id": "call-2", "function": {"arguments": "1}"}},
+        {"index": 0, "function": {"name": "other", "arguments": "1}"}},
+    ],
+    ids=["conflicting-id", "conflicting-name"],
+)
+def test_chat_conversion_rejects_conflicting_tool_metadata(tmp_path: Path, second_fragment: Dict[str, Any]) -> None:
+    first_fragment = {
+        "index": 0,
+        "id": "call-1",
+        "function": {"name": "run", "arguments": '{"value":'},
+    }
+    record = streaming_chat_record(tool_call_fragments=[first_fragment, second_fragment])
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_skips_incomplete_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: List[str] = []
+    monkeypatch.setattr(
+        wire_trace_converter.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    record = streaming_chat_record(content_fragments=["partial"], include_done=False)
+
+    trace = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))
+
+    assert trace["span_count"] == 0
+    assert "Skipping incomplete or invalid Chat Completions SSE wire record at line 1" in warnings
+
+
+@pytest.mark.parametrize(
+    "bad_event",
+    ["{not json}", json.dumps({"error": {"message": "generation failed"}})],
+    ids=["malformed-json", "error-event"],
+)
+def test_chat_conversion_rejects_invalid_event_before_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_event: str
+) -> None:
+    warnings: List[str] = []
+    monkeypatch.setattr(
+        wire_trace_converter.logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    record = streaming_chat_record(content_fragments=["partial"])
+    record["response"] = record["response"].replace("data: [DONE]", f"data: {bad_event}\n\ndata: [DONE]")
+
+    trace = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))
+
+    assert trace["span_count"] == 0
+    assert "Skipping incomplete or invalid Chat Completions SSE wire record at line 1" in warnings
+
+
+def test_chat_conversion_rejects_done_without_finish_reason(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["partial"])
+    lines = [line for line in record["response"].splitlines() if line]
+    events = [json.loads(line[6:]) for line in lines if line != "data: [DONE]"]
+    events = [event for event in events if not any(choice.get("finish_reason") for choice in event.get("choices", []))]
+    record["response"] = _sse(events) + "data: [DONE]\n\n"
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_finish_event_after_done(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["partial"])
+    lines = [line for line in record["response"].splitlines() if line]
+    events = [json.loads(line[6:]) for line in lines if line != "data: [DONE]"]
+    finish_event = next(event for event in events if any(c.get("finish_reason") for c in event.get("choices", [])))
+    events.remove(finish_event)
+    record["response"] = _sse(events) + "data: [DONE]\n\n" + _sse([finish_event])
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_unterminated_done_event(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["complete"])
+    record["response"] = record["response"].rstrip("\n")
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_multiple_choices(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["first"])
+    extra_choice = {
+        "id": "chatcmpl-stream",
+        "object": "chat.completion.chunk",
+        "model": "test/model",
+        "choices": [{"index": 1, "delta": {"content": "second"}, "finish_reason": "stop"}],
+        "usage": None,
+    }
+    record["response"] = record["response"].replace("data: [DONE]", _sse([extra_choice]) + "data: [DONE]")
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "bad_delta",
+    [
+        {"choices": 1},
+        {"choices": [{"index": 0, "delta": {"tool_calls": 1}}]},
+    ],
+    ids=["choices-not-list", "tool-calls-not-list"],
+)
+def test_chat_conversion_rejects_malformed_chunk_shapes(tmp_path: Path, bad_delta: Dict[str, Any]) -> None:
+    record = streaming_chat_record(content_fragments=["partial"])
+    malformed = {"id": "chatcmpl-stream", "object": "chat.completion.chunk", **bad_delta}
+    record["response"] = record["response"].replace("data: [DONE]", _sse([malformed]) + "data: [DONE]")
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_meaningful_delta_after_finish(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["complete"])
+    late_delta = {
+        "id": "chatcmpl-stream",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": " too late"}, "finish_reason": None}],
+    }
+    record["response"] = record["response"].replace("data: [DONE]", _sse([late_delta]) + "data: [DONE]")
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_parses_multiline_sse_data_event(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["hello"])
+    first_event, remainder = record["response"].split("\n\n", 1)
+    first_event = first_event.replace(', "choices"', ',\ndata: "choices"', 1)
+    record["response"] = first_event + "\n\n" + remainder
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [{"type": "text", "content": "hello"}]
+
+
+def test_chat_conversion_reassembles_interleaved_tool_calls(tmp_path: Path) -> None:
+    fragments = [
+        {"index": 0, "id": "call-0", "function": {"name": "first", "arguments": '{"a":'}},
+        {"index": 1, "id": "call-1", "function": {"name": "second", "arguments": '{"b":'}},
+        {"index": 0, "function": {"arguments": "1}"}},
+        {"index": 1, "function": {"arguments": "2}"}},
+    ]
+    record = streaming_chat_record(tool_call_fragments=fragments)
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [
+        {"type": "tool_call", "id": "call-0", "name": "first", "arguments": {"a": 1}},
+        {"type": "tool_call", "id": "call-1", "name": "second", "arguments": {"b": 2}},
+    ]
 
 
 # --------------------------------------------------------------------------------------
