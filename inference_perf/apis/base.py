@@ -44,6 +44,10 @@ class StreamedResponseMetrics(ResponseMetrics):
     # which stay the content channel alone and give time to first output token.
     reasoning_chunks: List[str] = []
     reasoning_chunk_times: List[float] = []
+    # The new text in each chunk, 1:1 with chunk_times. The template API sets it
+    # instead of response_chunks, because the report cannot parse its chunks.
+    # Not written to the reports.
+    chunk_texts: Optional[List[str]] = Field(default=None, exclude=True)
 
 
 class InferenceInfo(BaseModel):

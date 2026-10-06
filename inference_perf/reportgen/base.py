@@ -647,7 +647,11 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     """
     if not (
         isinstance(m.info.response_metrics, StreamedResponseMetrics)
-        and (m.info.response_metrics.response_chunks or m.info.response_metrics.reasoning_chunks)
+        and (
+            m.info.response_metrics.response_chunks
+            or m.info.response_metrics.reasoning_chunks
+            or m.info.response_metrics.chunk_texts
+        )
         and tokenizer
     ):
         return False
@@ -674,17 +678,28 @@ def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tok
         except Exception:
             token_cache = None
 
+    # The template API passes the new text of each content chunk, because its
+    # chunk shape comes from the user's config.
+    content_texts: Iterable[list[str]] = (
+        ([text] for text in response_metrics.chunk_texts)
+        if response_metrics.chunk_texts is not None
+        else map(_extract_chunk_generated_texts, response_metrics.response_chunks)
+    )
     # Content and reasoning-only chunks, in arrival order. The server counts
     # reasoning tokens in completion_tokens, so they belong on the timeline
     # and in the mismatch accounting alike (#559).
     chunks = heapq.merge(
-        zip(response_metrics.chunk_times, response_metrics.response_chunks, strict=True),
-        zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=True),
+        zip(response_metrics.chunk_times, content_texts, strict=True),
+        zip(
+            response_metrics.reasoning_chunk_times,
+            map(_extract_chunk_generated_texts, response_metrics.reasoning_chunks),
+            strict=True,
+        ),
         key=lambda pair: pair[0],
     )
-    for chunk_time, chunk_str in chunks:
+    for chunk_time, texts in chunks:
         tokens_in_chunk = 0
-        for text in _extract_chunk_generated_texts(chunk_str):
+        for text in texts:
             # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
             # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
             # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL

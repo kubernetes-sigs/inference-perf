@@ -913,6 +913,40 @@ def test_correct_streamed_response_metrics_anthropic_calculates_ttft_tpot_itl() 
     assert metrics["inter_token_latency_deltas"] == [pytest.approx(1.0), pytest.approx(1.5)]
 
 
+def test_correct_streamed_response_metrics_uses_chunk_texts() -> None:
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    # Template API chunks have a shape the report cannot parse, and a cumulative
+    # chunk repeats earlier text, so the adapter passes the new text of each chunk.
+    info = InferenceInfo(
+        request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+        response_metrics=StreamedResponseMetrics(
+            output_tokens=3,
+            # The template API keeps no response_chunks, only the new text of each chunk.
+            chunk_times=[1.0, 2.0],
+            output_token_times=[1.0, 2.0],
+            chunk_texts=["Hello", " big world"],
+            server_usage={"completion_tokens": 3},
+        ),
+    )
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.5, end_time=3.0, request_data="req", info=info, error=None
+    )
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = lambda text, **kw: len(text.split())
+
+    assert correct_streamed_response_metrics(metric, tokenizer) is False
+
+    assert isinstance(info.response_metrics, StreamedResponseMetrics)
+    assert info.response_metrics.output_token_times == [1.0, 2.0, 2.0]
+    latency = compute_request_latency_metrics(metric)
+    assert latency["time_to_first_token"] == pytest.approx(0.5)
+    assert latency["time_per_output_token"] == pytest.approx(0.5)
+    # The new text is kept for the report only, not written to it.
+    assert "chunk_texts" not in info.model_dump()["response_metrics"]
+
+
 def test_ntpot_is_unset_for_requests_without_output_tokens() -> None:
     """NTPOT divides latency by output tokens, so it does not apply to a request
     that generated none (e.g. embeddings). Such a request must be left out of the

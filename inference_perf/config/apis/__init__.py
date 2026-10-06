@@ -21,6 +21,9 @@ from inference_perf.config.apis.config import (
     ResponseFormatType,
     TemplateConfig,
     TemplateResponseConfig,
+    TemplateStreamChunks,
+    TemplateStreamConfig,
+    TemplateStreamFraming,
 )
 
 __all__ = [
@@ -33,4 +36,7 @@ __all__ = [
     "ResponseFormatType",
     "TemplateConfig",
     "TemplateResponseConfig",
+    "TemplateStreamChunks",
+    "TemplateStreamConfig",
+    "TemplateStreamFraming",
 ]

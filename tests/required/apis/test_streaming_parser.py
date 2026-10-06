@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Optional
 from unittest.mock import Mock
 
 import pytest
 
+from inference_perf.apis import streaming_parser
 from inference_perf.apis.streaming_parser import (
     StreamInterruptedError,
     _SSEStreamParser,
+    parse_ndjson_stream,
     parse_sse_stream,
 )
 
@@ -621,3 +624,104 @@ async def test_parse_sse_stream_reasoning_ignored_without_extractor() -> None:
     assert len(parsed.chunk_times) == 2
     assert parsed.reasoning_chunks == []
     assert parsed.reasoning_chunk_times == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
+@pytest.mark.parametrize("chunk_size", [1, 7, 4096])
+async def test_ndjson_line_endings_and_chunk_boundaries(ending: bytes, chunk_size: int) -> None:
+    """Network boundaries must not change the lines or split UTF-8 characters."""
+    payload = (
+        '{"content": "你好"}'.encode()
+        + ending
+        + ending
+        + b"[DONE]"
+        + ending
+        + b'{"usage": {"completion_tokens": 2}}'
+        + ending
+        # The last line has no newline after it.
+        + b'{"content": " world"}'
+    )
+    response = Mock()
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        for offset in range(0, len(payload), chunk_size):
+            yield payload[offset : offset + chunk_size]
+
+    response.content.iter_any = chunks
+    parsed = await parse_ndjson_stream(response, lambda data: data.get("content"))
+    assert parsed.output_text == "你好 world"
+    assert len(parsed.chunk_times) == len(parsed.response_chunks) == 2
+    assert parsed.response_chunks == ['{"content": "你好"}', '{"content": " world"}']
+    assert parsed.raw_content == payload.decode()
+    assert parsed.server_usage == {"completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_ndjson_lines_get_the_time_of_the_chunk_that_completes_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(streaming_parser, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
+    response = Mock()
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield b'{"content": "a"}\n{"content": "b"}\n{"content": "c'
+        yield b'"}\n'
+
+    response.content.iter_any = chunks
+    parsed = await parse_ndjson_stream(response, lambda data: data.get("content"))
+    assert parsed.output_text == "abc"
+    assert parsed.chunk_times == [1.0, 1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_ndjson_reasoning_tracked_separately_from_content() -> None:
+    response = Mock()
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield b'{"reasoning": "Let me think."}\n{"content": "The answer"}\n'
+
+    response.content.iter_any = chunks
+    parsed = await parse_ndjson_stream(response, lambda data: data.get("content"), lambda data: data.get("reasoning"))
+    assert parsed.output_text == "The answer"
+    assert parsed.reasoning_text == "Let me think."
+    assert len(parsed.chunk_times) == len(parsed.reasoning_chunk_times) == 1
+    assert parsed.reasoning_chunks == ['{"reasoning": "Let me think."}']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parse", "payload"),
+    [
+        (parse_sse_stream, b'data: [{"content": " a message"}]\n\ndata: [{"content": " on usage"}]\n\n'),
+        (parse_ndjson_stream, b'[{"content": " a message"}]\n[{"content": " on usage"}]\n'),
+    ],
+)
+async def test_chunks_that_are_not_json_objects(parse: Any, payload: bytes) -> None:
+    """A chunk that is a JSON list must not fail when its text mentions usage or message."""
+    response = Mock()
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield payload
+
+    response.content.iter_any = chunks
+    parsed = await parse(response, lambda data: data[0]["content"])
+    assert parsed.output_text == " a message on usage"
+    assert len(parsed.chunk_times) == 2
+    assert parsed.server_usage is None
+
+
+@pytest.mark.asyncio
+async def test_ndjson_interrupted_preserves_partial_body() -> None:
+    response = Mock()
+    boom = ConnectionResetError("connection reset")
+
+    async def chunks() -> AsyncGenerator[bytes, None]:
+        yield b'{"content": "Hello"}\n{"content": " wor'
+        raise boom
+
+    response.content.iter_any = chunks
+    with pytest.raises(StreamInterruptedError) as exc_info:
+        await parse_ndjson_stream(response, lambda data: data.get("content"))
+
+    assert exc_info.value.original is boom
+    assert exc_info.value.raw_content == '{"content": "Hello"}\n{"content": " wor'
