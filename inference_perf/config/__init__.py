@@ -20,6 +20,9 @@ from inference_perf.config.apis import (
     ResponseFormatType,
     TemplateConfig,
     TemplateResponseConfig,
+    TemplateStreamChunks,
+    TemplateStreamConfig,
+    TemplateStreamFraming,
 )
 from inference_perf.config.circuit_breaker import (
     CircuitBreakerConfig,
@@ -142,6 +145,9 @@ __all__ = [
     "SyntheticMultimodalDatagenConfig",
     "TemplateConfig",
     "TemplateResponseConfig",
+    "TemplateStreamChunks",
+    "TemplateStreamConfig",
+    "TemplateStreamFraming",
     "TraceConfig",
     "TraceFormat",
     "TraceSessionReplayLoadStage",

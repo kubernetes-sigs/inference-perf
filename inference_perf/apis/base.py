@@ -36,6 +36,10 @@ class StreamedResponseMetrics(ResponseMetrics):
     response_chunks: List[str] = []
     chunk_times: List[float] = []
     output_token_times: List[float] = []
+    # The new text in each chunk, 1:1 with chunk_times. The template API sets it
+    # instead of response_chunks, because the report cannot parse its chunks.
+    # Not written to the reports.
+    chunk_texts: Optional[List[str]] = Field(default=None, exclude=True)
 
 
 class InferenceInfo(BaseModel):

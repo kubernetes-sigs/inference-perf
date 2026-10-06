@@ -77,9 +77,32 @@ Apart from the placeholders, the body is sent as written, so options such as `se
 
 With `output_tokens_path` set, the output token summary uses the server's count. TPOT and NTPOT are still normalized with the tokenizer count, unless `report.request_lifecycle.use_server_output_tokens` is set.
 
+To stream, set `api.streaming: true` and add a `stream` block under `response`. The body must also ask the server for a stream, in the form the server expects. By default, the SGLang native API sends all the text so far in each chunk:
+
+```yaml
+api:
+  type: template
+  streaming: true
+  template:
+    route: /generate
+    body:
+      text: ${prompt}
+      stream: true
+      sampling_params:
+        max_new_tokens: ${max_tokens}
+    response:
+      text_path: text                                 # Selects the text in each chunk
+      output_tokens_path: meta_info.completion_tokens # Read from the last chunk that has it
+      stream:
+        framing: sse                                  # sse, or ndjson for one JSON object per line
+        chunks: cumulative                            # delta, or cumulative when each chunk has all the text so far
+```
+
+`chunks` has no default, because the wrong value gives wrong token counts without an error. Each path is applied to every chunk, and a count path keeps the value from the last chunk where it selects one. The stream ends with the response body or with an SSE `data: [DONE]` line, and any other chunk that is not JSON is skipped. If `text_path` does not select a string in any chunk, the request is recorded as failed.
+
 `server.type` only selects the Prometheus metric names. For a server that is not vLLM, SGLang or TGI, any of these three works when `metrics` is unset. `mock` does not send requests. If the server has no `/v1/models` endpoint, set `server.model_name`.
 
-Streaming and `response_format` are not supported yet. Like `completion`, the template takes one prompt per request, so it works with the `mock`, `random`, `synthetic`, `shareGPT`, `cnn_dailymail`, `billsum_conversations` and `infinity_instruct` data generators.
+`response_format` is not supported yet. Like `completion`, the template takes one prompt per request, so it works with the `mock`, `random`, `synthetic`, `shareGPT`, `cnn_dailymail`, `billsum_conversations` and `infinity_instruct` data generators.
 
 ### Data Generation
 

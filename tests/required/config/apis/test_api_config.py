@@ -27,6 +27,9 @@ from inference_perf.config import (
     ResponseFormat,
     ResponseFormatType,
     TemplateConfig,
+    TemplateStreamChunks,
+    TemplateStreamConfig,
+    TemplateStreamFraming,
     read_config,
 )
 
@@ -120,9 +123,40 @@ def test_template_api_type_requires_options() -> None:
         APIConfig(type=APIType.Template)
 
 
-def test_template_rejects_streaming() -> None:
-    with pytest.raises(ValidationError, match="streaming is not supported for the template API"):
+def test_template_streaming_reads_the_stream_block() -> None:
+    options = _template_options(response={"text_path": "text", "stream": {"chunks": "cumulative"}})
+    config = read_config(cli_overrides={"api": {"type": "template", "streaming": True, "template": options}})
+
+    assert config.api.template is not None
+    assert config.api.template.response.stream == TemplateStreamConfig(
+        framing=TemplateStreamFraming.SSE, chunks=TemplateStreamChunks.CUMULATIVE
+    )
+
+
+def test_template_streaming_needs_a_stream_block() -> None:
+    with pytest.raises(ValidationError, match="template streaming needs template.response.stream"):
         APIConfig(type=APIType.Template, template=TemplateConfig(**_template_options()), streaming=True)
+
+
+def test_template_stream_block_needs_streaming() -> None:
+    template = TemplateConfig(**_template_options(response={"text_path": "text", "stream": {"chunks": "delta"}}))
+    with pytest.raises(ValidationError, match="template.response.stream is only valid when streaming is true"):
+        APIConfig(type=APIType.Template, template=template)
+
+
+@pytest.mark.parametrize(
+    ("stream", "field"),
+    [
+        # A wrong chunks value skews the token counts without an error, so it has no default.
+        ({"framing": "sse"}, "chunks"),
+        ({"chunks": "partial"}, "chunks"),
+        ({"framing": "websocket", "chunks": "delta"}, "framing"),
+    ],
+)
+def test_template_stream_block_rejects_invalid_values(stream: dict[str, Any], field: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        TemplateStreamConfig(**stream)
+    assert [error["loc"] for error in exc_info.value.errors()] == [(field,)]
 
 
 def test_template_rejects_response_format() -> None:

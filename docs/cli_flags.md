@@ -23,9 +23,11 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--api.template.route` | str | Path the request is sent to, appended to the server base URL, e.g. '/generate'. It can use ${model}. |
 | `--api.template.body` | JSON | JSON request body. ${prompt}, ${max_tokens} and ${model} in its string values are filled in for each request. |
 | `--api.template.ignore_eos` | boolean | Declares that the body asks the server to ignore EOS and generate all ${max_tokens} tokens. The body still sets the server's own field for this. |
-| `--api.template.response.text_path` | str | JMESPath expression that selects the generated text in the response body. It must select only the generated text, without the prompt. |
-| `--api.template.response.input_tokens_path` | str | JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer. |
-| `--api.template.response.output_tokens_path` | str | JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens. |
+| `--api.template.response.text_path` | str | JMESPath expression that selects the generated text in the response body, or in each chunk of a stream. It must select only the generated text, without the prompt. |
+| `--api.template.response.input_tokens_path` | str | JMESPath expression that selects the prompt token count in the response body, or in the last chunk that has it. Unset counts the prompt with the tokenizer. |
+| `--api.template.response.output_tokens_path` | str | JMESPath expression that selects the generated token count in the response body, or in the last chunk that has it. Reported as the server's completion_tokens. |
+| `--api.template.response.stream.framing` | Enum (sse, ndjson) | How the stream is split into chunks: 'sse' for Server-Sent Events data lines, 'ndjson' for one JSON object per line. |
+| `--api.template.response.stream.chunks` | Enum (delta, cumulative) | 'delta' if each chunk holds only the new text, 'cumulative' if each chunk holds all the text so far. |
 | `--api.session_id_header_key` | str | Header used to send the session ID with each request in multi-turn benchmarks. |
 | `--api.session_token_header_key` | str | Response header carrying a server-assigned session token, replayed as a request header on later requests of the same session to keep router session affinity. |
 | `--data.type` | Enum (mock, shareGPT, synthetic, random, shared_prefix, cnn_dailymail, infinity_instruct, billsum_conversations, otel_trace_replay, weka_trace_replay, conversation_replay, visionarena, synthetic_agentic) | Dataset or generator used to produce prompts. |

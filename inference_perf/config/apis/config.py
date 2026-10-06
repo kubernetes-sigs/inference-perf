@@ -120,19 +120,44 @@ def _fill_template(node: Any, values: dict[str, Any]) -> Any:
     return node
 
 
+class TemplateStreamFraming(Enum):
+    SSE = "sse"
+    NDJSON = "ndjson"
+
+
+class TemplateStreamChunks(Enum):
+    DELTA = "delta"
+    CUMULATIVE = "cumulative"
+
+
+class TemplateStreamConfig(StrictBaseModel):
+    """How the template API reads a streamed response."""
+
+    framing: TemplateStreamFraming = Field(
+        default=TemplateStreamFraming.SSE,
+        description="How the stream is split into chunks: 'sse' for Server-Sent Events data lines, 'ndjson' for one JSON object per line.",
+    )
+    chunks: TemplateStreamChunks = Field(
+        description="'delta' if each chunk holds only the new text, 'cumulative' if each chunk holds all the text so far."
+    )
+
+
 class TemplateResponseConfig(StrictBaseModel):
     """Where the template API finds the generated text and token counts in a response."""
 
     text_path: str = Field(
-        description="JMESPath expression that selects the generated text in the response body. It must select only the generated text, without the prompt."
+        description="JMESPath expression that selects the generated text in the response body, or in each chunk of a stream. It must select only the generated text, without the prompt."
     )
     input_tokens_path: Optional[str] = Field(
         default=None,
-        description="JMESPath expression that selects the prompt token count in the response body. Unset counts the prompt with the tokenizer.",
+        description="JMESPath expression that selects the prompt token count in the response body, or in the last chunk that has it. Unset counts the prompt with the tokenizer.",
     )
     output_tokens_path: Optional[str] = Field(
         default=None,
-        description="JMESPath expression that selects the generated token count in the response body. Reported as the server's completion_tokens.",
+        description="JMESPath expression that selects the generated token count in the response body, or in the last chunk that has it. Reported as the server's completion_tokens.",
+    )
+    stream: Optional[TemplateStreamConfig] = Field(
+        default=None, description="How a streamed response is read. Required when streaming is true, and only valid then."
     )
 
     @model_validator(mode="after")
@@ -256,12 +281,14 @@ class APIConfig(StrictBaseModel):
     @model_validator(mode="after")
     def validate_template_options(self) -> "APIConfig":
         # The template is the whole request body, so the client cannot add
-        # response_format to it, and streamed responses are not parsed yet.
+        # response_format to it.
         if self.type == APIType.Template:
             if self.template is None:
                 raise ValueError("template options are required when type is 'template'")
-            if self.streaming:
-                raise ValueError("streaming is not supported for the template API")
+            if self.streaming and self.template.response.stream is None:
+                raise ValueError("template streaming needs template.response.stream")
+            if not self.streaming and self.template.response.stream is not None:
+                raise ValueError("template.response.stream is only valid when streaming is true")
             if self.response_format is not None:
                 raise ValueError("response_format is not supported for the template API")
         elif self.template is not None:
