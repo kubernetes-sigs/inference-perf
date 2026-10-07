@@ -1,6 +1,6 @@
 # BR0.2 report generation
 
-Native emission of [llm-d-benchmark v0.2.1](https://github.com/llm-d/llm-d-benchmark/tree/main/llmdbenchmark/analysis/benchmark_report) (BR0.2) partial reports alongside inference-perf's existing report formats. See [docs/br_v0_2.md](../../../../docs/br_v0_2.md) for user-facing documentation.
+Native emission of [llm-d-benchmark v0.2.1](https://github.com/llm-d/llm-d-benchmark/tree/main/benchmark-report) (BR0.2) partial reports alongside inference-perf's existing report formats. See [docs/br_v0_2.md](../../../../docs/br_v0_2.md) for user-facing documentation.
 
 ## Responsibility split
 
@@ -12,24 +12,11 @@ Emission is unconditional and has no config surface: every run drops one `infere
 
 | File | Owner | Purpose |
 |------|-------|---------|
-| `base.py` | **Vendored** from upstream | `BenchmarkReport` base class, `Units` / `WorkloadGenerator` enums, unit-group constants. |
-| `schema_v0_2.py` | **Vendored** from upstream | Top-level BR0.2 pydantic models (`Run`, `Scenario`, `Results`, `Statistics`, etc.). |
-| `schema_v0_2_1.py` | **Vendored** from upstream | v0.2.1 point release: multimodal payload statistics. Extends v0.2 in place by overriding the request aggregates and the report root's containment chain. |
-| `schema_v0_2_components.py` | **Vendored** from upstream | Component subtype hierarchy (`ComponentStandardizedBase` + concrete kinds). |
-| `schema.py` | inference-perf | Facade that re-exports every public symbol from the vendored files. **Import from here**, not from the vendored files directly; a schema bump should only touch the vendored files. |
+| `schema.py` | inference-perf | Facade that re-exports the BR0.2 models from the `llmd-benchmark-report` package. **Import from here**, not from the package directly, so a schema bump only touches this file. |
 | `adapter.py` | inference-perf | `build_results(request_metrics, tokenizer, use_server_output_tokens)`: projects inference-perf `RequestLifecycleMetric`s into a BR0.2 `Results` object. Pure function, no I/O. |
 | `partial_report.py` | inference-perf | `build_partial_report` / `generate_run_uid` / `generate_experiment_eid`: assemble the per-stage partial dict (`version` + `run` + `results`) with `None` fields stripped so it deep-merges cleanly. |
 | `__init__.py` | inference-perf | Re-exports the inference-perf-owned API surface (`build_results`, `build_partial_report`, `generate_run_uid`, `generate_experiment_eid`). |
 
-## Resyncing the vendored schema
+## Schema dependency
 
-The vendoring is transitional: once the schema is published to PyPI as `llmd-benchmark-report` ([llm-d/llm-d-benchmark#1730](https://github.com/llm-d/llm-d-benchmark/pull/1730)), the vendored files go away and `schema.py` re-exports from the package instead. Tracked in [#758](https://github.com/kubernetes-sigs/inference-perf/issues/758).
-
-The four vendored files map 1:1 to upstream files in `llmdbenchmark/analysis/benchmark_report/`. Each has a header pinning the upstream commit SHA. To bump the BR0.2 schema:
-
-1. Copy the four upstream files over `base.py`, `schema_v0_2.py`, `schema_v0_2_1.py`, `schema_v0_2_components.py`.
-2. Update the SHA in each header.
-3. Adjust `schema.py` if new public symbols were added upstream.
-4. Re-run `tests/reportgen/br/v0_2/`.
-
-Keeping the file split matches the upstream layout, so a resync is a plain copy rather than a three-way merge.
+The models come from [`llmd-benchmark-report`](https://pypi.org/project/llmd-benchmark-report/), pinned `>=0.2.1,<0.3` in `pyproject.toml`. Within a minor line the package only adds optional fields, so new 0.2.x releases need no change here. Moving to a new minor line means bumping the pin and adjusting `schema.py` for any renamed symbols.
