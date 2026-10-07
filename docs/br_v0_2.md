@@ -105,10 +105,8 @@ The merged document validates against `BenchmarkReportV021` in
 
 ## Schema source
 
-The pydantic models in
-`inference_perf/reportgen/br/v0_2/{base,schema_v0_2,schema_v0_2_1,schema_v0_2_components}.py`
-are vendored from `llm-d/llm-d-benchmark`. The header of each file pins the
-upstream commit SHA. To resync after a BR0.2 schema bump, replace those
-four files from upstream and re-run
-`tests/reportgen/br/v0_2/test_schema_fixture.py` to confirm round-trip
-validation against the upstream example still holds.
+The pydantic models come from the
+[`llmd-benchmark-report`](https://pypi.org/project/llmd-benchmark-report/)
+package, published from `llm-d/llm-d-benchmark`. inference-perf depends on
+`>=0.2.1,<0.3`. Releases within a minor line only add optional fields, so a
+partial that validates today keeps validating on every later 0.2.x.

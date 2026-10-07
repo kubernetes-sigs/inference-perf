@@ -11,25 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import pathlib
+import importlib.resources
 
 import yaml
 
 from inference_perf.reportgen.br.v0_2.schema import VERSION, BenchmarkReportV021
 
 
-FIXTURE = pathlib.Path(__file__).parent / "br_v0_2_1_example.yaml"
+# The example report shipped inside the llmd-benchmark-report wheel.
+EXAMPLE = importlib.resources.files("llmd_benchmark_report") / "br_v0_2_example.yaml"
 
 
+# The facade exposes the schema line inference-perf emits. Expects "0.2.1".
 def test_schema_version() -> None:
     assert VERSION == "0.2.1"
 
 
-def test_upstream_example_validates_against_vendored_schema() -> None:
-    """Catches schema drift: if upstream changes BR0.2.1 in a way our vendored
-    schema can't parse, this fails."""
-    with FIXTURE.open() as f:
-        data = yaml.safe_load(f)
+# Loads the package's example report and validates it through the facade.
+# Expects version "0.2.1" plus the same run uid and stack length as the YAML.
+def test_package_example_validates_through_facade() -> None:
+    data = yaml.safe_load(EXAMPLE.read_text())
     report = BenchmarkReportV021.model_validate(data)
     assert report.version == "0.2.1"
     assert report.run.uid == data["run"]["uid"]
