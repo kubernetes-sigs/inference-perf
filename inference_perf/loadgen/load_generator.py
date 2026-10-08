@@ -1169,7 +1169,7 @@ class LoadGenerator:
         self,
         stage_id: int,
         rate: float,
-        duration: int,
+        duration: float,
         request_queue: RequestQueue[RequestQueueData],
         active_requests_counter: "Synchronized[int]",
         finished_requests_counter: "Synchronized[int]",
@@ -1513,7 +1513,7 @@ class LoadGenerator:
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
-                    duration = stage.duration
+                    duration = stage.effective_duration
                     concurrency_level = None
                     await self.run_stage(
                         stage_id,
@@ -1566,14 +1566,15 @@ class LoadGenerator:
                 if not isinstance(stage, StandardLoadStage):
                     raise TypeError(f"Non-multiprocessing run() only supports StandardLoadStage, got {type(stage)}")
 
-                timer = self.get_timer(stage.rate, stage.duration)
+                duration = stage.effective_duration
+                timer = self.get_timer(stage.rate, duration)
                 start_time_epoch = time.time()
                 start_time = time.perf_counter()
-                end_time = start_time + stage.duration
+                end_time = start_time + duration
                 stage_status = StageStatus.RUNNING
                 logger.info("Stage %d - run started", stage_id)
 
-                num_requests = int(stage.rate * stage.duration)
+                num_requests = int(stage.rate * duration)
                 stage_task = progress.add_task(description=f"Stage {stage_id} Progress", total=num_requests)
 
                 if not isinstance(self.datagen, DataGenerator):
