@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import pytest
-from typing import Any
+from typing import Any, Union
 from unittest.mock import AsyncMock, MagicMock
 
 from inference_perf.apis import LazyLoadInferenceAPIData
@@ -597,6 +597,39 @@ def test_multiturn_output_len_leaving_no_prompt_budget_is_rejected() -> None:
                 num_groups=1,
                 num_prompts_per_group=1,
                 output_len=100,
+                max_model_len=300,
+                enable_multi_turn_chat=True,
+            )
+        )
+
+
+# The prompt-budget guard for every output_len form. max_model_len 300 minus the 200 token
+# buffer leaves room for an output of at most 99 tokens. Accepted: the int 99, an expression
+# whose provable range stays at or under 99 ('Uniform(10, 90)'), and one that is bounded
+# explicitly ('Min(Normal(50, 10), 99)'). Rejected: an expression that can reach 150
+# ('Uniform(10, 150)'), a bare 'Normal(50, 10)', whose support is unbounded, and a Piecewise the
+# bounds walk can't reason about: a budget check must hold for every draw, so "unproven" fails too.
+@pytest.mark.parametrize("output_len", [99, "Uniform(10, 90)", "Min(Normal(50, 10), 99)"])
+def test_multiturn_output_len_within_prompt_budget_is_accepted(output_len: Union[int, str]) -> None:
+    _make_generator(
+        SharedPrefix(
+            num_groups=1,
+            num_prompts_per_group=1,
+            output_len=output_len,
+            max_model_len=300,
+            enable_multi_turn_chat=True,
+        )
+    )
+
+
+@pytest.mark.parametrize("output_len", ["Uniform(10, 150)", "Normal(50, 10)", "Piecewise((50, Normal(0, 1) > 0), (60, True))"])
+def test_multiturn_output_len_expression_over_prompt_budget_is_rejected(output_len: str) -> None:
+    with pytest.raises(ValueError, match="is not provably at most 99 tokens"):
+        _make_generator(
+            SharedPrefix(
+                num_groups=1,
+                num_prompts_per_group=1,
+                output_len=output_len,
                 max_model_len=300,
                 enable_multi_turn_chat=True,
             )

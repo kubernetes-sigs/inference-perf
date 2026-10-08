@@ -477,10 +477,10 @@ def test_multimodal_config_parsing() -> None:
         assert config.data.multimodal is not None
         assert config.data.multimodal.image is not None
         assert config.data.multimodal.image.insertion_point == 0.5
-        assert config.data.multimodal.image.count is not None
+        assert isinstance(config.data.multimodal.image.count, Distribution)
         assert config.data.multimodal.image.count.mean == 3
         assert config.data.multimodal.video is not None
-        assert config.data.multimodal.video.count is not None
+        assert isinstance(config.data.multimodal.video.count, Distribution)
         assert config.data.multimodal.video.count.mean == 1
         assert config.data.multimodal.video.profiles is not None
         assert isinstance(config.data.multimodal.video.profiles, VideoProfile)

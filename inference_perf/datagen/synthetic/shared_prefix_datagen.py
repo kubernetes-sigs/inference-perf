@@ -20,13 +20,12 @@ import numpy as np
 from inference_perf.apis.base import InferenceAPIData, LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
-from inference_perf.apis.user_session import PROMPT_TOKEN_BUFFER, LocalUserSession, UserSessionCompletionAPIData
+from inference_perf.apis.user_session import LocalUserSession, UserSessionCompletionAPIData
 from inference_perf.config import (
     APIConfig,
     APIType,
     DataConfig,
     Distribution,
-    DistributionType,
     SyntheticMultimodalDatagenConfig,
 )
 from inference_perf.datagen.multimodal_sampling import (
@@ -47,11 +46,12 @@ from inference_perf.payloads import (
     VideoSpecUnion,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_lengths, sample_values
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..datagen_utils import (
     build_word_start_token_ids,
+    check_output_leaves_prompt_budget,
     converge_to_exact_length_text,
     generate_random_exact_length_text,
     init_vocab_sampling,
@@ -71,18 +71,19 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     _session_namespace_counter: ClassVar[Iterator[int]] = count()
 
     @staticmethod
-    def _resolve_distribution(
-        param: Union[int, Distribution],
+    def _resolve_length(
+        param: Union[int, Distribution, str],
         legacy_dist: Optional[Distribution] = None,
-    ) -> Distribution:
-        """Resolve a Union[int, Distribution] + optional legacy Distribution into a Distribution."""
-        if isinstance(param, Distribution):
-            return param
-        # param is an int
-        if legacy_dist is not None:
+    ) -> Union[int, Distribution, str]:
+        """Resolve a length field plus its optional legacy distribution into the value to sample from.
+
+        The legacy field only applies when the inline field was left as a
+        plain int (the config validator rejects the ambiguous combinations);
+        sample_lengths handles each resulting form.
+        """
+        if isinstance(param, int) and legacy_dist is not None:
             return legacy_dist
-        # Fixed value: min=max=mean, std_dev=0
-        return Distribution(mean=float(param), min=param, max=param, std_dev=0.0)
+        return param
 
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
@@ -111,38 +112,26 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.prefix_multimodal: Optional[SyntheticMultimodalDatagenConfig] = self.shared_prefix.multimodal
         self.payload_multimodal: Optional[SyntheticMultimodalDatagenConfig] = config.multimodal
 
-        # Resolve all parameters to Distribution
-        system_prompt_dist = self._resolve_distribution(self.shared_prefix.system_prompt_len)
-        question_dist = self._resolve_distribution(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
-        output_dist = self._resolve_distribution(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
+        # Resolve each length field to the value to sample from
+        system_prompt_spec = self._resolve_length(self.shared_prefix.system_prompt_len)
+        question_spec = self._resolve_length(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
+        output_spec = self._resolve_length(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
 
         if self.enable_multi_turn_chat:
-            if output_dist.type == DistributionType.FIXED:
-                output_ceiling, ceiling_desc = int(output_dist.mean), "output_len.mean"
-            else:
-                output_ceiling, ceiling_desc = output_dist.max, "output_len.max"
-
-            if output_ceiling + PROMPT_TOKEN_BUFFER >= self.max_model_len:
-                raise ValueError(
-                    f"{ceiling_desc} ({output_ceiling}) leaves no room for a prompt within max_model_len "
-                    f"({self.max_model_len}) after reserving the {PROMPT_TOKEN_BUFFER} token safety buffer. "
-                    f"Lower it below {self.max_model_len - PROMPT_TOKEN_BUFFER} or raise max_model_len."
-                )
+            check_output_leaves_prompt_budget(output_spec, "output_len", self.max_model_len)
 
         # Generate per-group system prompt lengths
-        self.system_prompt_lens_per_group: List[int] = sample_from_distribution(
-            system_prompt_dist, self.num_groups, self.rng
-        ).tolist()
+        self.system_prompt_lens_per_group: List[int] = sample_lengths(system_prompt_spec, self.num_groups, self.rng).tolist()
 
         # Generate separate distributions for each group
         self.question_len_list_per_group: List[List[int]] = []
         self.output_len_list_per_group: List[List[int]] = []
 
         for _ in range(self.num_groups):
-            question_lens = sample_from_distribution(question_dist, self.num_prompts_per_group, self.rng)
+            question_lens = sample_lengths(question_spec, self.num_prompts_per_group, self.rng)
             self.question_len_list_per_group.append(question_lens.tolist())
 
-            output_lens = sample_from_distribution(output_dist, self.num_prompts_per_group, self.rng)
+            output_lens = sample_lengths(output_spec, self.num_prompts_per_group, self.rng)
             self.output_len_list_per_group.append(output_lens.tolist())
 
         # Per-prompt storage, all parallel (same length after _generate_prompts).
@@ -380,7 +369,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     img_cfg = cfg.image
     if img_cfg and img_cfg.count:
-        count = int(sample_from_distribution(img_cfg.count, 1, rng)[0])
+        count = int(sample_values(img_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             w, h = sample_image_resolution(img_cfg, rng)
             spec.images.append(
@@ -394,7 +383,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     vid_cfg = cfg.video
     if vid_cfg and vid_cfg.count:
-        count = int(sample_from_distribution(vid_cfg.count, 1, rng)[0])
+        count = int(sample_values(vid_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             profile = sample_video_profile(vid_cfg, rng)
             w, h = resolution_to_wh(profile.resolution)
@@ -418,7 +407,7 @@ def _sample_spec(cfg: SyntheticMultimodalDatagenConfig, rng: np.random.Generator
 
     aud_cfg = cfg.audio
     if aud_cfg and aud_cfg.count:
-        count = int(sample_from_distribution(aud_cfg.count, 1, rng)[0])
+        count = int(sample_values(aud_cfg.count, 1, rng, integer=True)[0])
         for _ in range(count):
             spec.audios.append(
                 SyntheticAudioSpec(

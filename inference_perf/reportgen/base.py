@@ -714,6 +714,7 @@ def summarize_requests(
     stage_rate: Optional[float] = None,
     stage_concurrency: Optional[int] = None,
     goodput_config: Optional[GoodputConfig] = None,
+    stage_request_interval: Optional[str] = None,
     tokenizer: Optional[CustomTokenizer] = None,
     use_server_output_tokens: bool = False,
     max_error_messages: int = 100,
@@ -731,7 +732,7 @@ def summarize_requests(
         "schedule_delay": summarize(schedule_deltas, percentiles),
     }
 
-    if stage_rate is not None:
+    if stage_rate is not None or stage_request_interval is not None:
         # Guard against zero send_duration to avoid ZeroDivisionError when all
         # requests have identical start times or there is only a single request.
         achieved_rate = len(metrics) / send_duration if send_duration > 0 else 0.0
@@ -739,9 +740,14 @@ def summarize_requests(
             "count": len(metrics),
             "schedule_delay": summarize(schedule_deltas, percentiles),
             "send_duration": send_duration,
-            "requested_rate": stage_rate,
-            "achieved_rate": achieved_rate,
         }
+        # A stage is configured by one or the other, and the report carries the
+        # one it was configured by. achieved_rate is measured, so it is always there.
+        if stage_rate is not None:
+            load_summary["requested_rate"] = stage_rate
+        else:
+            load_summary["request_interval"] = stage_request_interval
+        load_summary["achieved_rate"] = achieved_rate
         if stage_concurrency is not None:
             load_summary["concurrency"] = stage_concurrency
 
@@ -1032,6 +1038,7 @@ class ReportGenerator:
                     stage_buckets[metric.stage_id].append(metric)
             for stage_id, metrics in stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
+                stage_request_interval = runtime_parameters.stages[stage_id].request_interval
                 concurrency_level = runtime_parameters.stages[stage_id].concurrency_level
                 if concurrency_level is not None:
                     report_file = ReportFile(
@@ -1042,6 +1049,7 @@ class ReportGenerator:
                             stage_rate,
                             concurrency_level,
                             goodput_config=report_config.goodput,
+                            stage_request_interval=stage_request_interval,
                             tokenizer=tokenizer,
                             use_server_output_tokens=use_server_output_tokens,
                             max_error_messages=max_error_messages,
@@ -1055,6 +1063,7 @@ class ReportGenerator:
                             percentiles,
                             stage_rate,
                             goodput_config=report_config.goodput,
+                            stage_request_interval=stage_request_interval,
                             tokenizer=tokenizer,
                             use_server_output_tokens=use_server_output_tokens,
                             max_error_messages=max_error_messages,
@@ -1100,6 +1109,7 @@ class ReportGenerator:
                     adapter_stage_buckets[(metric.info.lora_adapter, metric.stage_id)].append(metric)
             for (adapter, stage_id), metrics in adapter_stage_buckets.items():
                 stage_rate = runtime_parameters.stages[stage_id].rate
+                stage_request_interval = runtime_parameters.stages[stage_id].request_interval
                 report_file = ReportFile(
                     name=f"adapter_{adapter}_stage_{stage_id}_lifecycle_metrics",
                     contents=summarize_requests(
@@ -1107,6 +1117,7 @@ class ReportGenerator:
                         percentiles,
                         stage_rate,
                         goodput_config=report_config.goodput,
+                        stage_request_interval=stage_request_interval,
                         tokenizer=tokenizer,
                         use_server_output_tokens=use_server_output_tokens,
                         max_error_messages=max_error_messages,
@@ -1533,7 +1544,7 @@ class ReportGenerator:
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,
                         "concurrent_sessions": stage_info.concurrency_level,
-                        "session_rate": stage_info.rate if stage_info.rate > 0 else None,
+                        "session_rate": stage_info.rate if stage_info.rate else None,
                     }
 
                     # Insert stage_metadata as first key

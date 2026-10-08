@@ -13,7 +13,7 @@
 # limitations under the License.
 """Tests for ConversationReplayDataGenerator."""
 
-from typing import Any, Generator
+from typing import Any, Generator, List
 
 import pytest
 from unittest.mock import MagicMock
@@ -317,6 +317,66 @@ class TestConversationReplayDataGenerator:
         result = gen.load_lazy_data(lazy)
         assert isinstance(result, _ConversationReplayAPIData)
         assert result.tool_call_latency_sec == 5.0
+
+    # Tool-call latency is seconds, so fractions must survive. Inputs: latency fixed at 0.5s, then normal
+    # (mean 0.5, std 0.1) clipped to [0, 1]. Expected: every turn 0.5 exactly; then values inside [0, 1] with at
+    # least one strictly between 0 and 1. Integer sampling turned these into 0s and 1s.
+    def test_tool_call_latency_keeps_fractional_seconds(self) -> None:
+        fixed = self._tool_latencies(Distribution(type="fixed", min=0, max=1, mean=0.5, std_dev=0))
+        assert fixed and all(x == 0.5 for x in fixed), fixed
+        normal = self._tool_latencies(Distribution(type="normal", min=0, max=1, mean=0.5, std_dev=0.1))
+        assert all(0 <= x <= 1 for x in normal) and any(0 < x < 1 for x in normal), normal
+
+    # Builds a 2-conversation, 3-turn generator with the given tool-call latency and returns every turn's latency.
+    @staticmethod
+    def _tool_latencies(latency: Distribution) -> List[float]:
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=2,
+            shared_system_prompt_len=50,
+            turns_per_conversation=Distribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
+            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            tool_call_latency_sec=latency,
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        gen = ConversationReplayDataGenerator(APIConfig(type=APIType.Completion), data_config, _make_mock_tokenizer())
+        return [lat for bp in gen.blueprints for lat in bp.turn_tool_call_latencies]
+
+    # Every conversation_replay Distribution knob also takes an expression string. Inputs: turns '3', dynamic
+    # prompt 'Uniform(20, 40)', input 'Min(Normal(20, 5), 50)', output 'Uniform(10, 50)', latency
+    # 'Uniform(0.1, 0.4)'. Expected: 3 turns per conversation, fractional latencies inside [0.1, 0.4].
+    def test_expression_knobs(self) -> None:
+        cr_config = ConversationReplayConfig(
+            seed=42,
+            num_conversations=2,
+            shared_system_prompt_len=50,
+            dynamic_system_prompt_len="Uniform(20, 40)",
+            turns_per_conversation="3",
+            input_tokens_per_turn="Min(Normal(20, 5), 50)",
+            output_tokens_per_turn="Uniform(10, 50)",
+            tool_call_latency_sec="Uniform(0.1, 0.4)",
+        )
+        data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+        gen = ConversationReplayDataGenerator(APIConfig(type=APIType.Completion), data_config, _make_mock_tokenizer())
+        assert all(bp.num_turns == 3 for bp in gen.blueprints)
+        lats = [lat for bp in gen.blueprints for lat in bp.turn_tool_call_latencies]
+        assert all(0.1 <= x <= 0.4 for x in lats) and any(x != round(x) for x in lats)
+
+    # The prompt-budget guard covers expression output lengths. Inputs: max_model_len 300 (99-token output
+    # budget). 'Uniform(10, 150)' and the unbounded 'Normal(50, 10)' are rejected; 'Min(Normal(50, 10), 99)' fits.
+    def test_output_expression_prompt_budget(self) -> None:
+        def build(output: str) -> None:
+            cr_config = ConversationReplayConfig(
+                seed=42, num_conversations=1, shared_system_prompt_len=10, output_tokens_per_turn=output, max_model_len=300
+            )
+            data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
+            ConversationReplayDataGenerator(APIConfig(type=APIType.Completion), data_config, _make_mock_tokenizer())
+
+        for bad in ("Uniform(10, 150)", "Normal(50, 10)"):
+            with pytest.raises(ValueError, match="is not provably at most 99 tokens"):
+                build(bad)
+        build("Min(Normal(50, 10), 99)")
 
     def test_load_lazy_data_regenerates_after_clear_instances(self) -> None:
         """After LoadGenerator clears the session registry between stages,

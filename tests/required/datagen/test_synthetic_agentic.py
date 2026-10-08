@@ -4523,3 +4523,61 @@ def test_dispatch_description_documents_the_envelope_and_ordering() -> None:
     assert "one at a time" in desc.lower(), "per-report (non-batched) delivery documented"
     assert DISPATCH_AGENT_TOOL_DEF["description"] == desc
     assert DISPATCH_AGENT_TOOL_DEF["function"]["description"] == desc
+
+
+# Tool-call latency and user think time are seconds, so fractions must survive into wait_ms. Inputs: 3 rounds,
+# tool latency fixed 0.25s, think time fixed 0.5s. Expected wait_ms values: 250 on tool turns, 500 on later
+# rounds' first turn, 0 on the very first turn. Integer sampling truncated both to 0.
+def test_fractional_latencies_reach_wait_ms() -> None:
+    cfg = _cfg(
+        turns_per_session=Distribution(type="fixed", mean=3),
+        tool_call_latency_sec=Distribution(type="fixed", mean=0.25),
+        user_think_time_sec=Distribution(type="fixed", mean=0.5),
+    )
+    g = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    assert {ev.wait_ms for ev in g.events.values()} == {0, 250, 500}
+
+
+# Every synthetic_agentic Distribution knob also takes an expression string. Inputs: turns '3', tool loop depth
+# 'Min(Poisson(2), 3)', input 'Uniform(15, 25)', output 'Min(Normal(10, 2), 14)', tool latency
+# 'Uniform(0.1, 0.4)', think time 'Uniform(1, 2)'. Expected: the graph builds, is identical for the same seed
+# (determinism), and every non-zero wait is a tool wait in [100, 400] ms or a think wait in [1000, 2000] ms,
+# with at least one of each.
+def test_expression_knobs_build_a_deterministic_graph() -> None:
+    cfg = _cfg(
+        turns_per_session="3",
+        tool_loop_depth="Min(Poisson(2), 3)",
+        input_tokens_per_turn="Uniform(15, 25)",
+        output_tokens_per_turn="Min(Normal(10, 2), 14)",
+        tool_call_latency_sec="Uniform(0.1, 0.4)",
+        user_think_time_sec="Uniform(1, 2)",
+    )
+    g1 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    g2 = build_graph_for_session(cfg, GENERIC_THEME, _word_tok(), 0)
+    assert [(e.event_id, e.wait_ms) for e in g1.events.values()] == [(e.event_id, e.wait_ms) for e in g2.events.values()]
+    waits = {e.wait_ms for e in g1.events.values()} - {0}
+    tool_waits = {w for w in waits if 100 <= w <= 400}
+    think_waits = {w for w in waits if 1000 <= w <= 2000}
+    assert tool_waits and think_waits and waits == tool_waits | think_waits, sorted(waits)
+
+
+# The max_model_len budget reads an expression's provable upper bound. Inputs: max_model_len 1000 with
+# input_tokens_per_turn 'Min(Normal(500, 50), 600)' -> the breakdown shows input(600), the Min cap, and the
+# config is rejected as too small. An unbounded 'Normal(500, 50)' can't be budgeted -> rejected naming that.
+def test_max_model_len_budgets_expression_upper_bound() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=r"input\(600\)"):
+        _cfg(max_model_len=1000, input_tokens_per_turn="Min(Normal(500, 50), 600)")
+    with pytest.raises(ValidationError, match="has no provable upper bound"):
+        _cfg(max_model_len=100_000, input_tokens_per_turn="Normal(500, 50)")
+
+
+# Compaction's two knobs take expression strings too; a malformed one fails at config load.
+def test_compaction_accepts_expressions() -> None:
+    from pydantic import ValidationError
+
+    cfg = ContextCompactionConfig(trigger_tokens="Uniform(600, 700)", target_tokens="Min(Normal(150, 20), 200)")
+    assert cfg.trigger_tokens == "Uniform(600, 700)"
+    with pytest.raises(ValidationError, match="unknown function"):
+        ContextCompactionConfig(trigger_tokens="foo(3)", target_tokens="100")
