@@ -23,7 +23,7 @@ Supports four file shapes, detected from the first non-blank line rather than th
 - OTel document (.json)          top-level dict with "spans"
 - OTel JSONL (.jsonl)            one dict with "spans" per line; 1..N traces per file
 - Responses API wire (.jsonl)    path contains "/responses"; response is an SSE stream
-- Chat Completions wire (.jsonl) path contains "/chat/completions"; response is plain JSON
+- Chat Completions wire (.jsonl) path contains "/chat/completions"; response is JSON or SSE
 - Anthropic Messages wire (.jsonl) path contains "/v1/messages"; response is an SSE stream
 
 Reasoning content is intentionally never emitted -- OpenAI `reasoning` items and
@@ -160,15 +160,39 @@ def detect_trace_format(path: Path) -> str:
     )
 
 
-def _parse_sse_completed(response_text: str) -> Optional[Dict[str, Any]]:
-    """Return the payload of the response.completed SSE event, or None."""
+def _iter_sse_data(response_text: Any) -> Iterator[str]:
+    """Yield SSE event payloads, joining multiple data fields per the SSE specification."""
+    if not isinstance(response_text, str):
+        return
+    data_lines: List[str] = []
     for line in response_text.splitlines():
-        if not line.startswith("data: "):
+        if not line:
+            if data_lines:
+                yield "\n".join(data_lines)
+                data_lines = []
+            continue
+        field, _, value = line.partition(":")
+        if field != "data":
+            continue
+        data_lines.append(value[1:] if value.startswith(" ") else value)
+
+
+def _iter_sse_json_events(response_text: Any) -> Iterator[Dict[str, Any]]:
+    """Yield JSON objects from SSE events, ignoring sentinels and malformed payloads."""
+    for payload in _iter_sse_data(response_text):
+        if not payload or payload.strip() == "[DONE]":
             continue
         try:
-            event = json.loads(line[6:])
+            event = json.loads(payload)
         except json.JSONDecodeError:
             continue
+        if isinstance(event, dict):
+            yield event
+
+
+def _parse_sse_completed(response_text: str) -> Optional[Dict[str, Any]]:
+    """Return the payload of the response.completed SSE event, or None."""
+    for event in _iter_sse_json_events(response_text):
         if event.get("type") == "response.completed":
             response = event.get("response")
             return response if isinstance(response, dict) else None
@@ -184,14 +208,8 @@ def _has_sse_terminal_event(response_text: Any, success_type: str) -> bool:
     """
     if not isinstance(response_text, str):
         return False
-    for line in response_text.splitlines():
-        if not line.startswith("data: "):
-            continue
-        try:
-            event = json.loads(line[6:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(event, dict) and event.get("type") == success_type:
+    for event in _iter_sse_json_events(response_text):
+        if event.get("type") == success_type:
             return True
     return False
 
@@ -208,16 +226,128 @@ def _parse_json_object(response_text: Any) -> Optional[Dict[str, Any]]:
 
 
 def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, Any]]:
-    """Parse a plain-JSON Chat Completions response body."""
+    """Parse JSON or reassemble Chat Completions SSE into the same response shape.
+
+    Streaming deltas are joined by choice and tool-call index; usage is retained from
+    the terminal chunk. A stream is accepted only after every payload parses, a choice
+    finishes, and [DONE] arrives. Returning the ordinary response shape lets the existing
+    output and OTel conversion path handle both streaming and non-streaming captures.
+    """
     if not response_text:
         return None
-    try:
-        resp = json.loads(response_text) if isinstance(response_text, str) else response_text
-    except (json.JSONDecodeError, TypeError):
+
+    response = _parse_json_object(response_text)
+    if response is not None:
+        return response if "choices" in response else None
+    if not isinstance(response_text, str):
         return None
-    if not isinstance(resp, dict) or "choices" not in resp:
+
+    response_id = ""
+    model = ""
+    usage: Dict[str, Any] = {}
+    choices: Dict[int, Dict[str, Any]] = {}
+    tool_calls: Dict[int, Dict[int, Dict[str, Any]]] = {}
+    saw_done = False
+
+    for payload in _iter_sse_data(response_text):
+        if not payload:
+            continue
+        if saw_done:
+            return None
+        if payload.strip() == "[DONE]":
+            saw_done = True
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict) or event.get("error") is not None or event.get("type") == "error":
+            return None
+        response_id = event.get("id") or response_id
+        model = event.get("model") or model
+        if isinstance(event.get("usage"), dict):
+            usage.update(event["usage"])
+
+        chunk_choices = event.get("choices") or []
+        if not isinstance(chunk_choices, list):
+            return None
+        for position, chunk_choice in enumerate(chunk_choices):
+            if not isinstance(chunk_choice, dict):
+                return None
+            choice_index = chunk_choice.get("index", position)
+            if not isinstance(choice_index, int):
+                return None
+            delta = chunk_choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                return None
+
+            choice = choices.get(choice_index)
+            if choice is not None and choice.get("finish_reason") is not None:
+                # Some providers attach usage to a final inert delta after finishing.
+                if delta or chunk_choice.get("finish_reason") is not None:
+                    return None
+                continue
+            choice = choices.setdefault(
+                choice_index,
+                {"index": choice_index, "finish_reason": None, "message": {"role": "assistant", "content": None}},
+            )
+
+            message = choice["message"]
+            if isinstance(delta.get("role"), str):
+                message["role"] = delta["role"]
+            content = delta.get("content")
+            if isinstance(content, str):
+                message["content"] = (message.get("content") or "") + content
+
+            tool_deltas = delta.get("tool_calls") or []
+            if not isinstance(tool_deltas, list):
+                return None
+            for tool_position, tool_delta in enumerate(tool_deltas):
+                if not isinstance(tool_delta, dict):
+                    return None
+                tool_index = tool_delta.get("index", tool_position)
+                if not isinstance(tool_index, int):
+                    continue
+                tool = tool_calls.setdefault(choice_index, {}).setdefault(
+                    tool_index,
+                    {"index": tool_index, "type": "function", "id": "", "function": {"name": "", "arguments": ""}},
+                )
+                incoming_id = tool_delta.get("id")
+                if isinstance(incoming_id, str) and incoming_id:
+                    if tool["id"] and tool["id"] != incoming_id:
+                        return None
+                    tool["id"] = incoming_id
+                if isinstance(tool_delta.get("type"), str):
+                    tool["type"] = tool_delta["type"]
+                function_delta = tool_delta.get("function") or {}
+                if isinstance(function_delta, dict):
+                    incoming_name = function_delta.get("name")
+                    if isinstance(incoming_name, str) and incoming_name:
+                        if tool["function"]["name"] and tool["function"]["name"] != incoming_name:
+                            return None
+                        tool["function"]["name"] = incoming_name
+                    if isinstance(function_delta.get("arguments"), str):
+                        tool["function"]["arguments"] += function_delta["arguments"]
+
+            if chunk_choice.get("finish_reason") is not None:
+                choice["finish_reason"] = chunk_choice["finish_reason"]
+
+    # Replay has one assistant output per call, so accepting n>1 would pair aggregate
+    # usage with only the first output consumed by _convert_chat_output.
+    if len(choices) != 1:
         return None
-    return resp
+    first_choice = next(iter(choices.values()))
+    if not saw_done or first_choice.get("finish_reason") is None:
+        return None
+    for choice_index, accumulated_tools in tool_calls.items():
+        choices[choice_index]["message"]["tool_calls"] = [accumulated_tools[i] for i in sorted(accumulated_tools)]
+    return {
+        "id": response_id,
+        "object": "chat.completion",
+        "model": model,
+        "choices": [choices[i] for i in sorted(choices)],
+        "usage": usage,
+    }
 
 
 def _parse_anthropic_sse(response_text: str) -> Optional[Dict[str, Any]]:
@@ -249,16 +379,7 @@ def _parse_anthropic_sse(response_text: str) -> Optional[Dict[str, Any]]:
     # Tool-call arguments arrive as JSON fragments that are only valid once concatenated.
     json_fragments: Dict[int, List[str]] = {}
 
-    for line in response_text.splitlines():
-        if not line.startswith("data: "):
-            continue
-        try:
-            event = json.loads(line[6:])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-
+    for event in _iter_sse_json_events(response_text):
         event_type = event.get("type")
 
         if event_type == "message_start":
@@ -803,14 +924,19 @@ def convert_responses_api_record(record: Dict[str, Any], trace_id: str, line_no:
 def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_no: int = 0) -> Optional[Dict[str, Any]]:
     """Convert one Chat Completions wire record to an OTel span.
 
-    The response body is a plain JSON object with choices[] and usage.
+    The response body is either a plain JSON object or a stream of Chat Completions chunks.
     Returns None if the request body is unparseable.
     """
     request = _load_request(record)
     if request is None:
         return None
 
-    resp = _parse_chat_completions_response(record.get("response"))
+    response_body = record.get("response") or ""
+    http_status = int(record.get("status", 200))
+    resp = _parse_chat_completions_response(response_body)
+    if request.get("stream") is True and 200 <= http_status < 300 and resp is None:
+        logger.warning("Skipping incomplete or invalid Chat Completions SSE wire record at line %d", line_no)
+        return None
     usage = (resp or {}).get("usage") or {}
 
     output_msg, finish_reason = _convert_chat_output(resp) if resp else (None, None)
@@ -822,7 +948,7 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_
         model=record.get("model") or request.get("model", "unknown"),
         start_time=start_time,
         end_time=end_time,
-        http_status=int(record.get("status", 200)),
+        http_status=http_status,
         input_tokens=usage.get("prompt_tokens", 0),
         output_tokens=usage.get("completion_tokens", 0),
         cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
