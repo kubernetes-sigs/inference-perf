@@ -35,7 +35,7 @@ from inference_perf.config import (
 )
 from asyncio import (
     CancelledError,
-    Semaphore,
+    Future,
     Task,
     TimeoutError as AsyncioTimeoutError,
     create_task,
@@ -82,6 +82,7 @@ from rich.progress import (
 import signal
 
 from inference_perf.observability.logging import get_console
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,53 @@ def _counter_value_nolock(counter: "Synchronized[int]") -> int:
     that teardown always returns.
     """
     return int(cast("ctypes.c_int", counter.get_obj()).value)
+
+
+class _ConcurrencyLimit:
+    """A semaphore whose limit can change while permits are held.
+
+    Raising the limit lets waiters in at once. Lowering it never touches
+    requests already in flight: new acquisitions wait until enough of them
+    finish to bring the count under the new limit. A limit of 0 parks the
+    worker without ending its stage. asyncio.Semaphore cannot do this, and
+    rebuilding one means waiting for every in-flight request to finish first.
+    """
+
+    # How often a worker re-reads its shared limit, in seconds.
+    POLL_INTERVAL = 0.01
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.in_use = 0
+        self._waiters: List["Future[None]"] = []
+
+    async def acquire(self) -> None:
+        while self.in_use >= self.limit:
+            waiter: "Future[None]" = get_event_loop().create_future()
+            self._waiters.append(waiter)
+            try:
+                await waiter
+            finally:
+                if waiter in self._waiters:
+                    self._waiters.remove(waiter)
+        self.in_use += 1
+
+    def release(self) -> None:
+        self.in_use -= 1
+        self._wake()
+
+    def set_limit(self, limit: int) -> None:
+        if limit != self.limit:
+            self.limit = limit
+            self._wake()
+
+    def _wake(self) -> None:
+        # Every waiter re-checks the count itself, so waking all of them is
+        # correct; a worker has one acquiring loop, so there is one at most.
+        for waiter in self._waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+        self._waiters.clear()
 
 
 class TeardownResult(NamedTuple):
@@ -233,7 +281,6 @@ class Worker(mp.Process):
         self.finished_requests_counter = finished_requests_counter
         self.active_requests_counter = active_requests_counter
         self.shared_max_concurrency = shared_max_concurrency
-        self.skip = False
         self.base_seed = base_seed
         self.force_stop_signal = force_stop_signal
         self.stage_done_counter = stage_done_counter
@@ -254,41 +301,18 @@ class Worker(mp.Process):
 
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
-        semaphore = Semaphore(self.max_concurrency)
-        current_concurrency = self.max_concurrency
+        semaphore = _ConcurrencyLimit(self.max_concurrency)
+        # Concurrent load type: the main process can change this worker's
+        # limit at any time, including mid-stage, so follow it continuously.
+        follower = create_task(self._follow_shared_limit(semaphore)) if self.shared_max_concurrency else None
         tasks = []
         event_loop = get_event_loop()
         item = None
         timeout = 0.5
 
         while not self.stop_signal.is_set():
-            # Check if max_concurrency has been updated and recreate semaphore if needed (concurrent load type)
-            if self.shared_max_concurrency and not self.skip:
-                with self.shared_max_concurrency.get_lock():
-                    new_concurrency = self.shared_max_concurrency.value
-                if new_concurrency == 0:
-                    self.skip = True
-                elif new_concurrency != current_concurrency:
-                    logger.debug(f"[Worker {self.id}] updating semaphore from {current_concurrency} to {new_concurrency}")
-                    # Wait for all current semaphore permits to be released
-                    for _ in range(current_concurrency):
-                        await semaphore.acquire()
-                    # Create new semaphore with updated limit
-                    semaphore = Semaphore(new_concurrency)
-                    current_concurrency = new_concurrency
-
-            if not self.skip:
-                logger.debug(f"Worker {self.id} is currently working")
-            else:
-                await sleep(0)
-
             # Process requests in loop
-            while (
-                self.request_phase.is_set()
-                and not self.cancel_signal.is_set()
-                and not self.skip
-                and not self.stop_signal.is_set()
-            ):
+            while self.request_phase.is_set() and not self.cancel_signal.is_set() and not self.stop_signal.is_set():
                 # Bounded acquire so a worker saturated with hung in-flight
                 # requests (all permits held) still re-checks the loop
                 # condition and reaches the stage boundary, where those
@@ -327,7 +351,7 @@ class Worker(mp.Process):
                     request_data: InferenceAPIData,
                     request_time: float,
                     stage_id: int,
-                    semaphore: Semaphore,
+                    semaphore: _ConcurrencyLimit,
                     lora_adapter: Optional[str],
                 ) -> None:
                     inflight = False
@@ -392,9 +416,6 @@ class Worker(mp.Process):
                 tasks.append(task)
                 await sleep(0)
 
-            # Reset skip
-            self.skip = False
-
             if self.cancel_signal.is_set() or not self.request_phase.is_set():
                 await self._wind_down_stage(tasks)
                 tasks = []
@@ -428,7 +449,24 @@ class Worker(mp.Process):
                     while not self.request_phase.is_set() and not self.stop_signal.is_set():
                         self.request_phase.wait(timeout=0.5)
 
+        if follower is not None:
+            follower.cancel()
         logger.debug(f"[Worker {self.id}] stopped")
+
+    async def _follow_shared_limit(self, limit: _ConcurrencyLimit) -> None:
+        """Keep ``limit`` equal to the shared value the main process writes.
+
+        Read without the lock: it is a single int written only by the main
+        process, and a worker killed while polling must not strand the lock
+        the main process takes to write it.
+        """
+        assert self.shared_max_concurrency is not None
+        while not self.stop_signal.is_set():
+            new_limit = _counter_value_nolock(self.shared_max_concurrency)
+            if new_limit != limit.limit:
+                logger.debug(f"[Worker {self.id}] concurrency limit {limit.limit} -> {new_limit}")
+                limit.set_limit(new_limit)
+            await sleep(_ConcurrencyLimit.POLL_INTERVAL)
 
     async def _wind_down_stage(self, tasks: List["Task[None]"]) -> None:
         """Bounded end-of-stage wind-down; always returns.
@@ -1176,7 +1214,7 @@ class LoadGenerator:
         request_phase: SyncEvent,
         cancel_signal: Optional[SyncEvent] = None,
         timeout: Optional[float] = None,
-        concurrency_level: Optional[int] = None,
+        concurrency: Optional[ConcurrencySchedule] = None,
         progress_ctx: Optional[Progress] = None,
     ) -> None:
         logger.info("Stage %d - run started", stage_id)
@@ -1206,10 +1244,12 @@ class LoadGenerator:
             data_generator = self.datagen.get_data()
         else:
             raise TypeError("run_stage requires DataGenerator, use run_session_stage for SessionGenerator")
-        active_workers = self.num_workers
-        if concurrency_level:
-            # If concurrency_level is set, some worker may get 0 concurrency, then we should re-evaluate workers we can assign reqeusts to.
-            active_workers = min(self.num_workers, concurrency_level)
+        active_workers = self._routable_workers(concurrency)
+        follower = (
+            create_task(self._follow_concurrency_schedule(concurrency, start_time))
+            if concurrency is not None and not concurrency.is_constant
+            else None
+        )
 
         for _ in range(num_requests):
             request_data = next(data_generator)
@@ -1258,6 +1298,9 @@ class LoadGenerator:
         if progress_ctx and stage_task:
             progress_ctx.remove_task(stage_task)
 
+        if follower is not None:
+            follower.cancel()
+
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
 
@@ -1279,12 +1322,47 @@ class LoadGenerator:
             start_time=start_time_epoch,
             end_time=end_time_epoch,
             status=stage_status,
-            concurrency_level=concurrency_level,
+            concurrency_level=concurrency.peak if concurrency is not None else None,
+            concurrency_expression=None if concurrency is None or concurrency.is_constant else str(concurrency.raw),
             max_stage_duration=timeout,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
         )
         logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
+
+    def _routable_workers(self, concurrency: Optional[ConcurrencySchedule]) -> int:
+        """How many workers preferred-worker requests are spread over.
+
+        A level below num_workers gives some workers 0 (see
+        _set_worker_concurrency), so requests pinned to them would never run.
+        Count the workers that get a share at the peak level: a varying level
+        reaches its peak later, and counting at the starting level would pin
+        every request to the first few workers for the whole stage.
+        """
+        if concurrency is None:
+            return self.num_workers
+        return min(self.num_workers, concurrency.peak)
+
+    async def _follow_concurrency_schedule(self, concurrency: ConcurrencySchedule, start_time: float) -> None:
+        """Move the workers' limits at each time the stage's concurrency level changes.
+
+        ``start_time`` is the stage's ``t = 0`` on the ``perf_counter`` clock.
+        The level only changes at exact times, so this sleeps until the next one
+        instead of polling. After a late wake-up it applies the level in effect
+        now, skipping any it overslept.
+        """
+        t = 0.0
+        while True:
+            change = concurrency.next_change_after(t)
+            if change is None:
+                return
+            delay = start_time + change - time.perf_counter()
+            if delay > 0:
+                await sleep(delay)
+            t = max(change, time.perf_counter() - start_time)
+            level = concurrency.level_at(t)
+            logger.debug(f"Stage concurrency -> {level} at t={t:.3f}s")
+            self._set_worker_concurrency(level)
 
     async def preprocess(
         self,
@@ -1492,13 +1570,13 @@ class LoadGenerator:
                     )
                 # Update worker concurrency for concurrent load type
                 elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
-                    logger.debug(f"Setting worker concurrency to {stage.concurrency_level} for stage {stage_id}")
-                    self._set_worker_concurrency(stage.concurrency_level)
+                    concurrency = stage.concurrency_schedule
+                    logger.debug(f"Setting worker concurrency to {concurrency.initial} for stage {stage_id}")
+                    self._set_worker_concurrency(concurrency.initial)
 
                     # Use the dynamically set rate/duration from main.py
                     rate = getattr(stage, "rate", stage.num_requests)
                     duration = getattr(stage, "duration", 1)
-                    concurrency_level = stage.concurrency_level
                     await self.run_stage(
                         stage_id,
                         rate,
@@ -1508,13 +1586,12 @@ class LoadGenerator:
                         finished_requests_counter,
                         request_phase,
                         cancel_signal,
-                        concurrency_level=concurrency_level,
+                        concurrency=concurrency,
                         progress_ctx=progress,
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
                     duration = stage.duration
-                    concurrency_level = None
                     await self.run_stage(
                         stage_id,
                         rate,
@@ -1524,7 +1601,6 @@ class LoadGenerator:
                         finished_requests_counter,
                         request_phase,
                         cancel_signal,
-                        concurrency_level=concurrency_level,
                         progress_ctx=progress,
                     )
                 else:
