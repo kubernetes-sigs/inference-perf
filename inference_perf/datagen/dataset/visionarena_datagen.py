@@ -36,6 +36,7 @@ from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType, DataConfig, VisionArenaConfig
 from inference_perf.payloads import ImageRepresentation, MultimodalSpec, PreEncodedImageSpec
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
+from inference_perf.utils.dataset import load_dataset_with_deadline
 
 from ..base import DataGenerator, LazyLoadDataMixin
 from ..multimodal_sampling import sample_insertion_point
@@ -69,7 +70,9 @@ class VisionArenaDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("visionarena config is required for VisionArenaDataGenerator")
         self.va_config: VisionArenaConfig = config.visionarena
 
-        self._pool: List[dict[str, Any]] = self._build_pool()
+        self._pool: List[dict[str, Any]] = load_dataset_with_deadline(
+            self._build_pool, self.va_config.hf_dataset_name, config.load_timeout
+        )
         if not self._pool:
             raise RuntimeError(
                 f"VisionArena pool is empty: no usable rows found in "
@@ -130,11 +133,11 @@ class VisionArenaDataGenerator(DataGenerator, LazyLoadDataMixin):
         logger.info("Streaming VisionArena dataset '%s' ...", self.va_config.hf_dataset_name)
         pool: List[dict[str, Any]] = []
         for row in load_dataset(self.va_config.hf_dataset_name, **load_kwargs):
-            if len(pool) >= self.va_config.num_rows:
-                break
             entry = self._row_to_entry(row)
             if entry is not None:
                 pool.append(entry)
+                if len(pool) >= self.va_config.num_rows:
+                    break
         return pool
 
     def _row_to_entry(self, row: Any) -> Optional[dict[str, Any]]:
