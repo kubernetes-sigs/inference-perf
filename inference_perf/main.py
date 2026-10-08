@@ -318,8 +318,8 @@ def main_cli() -> None:
                     raise Exception(
                         f"{config.data.type.value} data generator requires 'input_distribution' to be configured if no trace config is provided"
                     )
-                # Embeddings requests generate no output, so they need no output lengths.
-                if config.data.output_distribution is None and config.api.type != APIType.Embeddings:
+                # Embeddings and rerank requests generate no output, so they need no output lengths.
+                if config.data.output_distribution is None and config.api.type not in (APIType.Embeddings, APIType.Rerank):
                     raise Exception(
                         f"{config.data.type.value} data generator requires 'output_distribution' to be configured if no trace config is provided"
                     )

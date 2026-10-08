@@ -35,6 +35,7 @@ from inference_perf.apis import (
     EmbeddingsAPIData,
     ErrorResponseInfo,
     InferenceInfo,
+    RerankAPIData,
     SessionLifecycleMetric,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
@@ -411,6 +412,52 @@ async def test_embeddings_200_recorded_as_failure_keeps_body(mock_client: MagicM
     metric = mock_client.metrics_collector.record_metric.call_args[0][0]
     assert metric.error is not None
     assert metric.response_data == error_body
+
+
+@pytest.mark.asyncio
+async def test_rerank_request_round_trip(mock_client: MagicMock) -> None:
+    mock_client.api_config.type = APIType.Rerank
+    mock_client.api_config.streaming = False
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "rerank-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+
+    # vLLM's rerank response reports only total_tokens, not prompt_tokens.
+    body = {
+        "results": [{"index": 0, "relevance_score": 0.9}],
+        "usage": {"total_tokens": 6},
+    }
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    data = RerankAPIData(query="what is a cat", documents=["a cat is a mammal"])
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(data, stage_id=1, scheduled_time=0.0)
+
+    assert session.session.post.call_args.args[0] == "http://test-uri/v1/rerank"
+    assert json.loads(session.session.post.call_args.kwargs["data"]) == {
+        "model": "rerank-model",
+        "query": "what is a cat",
+        "documents": ["a cat is a mammal"],
+    }
+    assert session.session.post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "rerank"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 6
+    assert metric.info.response_metrics.output_tokens == 0
 
 
 @pytest.mark.asyncio
