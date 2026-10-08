@@ -130,6 +130,12 @@ def generate_current(output_path: Path):
     print(f"✅ Current report generated: {output_path.name} (+ coverage.xml, coverage.lcov)")
 
 
+def coverage_regressed(current_totals, baseline_totals):
+    """True when the total fell vs main and uncovered statements rose. Deleting covered code only does the first."""
+    fell = current_totals["percent_covered"] < baseline_totals["percent_covered"] - 0.01
+    return fell and current_totals["missing_lines"] > baseline_totals["missing_lines"]
+
+
 def print_detailed_report(current_data, baseline_data):
     """Prints a detailed per-file comparison."""
     current_files = current_data.get("files", {})
@@ -207,14 +213,16 @@ def main():
 
     current_val = current_data["totals"]["percent_covered"]
     baseline_val = baseline_data["totals"]["percent_covered"]
+    current_missing = current_data["totals"]["missing_lines"]
+    baseline_missing = baseline_data["totals"]["missing_lines"]
 
     if args.detailed:
         print_detailed_report(current_data, baseline_data)
 
     print("\n--- Coverage Summary ---")
     print(f"Absolute coverage: {current_val:.2f}% (floor: {MIN_TOTAL_COVERAGE:.2f}%)")
-    print(f"Main Branch:       {baseline_val:.2f}%")
-    print(f"Current Branch:    {current_val:.2f}%")
+    print(f"Main Branch:       {baseline_val:.2f}% ({baseline_missing} uncovered)")
+    print(f"Current Branch:    {current_val:.2f}% ({current_missing} uncovered)")
 
     failures = []
 
@@ -225,11 +233,14 @@ def main():
         print(f"✅ Absolute: {current_val:.2f}% meets the {MIN_TOTAL_COVERAGE:.2f}% floor.")
 
     # Check 2: delta-vs-main ratchet. Use a small epsilon (0.01) for float precision.
-    if current_val < (baseline_val - 0.01):
+    if coverage_regressed(current_data["totals"], baseline_data["totals"]):
         diff = baseline_val - current_val
-        failures.append(f"Total coverage decreased by {diff:.2f}% vs main ({baseline_val:.2f}%)")
+        failures.append(
+            f"Total coverage decreased by {diff:.2f}% vs main ({baseline_val:.2f}%) "
+            f"and uncovered statements rose from {baseline_missing} to {current_missing}"
+        )
     else:
-        print("✅ Delta: coverage is maintained or improved vs main.")
+        print("✅ Delta: total held, or uncovered statements did not rise vs main.")
 
     if failures:
         print("\n❌ FAIL:")
