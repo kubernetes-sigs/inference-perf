@@ -174,7 +174,13 @@ BACKEND = Backend(
             }
         ],
     },
-    expected_supported_apis=[APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings],
+    expected_supported_apis=[
+        APIType.Completion,
+        APIType.Chat,
+        APIType.AnthropicMessages,
+        APIType.Embeddings,
+        APIType.Template,
+    ],
     expected_metric_filters=[f"model_name='{MODEL}'"],
     queue_metric_name="vllm:num_requests_waiting",
 )

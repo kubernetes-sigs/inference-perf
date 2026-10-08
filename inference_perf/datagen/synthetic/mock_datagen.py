@@ -18,7 +18,6 @@ from inference_perf.apis import (
     AnthropicMessagesAPIData,
     ChatCompletionAPIData,
     ChatMessage,
-    CompletionAPIData,
     EmbeddingsAPIData,
     InferenceAPIData,
 )
@@ -30,14 +29,14 @@ class MockDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings]
+        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type in (APIType.Completion, APIType.Template):
             while True:
                 i += 1
-                yield CompletionAPIData(prompt=f"1 2 3 {i}")
+                yield self.prompt_data(f"1 2 3 {i}")
         elif self.api_config.type == APIType.Chat:
             while True:
                 i += 1

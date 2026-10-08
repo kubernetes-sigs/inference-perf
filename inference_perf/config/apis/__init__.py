@@ -18,6 +18,8 @@ from inference_perf.config.apis.config import (
     EmbeddingsEncodingFormat,
     ResponseFormat,
     ResponseFormatType,
+    TemplateConfig,
+    TemplateResponseConfig,
 )
 
 __all__ = [
@@ -27,4 +29,6 @@ __all__ = [
     "EmbeddingsEncodingFormat",
     "ResponseFormat",
     "ResponseFormatType",
+    "TemplateConfig",
+    "TemplateResponseConfig",
 ]
