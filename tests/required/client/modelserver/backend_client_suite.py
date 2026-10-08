@@ -28,10 +28,15 @@ from typing import Any, AsyncGenerator, ClassVar, Dict, List, Optional, Type, ca
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import requests
 from aiohttp import ClientResponse
 
 from inference_perf.apis import ChatCompletionAPIData, ChatMessage, CompletionAPIData, StreamedResponseMetrics
-from inference_perf.client.modelserver.openai_client import openAIModelServerClient, openAIModelServerClientSession
+from inference_perf.client.modelserver.openai_client import (
+    _SUPPORTED_MODELS_TIMEOUT_SEC,
+    openAIModelServerClient,
+    openAIModelServerClientSession,
+)
 from inference_perf.config import APIConfig, APIType
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -389,7 +394,156 @@ class BackendClientSuite:
         assert metadata.filters == ",".join(self.backend.expected_metric_filters)
         for _, metric in metadata:
             assert "None" not in " ".join(metric.get_queries(60, metadata.filters))
-        mock_get.assert_called_once_with(f"{BASE_URI}/v1/models", headers=expected_headers)
+        mock_get.assert_called_once_with(
+            f"{BASE_URI}/v1/models",
+            headers=expected_headers,
+            timeout=_SUPPORTED_MODELS_TIMEOUT_SEC,
+            cert=None,
+        )
+
+    def test_models_endpoint_uses_configured_timeout(self) -> None:
+        """The /v1/models probe must reuse the configured request timeout instead of
+        hanging startup when the server is unresponsive (#809)."""
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = self.backend.models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+                timeout=7.5,
+            )
+        _, kwargs = mock_get.call_args
+        assert kwargs["timeout"] == 7.5
+
+    def test_models_endpoint_sends_client_certificate(self) -> None:
+        """The /v1/models probe must carry the client certificate so auto-detection
+        works against servers that require mTLS (#809)."""
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = self.backend.models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+                cert_path="/tmp/client.crt",
+                key_path="/tmp/client.key",
+            )
+        _, kwargs = mock_get.call_args
+        assert kwargs["cert"] == ("/tmp/client.crt", "/tmp/client.key")
+
+    def test_models_endpoint_timeout_fails_fast(self) -> None:
+        """An unresponsive /v1/models must fail startup with an error instead of
+        hanging forever (#809)."""
+        mock_get = MagicMock(side_effect=requests.Timeout("connection timed out"))
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+            pytest.raises(Exception, match="no model_name could be found"),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        _, kwargs = mock_get.call_args
+        assert kwargs["timeout"] == _SUPPORTED_MODELS_TIMEOUT_SEC
+
+    def test_tokenizer_falls_back_to_model_root_when_id_is_alias(self) -> None:
+        """The tokenizer fallback must try the /v1/models entry's ``root`` after its
+        ``id``: vLLM serves ``--served-model-name`` as the id, which can be an alias
+        the tokenizer cannot load under (#809)."""
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "served-alias",
+                    "object": "model",
+                    "created": 1750000000,
+                    "owned_by": "vllm",
+                    "root": MODEL,
+                }
+            ],
+        }
+
+        class AliasRejectingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                path = config.pretrained_model_name_or_path
+                if path == "served-alias":
+                    raise RuntimeError("no tokenizer files under served alias")
+                assert path == MODEL
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AliasRejectingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+        ):
+            client = self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
+        assert client.model_name == "served-alias"
+
+    def test_tokenizer_fallback_error_names_config_field(self) -> None:
+        """When neither the served id nor the model root loads a tokenizer, the error
+        must point the user at tokenizer.pretrained_model_name_or_path (#809)."""
+        models_response: Dict[str, Any] = {
+            "object": "list",
+            "data": [
+                {
+                    "id": "served-alias",
+                    "object": "model",
+                    "created": 1750000000,
+                    "owned_by": "vllm",
+                    "root": "also-unloadable",
+                }
+            ],
+        }
+
+        class AlwaysFailingTokenizer:
+            def __init__(self, config: Any = None) -> None:
+                raise RuntimeError("cannot load")
+
+        mock_get = MagicMock()
+        mock_get.return_value.json.return_value = models_response
+        with (
+            patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", AlwaysFailingTokenizer),
+            patch("inference_perf.client.modelserver.openai_client.requests.get", mock_get),
+            pytest.raises(Exception, match="tokenizer.pretrained_model_name_or_path"),
+        ):
+            self.backend.client_cls(
+                metrics_collector=MagicMock(),
+                api_config=APIConfig(type=APIType.Completion, streaming=False),
+                uri=BASE_URI,
+                model_name=None,
+                tokenizer_config=None,
+                max_tcp_connections=4,
+                additional_filters=[],
+            )
 
     def test_supported_apis_and_metric_metadata(self) -> None:
         client = make_client(self.backend, APIConfig(type=APIType.Completion, streaming=False))
