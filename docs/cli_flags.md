@@ -382,7 +382,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--report.request_lifecycle.per_request_fields.request` | boolean | Include the raw request payload in per-request report entries. |
 | `--report.request_lifecycle.per_request_fields.response` | boolean | Include the raw response payload in per-request report entries. |
 | `--report.request_lifecycle.per_request_fields.info` | boolean | Include response metadata in per-request report entries. |
-| `--report.request_lifecycle.per_request_fields.response_chunks` | boolean | Include streamed response chunks in per-request metadata. |
+| `--report.request_lifecycle.per_request_fields.response_chunks` | boolean | Include raw streamed chunks, content and reasoning, in per-request metadata. |
 | `--report.request_lifecycle.per_request_fields.computed_metrics` | boolean | Include computed per-request latency and token metrics in report entries. |
 | `--report.request_lifecycle.per_adapter` | boolean | Generate a report for each LoRA adapter. |
 | `--report.request_lifecycle.per_adapter_stage` | boolean | Generate a report for each LoRA adapter within each load stage. |

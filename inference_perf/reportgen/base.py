@@ -1007,7 +1007,9 @@ def build_per_request_lifecycle_entry(
         if info and not fields.response_chunks:
             response_metrics = info.get("response_metrics")
             if isinstance(response_metrics, dict):
+                # Reasoning chunks are raw stream JSON too, and most of a reasoning model's stream.
                 response_metrics.pop("response_chunks", None)
+                response_metrics.pop("reasoning_chunks", None)
         entry["info"] = info
 
     if fields.computed_metrics and metric.error is None:

@@ -72,6 +72,51 @@ def test_per_request_fields_can_omit_response_chunks_without_mutating_metric() -
     assert metric.info.response_metrics.response_chunks == ['{"choices": [{"text": "hello"}]}']
 
 
+_CONTENT_CHUNKS = ['{"choices": [{"delta": {"content": "hi"}}]}']
+_REASONING_CHUNKS = [
+    '{"choices": [{"delta": {"reasoning_content": "let"}}]}',
+    '{"choices": [{"delta": {"reasoning_content": " me think"}}]}',
+]
+
+
+# A reasoning model's stream: reasoning chunks at 1.2s and 1.4s, then one content chunk at 1.6s.
+def _reasoning_metric() -> RequestLifecycleMetric:
+    metric = _metric()
+    metric.info.response_metrics = StreamedResponseMetrics(
+        output_tokens=4,
+        response_chunks=list(_CONTENT_CHUNKS),
+        chunk_times=[1.6],
+        reasoning_chunks=list(_REASONING_CHUNKS),
+        reasoning_chunk_times=[1.2, 1.4],
+        output_token_times=[1.2, 1.4, 1.4, 1.6],
+    )
+    return metric
+
+
+# response_chunks=False on that stream writes no chunk list from either channel.
+# Both channels' arrival times stay, and the in-memory metric keeps its chunks.
+def test_per_request_fields_omit_response_chunks_drops_both_channels() -> None:
+    metric = _reasoning_metric()
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(response_chunks=False))
+
+    response_metrics = entry["info"]["response_metrics"]
+    assert [key for key in response_metrics if key.endswith("_chunks")] == []
+    assert response_metrics["chunk_times"] == [1.6]
+    assert response_metrics["reasoning_chunk_times"] == [1.2, 1.4]
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+    assert metric.info.response_metrics.response_chunks == _CONTENT_CHUNKS
+    assert metric.info.response_metrics.reasoning_chunks == _REASONING_CHUNKS
+
+
+# response_chunks=True on the same stream writes both chunk lists exactly as received.
+def test_per_request_fields_include_response_chunks_keeps_both_channels() -> None:
+    entry = build_per_request_lifecycle_entry(_reasoning_metric(), PerRequestFieldsConfig(response_chunks=True))
+
+    response_metrics = entry["info"]["response_metrics"]
+    assert response_metrics["response_chunks"] == _CONTENT_CHUNKS
+    assert response_metrics["reasoning_chunks"] == _REASONING_CHUNKS
+
+
 def test_per_request_fields_computed_metrics_disabled_by_default() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
 
