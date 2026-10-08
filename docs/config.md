@@ -29,7 +29,7 @@ Controls the API interaction behavior. If SLO headers are present, each request 
 
 ```yaml
 api:
-  type: completion             # API type (completion|chat|anthropic_messages|embeddings)
+  type: completion             # API type (completion|chat|anthropic_messages|embeddings|template)
   streaming: true             # Enable streaming for TTFT, ITL, and TPOT metrics
   headers:                     # Optional custom HTTP headers
     x-inference-model: llama
@@ -51,6 +51,58 @@ api:
     dimensions: 512            # Optional embedding size; default is the model's
     encoding_format: float     # Optional: float|base64; default is the server's
 ```
+
+With `type: template`, each request body is built from a template you write, so you can benchmark a server whose API is not built in. String values in the body can use three placeholders: `${prompt}` for the prompt text, `${max_tokens}` for the output length and `${model}` for the model name. A string that holds only one placeholder is replaced by the value itself, so `${max_tokens}` is sent as a number. Write a literal `$` as `$$`. The route can use `${model}`, for example `/predictions/${model}`. The paths under `response` are [JMESPath](https://jmespath.org) expressions that select values in the response body. This example targets the SGLang native API:
+
+```yaml
+api:
+  type: template
+  template:
+    route: /generate                                  # Appended to server.base_url, can use ${model}
+    body:
+      text: ${prompt}
+      sampling_params:
+        max_new_tokens: ${max_tokens}
+        ignore_eos: true
+    ignore_eos: true                                  # Optional, true when the body asks the server to ignore EOS
+    response:
+      text_path: text                                 # Selects the generated text, and only that
+      input_tokens_path: meta_info.prompt_tokens      # Optional, default counts the prompt with the tokenizer
+      output_tokens_path: meta_info.completion_tokens # Optional, read as the server's completion_tokens
+```
+
+Apart from the placeholders, the body is sent as written, so options such as `server.ignore_eos` are not added for you. Put them in the body in the form the server expects. When the body asks the server to ignore EOS, also set `ignore_eos: true` under `template`. inference-perf cannot find that option in a free-form body, and this tells it that each response should have `${max_tokens}` output tokens. It is rejected when the body does not use `${max_tokens}`.
+
+`text_path` must select only the generated text. Some servers return the prompt and the completion together. That text still matches, so without `output_tokens_path` the output token count also includes the prompt. If `text_path` does not select a string, the request is recorded as failed.
+
+With `output_tokens_path` set, the output token summary uses the server's count. TPOT and NTPOT are still normalized with the tokenizer count, unless `report.request_lifecycle.use_server_output_tokens` is set.
+
+To stream, set `api.streaming: true` and add a `stream` block under `response`. The body must also ask the server for a stream, in the form the server expects. By default, the SGLang native API sends all the text so far in each chunk:
+
+```yaml
+api:
+  type: template
+  streaming: true
+  template:
+    route: /generate
+    body:
+      text: ${prompt}
+      stream: true
+      sampling_params:
+        max_new_tokens: ${max_tokens}
+    response:
+      text_path: text                                 # Selects the text in each chunk
+      output_tokens_path: meta_info.completion_tokens # Read from the last chunk that has it
+      stream:
+        framing: sse                                  # sse, or ndjson for one JSON object per line
+        chunks: cumulative                            # delta, or cumulative when each chunk has all the text so far
+```
+
+`chunks` has no default, because the wrong value gives wrong token counts without an error. Each path is applied to every chunk, and a count path keeps the value from the last chunk where it selects one. The stream ends with the response body or with an SSE `data: [DONE]` line, and any other chunk that is not JSON is skipped. If `text_path` does not select a string in any chunk, the request is recorded as failed.
+
+`server.type` only selects the Prometheus metric names. For a server that is not vLLM, SGLang or TGI, any of these three works when `metrics` is unset. `mock` does not send requests. If the server has no `/v1/models` endpoint, set `server.model_name`.
+
+`response_format` is not supported yet. Like `completion`, the template takes one prompt per request, so it works with the `mock`, `random`, `synthetic`, `shareGPT`, `cnn_dailymail`, `billsum_conversations` and `infinity_instruct` data generators.
 
 ### Data Generation
 

@@ -17,7 +17,6 @@ from inference_perf.apis import (
     AnthropicMessagesAPIData,
     ChatCompletionAPIData,
     ChatMessage,
-    CompletionAPIData,
     InferenceAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -111,11 +110,11 @@ class HFShareGPTDataGenerator(DataGenerator):
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages]
+        return [APIType.Chat, APIType.Completion, APIType.AnthropicMessages, APIType.Template]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         self._ensure_dataset_loaded()
-        if self.api_config.type == APIType.Completion:
+        if self.api_config.type in (APIType.Completion, APIType.Template):
             yield from self.get_completion_data()
             return
         if self.api_config.type == APIType.Chat:
@@ -159,7 +158,7 @@ class HFShareGPTDataGenerator(DataGenerator):
                     if completion_tokens > self.output_distribution.max:
                         continue
 
-                yield CompletionAPIData(prompt=prompt, max_tokens=completion_tokens)
+                yield self.prompt_data(prompt, completion_tokens)
 
             except (KeyError, TypeError) as e:
                 logger.warning(f"Skipping invalid completion data: {e}")

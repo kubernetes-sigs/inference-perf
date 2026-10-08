@@ -609,7 +609,9 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     server-reported completion_tokens.
     """
     if not (
-        isinstance(m.info.response_metrics, StreamedResponseMetrics) and m.info.response_metrics.response_chunks and tokenizer
+        isinstance(m.info.response_metrics, StreamedResponseMetrics)
+        and (m.info.response_metrics.response_chunks or m.info.response_metrics.chunk_texts)
+        and tokenizer
     ):
         return False
 
@@ -627,10 +629,15 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
         except Exception:
             token_cache = None
 
-    for chunk_str, chunk_time in zip(
-        m.info.response_metrics.response_chunks, m.info.response_metrics.chunk_times, strict=True
-    ):
-        text = _extract_chunk_text(chunk_str)
+    response_metrics = m.info.response_metrics
+    # The template API passes the new text of each chunk, because its chunk shape
+    # comes from the user's config.
+    chunk_texts: Iterable[Optional[str]] = (
+        response_metrics.chunk_texts
+        if response_metrics.chunk_texts is not None
+        else map(_extract_chunk_text, response_metrics.response_chunks)
+    )
+    for text, chunk_time in zip(chunk_texts, response_metrics.chunk_times, strict=True):
         if not text:
             continue
 

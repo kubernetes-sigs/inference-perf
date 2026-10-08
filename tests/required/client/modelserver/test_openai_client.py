@@ -21,7 +21,7 @@ from aiohttp.client_reqrep import ConnectionKey
 import pytest
 import asyncio
 import aiohttp
-from typing import Any, Optional, cast
+from typing import Any, AsyncGenerator, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 from inference_perf.client.modelserver.openai_client import (
     is_retryable_transport_error,
@@ -36,9 +36,17 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     InferenceInfo,
     SessionLifecycleMetric,
+    StreamedResponseMetrics,
+    TemplateAPIData,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
-from inference_perf.config import APIType
+from inference_perf.config import (
+    APIType,
+    TemplateConfig,
+    TemplateResponseConfig,
+    TemplateStreamChunks,
+    TemplateStreamConfig,
+)
 from inference_perf.payloads import RequestMetrics, Text
 
 
@@ -1218,3 +1226,140 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
     assert metric.error is not None
     assert metric.info.retries_attempted == 1
     assert metric.info.retries_recovered is False
+
+
+_GENERATE_TEMPLATE = TemplateConfig(
+    route="/generate",
+    body={"text": "${prompt}", "sampling_params": {"max_new_tokens": "${max_tokens}"}},
+    response=TemplateResponseConfig(text_path="text", output_tokens_path="meta_info.completion_tokens"),
+)
+
+
+def _template_session(mock_client: MagicMock, body: dict[str, Any]) -> openAIModelServerClientSession:
+    mock_client.api_config.type = APIType.Template
+    mock_client.api_config.session_id_header_key = None
+    mock_client.api_key = "test-key"
+    mock_client.model_name = "test-model"
+    mock_client.max_completion_tokens = 128
+    mock_client.ignore_eos = True
+    mock_client.tokenizer.count_tokens = lambda text, **kw: len(text.split())
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.headers = {}
+    resp.text = AsyncMock(return_value=json.dumps(body))
+    resp.json = AsyncMock(return_value=body)
+
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+    return session
+
+
+@pytest.mark.asyncio
+async def test_template_request_round_trip(mock_client: MagicMock) -> None:
+    session = _template_session(mock_client, {"text": "a b c", "meta_info": {"completion_tokens": 3}})
+
+    await session.process_request(
+        TemplateAPIData(prompt="hello world", max_tokens=16, template=_GENERATE_TEMPLATE), stage_id=1, scheduled_time=0.0
+    )
+
+    post = _post(session).call_args
+    assert post.args[0] == "http://test-uri/generate"
+    assert json.loads(post.kwargs["data"]) == {"text": "hello world", "sampling_params": {"max_new_tokens": 16}}
+    assert post.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert mock_client.otel.trace_llm_request.call_args.kwargs["operation_name"] == "template"
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.info.request_metrics.text.input_tokens == 2
+    assert metric.info.response_metrics.output_tokens == 3
+    assert metric.info.response_metrics.server_usage == {"completion_tokens": 3}
+
+
+@pytest.mark.asyncio
+async def test_template_response_without_text_is_recorded_as_failed(mock_client: MagicMock) -> None:
+    session = _template_session(mock_client, {"generated_text": "a b c"})
+
+    await session.process_request(
+        TemplateAPIData(prompt="hello world", template=_GENERATE_TEMPLATE), stage_id=1, scheduled_time=0.0
+    )
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.error.error_type == "ValueError"
+    assert "text_path 'text' did not select a string" in metric.error.error_msg
+
+
+@pytest.mark.asyncio
+async def test_template_route_names_the_model(mock_client: MagicMock) -> None:
+    template = TemplateConfig(
+        route="/predictions/${model}", body={"text": "${prompt}"}, response=TemplateResponseConfig(text_path="text")
+    )
+    session = _template_session(mock_client, {"text": "a b c"})
+
+    await session.process_request(TemplateAPIData(prompt="hello world", template=template), stage_id=1, scheduled_time=0.0)
+
+    assert _post(session).call_args.args[0] == "http://test-uri/predictions/test-model"
+
+
+_STREAM_TEMPLATE = TemplateConfig(
+    route="/generate",
+    body={"text": "${prompt}", "stream": True},
+    response=TemplateResponseConfig(
+        text_path="text",
+        output_tokens_path="meta_info.completion_tokens",
+        stream=TemplateStreamConfig(chunks=TemplateStreamChunks.CUMULATIVE),
+    ),
+)
+
+
+def _streaming_template_session(mock_client: MagicMock, payload: bytes) -> openAIModelServerClientSession:
+    session = _template_session(mock_client, {})
+    mock_client.api_config.streaming = True
+    response = _post(session).return_value.__aenter__.return_value
+
+    async def iter_any() -> AsyncGenerator[bytes, None]:
+        yield payload
+
+    response.content.iter_any = iter_any
+    return session
+
+
+@pytest.mark.asyncio
+async def test_template_stream_round_trip(mock_client: MagicMock) -> None:
+    payload = (
+        b'data: {"text": "a", "meta_info": {"completion_tokens": 1}}\n\n'
+        b'data: {"text": "a b", "meta_info": {"completion_tokens": 2}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    session = _streaming_template_session(mock_client, payload)
+
+    await session.process_request(
+        TemplateAPIData(prompt="hello world", template=_STREAM_TEMPLATE), stage_id=1, scheduled_time=0.0
+    )
+
+    assert json.loads(_post(session).call_args.kwargs["data"]) == {"text": "hello world", "stream": True}
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is None
+    assert metric.response_data == payload.decode()
+    assert isinstance(metric.info.response_metrics, StreamedResponseMetrics)
+    assert metric.info.response_metrics.chunk_texts == ["a", " b"]
+    assert metric.info.response_metrics.server_usage == {"completion_tokens": 2}
+
+
+@pytest.mark.asyncio
+async def test_template_stream_without_text_is_recorded_as_failed(mock_client: MagicMock) -> None:
+    session = _streaming_template_session(mock_client, b'data: {"generated_text": "a b"}\n\ndata: [DONE]\n\n')
+
+    await session.process_request(
+        TemplateAPIData(prompt="hello world", template=_STREAM_TEMPLATE), stage_id=1, scheduled_time=0.0
+    )
+
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error is not None
+    assert metric.error.error_type == "ValueError"
+    assert "did not select a string in any chunk" in metric.error.error_msg
