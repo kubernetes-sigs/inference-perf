@@ -92,14 +92,18 @@ data:
       std_dev: 5
 ```
 
-`data.load_timeout` bounds each Hub `load_dataset()` call for ShareGPT, CNN/DailyMail,
-VisionArena, and OTel trace replay. It must be positive and finite; YAML `null` disables
-the deadline. The `--data.load_timeout` CLI flag accepts a number, not `null`.
-Local JSON streaming loaders are unchanged. For streaming datasets, only the loading
-call is bounded: fetching rows afterward, including startup priming and VisionArena
-pool construction, has no deadline. A timed-out loader runs in a daemon thread and
-cannot be cancelled. As with tokenizer loading, the deadline applies to waits that
-release the GIL, such as network and file I/O.
+`data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
+VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
+CNN/DailyMail, this includes loading and reading the first row, when streaming
+downloads begin. For VisionArena, it includes building the entire startup row pool.
+For OTel, it bounds the non-streaming `load_dataset()` call. Later streaming
+iteration and local JSON streaming loaders have no deadline.
+
+The value must be positive and finite; YAML `null` disables the deadline. The
+`--data.load_timeout` CLI flag accepts a number, not `null`. Increase the timeout
+for large datasets or slow connections. A timed-out loader runs in a daemon thread
+and cannot be cancelled. As with tokenizer loading, the deadline applies to waits
+that release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 

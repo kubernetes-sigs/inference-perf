@@ -122,8 +122,8 @@ class DataConfig(StrictBaseModel):
         default=300.0,
         gt=0,
         allow_inf_nan=False,
-        description="Deadline in seconds for Hub dataset loading calls."
-        " Does not bound streaming iteration. Null disables the deadline.",
+        description="Deadline in seconds for Hub dataset initialization, including startup row reads."
+        " Does not bound later streaming iteration. Null disables the deadline.",
     )
     corpus_file_path: Optional[str] = Field(
         None,

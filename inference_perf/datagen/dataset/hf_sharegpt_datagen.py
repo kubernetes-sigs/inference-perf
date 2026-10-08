@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import partial
 import itertools
 import logging
 from inference_perf.apis import (
@@ -46,11 +45,20 @@ class HFShareGPTDataGenerator(DataGenerator):
         self.role_key = "from"
         self.content_key = "value"
         self.sharegpt_dataset = self._load_dataset()
-        # initialize data collection
-        next(self.sharegpt_dataset)
         self._dataset_ready = True
 
     def _load_dataset(self) -> Iterator[Any]:
+        def load_and_prime() -> Iterator[Any]:
+            dataset = self._open_dataset()
+            # Streaming downloads start when the first row is read.
+            next(dataset)
+            return dataset
+
+        if self.config.path is not None:
+            return load_and_prime()
+        return load_dataset_with_deadline(load_and_prime, SHAREGPT_HF_DATASET_URL, self.config.load_timeout)
+
+    def _open_dataset(self) -> Iterator[Any]:
         config = self.config
         if config.path is not None:
             # check if the path is valid
@@ -67,16 +75,11 @@ class HFShareGPTDataGenerator(DataGenerator):
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
             return itertools.cycle(
-                load_dataset_with_deadline(
-                    partial(
-                        load_dataset,
-                        SHAREGPT_HF_DATASET_URL,
-                        data_files=SHAREGPT_HF_DATAFILES_PATH,
-                        streaming=True,
-                        split="train",
-                    ),
+                load_dataset(
                     SHAREGPT_HF_DATASET_URL,
-                    config.load_timeout,
+                    data_files=SHAREGPT_HF_DATAFILES_PATH,
+                    streaming=True,
+                    split="train",
                 )
             )
 
@@ -105,7 +108,6 @@ class HFShareGPTDataGenerator(DataGenerator):
         # included for the default Hub dataset, for nothing.
         if not self._dataset_ready:
             self.sharegpt_dataset = self._load_dataset()
-            next(self.sharegpt_dataset)
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:

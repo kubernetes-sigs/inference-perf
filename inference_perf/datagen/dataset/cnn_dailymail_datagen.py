@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import partial
 import itertools
 import logging
 from inference_perf.apis import InferenceAPIData, CompletionAPIData
@@ -35,11 +34,20 @@ class CNNDailyMailDataGenerator(DataGenerator):
         self.article_key = "article"
         self.highlights_key = "highlights"
         self.cnn_dailymail_dataset = self._load_dataset()
-        # initialize data collection
-        next(self.cnn_dailymail_dataset)
         self._dataset_ready = True
 
     def _load_dataset(self) -> Iterator[Any]:
+        def load_and_prime() -> Iterator[Any]:
+            dataset = self._open_dataset()
+            # Streaming downloads start when the first row is read.
+            next(dataset)
+            return dataset
+
+        if self.config.path is not None:
+            return load_and_prime()
+        return load_dataset_with_deadline(load_and_prime, "abisee/cnn_dailymail", self.config.load_timeout)
+
+    def _open_dataset(self) -> Iterator[Any]:
         config = self.config
         if config.path is not None:
             # check if the path is valid
@@ -56,16 +64,11 @@ class CNNDailyMailDataGenerator(DataGenerator):
                 raise ValueError(f"Invalid dataset path: {config.path}")
         else:
             return itertools.cycle(
-                load_dataset_with_deadline(
-                    partial(
-                        load_dataset,
-                        "abisee/cnn_dailymail",
-                        "3.0.0",
-                        streaming=True,
-                        split="train",
-                    ),
+                load_dataset(
                     "abisee/cnn_dailymail",
-                    config.load_timeout,
+                    "3.0.0",
+                    streaming=True,
+                    split="train",
                 )
             )
 
@@ -94,7 +97,6 @@ class CNNDailyMailDataGenerator(DataGenerator):
         # included for the default Hub dataset, for nothing.
         if not self._dataset_ready:
             self.cnn_dailymail_dataset = self._load_dataset()
-            next(self.cnn_dailymail_dataset)
             self._dataset_ready = True
 
     def get_supported_apis(self) -> List[APIType]:

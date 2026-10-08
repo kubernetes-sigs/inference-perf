@@ -23,7 +23,6 @@ hot request path cycles through it deterministically.
 
 from __future__ import annotations
 
-from functools import partial
 import io
 import logging
 from typing import Any, Generator, List, Optional, Tuple
@@ -71,7 +70,9 @@ class VisionArenaDataGenerator(DataGenerator, LazyLoadDataMixin):
             raise ValueError("visionarena config is required for VisionArenaDataGenerator")
         self.va_config: VisionArenaConfig = config.visionarena
 
-        self._pool: List[dict[str, Any]] = self._build_pool()
+        self._pool: List[dict[str, Any]] = load_dataset_with_deadline(
+            self._build_pool, self.va_config.hf_dataset_name, config.load_timeout
+        )
         if not self._pool:
             raise RuntimeError(
                 f"VisionArena pool is empty: no usable rows found in "
@@ -131,17 +132,12 @@ class VisionArenaDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         logger.info("Streaming VisionArena dataset '%s' ...", self.va_config.hf_dataset_name)
         pool: List[dict[str, Any]] = []
-        dataset = load_dataset_with_deadline(
-            partial(load_dataset, self.va_config.hf_dataset_name, **load_kwargs),
-            self.va_config.hf_dataset_name,
-            self.config.load_timeout,
-        )
-        for row in dataset:
-            if len(pool) >= self.va_config.num_rows:
-                break
+        for row in load_dataset(self.va_config.hf_dataset_name, **load_kwargs):
             entry = self._row_to_entry(row)
             if entry is not None:
                 pool.append(entry)
+                if len(pool) >= self.va_config.num_rows:
+                    break
         return pool
 
     def _row_to_entry(self, row: Any) -> Optional[dict[str, Any]]:

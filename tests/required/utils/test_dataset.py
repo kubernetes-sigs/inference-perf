@@ -117,27 +117,38 @@ def test_rejects_invalid_timeout(value: float) -> None:
         DataConfig(load_timeout=value)
 
 
+@pytest.mark.parametrize("stall", ["load", "first_row"])
 @pytest.mark.parametrize("source", ["sharegpt", "cnn", "visionarena", "otel"])
 def test_generators_apply_configured_deadline(
-    source: str, monkeypatch: pytest.MonkeyPatch, blocked_load: Callable[..., Any]
+    source: str, stall: str, monkeypatch: pytest.MonkeyPatch, blocked_load: Callable[..., Any]
 ) -> None:
+    if source == "otel" and stall == "first_row":
+        pytest.skip("OTel loads eagerly")
+
+    def rows() -> Iterator[Any]:
+        blocked_load()
+        yield {}
+
+    def load(*args: Any, **kwargs: Any) -> Any:
+        return rows() if stall == "first_row" else blocked_load()
+
     config = DataConfig(load_timeout=0.05)
     start = time.monotonic()
     with pytest.raises(TimeoutError, match="data.load_timeout"):
         if source == "sharegpt":
-            monkeypatch.setattr(hf_sharegpt_datagen, "load_dataset", blocked_load)
+            monkeypatch.setattr(hf_sharegpt_datagen, "load_dataset", load)
             hf_sharegpt_datagen.HFShareGPTDataGenerator(APIConfig(), config, None)
         elif source == "cnn":
-            monkeypatch.setattr(cnn_dailymail_datagen, "load_dataset", blocked_load)
+            monkeypatch.setattr(cnn_dailymail_datagen, "load_dataset", load)
             # CNN requires a tokenizer, but loading times out before it is used.
             tokenizer = CustomTokenizer.__new__(CustomTokenizer)
             cnn_dailymail_datagen.CNNDailyMailDataGenerator(APIConfig(), config, tokenizer)
         elif source == "visionarena":
-            monkeypatch.setattr(visionarena_datagen, "load_dataset", blocked_load)
+            monkeypatch.setattr(visionarena_datagen, "load_dataset", load)
             config.visionarena = VisionArenaConfig()
             visionarena_datagen.VisionArenaDataGenerator(APIConfig(type=APIType.Chat), config, None)
         else:
-            monkeypatch.setattr(otel_trace_replay_datagen, "load_dataset", blocked_load)
+            monkeypatch.setattr(otel_trace_replay_datagen, "load_dataset", load)
             config.otel_trace_replay = OTelTraceReplayConfig(hf_dataset_path="test/traces")
             otel_trace_replay_datagen.OTelTraceReplayDataGenerator(APIConfig(type=APIType.Chat), config, None)
     assert time.monotonic() - start < 2
@@ -158,3 +169,68 @@ def test_otel_passes_dataset_options(monkeypatch: pytest.MonkeyPatch) -> None:
     assert otel_trace_replay_datagen._download_hf_dataset(options, None) is rows
     assert calls == [("test/traces", {"split": "test", "revision": "v1"})]
     assert options == {"path": "test/traces", "split": "test", "revision": "v1"}
+
+
+@pytest.mark.parametrize("source", ["sharegpt", "cnn"])
+@pytest.mark.parametrize("timeout", [5.0, None])
+def test_streaming_startup_primes_once_and_reloads(
+    source: str, timeout: float | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    consumed: list[int] = []
+
+    def load(*args: Any, **kwargs: Any) -> Iterator[int]:
+        for value in range(3):
+            consumed.append(value)
+            yield value
+
+    generator: hf_sharegpt_datagen.HFShareGPTDataGenerator | cnn_dailymail_datagen.CNNDailyMailDataGenerator
+    config = DataConfig(load_timeout=timeout)
+    if source == "sharegpt":
+        monkeypatch.setattr(hf_sharegpt_datagen, "load_dataset", load)
+        generator = hf_sharegpt_datagen.HFShareGPTDataGenerator(APIConfig(), config, None)
+        attribute = "sharegpt_dataset"
+    else:
+        monkeypatch.setattr(cnn_dailymail_datagen, "load_dataset", load)
+        tokenizer = CustomTokenizer.__new__(CustomTokenizer)
+        generator = cnn_dailymail_datagen.CNNDailyMailDataGenerator(APIConfig(), config, tokenizer)
+        attribute = "cnn_dailymail_dataset"
+    assert consumed == [0]
+    assert next(getattr(generator, attribute)) == 1
+    restored = type(generator).__new__(type(generator))
+    restored.__setstate__(generator.__getstate__())
+    assert consumed == [0, 1]
+    restored._ensure_dataset_loaded()
+    assert consumed == [0, 1, 0]
+    assert next(getattr(restored, attribute)) == 1
+
+
+@pytest.mark.parametrize("timeout", [5.0, None])
+def test_visionarena_stops_reading_when_pool_is_full(timeout: float | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image
+
+    def load(*args: Any, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        yield {"conversation": [{"role": "user", "content": "describe"}], "images": [Image.new("RGB", (1, 1))]}
+        raise AssertionError("Read beyond the configured pool size")
+
+    monkeypatch.setattr(visionarena_datagen, "load_dataset", load)
+    config = DataConfig(load_timeout=timeout, visionarena=VisionArenaConfig(num_rows=1))
+    generator = visionarena_datagen.VisionArenaDataGenerator(APIConfig(type=APIType.Chat), config, None)
+    assert len(generator._pool) == 1
+
+
+def test_visionarena_deadline_covers_later_pool_rows(
+    monkeypatch: pytest.MonkeyPatch, blocked_load: Callable[..., Any]
+) -> None:
+    from PIL import Image
+
+    def load(*args: Any, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        yield {
+            "conversation": [{"role": "user", "content": "describe"}],
+            "images": [Image.new("RGB", (1, 1))],
+        }
+        blocked_load()
+
+    monkeypatch.setattr(visionarena_datagen, "load_dataset", load)
+    config = DataConfig(load_timeout=0.05, visionarena=VisionArenaConfig(num_rows=2))
+    with pytest.raises(TimeoutError, match="data.load_timeout"):
+        visionarena_datagen.VisionArenaDataGenerator(APIConfig(type=APIType.Chat), config, None)

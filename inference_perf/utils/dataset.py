@@ -24,7 +24,7 @@ T = TypeVar("T")
 
 
 def load_dataset_with_deadline(load: Callable[[], T], dataset_path: str, timeout: float | None) -> T:
-    """Bound dataset loading without consuming the returned dataset or iterator."""
+    """Bound the supplied dataset loading and initialization operation."""
     # Match tokenizer loading: a daemon thread bounds waits on network/file I/O
     # that releases the GIL. It cannot cancel the load or interrupt GIL-holding code.
     result: list[T] = []
@@ -44,7 +44,7 @@ def load_dataset_with_deadline(load: Callable[[], T], dataset_path: str, timeout
     if thread.is_alive():
         raise TimeoutError(
             f"Loading dataset '{dataset_path}' did not finish within {timeout} seconds. "
-            "This usually means the download from Hugging Face Hub is stuck "
+            "This usually means the download from Hugging Face Hub is slow or stuck "
             "(network issues or a Hub/CDN outage). Check connectivity to huggingface.co, "
             "try HF_HUB_DISABLE_XET=1 to surface the underlying download error, "
             "or pre-populate the HF cache. The deadline is configurable via "
