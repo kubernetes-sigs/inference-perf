@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -1345,6 +1345,9 @@ class WekaTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     RawCall(
                         # Call ID must match what build_graph uses, ensuring subagent uniqueness
                         call_id=f"sa_{cp.entry.agent_id}_s{cp.stream_index}_turn_{k}",
+                        session_id_suffix=f"::sa:{cp.entry.agent_id}:s{cp.stream_index}"
+                        if self.weka_config.separate_subagent_session_ids
+                        else None,
                         trace_id=trace.id,
                         t_start_ms=t_start_ms,
                         t_end_ms=t_end_ms,

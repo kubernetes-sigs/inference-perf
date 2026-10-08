@@ -53,6 +53,7 @@ data:
     default_block_size: 64
     skip_invalid_files: true
     trace_idle_gap_cap_seconds: 1.0 # Caps think-time delay between turns to 1s
+    # separate_subagent_session_ids: true # Give each child stream its own session ID.
     # datagen_workers: 16 # Processes used to build sessions at startup.
                           # Defaults to available CPU cores; set to 1 for serial.
 
@@ -73,6 +74,33 @@ report:
 ```
 
 See the [Reporting section of config.md](config.md#reporting) for details on `per_request_fields`.
+
+### Subagent Session IDs
+
+By default, every request in a trace uses the enclosing replay session ID, including
+subagent requests. Set `data.weka_trace_replay.separate_subagent_session_ids: true`
+to give each subagent stream a separate request identity. Configure
+`api.session_id_header_key` to send that identity to a session-affinity router:
+
+```yaml
+api:
+  session_id_header_key: x-session-id
+data:
+  weka_trace_replay:
+    separate_subagent_session_ids: true
+```
+
+Parent requests retain IDs such as `wekatrace0_example`. Child requests use
+`<parent_id>::sa:<agent_id>:s<stream_index>`, for example
+`wekatrace0_example::sa:researcher:s0`. The stream index starts at zero and is
+present even when a subagent has only one stream. Sequential requests in a stream
+share an ID; overlapping requests are packed into separate streams.
+
+Duplicated replay sessions resolve child IDs from their own parent ID, for example
+`wekatrace0_example_dup1::sa:researcher:s0`. The setting changes request headers and
+session-token routing, while scheduling, dependency tracking, request metrics,
+and session lifecycle reports still use the enclosing trace
+session. The default is `false` to preserve existing benchmark behavior.
 
 ---
 

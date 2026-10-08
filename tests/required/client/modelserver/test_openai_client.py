@@ -64,6 +64,7 @@ def mock_client() -> MagicMock:
 @pytest.fixture
 def mock_data() -> MagicMock:
     data = MagicMock()
+    data.request_session_id = None
     data.get_route.return_value = "/test"
     data.process_failure = AsyncMock(return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))))
     data.process_response = AsyncMock(return_value=InferenceInfo(request_metrics=RequestMetrics(text=Text(input_tokens=0))))
@@ -434,6 +435,34 @@ async def test_session_id_header_injected_when_both_set(mock_client: MagicMock, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header_key", [None, "x-session-id"])
+async def test_child_request_identity_keeps_parent_metrics(
+    mock_client: MagicMock, mock_data: MagicMock, header_key: Optional[str]
+) -> None:
+    mock_data.session_id = "trace0_parent"
+    mock_data.request_session_id = "trace0_parent::sa:alpha:s0"
+    mock_data.headers = None
+    mock_client.api_config.session_id_header_key = header_key
+
+    session = openAIModelServerClientSession(mock_client)
+    await session.session.close()
+    session.session = MagicMock()
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError("force exit"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    headers = session.session.post.call_args.kwargs["headers"]
+    if header_key:
+        assert headers[header_key] == "trace0_parent::sa:alpha:s0"
+    else:
+        assert "x-session-id" not in headers
+    metric = mock_client.metrics_collector.record_metric.call_args.args[0]
+    assert metric.session_id == "trace0_parent"
+
+
+@pytest.mark.asyncio
 async def test_user_session_id_used_when_session_id_is_none(mock_client: MagicMock, mock_data: MagicMock) -> None:
     mock_data.session_id = None
     mock_data.user_session_id = "conv_0"
@@ -651,6 +680,26 @@ async def test_session_token_not_shared_across_sessions(mock_client: MagicMock, 
     await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
     headers_passed = mock_http_session.post.call_args.kwargs["headers"]
     assert "x-session-token" not in headers_passed
+
+
+@pytest.mark.asyncio
+async def test_session_tokens_isolated_between_parent_and_child_streams(mock_client: MagicMock, mock_data: MagicMock) -> None:
+    session, http_session = _session_token_test_setup(mock_client, mock_data, response_token="encoded-pod-a")
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    parent_id = mock_data.session_id
+
+    # New child streams cannot reuse the parent's token, or each other's.
+    for suffix in ["::sa:alpha:s0", "::sa:alpha:s1", "::sa:beta:s0"]:
+        mock_data.request_session_id = parent_id + suffix
+        await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+        assert "x-session-token" not in http_session.post.call_args.kwargs["headers"]
+        await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+        assert http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
+
+    mock_data.request_session_id = None
+    await session.process_request(mock_data, stage_id=1, scheduled_time=0.0)
+    assert http_session.post.call_args.kwargs["headers"]["x-session-token"] == "encoded-pod-a"
+    assert mock_data.session_id == parent_id
 
 
 @pytest.mark.asyncio

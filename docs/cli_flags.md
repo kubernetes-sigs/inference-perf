@@ -170,6 +170,7 @@ Security: Filter expressions use eval() and should only contain trusted input. |
 | `--data.weka_trace_replay.include_errors` | boolean | Include spans with error status |
 | `--data.weka_trace_replay.skip_invalid_files` | boolean | Skip invalid trace files instead of failing |
 | `--data.weka_trace_replay.bad_tool_call_handling` | Enum (none, use_recorded) | How to handle tool_calls whose function.arguments is not valid JSON. none (default): no mitigation, bytes propagate and vLLM may return HTTP 400 on the next turn. use_recorded: discard the live response and substitute the recorded assistant message at the affected slot; the recorded tool_call_id flows into the recorded role:tool successor unchanged. |
+| `--data.weka_trace_replay.separate_subagent_session_ids` | boolean | Give each subagent stream its own request session ID, shaped as <parent_id>::sa:<agent_id>:s<stream_index>. Parent IDs stay unchanged. Defaults to False so all requests in a trace share the parent ID. |
 | `--data.weka_trace_replay.trace_directory` | str | Directory containing Weka JSON trace files |
 | `--data.weka_trace_replay.trace_files` | JSON | List of paths to specific Weka JSON trace files |
 | `--data.weka_trace_replay.hf_dataset_path` | JSON | HuggingFace dataset path. Can be:

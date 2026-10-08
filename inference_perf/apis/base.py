@@ -176,6 +176,9 @@ class InferenceAPIData(BaseModel):
     # loadgen should assign this request to preferred worker if possible
     preferred_worker_id: int = -1  # no preferred worker by default
     session_id: Optional[str] = None  # set by loadgen for session-based workloads
+    # Optional wire identity for a conversation within the enclosing replay
+    # session. session_id remains the scheduler/reporting identity.
+    request_session_id: Optional[str] = None
     graph_event_id: Optional[str] = None
     otel_context: Optional[dict[str, str]] = None  # OTEL trace context for distributed tracing
     stage_id: int = 0  # stage id

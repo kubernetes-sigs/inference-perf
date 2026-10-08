@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -1945,6 +1945,12 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
 
         gc = state.graph.events[raw_event_id].call if state and raw_event_id in state.graph.events else None
 
+        # Request identity can differ from the enclosing scheduler session.
+        # Keep event IDs and lifecycle tracking scoped to that enclosing session.
+        request_session_id = None
+        if data.session_id and gc and gc.session_id_suffix:
+            request_session_id = data.session_id + gc.session_id_suffix
+
         api_data_class: type[SessionChatCompletionAPIData] = SessionChatCompletionAPIData
         api_config = getattr(self, "api_config", None)
         if api_config is not None and api_config.type == APIType.AnthropicMessages:
@@ -1968,6 +1974,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             expected_output_tool_names=gc.expected_output_tool_names if gc else None,
             otel_context=data.otel_context,
             session_id=data.session_id,
+            request_session_id=request_session_id,
             preferred_worker_id=data.preferred_worker_id,
             # Pass KV-cache invalidation configuration and session random string
             inject_random_session_id=self.replay_config.inject_random_session_id if self.replay_config else False,
