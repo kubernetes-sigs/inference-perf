@@ -172,3 +172,22 @@ async def test_multimodal_synthetic_against_sim(case_id: str, multimodal: Dict[s
     if "audio" in expected_modalities:
         for field in ("seconds", "bytes"):
             assert successes["audio"].get(field), f"audio.{field} missing for case {case_id}"
+
+    partial = result.reports["inference-perf.partial.stage_0.yaml"]
+    aggregate = partial["results"]["request_performance"]["aggregate"]
+    requests = aggregate["requests"]
+    assert requests["request_size"]["mean"] == successes["request_size_bytes"]["mean"]
+    for modality in expected_modalities:
+        rate = aggregate["throughput"][f"{modality}_rate"]["mean"]
+        assert rate == pytest.approx(throughput[f"{modality}s_per_sec"])
+        media = requests["multimodal"][modality]
+        fields = {"count": "count", "filesize": "bytes"}
+        if modality in ("image", "video"):
+            fields.update(pixels="pixels", aspect_ratio="aspect_ratio")
+        if modality == "video":
+            fields["frames"] = "frames"
+        if modality == "audio":
+            fields["duration"] = "seconds"
+        for br_field, native_field in fields.items():
+            expected = successes[modality][native_field]["mean"]
+            assert media[br_field]["mean"] == pytest.approx(expected)
