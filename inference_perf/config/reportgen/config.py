@@ -21,7 +21,9 @@ class PerRequestFieldsConfig(StrictBaseModel):
     request: bool = Field(default=True, description="Include the raw request payload in per-request report entries.")
     response: bool = Field(default=True, description="Include the raw response payload in per-request report entries.")
     info: bool = Field(default=True, description="Include response metadata in per-request report entries.")
-    response_chunks: bool = Field(default=True, description="Include streamed response chunks in per-request metadata.")
+    response_chunks: bool = Field(
+        default=True, description="Include raw streamed chunks, content and reasoning, in per-request metadata."
+    )
     computed_metrics: bool = Field(
         default=False, description="Include computed per-request latency and token metrics in report entries."
     )
