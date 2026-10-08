@@ -45,21 +45,19 @@ async def test_parse_sse_stream() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
-        mock_response, extract_content
-    )
+    parsed = await parse_sse_stream(mock_response, extract_content)
 
-    assert output_text == "Hello world"
-    assert len(chunk_times) == 2
-    assert "Hello" in raw_content
-    assert "world" in raw_content
-    assert "[DONE]" in raw_content
-    assert len(response_chunks) == 2
-    assert "Hello" in response_chunks[0]
-    assert "world" in response_chunks[1]
+    assert parsed.output_text == "Hello world"
+    assert len(parsed.chunk_times) == 2
+    assert "Hello" in parsed.raw_content
+    assert "world" in parsed.raw_content
+    assert "[DONE]" in parsed.raw_content
+    assert len(parsed.response_chunks) == 2
+    assert "Hello" in parsed.response_chunks[0]
+    assert "world" in parsed.response_chunks[1]
     # response_chunks and chunk_times must stay in lockstep — reportgen zips them with strict=True.
-    assert len(chunk_times) == len(response_chunks)
-    assert server_usage is None
+    assert len(parsed.chunk_times) == len(parsed.response_chunks)
+    assert parsed.server_usage is None
 
 
 @pytest.mark.asyncio
@@ -93,15 +91,15 @@ async def test_parse_sse_stream_timestamps_only_content_events() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, _, response_chunks, server_usage = await parse_sse_stream(mock_response, extract_content)
+    parsed = await parse_sse_stream(mock_response, extract_content)
 
-    assert output_text == "Hello world"
-    assert len(chunk_times) == 2, (
-        f"expected 2 timestamps for content-bearing chunks, got {len(chunk_times)} "
+    assert parsed.output_text == "Hello world"
+    assert len(parsed.chunk_times) == 2, (
+        f"expected 2 timestamps for content-bearing chunks, got {len(parsed.chunk_times)} "
         "(role-only, usage, or [DONE] events leaking into chunk_times)"
     )
-    assert len(response_chunks) == len(chunk_times), "response_chunks must stay 1:1 aligned with chunk_times"
-    assert server_usage == {"prompt_tokens": 5, "completion_tokens": 2}, (
+    assert len(parsed.response_chunks) == len(parsed.chunk_times), "response_chunks must stay 1:1 aligned with chunk_times"
+    assert parsed.server_usage == {"prompt_tokens": 5, "completion_tokens": 2}, (
         "usage info from a content-less chunk should still be surfaced separately"
     )
 
@@ -175,11 +173,11 @@ async def test_sse_line_endings_and_optional_space(ending: bytes, space: bytes, 
             yield payload[offset : offset + chunk_size]
 
     response.content.iter_any = chunks
-    output, times, raw, events, usage = await parse_sse_stream(response, lambda data: data.get("content"))
-    assert output == "你好"
-    assert len(times) == len(events) == 1
-    assert raw == payload.decode()
-    assert usage == {"completion_tokens": 2}
+    parsed = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert parsed.output_text == "你好"
+    assert len(parsed.chunk_times) == len(parsed.response_chunks) == 1
+    assert parsed.raw_content == payload.decode()
+    assert parsed.server_usage == {"completion_tokens": 2}
 
 
 @pytest.mark.asyncio
@@ -191,11 +189,11 @@ async def test_sse_multiline_data_and_incomplete_event() -> None:
         yield payload
 
     response.content.iter_any = chunks
-    output, times, raw, events, _ = await parse_sse_stream(response, lambda data: data.get("content"))
-    assert output == "Hello"
-    assert len(times) == len(events) == 1
-    assert events == ['{"content":\n"Hello"}']
-    assert raw == payload.decode()
+    parsed = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert parsed.output_text == "Hello"
+    assert len(parsed.chunk_times) == len(parsed.response_chunks) == 1
+    assert parsed.response_chunks == ['{"content":\n"Hello"}']
+    assert parsed.raw_content == payload.decode()
 
 
 @pytest.mark.asyncio
@@ -212,10 +210,32 @@ async def test_sse_done_ignores_later_content_but_preserves_raw_body() -> None:
             yield payload
 
     response.content.iter_any = chunks
-    output, times, raw, events, _ = await parse_sse_stream(response, lambda data: data.get("content"))
-    assert output == "Hello"
-    assert len(times) == len(events) == 1
-    assert raw == b"".join(payloads).decode()
+    parsed = await parse_sse_stream(response, lambda data: data.get("content"))
+    assert parsed.output_text == "Hello"
+    assert len(parsed.chunk_times) == len(parsed.response_chunks) == 1
+    assert parsed.raw_content == b"".join(payloads).decode()
+
+
+def extract_delta_content(data: dict[str, Any]) -> Optional[str]:
+    return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
+
+
+def extract_delta_reasoning(data: dict[str, Any]) -> Optional[str]:
+    delta = data.get("choices", [{}])[0].get("delta", {})
+    return delta.get("reasoning_content") or delta.get("reasoning")  # type: ignore[no-any-return]
+
+
+def make_response(chunks: list[bytes]) -> Mock:
+    mock_response = Mock()
+    mock_content = Mock()
+    mock_response.content = mock_content
+
+    async def mock_iter_any() -> AsyncGenerator[bytes, None]:
+        for chunk in chunks:
+            yield chunk
+
+    mock_content.iter_any = mock_iter_any
+    return mock_response
 
 
 @pytest.mark.asyncio
@@ -241,7 +261,7 @@ async def test_parse_sse_stream_fragmented_chunks() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks, _, *_ = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "Fragmented"
     assert len(chunk_times) == 2
@@ -274,7 +294,7 @@ async def test_parse_sse_stream_multiple_events_in_single_chunk() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks, _, *_ = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "OneTwoThree"
     assert len(chunk_times) == 3
@@ -302,7 +322,7 @@ async def test_parse_sse_stream_no_space_prefix() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks, _, *_ = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "AB"
     assert len(chunk_times) == 2
@@ -331,7 +351,7 @@ async def test_parse_sse_stream_comments_and_multiline_events() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks, _, *_ = await parse_sse_stream(mock_response, extract_content)
 
     assert output_text == "Data"
     assert len(chunk_times) == 1
@@ -360,7 +380,7 @@ async def test_parse_sse_stream_merges_multiple_usage_updates() -> None:
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+    output_text, chunk_times, raw_content, response_chunks, server_usage, *_ = await parse_sse_stream(
         mock_response, extract_content
     )
 
@@ -391,7 +411,7 @@ async def test_parse_sse_stream_bare_cr_mid_chunk_does_not_drop_content() -> Non
     def extract_content(data: dict[str, Any]) -> Optional[str]:
         return data.get("choices", [{}])[0].get("delta", {}).get("content")  # type: ignore[no-any-return]
 
-    output_text, chunk_times, raw_content, response_chunks, _ = await parse_sse_stream(mock_response, extract_content)
+    output_text, chunk_times, raw_content, response_chunks, _, *_ = await parse_sse_stream(mock_response, extract_content)
     assert output_text == "A"
     assert len(chunk_times) == 1
     assert len(response_chunks) == 1
@@ -425,7 +445,7 @@ async def test_parse_sse_stream_chunking_invariance_whole_byte_by_byte_per_event
                 yield c
 
         mock_content.iter_any = mock_iter_any
-        output_text, chunk_times, raw_content, response_chunks, server_usage = await parse_sse_stream(
+        output_text, chunk_times, raw_content, response_chunks, server_usage, *_ = await parse_sse_stream(
             mock_response, extract_content
         )
         return output_text, len(chunk_times), raw_content, response_chunks, server_usage
@@ -519,3 +539,86 @@ def test_sse_stream_parser_process_data_payload_malformed_json_handled_silently(
     assert parser.output_text_parts == []
     assert parser.chunk_times == []
     assert parser.response_chunks == []
+
+
+REASONING_THEN_CONTENT_CHUNKS = [
+    b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n',
+    b'data: {"choices": [{"delta": {"reasoning_content": "Let me"}}]}\n\n',
+    b'data: {"choices": [{"delta": {"reasoning_content": " think."}}]}\n\n',
+    b'data: {"choices": [{"delta": {"content": "The answer"}}]}\n\n',
+    b'data: {"choices": [{"delta": {"content": " is 4."}}]}\n\n',
+    b"data: [DONE]\n\n",
+]
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_tracked_separately_from_content() -> None:
+    """Reasoning models (gpt-oss, DeepSeek-R1, QwQ) stream delta.reasoning_content
+    before delta.content. The channels must stay separate (#559): reasoning
+    timestamps anchor TTFT, while output_text (the basis for output_len) and
+    chunk_times (the basis for TPOT/ITL) must remain content-only so reasoning
+    doesn't count as user-facing output."""
+    parsed = await parse_sse_stream(
+        make_response(REASONING_THEN_CONTENT_CHUNKS), extract_delta_content, extract_delta_reasoning
+    )
+
+    assert parsed.output_text == "The answer is 4."
+    assert parsed.reasoning_text == "Let me think."
+    assert len(parsed.chunk_times) == 2
+    assert len(parsed.response_chunks) == 2
+    assert len(parsed.reasoning_chunk_times) == 2
+    # reasoning_chunks and reasoning_chunk_times stay 1:1, mirroring the content lists.
+    assert len(parsed.reasoning_chunks) == len(parsed.reasoning_chunk_times)
+    assert all("reasoning_content" in chunk for chunk in parsed.reasoning_chunks)
+    # Reasoning arrived before content, so its timestamps must precede content's:
+    # this ordering is what lets reportgen anchor TTFT to the reasoning channel.
+    assert parsed.reasoning_chunk_times[0] <= parsed.chunk_times[0]
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_field_variant() -> None:
+    """Some OpenAI-compatible servers name the channel delta.reasoning rather
+    than delta.reasoning_content; both must be recognized."""
+    chunks = [
+        b'data: {"choices": [{"delta": {"reasoning": "Step 1."}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "Result."}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    parsed = await parse_sse_stream(make_response(chunks), extract_delta_content, extract_delta_reasoning)
+
+    assert parsed.output_text == "Result."
+    assert parsed.reasoning_text == "Step 1."
+    assert len(parsed.reasoning_chunk_times) == 1
+    assert len(parsed.chunk_times) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_only_stream() -> None:
+    """When the output budget is exhausted mid-reasoning (max_tokens below the
+    reasoning length), the stream ends with no content chunk at all. The
+    reasoning channel must still be captured: it is the only TTFT anchor such
+    a request has (#559's null-TTFT case)."""
+    chunks = [
+        b'data: {"choices": [{"delta": {"reasoning_content": "Thinking"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"reasoning_content": " hard"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    parsed = await parse_sse_stream(make_response(chunks), extract_delta_content, extract_delta_reasoning)
+
+    assert parsed.output_text == ""
+    assert parsed.reasoning_text == "Thinking hard"
+    assert len(parsed.chunk_times) == 0
+    assert len(parsed.reasoning_chunk_times) == 2
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_reasoning_ignored_without_extractor() -> None:
+    """Callers that pass no extract_reasoning (e.g. the completions API) must
+    see exactly the pre-#559 behavior: reasoning chunks contribute nothing."""
+    parsed = await parse_sse_stream(make_response(REASONING_THEN_CONTENT_CHUNKS), extract_delta_content)
+
+    assert parsed.output_text == "The answer is 4."
+    assert parsed.reasoning_text == ""
+    assert len(parsed.chunk_times) == 2
+    assert parsed.reasoning_chunks == []
+    assert parsed.reasoning_chunk_times == []
