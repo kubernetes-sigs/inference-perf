@@ -94,7 +94,7 @@ def test_build_results_latency_calculations() -> None:
 
 
 def test_build_results_aggregate_units() -> None:
-    """The vendored BR0.2 schema enforces unit compatibility per metric
+    """The BR0.2 schema enforces unit compatibility per metric
     category. Guards that the adapter assigns units the schema accepts."""
     now = time.time()
     metrics = [_streaming_metric(now + i * 0.1) for i in range(10)]

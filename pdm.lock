@@ -5,7 +5,7 @@
 groups = ["default", "analysis", "dev", "lint", "otel", "test", "types"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.1"
-content_hash = "sha256:6f331ad3bcf9e9bc5a0135dabcf2347603ee55ce94b266b81896b87807669cb4"
+content_hash = "sha256:79241a47f51e47ff18a1fbad9ec1bcf91079b2de8edb0e3316d94897234cf239"
 
 [[metadata.targets]]
 requires_python = ">=3.12"
@@ -1677,6 +1677,22 @@ files = [
     {file = "librt-0.12.0-cp314-cp314t-win_amd64.whl", hash = "sha256:e1cbb037324e759f0afa270229731ff0047772667f3cb38ef5df2cabf0175ede"},
     {file = "librt-0.12.0-cp314-cp314t-win_arm64.whl", hash = "sha256:bca1472acbd473eff61059b4409f802c5a1bcb4cd0344d06f939df9c4c125d40"},
     {file = "librt-0.12.0.tar.gz", hash = "sha256:cb26faedbd09c6130e9c1b64d8000efec5076ffd18d606c6cd1cf02730e6d8b0"},
+]
+
+[[package]]
+name = "llmd-benchmark-report"
+version = "0.2.1"
+requires_python = ">=3.11"
+summary = "Benchmark Report: a standard data format for LLM inference benchmark runs (schemas, validators, and converters)"
+groups = ["default"]
+dependencies = [
+    "PyYAML",
+    "numpy",
+    "pydantic>=2.0",
+]
+files = [
+    {file = "llmd_benchmark_report-0.2.1-py3-none-any.whl", hash = "sha256:8690b8432e4872cd928edc6755d82ee95096d52064b80afc3bb35c2afdbf657e"},
+    {file = "llmd_benchmark_report-0.2.1.tar.gz", hash = "sha256:d0b70bbc4f417f900e4e3becfd310dcb58a9db0b21fbf617d764841190ad8fd9"},
 ]
 
 [[package]]
