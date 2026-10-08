@@ -22,6 +22,7 @@ from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
     OTelTraceReplayConfig,
     SyntheticAgenticConfig,
+    TraceLabTraceReplayConfig,
     WekaTraceReplayConfig,
     TraceConfig,
 )
@@ -39,6 +40,7 @@ class DataGenType(Enum):
     BillsumConversations = "billsum_conversations"
     OTelTraceReplay = "otel_trace_replay"
     WekaTraceReplay = "weka_trace_replay"
+    TraceLabTraceReplay = "tracelab_trace_replay"
     ConversationReplay = "conversation_replay"
     VisionArena = "visionarena"
     SyntheticAgentic = "synthetic_agentic"
@@ -155,6 +157,10 @@ class DataConfig(StrictBaseModel):
 
     weka_trace_replay: Optional[WekaTraceReplayConfig] = Field(
         default=None, description="Weka trace replay settings. Only used by the 'weka_trace_replay' type."
+    )
+
+    tracelab_trace_replay: Optional[TraceLabTraceReplayConfig] = Field(
+        default=None, description="TraceLab trace replay settings. Only used by the 'tracelab_trace_replay' type."
     )
 
     conversation_replay: Optional[ConversationReplayConfig] = Field(
