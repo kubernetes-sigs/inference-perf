@@ -38,6 +38,7 @@ from inference_perf.apis import (
     SessionLifecycleMetric,
 )
 from inference_perf.apis.anthropic_messages import ANTHROPIC_VERSION
+from inference_perf.apis.base import STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
 from inference_perf.config import APIType
 from inference_perf.payloads import RequestMetrics, Text
 
@@ -1218,3 +1219,67 @@ async def test_retry_ending_in_http_error_is_not_recovered(mock_client: MagicMoc
     assert metric.error is not None
     assert metric.info.retries_attempted == 1
     assert metric.info.retries_recovered is False
+
+
+# A POST that never returns; the request task is cancelled 50ms in. Expects one
+# metric recorded as a StageTeardownCancelled failure (not TimeoutError), and the
+# cancellation still raised to the caller.
+@pytest.mark.asyncio
+async def test_process_request_cancelled_in_flight_is_recorded_then_reraised(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    async def hang(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(3600)
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=hang)
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=1, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert isinstance(metric.error, ErrorResponseInfo)
+    assert metric.error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+    assert metric.error.error_type != "TimeoutError"
+    assert "stage_teardown_grace_seconds" in metric.error.error_msg
+    assert "not request_timeout" in metric.error.error_msg
+    assert metric.stage_id == 1
+    mock_data.process_failure.assert_not_called()
+
+
+# Retries on, first POST fails with a connection reset, and the task is cancelled
+# during the backoff sleep. Expects one metric, recorded as StageTeardownCancelled
+# rather than as the connection fault that was about to be retried.
+@pytest.mark.asyncio
+async def test_process_request_cancelled_during_retry_backoff_is_recorded(
+    mock_client: MagicMock, mock_data: MagicMock
+) -> None:
+    mock_client.request_retries = 3
+    mock_client.request_retry_backoff_sec = 60.0
+    session = openAIModelServerClientSession(mock_client)
+    session.session = MagicMock()
+
+    mock_post_ctx = MagicMock()
+    mock_post_ctx.__aenter__ = AsyncMock(side_effect=aiohttp.ServerDisconnectedError("reset"))
+    mock_post_ctx.__aexit__ = AsyncMock(return_value=None)
+    session.session.post.return_value = mock_post_ctx
+
+    task = asyncio.create_task(session.process_request(mock_data, stage_id=0, scheduled_time=0.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    mock_client.metrics_collector.record_metric.assert_called_once()
+    metric = mock_client.metrics_collector.record_metric.call_args[0][0]
+    assert metric.error.error_type == STAGE_TEARDOWN_CANCELLED_ERROR_TYPE
+    assert metric.info.retries_attempted == 1
