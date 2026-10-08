@@ -20,7 +20,7 @@ from inference_perf.apis import (
     RequestLifecycleMetric,
     UnaryResponseMetrics,
 )
-from inference_perf.circuit_breaker import _initialized_circuit_breakers
+from inference_perf.circuit_breaker import _initialized_circuit_breakers, feed_breakers
 from inference_perf.metrics.request_collector.multiprocess import (
     MultiprocessRequestMetricCollector,
 )
@@ -91,6 +91,8 @@ async def test_collector_bulk_drain_capacity() -> None:
 @pytest.mark.asyncio
 async def test_collector_feeds_circuit_breakers_when_initialized() -> None:
     collector = MultiprocessRequestMetricCollector()
+    # main.py wires breakers in as a collector observer; mirror that here.
+    collector.add_observer(feed_breakers)
     m1 = _create_dummy_metric(1)
 
     mock_breaker = MagicMock()

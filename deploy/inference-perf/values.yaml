@@ -17,6 +17,26 @@ job:
 
 logLevel: INFO
 
+# Scraping of inference-perf's own runtime metrics (stage state, request
+# counts, latencies). Whether the endpoint runs and on which port come from
+# config.observability.metrics (enabled by default, port 9464); these values
+# only decide how Prometheus finds it. See docs/runtime_metrics.md.
+metrics:
+  # Scrape interval for the PodMonitor and PodMonitoring below. A Job's pod
+  # stops serving when the run ends, so keep this short relative to the run.
+  interval: 15s
+  # prometheus.io/* pod annotations, for Prometheus setups that discover
+  # pods by annotation.
+  annotations: true
+  # PodMonitor for the Prometheus Operator. Requires the monitoring.coreos.com CRDs.
+  podMonitor:
+    enabled: false
+    # Extra labels, e.g. the release label your Prometheus selects PodMonitors by.
+    labels: {}
+  # PodMonitoring for Google Cloud Managed Service for Prometheus on GKE.
+  podMonitoring:
+    enabled: false
+
 # A GCS bucket path that points to the dataset file.
 # The file will be copied from this path to the local file system
 # at /gcsDataset/gcs-dataset.json for use during the run.

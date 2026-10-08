@@ -1,0 +1,21 @@
+# inference-perf/templates/podmonitor.yaml
+# Scrape config for the Prometheus Operator (monitoring.coreos.com CRDs).
+{{- if and (eq (include "inference-perf.metricsEnabled" .) "true") .Values.metrics.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "inference-perf.fullname" . }}
+  labels:
+    {{- include "inference-perf.labels" . | nindent 4 }}
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "inference-perf.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.interval }}
+{{- end }}

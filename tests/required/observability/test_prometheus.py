@@ -16,7 +16,7 @@ import urllib.request
 from typing import Iterator
 
 import pytest
-from prometheus_client import CollectorRegistry, Counter
+from prometheus_client import CollectorRegistry, Counter  # noqa: TID251 (throwaway metrics for these tests)
 
 from inference_perf.observability.metrics import PrometheusMetricsServer
 from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
