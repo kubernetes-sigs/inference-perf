@@ -499,7 +499,9 @@ class openAIModelServerClientSession(ModelServerClientSession):
 
         # Trace replay carries session identity as session_id (stamped by the loadgen);
         # conversation_replay and shared_prefix carry it as user_session_id.
-        session_id = getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
+        # Child conversations can use a separate wire identity while metrics
+        # remain associated with the enclosing scheduler session.
+        session_id = data.request_session_id or getattr(data, "session_id", None) or getattr(data, "user_session_id", None)
 
         if self.client.api_config.session_id_header_key and session_id:
             headers[self.client.api_config.session_id_header_key] = session_id

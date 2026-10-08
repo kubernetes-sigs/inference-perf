@@ -469,6 +469,8 @@ def test_all_failed_collection_logs_error_and_reports_missing(
     assert result.queue_length.is_missing()
     assert result.requests.is_missing()
     assert "all Prometheus queries returned no result" in caplog.text
+
+
 def test_verify_ssl_disabled_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
     """Disabling TLS verification is loud: the run log shows verification is off."""
     with caplog.at_level(logging.WARNING, logger="inference_perf.client.server_metrics.prometheus_client.base"):
