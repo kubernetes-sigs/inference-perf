@@ -298,6 +298,23 @@ For example:
 
 The trace reader normalizes timestamps to start from 0, so only the relative timing between requests matters.
 
+### Workload replay (alpha)
+
+Other recorded workloads go through the workload record layer: a format parser turns the file into records (the content) and an arrangement (when each request goes out and what it depends on), and one of two generators runs it. The schema is alpha and may change between minor releases.
+
+```yaml
+data:
+  type: workload_replay
+  workload:
+    format: <registered format name>
+    file: ./traces/trace.jsonl
+    block_size: 512          # optional, the format's own size by default
+    session:                 # optional, only read when the arrangement has dependencies
+      max_wait_ms: 15000
+```
+
+Which load type to use follows from the arrangement. Timestamped independent requests run with `load.type: trace_replay` and no `load.trace` block, since the send times come from the arrangement. Sessions with dependencies between requests run with `load.type: trace_session_replay`; the generator refuses the other combination. Prompts for formats that recorded lengths rather than text are built from the prompt corpus (`data.corpus_file_path`) and seeded by `load.base_seed`, so requests that recorded a shared prefix are sent with the same leading text on every worker.
+
 ## Troubleshooting
 
 You can observe how accurate the tool is generating your desired load by looking at few things:
