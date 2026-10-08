@@ -57,6 +57,10 @@ class BaseGenerator(ABC):
 class DataGenerator(BaseGenerator):
     """Request-based data generation for standard load types (CONSTANT, POISSON, CONCURRENT, TRACE_REPLAY)."""
 
+    # Structured view of the IO distribution fields, used e.g. as dataset
+    # filter bounds. None when the config holds an expression string instead;
+    # the generators that sample lengths from such a string (synthetic/random,
+    # per the DataConfig scope validator) read the raw value from self.config.
     input_distribution: Optional[Distribution]
     output_distribution: Optional[Distribution]
     shared_prefix: Optional[SharedPrefix]
@@ -81,8 +85,8 @@ class DataGenerator(BaseGenerator):
         if config.shared_prefix is not None and not self.is_shared_prefix_supported():
             raise Exception("Shared prefix not supported for this data generator")
 
-        self.input_distribution = config.input_distribution
-        self.output_distribution = config.output_distribution
+        self.input_distribution = config.input_distribution if isinstance(config.input_distribution, Distribution) else None
+        self.output_distribution = config.output_distribution if isinstance(config.output_distribution, Distribution) else None
         self.shared_prefix = config.shared_prefix
         self.trace = config.trace
 
