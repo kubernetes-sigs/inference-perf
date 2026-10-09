@@ -14,13 +14,16 @@
 """Mutation ratchet over the functions a change touches (#872).
 
 Mutates every touched function twice, on the merge base and on the working
-tree, with the same [tool.mutmut] config and each side's own tests. Fails when
-survivors in existing functions rise, or when the functions the change adds
-score under MIN_NEW_FUNCTION_SCORE.
+tree, with the base branch's [tool.mutmut] config and each side's own tests.
+Fails when survivors in existing functions rise, when the functions the change
+adds score under MIN_NEW_FUNCTION_SCORE, or when the change hides code from
+mutation. There is no in-code way to opt out: `# pragma: no mutate` is
+stripped before mutating.
 """
 
 import argparse
 import ast
+import io
 import json
 import os
 import re
@@ -28,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,9 +63,14 @@ KILLED = {"killed", "timeout", "segfault", "caught by type check"}
 PLACEHOLDER_TEST = "tests/test_mutation_placeholder.py"
 NO_COVERING_TESTS = "could not find any test case for any mutant"
 NOTHING_MATCHES = "nothing matches"
+SPINNER = re.compile(r"^\s*[\u2800-\u28ff] ")
 
 # Survivor diffs printed per side, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
+
+# The canary sets the active mutant to an id mutmut never generates, so every
+# function runs unmutated. Tests that still fail are reacting to the harness.
+CANARY_SUFFIX = "__mutmut_999999999"
 
 
 @dataclass
@@ -71,6 +80,8 @@ class Touched:
     # (name on the base, name on the head); they differ when the file moved
     existing: list[tuple[str, str]] = field(default_factory=list)
     new: list[str] = field(default_factory=list)
+    # head name -> (base, head) statements mutmut cannot check, for functions it skips
+    unchecked: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,6 +90,8 @@ class Side:
     tests: list[str]
     results: dict[str, str] = field(default_factory=dict)
     note: str = ""
+    pragmas_stripped: int = 0
+    canary_failed: bool = False
 
 
 class MutationRunError(Exception):
@@ -94,22 +107,77 @@ def module_name(path: str) -> str:
     return path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
 
 
-def function_spans(source: str) -> dict[str, tuple[int, int]]:
-    """Line span of each module-level function and method, keyed by mutmut's mangled name."""
-    spans: dict[str, tuple[int, int]] = {}
+FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
-    def span(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[int, int]:
-        # decorators belong to the function, so a change to one touches it
-        return min([d.lineno for d in node.decorator_list] + [node.lineno]), node.end_lineno or node.lineno
 
+def functions(source: str) -> dict[str, FunctionNode]:
+    """Each module-level function and method, keyed by mutmut's mangled name."""
+    found: dict[str, FunctionNode] = {}
     for node in ast.parse(source).body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            spans[f"x_{node.name}"] = span(node)
+            found[f"x_{node.name}"] = node
         elif isinstance(node, ast.ClassDef):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    spans[f"xǁ{node.name}ǁ{sub.name}"] = span(sub)
-    return spans
+                    found[f"xǁ{node.name}ǁ{sub.name}"] = sub
+    return found
+
+
+def function_spans(source: str) -> dict[str, tuple[int, int]]:
+    """Line span of each module-level function and method, keyed by mutmut's mangled name."""
+    # decorators belong to the function, so a change to one touches it
+    return {
+        name: (min([d.lineno for d in node.decorator_list] + [node.lineno]), node.end_lineno or node.lineno)
+        for name, node in functions(source).items()
+    }
+
+
+def mutmut_skips(node: FunctionNode) -> bool:
+    """mutmut 3.8 leaves decorated functions unmutated, unless the one decorator is a bare staticmethod or classmethod."""
+    if not node.decorator_list:
+        return False
+    only = node.decorator_list[0] if len(node.decorator_list) == 1 else None
+    return not (isinstance(only, ast.Name) and only.id in ("staticmethod", "classmethod"))
+
+
+def _plain(expr: ast.expr | None) -> bool:
+    """Names, attributes, constants and calls built only from those: nothing a mutation could flip."""
+    if expr is None or isinstance(expr, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(expr, (ast.Attribute, ast.Starred, ast.Await)):
+        return _plain(expr.value)
+    if isinstance(expr, ast.Call):
+        return _plain(expr.func) and all(_plain(a) for a in expr.args) and all(_plain(k.value) for k in expr.keywords)
+    return False
+
+
+def _delegates(stmt: ast.stmt) -> bool:
+    if isinstance(stmt, ast.Pass):
+        return True
+    if isinstance(stmt, (ast.Expr, ast.Return)):
+        return _plain(stmt.value)
+    if isinstance(stmt, ast.Raise):
+        return _plain(stmt.exc)
+    if isinstance(stmt, ast.Assign):
+        return all(isinstance(t, (ast.Name, ast.Attribute)) and _plain(t) for t in stmt.targets) and _plain(stmt.value)
+    return False
+
+
+def unchecked_statements(source: str) -> dict[str, int]:
+    """Statements in each function mutmut skips. A body that only delegates, like `return helper(self)`, counts 0."""
+    counts: dict[str, int] = {}
+    for name, node in functions(source).items():
+        if not mutmut_skips(node):
+            continue
+        body = node.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            if isinstance(body[0].value.value, str):
+                body = body[1:]  # docstring
+        if len(body) <= 1 and all(_delegates(stmt) for stmt in body):
+            counts[name] = 0
+        else:
+            counts[name] = sum(1 for stmt in body for sub in ast.walk(stmt) if isinstance(sub, ast.stmt))
+    return counts
 
 
 def touched_names(spans: dict[str, tuple[int, int]], lines: set[int]) -> set[str]:
@@ -164,18 +232,29 @@ def touched_functions(base: str, do_not_mutate: list[str]) -> Touched:
         assert head_path is not None
         head_src = Path(head_path).read_text()
         head_spans = function_spans(head_src)
+        head_unchecked = unchecked_statements(head_src)
         if base_path is None:
-            for name in sorted(head_spans):
-                touched.new.append(f"{module_name(head_path)}.{name}")
-            continue
-        base_spans = function_spans(git("show", f"{base}:{base_path}"))
-        old_lines, new_lines = parse_hunks(git("diff", "-U0", "-M", base, "--", base_path, head_path))
-        hit = touched_names(base_spans, old_lines) | touched_names(head_spans, new_lines)
+            hit = set(head_spans)
+            base_spans: dict[str, tuple[int, int]] = {}
+            base_unchecked: dict[str, int] = {}
+        else:
+            base_src = git("show", f"{base}:{base_path}")
+            base_spans = function_spans(base_src)
+            base_unchecked = unchecked_statements(base_src)
+            old_lines, new_lines = parse_hunks(git("diff", "-U0", "-M", base, "--", base_path, head_path))
+            hit = touched_names(base_spans, old_lines) | touched_names(head_spans, new_lines)
         for name in sorted(hit):
-            if name in base_spans and name in head_spans:
-                touched.existing.append((f"{module_name(base_path)}.{name}", f"{module_name(head_path)}.{name}"))
-            elif name in head_spans:
-                touched.new.append(f"{module_name(head_path)}.{name}")
+            if name not in head_spans:
+                continue  # deleted
+            head_name = f"{module_name(head_path)}.{name}"
+            if name in base_spans:
+                assert base_path is not None
+                touched.existing.append((f"{module_name(base_path)}.{name}", head_name))
+            else:
+                touched.new.append(head_name)
+            counts = (base_unchecked.get(name, 0), head_unchecked.get(name, 0))
+            if any(counts):
+                touched.unchecked[head_name] = counts
     return touched
 
 
@@ -232,11 +311,54 @@ def mutmut(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, "-m", "mutmut", *args], cwd=tree, capture_output=True, text=True)
 
 
-def run_side(tree: Path, names: list[str], config: dict[str, Any], changed_tests: list[str], max_children: int) -> Side:
+def pytest_command(tests: list[str], pytest_args: list[str]) -> list[str]:
+    # mirrors how mutmut's own runner invokes pytest for a mutant
+    head = [sys.executable, "-m", "pytest", "--rootdir=.", "--tb=native", "-x", "-q"]
+    return head + ["-p", "no:randomly", "-p", "no:random-order", *tests, *pytest_args]
+
+
+def strip_no_mutate_pragmas(tree: Path) -> int:
+    """Delete every `# pragma: no mutate` comment under the source tree and return how many there were."""
+    stripped = 0
+    for path in sorted((tree / SOURCE_PREFIX).rglob("*.py")):
+        text = path.read_text()
+        if "no mutate" not in text:
+            continue
+        lines = text.splitlines(keepends=True)
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        # same test mutmut uses to recognise one
+        hits = [t for t in tokens if t.type == tokenize.COMMENT and "# pragma:" in t.string and "no mutate" in t.string]
+        for token in reversed(hits):
+            row, col = token.start
+            line = lines[row - 1]
+            ending = line[len(line.rstrip("\r\n")) :]
+            lines[row - 1] = line[:col].rstrip() + ending
+        path.write_text("".join(lines))
+        stripped += len(hits)
+    return stripped
+
+
+def canary_passes(side: Side, name: str, pytest_args: list[str]) -> bool:
+    """Run the side's tests with an active mutant id that matches no mutant. Any passing run clears flaky tests."""
+    for _ in range(RERUNS):
+        run = subprocess.run(
+            pytest_command(side.tests, pytest_args),
+            cwd=side.tree / "mutants",
+            env={**os.environ, "MUTANT_UNDER_TEST": name + CANARY_SUFFIX},
+            capture_output=True,
+        )
+        if run.returncode in (0, 5):  # 5: nothing collected
+            return True
+    return False
+
+
+def run_side(
+    tree: Path, names: list[str], config: dict[str, Any], changed_tests: list[str], max_children: int, canary: bool = False
+) -> Side:
     files = sorted({name.rpartition(".")[0] for name in names})
     paths = [p for p in (_source_path(tree, m) for m in files) if p is not None]
     tests = select_tests(tree, set(files), changed_tests)
-    side = Side(tree=tree, tests=tests)
+    side = Side(tree=tree, tests=tests, pragmas_stripped=strip_no_mutate_pragmas(tree))
     if not tests:
         (tree / PLACEHOLDER_TEST).write_text("def test_placeholder() -> None:\n    pass\n")
         tests = [PLACEHOLDER_TEST]
@@ -248,7 +370,9 @@ def run_side(tree: Path, names: list[str], config: dict[str, Any], changed_tests
         return side
     uncovered = NO_COVERING_TESTS in output
     if run.returncode != 0 and not uncovered:
-        raise MutationRunError(f"mutmut run failed in {tree} (exit {run.returncode}):\n{output[-3000:]}")
+        # drop mutmut's spinner frames so the real error is what's left
+        detail = "\n".join(line for line in output.splitlines() if line.strip() and not SPINNER.match(line))
+        raise MutationRunError(f"mutmut run failed in {tree} (exit {run.returncode}):\n{detail[-3000:]}")
     listing = mutmut(tree, "results", "--all", "true").stdout
     for line in listing.splitlines():
         mutant, sep, status = line.strip().rpartition(": ")
@@ -259,6 +383,9 @@ def run_side(tree: Path, names: list[str], config: dict[str, Any], changed_tests
         raise MutationRunError(f"mutmut left {len(unchecked)} mutants unchecked in {tree}, e.g. {unchecked[0]}")
     if uncovered:
         side.note = "no selected test covers these functions"
+    elif canary and side.tests and side.results:
+        pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
+        side.canary_failed = not canary_passes(side, names[0], pytest_args)
     return side
 
 
@@ -292,21 +419,7 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> bool:
     tests = [t for t in mutmut(side.tree, "tests-for-mutant", mutant).stdout.splitlines() if "::" in t]
     for _ in range(RERUNS):
         rerun = subprocess.run(
-            # mirrors how mutmut's own runner invokes pytest for a mutant
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "--rootdir=.",
-                "--tb=native",
-                "-x",
-                "-q",
-                "-p",
-                "no:randomly",
-                "-p",
-                "no:random-order",
-            ]
-            + [*tests, *pytest_args],
+            pytest_command(tests, pytest_args),
             cwd=side.tree / "mutants",
             env={**os.environ, "MUTANT_UNDER_TEST": mutant},
             capture_output=True,
@@ -324,6 +437,8 @@ class Verdict:
     new_killed: int
     new_survived: int
     failures: list[str]
+    unchecked_base: int = 0
+    unchecked_head: int = 0
 
     @property
     def new_score(self) -> float | None:
@@ -352,6 +467,20 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
     score = verdict.new_score
     if score is not None and score < MIN_NEW_FUNCTION_SCORE - 0.01:
         verdict.failures.append(f"New functions score {score:.1f}%, under the {MIN_NEW_FUNCTION_SCORE:.0f}% floor")
+    # a decorator, or anything else that leaves mutmut nothing to mutate, must not hide a checked function
+    for b, h in touched.existing:
+        before = _count(list(base.results), b) if base else 0
+        if before and not _count(list(head.results), h):
+            verdict.failures.append(f"`{h}` had {before} mutants on the base and none with this change")
+    verdict.unchecked_base = sum(b for b, _ in touched.unchecked.values())
+    verdict.unchecked_head = sum(h for _, h in touched.unchecked.values())
+    if verdict.unchecked_head > verdict.unchecked_base:
+        verdict.failures.append(
+            f"Statements mutmut cannot check rose from {verdict.unchecked_base} to {verdict.unchecked_head}. "
+            "Decorated functions should delegate to an undecorated one"
+        )
+    if head.canary_failed:
+        verdict.failures.append("Tests fail with an active mutant id that changes no code, so they react to the harness")
     return verdict
 
 
@@ -378,6 +507,11 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
         if side is not None:
             note = f" ({side.note})" if side.note else ""
             lines.append(f"{label} tests: {len(side.tests)} files{note}.")
+    if touched.unchecked:
+        lines += ["", "| Function mutmut skips | Unchecked statements, base | Head |", "|---|---|---|"]
+        lines += [f"| `{name}` | {b} | {h} |" for name, (b, h) in touched.unchecked.items()]
+    if head.pragmas_stripped:
+        lines += ["", f"Stripped {head.pragmas_stripped} `# pragma: no mutate` comments before mutating. They have no effect."]
     if verdict.flaky:
         lines += ["", f"Flaky, killed on rerun and not counted: {', '.join(f'`{m}`' for m in verdict.flaky)}"]
     shown_survivors = survivors(head, [h for _, h in touched.existing] + touched.new)
@@ -395,6 +529,18 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     return "\n".join(lines) + "\n"
 
 
+def load_config(merge_base: str) -> dict[str, Any]:
+    """[tool.mutmut] as the base branch has it, so a change cannot loosen its own check."""
+    try:
+        config: dict[str, Any] = tomllib.loads(git("show", f"{merge_base}:pyproject.toml"))["tool"]["mutmut"]
+        return config
+    except KeyError:
+        # only until [tool.mutmut] first lands on the base branch
+        print("The base branch has no [tool.mutmut]; using the working tree's.")
+        fallback: dict[str, Any] = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["mutmut"]
+        return fallback
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mutation ratchet over the functions changed since the base branch.")
     parser.add_argument("--base", default="origin/main", help="Branch the change merges into (default: origin/main)")
@@ -403,9 +549,9 @@ def main() -> None:
     parser.add_argument("--output", default="mutation.json", help="Where to write the full results")
     args = parser.parse_args()
 
-    config: dict[str, Any] = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["mutmut"]
-    do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
     merge_base = git("merge-base", args.base, "HEAD").strip()
+    config = load_config(merge_base)
+    do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
     touched = touched_functions(merge_base, do_not_mutate)
     if not touched.existing and not touched.new:
         print(f"No functions under {SOURCE_PREFIX} changed since {args.base}. Nothing to mutate.")
@@ -424,9 +570,8 @@ def main() -> None:
             base = run_side(workdir / "base", [b for b, _ in touched.existing], config, changed_tests, args.max_children)
         (workdir / "head").mkdir()
         export_working_tree(workdir / "head")
-        head = run_side(
-            workdir / "head", [h for _, h in touched.existing] + touched.new, config, changed_tests, args.max_children
-        )
+        head_names = [h for _, h in touched.existing] + touched.new
+        head = run_side(workdir / "head", head_names, config, changed_tests, args.max_children, canary=True)
         verdict = judge(touched, base, head, pytest_args)
         summary = report(args.base, touched, base, head, verdict)
     except MutationRunError as e:
@@ -450,6 +595,9 @@ def main() -> None:
         "base_results": base.results if base else {},
         "head_results": head.results,
         "flaky": verdict.flaky,
+        "unchecked": touched.unchecked,
+        "pragmas_stripped": head.pragmas_stripped,
+        "canary_failed": head.canary_failed,
         "failures": verdict.failures,
     }
     Path(args.output).write_text(json.dumps(record, indent=2) + "\n")
