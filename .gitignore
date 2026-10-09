@@ -192,3 +192,7 @@ reports-*/
 
 # Optional live-test per-case reports
 tests/optional/**/output/
+
+# scripts/check_mutation_regression.py
+mutation.json
+mutants/

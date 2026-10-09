@@ -78,6 +78,11 @@ types = [
     "types-tqdm>=4.67.0.20250809",
     "types-jmespath>=1.0.2.20250809",
 ]
+# Pinned exactly: mutation operators change between releases, which would
+# move survivor counts on main and PRs alike and trip the ratchet.
+mutation = [
+    "mutmut==3.8.0",
+]
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -120,6 +125,7 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 "test:e2e:docker" = {cmd = "pdm run docker:e2e-test:run", help = "Run e2e tests inside Docker"}
 
 "check:cov" = {cmd = "python scripts/check_coverage_regression.py", help = "Check unit-test coverage for regressions"}
+"check:mutation" = {cmd = "python scripts/check_mutation_regression.py", help = "Mutation ratchet over the functions changed since the base branch"}
 
 "docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
 "docker:e2e-test:build".help = "Build the e2e-test Docker image"
@@ -248,3 +254,16 @@ skip_covered = true
 
 [tool.coverage.xml]
 output = "coverage.xml"
+
+# Shared by every mutmut run. scripts/check_mutation_regression.py adds the
+# per-PR scope (only_mutate and the test selection) on top of this table.
+[tool.mutmut]
+source_paths = ["inference_perf"]
+# Log calls and exception messages are text no test should have to pin.
+do_not_mutate_patterns = ["logger\\.", "raise \\w+\\("]
+# Stalls mutant generation for over 10 minutes (#872).
+do_not_mutate = ["inference_perf/datagen/synthetic_agentic/synthetic_agentic_datagen.py"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-o", "log_cli=false", "-q"]
+process_isolation = "forkserver"
+# Repo files the unit tests read at runtime, outside tests/.
+also_copy = ["examples", "workload-catalog", "docs", "scripts", "config.yml", "config-weka.yaml", "e2e", "tools", "deploy"]
