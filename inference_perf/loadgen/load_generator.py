@@ -663,6 +663,9 @@ class LoadGenerator:
             self.lora_weights = [config.split for config in load_config.lora_traffic_split]
         self.base_seed: int = load_config.base_seed
         self._session_cursor: int = 0
+        # Read by _run_reported_stage to close out a stage its runner left open.
+        self._open_stage: Optional[StageContext] = None
+        self._stages_started = 0
 
     def in_flight_requests(self) -> int:
         """Requests sent to the server and not yet finished, sampled live."""
@@ -683,12 +686,29 @@ class LoadGenerator:
             self._local_finished += 1
 
     def _stage_started(self, context: StageContext) -> None:
+        self._open_stage = context
+        self._stages_started += 1
         if self.stage_observer is not None:
             self.stage_observer.on_stage_start(context)
 
     def _stage_ended(self, context: StageContext) -> None:
+        self._open_stage = None
         if self.stage_observer is not None:
             self.stage_observer.on_stage_end(context)
+
+    async def _run_reported_stage(self, stage_id: int, runner: Awaitable[None]) -> None:
+        """Run one stage so its observer sees exactly one start and one end, however the runner exits."""
+        # The overall bar reads stages ended against the stage count, so a runner
+        # that returns before reporting its stage, or raises after starting it,
+        # would leave the bar short for the rest of the run.
+        started_before = self._stages_started
+        try:
+            await runner
+        finally:
+            if self._stages_started == started_before:
+                self._stage_started(StageContext(stage_id=stage_id))
+            if self._open_stage is not None:
+                self._stage_ended(self._open_stage)
 
     def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
         """SIGINT handler that sets interrup_sig flag to True"""
@@ -776,6 +796,11 @@ class LoadGenerator:
         available_sessions = total_sessions - self._session_cursor
         if available_sessions <= 0:
             logger.warning(f"Stage {stage_id}: no sessions remaining in trace files, skipping")
+            # Reported as a stage with nothing planned so dashboards can tell it
+            # was skipped rather than never reached.
+            skipped_stage = StageContext(stage_id=stage_id, planned_sessions=0)
+            self._stage_started(skipped_stage)
+            self._stage_ended(skipped_stage)
             return
         effective_num_sessions = (
             min(stage.num_sessions, available_sessions) if stage.num_sessions is not None else available_sessions
@@ -1601,15 +1626,18 @@ class LoadGenerator:
             for stage_id, stage in enumerate(self.stages):
                 # Handle session-based trace replay
                 if self.load_type == LoadType.TRACE_SESSION_REPLAY and isinstance(stage, TraceSessionReplayLoadStage):
-                    await self.run_session_stage(
+                    await self._run_reported_stage(
                         stage_id,
-                        stage,
-                        request_queue,
-                        active_requests_counter,
-                        finished_requests_counter,
-                        request_phase,
-                        cancel_signal,
-                        progress_ctx=progress,
+                        self.run_session_stage(
+                            stage_id,
+                            stage,
+                            request_queue,
+                            active_requests_counter,
+                            finished_requests_counter,
+                            request_phase,
+                            cancel_signal,
+                            progress_ctx=progress,
+                        ),
                     )
                 # Update worker concurrency for concurrent load type
                 elif self.load_type == LoadType.CONCURRENT and isinstance(stage, ConcurrentLoadStage):
@@ -1620,35 +1648,41 @@ class LoadGenerator:
                     rate = getattr(stage, "rate", stage.num_requests)
                     duration = getattr(stage, "duration", 1)
                     concurrency_level = stage.concurrency_level
-                    await self.run_stage(
+                    await self._run_reported_stage(
                         stage_id,
-                        rate,
-                        duration,
-                        request_queue,
-                        active_requests_counter,
-                        finished_requests_counter,
-                        skipped_requests_counter,
-                        request_phase,
-                        cancel_signal,
-                        concurrency_level=concurrency_level,
-                        progress_ctx=progress,
+                        self.run_stage(
+                            stage_id,
+                            rate,
+                            duration,
+                            request_queue,
+                            active_requests_counter,
+                            finished_requests_counter,
+                            skipped_requests_counter,
+                            request_phase,
+                            cancel_signal,
+                            concurrency_level=concurrency_level,
+                            progress_ctx=progress,
+                        ),
                     )
                 elif self.load_type != LoadType.CONCURRENT and isinstance(stage, StandardLoadStage):
                     rate = stage.rate
                     duration = stage.duration
                     concurrency_level = None
-                    await self.run_stage(
+                    await self._run_reported_stage(
                         stage_id,
-                        rate,
-                        duration,
-                        request_queue,
-                        active_requests_counter,
-                        finished_requests_counter,
-                        skipped_requests_counter,
-                        request_phase,
-                        cancel_signal,
-                        concurrency_level=concurrency_level,
-                        progress_ctx=progress,
+                        self.run_stage(
+                            stage_id,
+                            rate,
+                            duration,
+                            request_queue,
+                            active_requests_counter,
+                            finished_requests_counter,
+                            skipped_requests_counter,
+                            request_phase,
+                            cancel_signal,
+                            concurrency_level=concurrency_level,
+                            progress_ctx=progress,
+                        ),
                     )
                 else:
                     raise Exception(f"Stage {stage_id} has the wrong load type")
