@@ -19,6 +19,7 @@ from inference_perf.config.loadgen.config import (
     MultiLoRAConfig,
     StageGenType,
     StandardLoadStage,
+    ProbeConfig,
     SweepConfig,
     TraceSessionReplayLoadStage,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "MultiLoRAConfig",
     "StageGenType",
     "StandardLoadStage",
+    "ProbeConfig",
     "SweepConfig",
     "TraceSessionReplayLoadStage",
 ]
