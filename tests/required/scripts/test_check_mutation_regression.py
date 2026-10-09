@@ -242,3 +242,118 @@ def test_judge_scores_new_functions_against_the_floor(cmr: Any) -> None:
     assert (at_floor.new_score, at_floor.failures) == (60.0, [])
     assert under.failures == ["New functions score 54.5%, under the 60% floor"]
     assert (empty.new_score, empty.failures) == (None, [])
+
+
+# Undecorated and lone-staticmethod functions are mutated, so they are absent. Bodies that only
+# delegate count 0: a property returning an attribute, a setter assigning one, a validator calling
+# a helper, an abstract stub. Anything else counts every statement: a one-line return with
+# arithmetic is 1, a validator with an if, an assignment and a return is 3.
+def test_unchecked_statements_counts_skipped_functions_that_do_work(cmr: Any) -> None:
+    source = (
+        "import functools\n"
+        "def plain(x):\n    y = x\n    return y\n"
+        "class C:\n"
+        "    @staticmethod\n    def s(x):\n        y = x\n        return y\n"
+        "    @property\n    def p(self):\n        return self._p\n"
+        "    @p.setter\n    def q(self, v):\n        self._p = v\n"
+        '    @model_validator(mode="after")\n    def thin(self):\n        """doc"""\n        return _check(self, strict=True)\n'
+        "    @abstractmethod\n    def stub(self):\n        ...\n"
+        "    @functools.cache\n    def one(x):\n        return max(1, round(x / 1024))\n"
+        '    @model_validator(mode="after")\n'
+        "    def fat(self):\n        if self.x:\n            self.y = 1\n        return self\n"
+        "    @staticmethod\n    @functools.cache\n    def both(x):\n        y = x\n        return y\n"
+    )
+    assert cmr.unchecked_statements(source) == {
+        "xǁCǁp": 0,
+        "xǁCǁq": 0,
+        "xǁCǁthin": 0,
+        "xǁCǁstub": 0,
+        "xǁCǁone": 1,
+        "xǁCǁfat": 3,
+        "xǁCǁboth": 2,
+    }
+
+
+# Three pragma comments, one trailing code and a start/end pair on their own lines, plus a string
+# that only looks like one. The comments go, the string stays, the line count holds, and it returns 3.
+def test_strip_no_mutate_pragmas_removes_comments_only(cmr: Any, tmp_path: Path) -> None:
+    src = tmp_path / "inference_perf" / "m.py"
+    src.parent.mkdir()
+    src.write_text(
+        "x = 1  # pragma: no mutate, int() raises anyway\n"
+        "# pragma: no mutate start\n"
+        "s = '# pragma: no mutate'\n"
+        "# pragma: no mutate end\n"
+    )
+
+    assert cmr.strip_no_mutate_pragmas(tmp_path) == 3
+    assert src.read_text() == "x = 1\n\ns = '# pragma: no mutate'\n\n"
+
+
+# The base commit's pyproject excludes a.py. The working tree swaps that for b.py.
+# The config comes from the base, so the change cannot exclude its own file.
+def test_load_config_reads_the_base_branch(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\ndo_not_mutate = ["inference_perf/a.py"]\n')
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\ndo_not_mutate = ["inference_perf/b.py"]\n')
+    monkeypatch.chdir(tmp_path)
+
+    assert cmr.load_config("HEAD") == {"do_not_mutate": ["inference_perf/a.py"]}
+
+
+# The base has a 3-statement function f. The working tree wraps it in functools.cache, which mutmut
+# skips. f stays an existing function and its unchecked statements go from 0 to 3.
+def test_touched_functions_records_a_new_decorator_as_unchecked(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = tmp_path / "inference_perf"
+    pkg.mkdir()
+    body = "def f(x):\n    y = x + 1\n    z = y * 2\n    return z\n"
+    (pkg / "mod.py").write_text(body)
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    (pkg / "mod.py").write_text("import functools\n\n\n@functools.cache\n" + body)
+    monkeypatch.chdir(tmp_path)
+
+    touched = cmr.touched_functions("HEAD", [])
+
+    assert touched.existing == [("inference_perf.mod.x_f", "inference_perf.mod.x_f")]
+    assert touched.unchecked == {"inference_perf.mod.x_f": (0, 3)}
+
+
+# g had 4 mutants on the base and none with the change, as when a decorator hides it. That fails
+# even though its survivors fell from 1 to 0.
+def test_judge_fails_when_a_function_loses_all_its_mutants(cmr: Any) -> None:
+    touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
+    base = side(cmr, x_g={"killed": 3, "survived": 1})
+
+    verdict = cmr.judge(touched, base, side(cmr), [])
+
+    assert verdict.failures == ["`inference_perf.m.x_g` had 4 mutants on the base and none with this change"]
+
+
+# Unchecked statements across touched functions go from 2 to 3, so it fails. Equal counts pass.
+def test_judge_fails_when_unchecked_statements_rise(cmr: Any) -> None:
+    worse = cmr.Touched(
+        new=["inference_perf.m.x_v"], unchecked={"inference_perf.m.x_w": (2, 2), "inference_perf.m.x_v": (0, 1)}
+    )
+    held = cmr.Touched(unchecked={"inference_perf.m.x_w": (2, 2)})
+
+    assert cmr.judge(worse, None, side(cmr), []).failures == [
+        "Statements mutmut cannot check rose from 2 to 3. Decorated functions should delegate to an undecorated one"
+    ]
+    assert cmr.judge(held, None, side(cmr), []).failures == []
+
+
+# The head's tests failed the canary run, so they react to the mutation harness. That fails on its
+# own, with no survivors anywhere.
+def test_judge_fails_when_the_canary_fails(cmr: Any) -> None:
+    head = side(cmr, x_h={"killed": 5})
+    head.canary_failed = True
+
+    verdict = cmr.judge(cmr.Touched(new=["inference_perf.m.x_h"]), None, head, [])
+
+    assert verdict.failures == ["Tests fail with an active mutant id that changes no code, so they react to the harness"]
