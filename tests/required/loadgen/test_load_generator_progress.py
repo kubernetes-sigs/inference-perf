@@ -9,6 +9,7 @@ from inference_perf.datagen import DataGenerator
 class TestLoadGeneratorProgress(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.mock_datagen = MagicMock(spec=DataGenerator)
+        self.mock_datagen.is_preferred_worker_requested.return_value = False
         # Prepare a mock data generator that yields InferenceAPIData
         mock_data = MagicMock(spec=InferenceAPIData)
         mock_data.preferred_worker_id = -1
