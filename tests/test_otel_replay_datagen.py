@@ -2963,6 +2963,27 @@ class TestTruncatedSessionReporting:
         gen._session_events = {}
         return gen
 
+    def test_source_id_is_found_without_scanning_the_session_slots(self) -> None:
+        """A replay deep into a cycling run is resolved through the index, not a scan.
+
+        Cycling appends a slot per replay and cleanup leaves finished ones as None, so the
+        slot list grows for the whole run. Walking it to find one session made each lookup
+        longer than the last, and the total work quadratic over a long run.
+        """
+
+        class _RefusesScan(list):  # type: ignore[type-arg]
+            def __iter__(self) -> Any:
+                raise AssertionError("build_session_metric walked the session slots")
+
+        gen = self._generator(self._state(completed={"event_0"}))
+        session = MagicMock(session_id="session_1", source_id="src_1")
+        gen.sessions = _RefusesScan([None] * 999 + [session])
+        gen._session_id_to_index = {"session_1": 999}
+
+        metric = gen.build_session_metric(session_id="session_1", stage_id=0, start_time=0.0, end_time=5.0)
+
+        assert metric.file_path == "src_1"
+
     def test_a_cut_short_session_reports_the_events_it_lost(self) -> None:
         """2 of 4 events done when the stage stopped means 2 completed and 2 cancelled.
 
