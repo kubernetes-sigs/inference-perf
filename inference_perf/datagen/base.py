@@ -206,6 +206,14 @@ class SessionGenerator(BaseGenerator):
         """
         raise NotImplementedError
 
+    def last_event_completion_perf_counter(self, session_id: str) -> Optional[float]:
+        """perf_counter at which the session's last completed event landed, if known.
+
+        Lets a session that finishes during stage teardown report when it really ended,
+        rather than the stage boundary. None when the generator does not track it.
+        """
+        return None
+
     @abstractmethod
     def build_session_metric(
         self,

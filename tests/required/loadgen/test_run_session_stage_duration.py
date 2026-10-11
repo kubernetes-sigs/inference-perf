@@ -27,7 +27,9 @@ assertions are about ordering and status, never about exact timings, so a slow m
 makes these slower rather than flaky.
 """
 
+import asyncio
 import multiprocessing as mp
+import time
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -283,12 +285,12 @@ async def test_boundary_rows_carry_the_tfut_dispatch_anchor() -> None:
 
 @pytest.mark.asyncio
 async def test_boundary_rows_end_at_the_stage_boundary_not_after_teardown() -> None:
-    """Boundary rows are stamped with the end of the load window, not the current time.
+    """A session cut short is stamped with the end of the load window, not the current time.
 
-    Teardown is excluded from the metrics window, so reading the clock while recording
-    these rows would pull up to the whole teardown grace into two published numbers: the
-    `session_duration_sec` percentiles (via a wind-down completion, which is not marked
-    truncated) and the span `summarize_sessions` divides by for `sessions_per_second`.
+    Teardown waits on every in-flight request, so reading the clock while recording these
+    rows would stretch the span `summarize_sessions` divides by for `sessions_per_second`
+    by up to the whole grace. A session that finishes during teardown is the other case: it
+    ends when its own last event did (see the real-duration test below).
     """
     datagen = ScriptedSessionGenerator(num_sessions=5000, polls_to_complete=None)
     loadgen, collector = _load_generator(datagen)
@@ -554,9 +556,14 @@ class _CompletesDuringTeardown(ScriptedSessionGenerator):
     def __init__(self, num_sessions: int) -> None:
         super().__init__(num_sessions=num_sessions, polls_to_complete=None)
         self.teardown_done = False
+        # perf_counter at which each session's last event landed, as the worker records it.
+        self.finished_at: Optional[float] = None
 
     def check_session_completed(self, session_id: str) -> bool:
         return self.teardown_done
+
+    def last_event_completion_perf_counter(self, session_id: str) -> Optional[float]:
+        return self.finished_at
 
 
 @pytest.mark.asyncio
@@ -585,3 +592,39 @@ async def test_sessions_finishing_during_teardown_are_not_counted_as_stranded() 
     assert len(recorded) == 4, "all four sessions in the pool were recorded"
     assert [m.truncated for m in recorded] == [False] * 4, "none was cut short"
     assert loadgen.stage_runtime_info[0].sessions_not_completed_active == 0
+
+
+@pytest.mark.asyncio
+async def test_a_session_finishing_during_teardown_reports_its_real_duration() -> None:
+    """A session that finishes in the grace ends when its last event did, not at the boundary.
+
+    It completed, so it counts towards session_duration_sec. Stamping it with the stage
+    boundary would report it as shorter than it took, by however far into the grace its
+    last request landed. The real end comes from that session's own last event, so no time
+    spent waiting on other sessions to drain can leak in either.
+    """
+    datagen = _CompletesDuringTeardown(num_sessions=5000)
+    loadgen, collector = _load_generator(datagen)
+
+    real_teardown = loadgen._teardown_stage
+
+    async def _teardown(*args: Any, **kwargs: Any) -> Any:
+        result = await real_teardown(*args, **kwargs)
+        await asyncio.sleep(0.05)  # the last requests land a little way into the grace
+        datagen.finished_at = time.perf_counter()
+        datagen.teardown_done = True
+        return result
+
+    loadgen._teardown_stage = _teardown  # type: ignore[method-assign]
+    await _run_stage(loadgen, TraceSessionReplayLoadStage(concurrent_sessions=4, duration=0.2))
+
+    stage_end = loadgen.stage_runtime_info[0].end_time
+    recorded = collector.get_metrics()
+    assert len(recorded) == 4
+    assert datagen.finished_at is not None
+    for m in recorded:
+        assert m.truncated is False
+        assert m.dispatch_perf_counter is not None
+        assert m.end_time > stage_end, "a grace-period completion must not be capped at the boundary"
+        assert m.end_time == pytest.approx(m.start_time + (datagen.finished_at - m.dispatch_perf_counter))
+        assert m.duration_sec == pytest.approx(m.end_time - m.start_time)

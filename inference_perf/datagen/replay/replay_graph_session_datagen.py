@@ -2035,6 +2035,14 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
     def get_session_state(self, session_id: str) -> Optional[ReplaySessionState]:
         return self.session_graph_state.get(session_id)
 
+    def last_event_completion_perf_counter(self, session_id: str) -> Optional[float]:
+        # Recorded by the worker on its own perf_counter, the same monotonic clock the
+        # dispatch anchor is read from, so the two can be subtracted (as TFUT does).
+        state = self.session_graph_state.get(session_id)
+        if state is None or not state.event_completion_times:
+            return None
+        return max(state.event_completion_times.values())
+
     def check_session_completed(self, session_id: str) -> bool:
         self._process_completion_queue()
 

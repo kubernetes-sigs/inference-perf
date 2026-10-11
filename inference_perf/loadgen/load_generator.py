@@ -1345,18 +1345,25 @@ class LoadGenerator:
             if session_id in completed_session_ids:
                 continue
             session_completed = self.datagen.check_session_completed(session_id)
-            # Stamped with the boundary captured above, not the current time: the teardown
-            # tail is excluded from the metrics window, and reading the clock here would
-            # pull up to the whole grace into session_duration_sec (via a wind-down
-            # completion, which is not truncated) and into the span sessions_per_second
-            # divides by.
+            # Never the current time: teardown waits on every in-flight request, so reading
+            # the clock here would charge this session for time spent draining others.
+            # A session cut short ends at the boundary captured above. One that finished
+            # in the grace ends when its own last event did, so its duration is what it
+            # really took rather than capped at the boundary.
+            session_start = session_dispatch_times.get(session_id, start_time_epoch)
+            dispatch_perf = session_dispatch_perf_counters.get(session_id)
+            session_end = end_time_epoch
+            if session_completed and dispatch_perf is not None:
+                last_event_perf = self.datagen.last_event_completion_perf_counter(session_id)
+                if last_event_perf is not None:
+                    session_end = session_start + (last_event_perf - dispatch_perf)
             session_metric = self.datagen.build_session_metric(
                 session_id=session_id,
                 stage_id=stage_id,
-                start_time=session_dispatch_times.get(session_id, start_time_epoch),
-                end_time=end_time_epoch,
+                start_time=session_start,
+                end_time=session_end,
             )
-            session_metric.dispatch_perf_counter = session_dispatch_perf_counters.get(session_id)
+            session_metric.dispatch_perf_counter = dispatch_perf
             if not session_completed:
                 session_metric.truncated = True
                 sessions_truncated += 1
