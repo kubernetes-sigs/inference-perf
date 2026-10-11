@@ -318,6 +318,7 @@ What happens at the deadline:
 - No further sessions or turns are dispatched.
 - The stage reports `COMPLETED`, not `FAILED`. This is the difference from using `max_stage_duration` alone: that cap is a fault signal, so a stop you asked for would be recorded as a failure.
 - Requests already in flight finish during stage teardown and keep their metrics.
+- A session whose last request lands during teardown is a completed session: it counts towards the success/failure counts and `session_duration_sec`, with its duration measured to its own last event rather than cut at the deadline.
 - Sessions that had not finished are recorded as **truncated**. They appear in the report with `truncated: true` and are counted under `num_sessions_not_completed_active`, but are left out of the session success/failure counts and the `session_duration_sec` percentiles — a truncated session's duration reflects where the deadline fell, not how long that session takes. The requests those sessions did complete still count in the request-level metrics.
 - A truncated session still reports how far it got: `num_events_completed` is the events that finished before the deadline and `num_events_cancelled` is the rest, so the two add up to `num_events`. Its `success` is `null` rather than `true` or `false`, which is what keeps it out of the success/failure counts while leaving the numbers readable.
 - The stage's `stage_metadata` carries `duration_configured` alongside `actual_duration`, so a report read on its own shows whether the full window was run.
@@ -454,6 +455,7 @@ After a run, three session report files are generated:
   - `num_sessions` (total, including sessions never completed), `num_sessions_completed` (succeeded + failed)
   - `num_sessions_succeeded`, `num_sessions_failed`
   - `num_sessions_not_completed`, `num_sessions_not_completed_active`, `num_sessions_not_completed_pending` — sessions stranded when `duration` or `max_stage_duration` ended the stage before they finished, or that were interrupted or failed due to open circuit breakers. A stranded active session is recorded with `truncated: true` and its partial counts, and is excluded from the succeeded/failed counts and from `session_duration_sec`, since its duration reflects where the boundary fell rather than how long the session takes
+  - `sessions_per_second` — completed sessions divided by the span from the first session's start to the last session's end. Like `requests_per_sec`, it is a completion rate: truncated sessions widen the span they ran in but are not counted
   - `total_events`, `total_events_completed`, `total_events_cancelled` — inclusive of truncated sessions. Their completed events really did complete, and the events they never got to are counted as cancelled, so a stage bounded by time does not appear to have lost work it simply ran out of time for
   - Distributions: `session_duration_sec`, `num_events`, `total_input_tokens`, `total_output_tokens`
   
