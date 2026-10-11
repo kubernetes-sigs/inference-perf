@@ -1262,9 +1262,10 @@ class ReportGenerator:
         if num_sessions_recorded > 0:
             total_span = max(m.end_time for m in metrics) - min(m.start_time for m in metrics)
             if total_span > 0:
-                # Every recorded session was dispatched inside the window, truncated or not,
-                # so all of them count towards the rate actually driven.
-                sessions_per_second = num_sessions_recorded / total_span
+                # A completion rate, like requests_per_sec: a truncated session never
+                # finished, so it widens the span it ran in but is not counted. Sessions
+                # started, truncated or not, are reported as num_sessions.
+                sessions_per_second = num_sessions_completed / total_span
 
         # Bucketed on the stable cause code carried as error_type, mirroring the
         # request-side shape from #601. Sessions counted as failed but carrying
