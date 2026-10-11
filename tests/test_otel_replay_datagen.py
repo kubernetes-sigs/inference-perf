@@ -2984,6 +2984,20 @@ class TestTruncatedSessionReporting:
 
         assert metric.file_path == "src_1"
 
+    def test_last_event_completion_is_the_latest_recorded_event(self) -> None:
+        """The real end of a session is when its last event landed, whatever order they ran."""
+        state = self._state(completed={"event_0", "event_1", "event_2"})
+        state.event_completion_times = {"event_0": 3.0, "event_1": 7.5, "event_2": 5.0}
+        gen = self._generator(state)
+
+        assert gen.last_event_completion_perf_counter("session_1") == 7.5
+        assert gen.last_event_completion_perf_counter("unknown") is None
+
+    def test_last_event_completion_is_none_before_any_event_lands(self) -> None:
+        gen = self._generator(self._state(completed=set()))
+
+        assert gen.last_event_completion_perf_counter("session_1") is None
+
     def test_a_cut_short_session_reports_the_events_it_lost(self) -> None:
         """2 of 4 events done when the stage stopped means 2 completed and 2 cancelled.
 
