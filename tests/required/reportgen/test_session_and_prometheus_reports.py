@@ -153,6 +153,39 @@ class TestSummarizeSessionsRollups:
         # span = 20.0 - 0.0, so 2 sessions / 20s.
         assert summary["sessions_per_second"] == pytest.approx(0.1)
 
+    def test_sessions_per_second_counts_completed_sessions_only(self) -> None:
+        """It is a completion rate, like requests_per_sec: a truncated session never finished.
+
+        Truncated rows still widen the span (they were running inside the window), but
+        counting them as well would turn the metric into a start rate whenever a stage
+        cuts sessions off at its deadline.
+        """
+        gen = _make_generator()
+        cut_short = [
+            SessionLifecycleMetric(
+                session_id=sid,
+                stage_id=0,
+                file_path=f"{sid}.json",
+                start_time=4.0,
+                end_time=10.0,
+                duration_sec=6.0,
+                num_events=4,
+                num_events_completed=1,
+                truncated=True,
+            )
+            for sid in ("t1", "t2")
+        ]
+        sessions = [
+            _sess(session_id="s1", start_time=0.0, end_time=4.0),
+            _sess(session_id="s2", start_time=1.0, end_time=8.0),
+            *cut_short,
+        ]
+
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
+
+        # 2 completed over the 0..10 span; the 2 truncated rows are not completions.
+        assert summary["sessions_per_second"] == pytest.approx(0.2)
+
     def test_sessions_per_second_is_zero_for_a_zero_length_span(self) -> None:
         """Sessions that all start and end at the same instant must report 0.0 rather
         than raise on the division."""
