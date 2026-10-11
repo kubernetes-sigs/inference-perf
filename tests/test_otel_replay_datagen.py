@@ -1781,7 +1781,7 @@ class TestRealGeneratorBuildsAReplay:
     TestCorpusCycling injects its own ``_build_session``, so it pins the base class's index
     arithmetic but never the subclass hook that makes a replay buildable at all:
     ``_on_cycled_slot`` has to record which corpus slot a replay index copies, because
-    ``_build_session`` reads the dataset through ``_source_indices``. Without that entry a
+    ``_build_session`` reads the trace source through ``_source_indices``. Without that entry a
     replay would read its own index as a slot -- past the end of the corpus -- so cycling
     would fail on the first replay, and only against a real corpus.
     """
@@ -1805,7 +1805,8 @@ class TestRealGeneratorBuildsAReplay:
         gen._cycle_logged = False
         # Slot -> row is deliberately not the identity: the real generator shuffles rows, so
         # a builder that used the index directly would read the wrong trace.
-        gen._dataset = [{"tag": f"row{i}"} for i in range(count)]
+        rows = [{"tag": f"row{i}"} for i in range(count)]
+        gen._trace_source = MagicMock(load_record=lambda index: rows[index])
         gen._row_order = [(i + 1) % count for i in range(count)]
         gen._source_ids = [f"src{i}" for i in range(count)]
         gen._source_indices = [None] * count
