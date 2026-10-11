@@ -1863,13 +1863,13 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         if state is None:
             raise ValueError(f"Unknown session: {session_id}")
 
-        source_id = ""
-        for session in self.sessions:
-            if session is not None and session.session_id == session_id:
-                source_id = session.source_id
-                break
-
+        # Resolved through the index, not by walking self.sessions: cycling appends a slot
+        # per replay and cleanup leaves finished ones as None, so a scan would get longer
+        # with every replay. The slot is still populated here, since every caller builds
+        # the metric before cleanup_session frees it.
         session_index = self._session_id_to_index.get(session_id)
+        session = self.sessions[session_index] if session_index is not None and session_index < len(self.sessions) else None
+        source_id = session.source_id if session is not None else ""
         num_events = (
             len(self._session_events[session_index])
             if session_index is not None and session_index in self._session_events
