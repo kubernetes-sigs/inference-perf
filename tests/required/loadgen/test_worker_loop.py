@@ -75,6 +75,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
         self.force_stop_signal = mp.Event()
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
+        self.skipped_counter = mp.Value("i", 0)
         self.datagen = MagicMock(spec=DataGenerator)
         # The stage rendezvous is a published sequence number, not a Barrier:
         # the main side publishes stage_boundary_seq and each worker copies it
@@ -104,6 +105,7 @@ class TestWorkerLoop(unittest.IsolatedAsyncioTestCase):
             self.request_phase,
             self.finished_counter,
             self.active_counter,
+            self.skipped_counter,
             shared_max_concurrency,
             base_seed=42,
             force_stop_signal=self.force_stop_signal,
