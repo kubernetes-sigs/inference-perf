@@ -54,7 +54,6 @@ from inference_perf.config import (
     APIType,
     ConversationReplayConfig,
     DataConfig,
-    Distribution,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import sample_values
@@ -323,8 +322,8 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
         """Combine shared prompt prefix and dynamic prompt suffix with a space."""
         return f"{shared_prompt} {dynamic_prompt}" if dynamic_prompt else shared_prompt
 
-    def _sample_distribution(self, dist: Union[Distribution, str], count: int) -> List[int]:
-        """Sample ``count`` integers from a Distribution or an expression string."""
+    def _sample_distribution(self, dist: Union[int, str], count: int) -> List[int]:
+        """Sample ``count`` integers from a length value (a number or an expression string)."""
         return [int(v) for v in sample_values(dist, count, self.rng, integer=True)]
 
     def _generate_random_token_text(self, num_tokens: int, rng: Optional[np.random.Generator] = None) -> str:

@@ -347,9 +347,7 @@ def main_cli() -> None:
                 )
 
         # How many values the synthetic/random datagens must pre-generate,
-        # derived from the load stages. Passed to the datagen rather than
-        # written back onto the (already validated) config object; the datagen
-        # combines it with any user-supplied total_count on the distribution.
+        # derived from the load stages and passed to the datagen.
         sample_count: Optional[int] = None
         if config.data.type in [DataGenType.Synthetic, DataGenType.Random]:
             if config.data.trace is None:
