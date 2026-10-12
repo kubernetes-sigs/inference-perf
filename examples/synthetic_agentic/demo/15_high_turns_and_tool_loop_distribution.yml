@@ -13,16 +13,16 @@ data:
     seed: 16
     theme_mix: {code_change_task: {weight: 1.0}}
     # mean=8, std_dev=55, clipped to [1, 60]: median 1 turn, ~5% of sessions land at 30+ turns.
-    turns_per_session: {type: lognormal, min: 1, max: 60, mean: 8, std_dev: 55}
+    turns_per_session: "Min(Max(LogNormal(0.141, 1.969), 1), 60)"
     fanout_probability: 0.0
     # mean=9, std_dev=60, clipped to [0, 60]: median 1 tool call, ~5-6% of turns loop 30+ times.
-    tool_loop_depth: {type: lognormal, min: 0, max: 60, mean: 9, std_dev: 60}
-    tool_catalog_size_per_agent: {type: fixed, mean: 8}
+    tool_loop_depth: "Min(LogNormal(0.289, 1.954), 60)"
+    tool_catalog_size_per_agent: 8
     max_events_per_session: 2400                  # generous: worst case ~60 turns x 61 calls/turn
-    input_tokens_per_turn:  {type: fixed, mean: 150}
-    output_tokens_per_turn: {type: fixed, mean: 50}
-    tool_call_latency_sec:  {type: fixed, mean: 1}
-    user_think_time_sec:    {type: fixed, mean: 2}
+    input_tokens_per_turn: 150
+    output_tokens_per_turn: 50
+    tool_call_latency_sec: 1.0
+    user_think_time_sec: 2.0
 load:
   type: trace_session_replay
   stages:
