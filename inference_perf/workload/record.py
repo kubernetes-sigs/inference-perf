@@ -13,12 +13,13 @@
 # limitations under the License.
 """The record: one conversation's worth of content, with no timing attached.
 
-A record is what every dataset and trace format reduces to. A single request is
-a one-turn record. The content of a turn is a list of parts, so a turn can hold
-literal text (a recorded conversation), a media reference (an image the request
-attaches), or a synthetic spec (a trace that recorded only lengths and prefix
-block hashes, from which text has to be built). The parts are data, not
-behaviour: nothing here knows how to tokenize, schedule or send.
+A record is what a dataset or trace reduces to when it records lengths or plain
+text. Structured tool calls are out of scope for now, see docs/design.md. A
+single request is a one-turn record. The content of a turn is a list of parts,
+so a turn can hold literal text (a recorded conversation), a media reference (an
+image the request attaches), or a synthetic spec (a trace that recorded only
+lengths and prefix block hashes, from which text has to be built). The parts are
+data, not behaviour: nothing here knows how to tokenize, schedule or send.
 """
 
 from __future__ import annotations
