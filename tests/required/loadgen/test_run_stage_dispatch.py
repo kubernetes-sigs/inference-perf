@@ -54,6 +54,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
         self.request_queue.num_channels = 1
         self.finished_counter = mp.Value("i", 0)
         self.active_counter = mp.Value("i", 0)
+        self.skipped_counter = mp.Value("i", 0)
         self.request_phase = MagicMock()
         self.cancel_signal = MagicMock()
 
@@ -82,6 +83,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
                 request_queue=self.request_queue,
                 active_requests_counter=self.active_counter,
                 finished_requests_counter=self.finished_counter,
+                skipped_requests_counter=self.skipped_counter,
                 request_phase=self.request_phase,
                 cancel_signal=self.cancel_signal,
                 concurrency_level=concurrency_level,
@@ -153,6 +155,7 @@ class TestRunStageDispatch(unittest.IsolatedAsyncioTestCase):
                 request_queue=self.request_queue,
                 active_requests_counter=self.active_counter,
                 finished_requests_counter=self.finished_counter,
+                skipped_requests_counter=self.skipped_counter,
                 request_phase=self.request_phase,
                 cancel_signal=self.cancel_signal,
             )
