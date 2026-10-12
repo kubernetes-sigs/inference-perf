@@ -210,15 +210,15 @@ class TestObservabilityConfig(unittest.TestCase):
             config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="127.0.0.1", port=0))
         )
 
-    def test_in_cluster_configs_bind_all_interfaces(self) -> None:
-        # The Helm chart's default values and the config the deploy/ README
-        # turns into a ConfigMap, both run as a Job scraped by pod IP.
-        # Expects both to set host 0.0.0.0, since the loopback default would
-        # leave an in-cluster run unscrapeable.
+    def test_shipped_configs_keep_the_loopback_default(self) -> None:
+        # The Helm chart's default values, and the root config.yml that the README
+        # quickstart, the Docker image and the deploy/ ConfigMap all run.
+        # Expects both on 127.0.0.1: nothing in the repo scrapes the endpoint, and
+        # config.yml also runs on laptops, where 0.0.0.0 exposes it to the network.
         repo = Path(__file__).resolve().parents[3]
         chart = yaml.safe_load((repo / "deploy" / "inference-perf" / "values.yaml").read_text())
         for config in (Config.model_validate(chart["config"]), read_config(str(repo / "config.yml"))):
-            self.assertEqual(config.observability.metrics.host, "0.0.0.0")
+            self.assertEqual(config.observability.metrics.host, "127.0.0.1")
 
 
 class TestMetricsEndpointFailureLogging(unittest.TestCase):
