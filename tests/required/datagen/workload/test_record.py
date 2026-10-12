@@ -100,6 +100,38 @@ def test_arrangement_ids_and_dependencies() -> None:
     assert not Arrangement(nodes=[Node(id="a", record_id="r", turn=1, send_at_ms=10)]).has_dependencies()
 
 
+# A node that depends on itself, two nodes that depend on each other, and a
+# cycle hanging off a valid root (r <- a <-> b) are all rejected. A diamond
+# (a before b and c, both before d) is not a cycle and is accepted.
+def test_arrangement_rejects_dependency_cycles() -> None:
+    with pytest.raises(ValidationError, match="cycle.*'a'"):
+        Arrangement(nodes=[Node(id="a", record_id="r", turn=1, depends_on=["a"])])
+    with pytest.raises(ValidationError, match=r"cycle.*\['a', 'b'\]"):
+        Arrangement(
+            nodes=[
+                Node(id="a", record_id="r", turn=1, depends_on=["b"]),
+                Node(id="b", record_id="r", turn=3, depends_on=["a"]),
+            ]
+        )
+    with pytest.raises(ValidationError, match=r"cycle.*\['a', 'b'\]"):
+        Arrangement(
+            nodes=[
+                Node(id="r", record_id="r", turn=1),
+                Node(id="a", record_id="r", turn=3, depends_on=["r", "b"]),
+                Node(id="b", record_id="r", turn=5, depends_on=["a"]),
+            ]
+        )
+    diamond = Arrangement(
+        nodes=[
+            Node(id="a", record_id="r", turn=1),
+            Node(id="b", record_id="r", turn=3, depends_on=["a"]),
+            Node(id="c", record_id="r", turn=5, depends_on=["a"]),
+            Node(id="d", record_id="r", turn=7, depends_on=["b", "c"]),
+        ]
+    )
+    assert diamond.has_dependencies()
+
+
 # A workload checks its nodes against its records: a node naming a record
 # that is not there, or pointing at a user turn instead of an assistant turn,
 # is rejected at construction.

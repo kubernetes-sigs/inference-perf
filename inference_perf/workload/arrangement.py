@@ -23,7 +23,7 @@ dependencies; the arrangement itself does not say.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import Field, model_validator
 
@@ -46,7 +46,7 @@ class Arrangement(StrictBaseModel):
     nodes: List[Node]
 
     @model_validator(mode="after")
-    def _ids_resolve(self) -> Arrangement:
+    def _dependencies_runnable(self) -> Arrangement:
         ids = [node.id for node in self.nodes]
         if len(set(ids)) != len(ids):
             raise ValueError("node ids must be unique")
@@ -55,6 +55,23 @@ class Arrangement(StrictBaseModel):
             for dep in node.depends_on:
                 if dep not in known:
                     raise ValueError(f"node {node.id!r} depends on unknown node {dep!r}")
+        # a node in a cycle never becomes runnable, so the replay would stall on
+        # it instead of failing here.
+        waiting = {node.id: set(node.depends_on) for node in self.nodes}
+        dependents: Dict[str, List[str]] = {node_id: [] for node_id in waiting}
+        for node_id, deps in waiting.items():
+            for dep in deps:
+                dependents[dep].append(node_id)
+        ready = [node_id for node_id, deps in waiting.items() if not deps]
+        while ready:
+            done = ready.pop()
+            del waiting[done]
+            for child in dependents[done]:
+                waiting[child].discard(done)
+                if not waiting[child]:
+                    ready.append(child)
+        if waiting:
+            raise ValueError(f"node dependencies form a cycle, so these nodes can never run: {sorted(waiting)}")
         return self
 
     def has_dependencies(self) -> bool:
