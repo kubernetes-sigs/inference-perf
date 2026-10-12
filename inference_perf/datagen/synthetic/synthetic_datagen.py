@@ -46,8 +46,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         super().__init__(api_config, config, tokenizer)
 
         # Read the raw config values, not the base-class attributes: those
-        # only carry the structured Distribution view, and these fields may
-        # hold expression strings.
+        # only carry the filter bounds.
         input_spec = config.input_distribution
         output_spec = config.output_distribution
         # Embeddings and rerank requests generate no output, so they take no output lengths.
