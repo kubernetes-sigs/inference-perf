@@ -22,11 +22,7 @@ tokenizer:
 
 data:
   type: synthetic
-  input_distribution:         # Length in tokens of each input string
-    min: 20
-    max: 400
-    mean: 128
-    std_dev: 64
+  input_distribution: "Min(Max(Normal(128, 64), 20), 400)"  # Length in tokens of each input string
   # No output_distribution: embeddings requests generate no output.
 
 report:
