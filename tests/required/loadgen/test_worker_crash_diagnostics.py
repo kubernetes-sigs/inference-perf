@@ -172,6 +172,50 @@ class TestWorkerFailureDescription(unittest.TestCase):
         self.assertIn("exited cleanly before the stage finished", described)
 
 
+class TestCauseLabel(unittest.TestCase):
+    """The bounded string that ends up as the `cause` label on inference_perf_workers_lost."""
+
+    def test_reported_exception_class_wins(self) -> None:
+        # A worker that got far enough to report names its exception class,
+        # even though its exit code (1) is also available.
+        failure = WorkerFailure(
+            worker_id=0,
+            exitcode=1,
+            crash=WorkerCrash(
+                worker_id=0, stage_id=0, exc_type="RuntimeError", message="boom", traceback_text="tb", in_flight=0
+            ),
+        )
+        self.assertEqual(failure.cause_label(), "RuntimeError")
+
+    def test_signal_death_falls_back_to_the_signal_name(self) -> None:
+        # Killed at -9 with no record: SIGKILL is the only thing left to say.
+        self.assertEqual(WorkerFailure(worker_id=0, exitcode=-int(signal.SIGKILL), crash=None).cause_label(), "SIGKILL")
+
+    def test_exit_codes_fall_back_to_the_code(self) -> None:
+        # No record and a positive exit code: label by the code. Exit 0 mid-stage
+        # is abnormal but not a crash, so it gets its own name rather than exit_0.
+        self.assertEqual(WorkerFailure(worker_id=0, exitcode=7, crash=None).cause_label(), "exit_7")
+        self.assertEqual(WorkerFailure(worker_id=0, exitcode=0, crash=None).cause_label(), "clean_exit")
+
+    def test_labels_stay_bounded(self) -> None:
+        # Whatever the failure shape, the label must never carry a message or an
+        # id, because it becomes a Prometheus label value.
+        failure = WorkerFailure(
+            worker_id=3,
+            exitcode=1,
+            crash=WorkerCrash(
+                worker_id=3,
+                stage_id=1,
+                exc_type="ValueError",
+                message="a very long unbounded message with an id 8f3a-11ee",
+                traceback_text="tb",
+                in_flight=2,
+            ),
+        )
+        self.assertEqual(failure.cause_label(), "ValueError")
+        self.assertNotIn("8f3a", failure.cause_label())
+
+
 class TestCollectWorkerFailures(unittest.TestCase):
     """Pairing dead workers with the crash records drained from the queue."""
 

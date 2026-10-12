@@ -41,7 +41,7 @@ class PrometheusMetricsServer:
     available via :attr:`bound_port`.
     """
 
-    def __init__(self, registry: CollectorRegistry, port: int = DEFAULT_PORT, addr: str = "0.0.0.0") -> None:
+    def __init__(self, registry: CollectorRegistry, port: int = DEFAULT_PORT, addr: str = "127.0.0.1") -> None:
         self.registry = registry
         self.port = port
         self.addr = addr

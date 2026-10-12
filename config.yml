@@ -28,3 +28,6 @@ report:
   prometheus:
     summary: true
     per_stage: false
+observability:
+  metrics:
+    host: 0.0.0.0  # scraped by pod IP when run as the deploy/ Job

@@ -68,3 +68,6 @@ config:
     prometheus:
       summary: true
       per_stage: false
+  observability:
+    metrics:
+      host: 0.0.0.0  # scraped by pod IP
