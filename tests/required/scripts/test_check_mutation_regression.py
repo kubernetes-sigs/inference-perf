@@ -127,26 +127,57 @@ def test_touched_functions_follows_renames_and_untracked_files(
     assert touched.new == ["inference_perf.fresh.x_a", "inference_perf.fresh.xǁKǁb"]
 
 
-# Tests that import the module directly or through a re-exporting package are picked, plus any
-# changed test. Unrelated tests, tests/optional and the excluded git-dependent test are not.
-def test_select_tests_follows_imports_and_reexports(cmr: Any, tmp_path: Path) -> None:
-    (tmp_path / "inference_perf" / "utils").mkdir(parents=True)
-    (tmp_path / "inference_perf" / "utils" / "__init__.py").write_text("from .cpu import count\n")
-    files = {
-        "tests/test_direct.py": "from inference_perf.utils.cpu import count\n",
-        "tests/test_package.py": "from inference_perf.utils import count\n",
-        "tests/test_other.py": "from inference_perf.other import x\n",
-        "tests/test_changed.py": "import json\n",
-        "tests/optional/test_opt.py": "from inference_perf.utils.cpu import count\n",
-        "tests/required/config/test_yaml_configs.py": "from inference_perf.utils.cpu import count\n",
-    }
-    for rel, text in files.items():
+# The base has old.py with a and b, and gone.py with c. The working tree deletes b from old.py and
+# deletes gone.py. b and c are deleted functions named as they were on the base, and a is untouched.
+def test_touched_functions_records_deleted_functions_and_files(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = tmp_path / "inference_perf"
+    pkg.mkdir()
+    (pkg / "old.py").write_text("def a():\n    return 1\n\n\ndef b():\n    return 2\n")
+    (pkg / "gone.py").write_text("def c():\n    return 3\n")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    (pkg / "old.py").write_text("def a():\n    return 1\n")
+    (pkg / "gone.py").unlink()
+    monkeypatch.chdir(tmp_path)
+
+    touched = cmr.touched_functions("HEAD", [])
+
+    assert (touched.existing, touched.new) == ([], [])
+    assert touched.deleted == ["inference_perf.gone.x_c", "inference_perf.old.x_b"]
+
+
+# Every test_*.py under tests/, nested or not, except tests/optional and the git-dependent YAML
+# test. Helpers and conftest files are not test files.
+def test_unit_suite_is_every_unit_test_file(cmr: Any, tmp_path: Path) -> None:
+    for rel in [
+        "tests/test_a.py",
+        "tests/required/utils/test_b.py",
+        "tests/required/utils/helpers.py",
+        "tests/conftest.py",
+        "tests/optional/test_opt.py",
+        "tests/required/config/test_yaml_configs.py",
+    ]:
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / rel).write_text(text)
+        (tmp_path / rel).write_text("")
 
-    picked = cmr.select_tests(tmp_path, {"inference_perf.utils.cpu"}, ["tests/test_changed.py", "tests/test_gone.py"])
+    assert cmr.unit_suite(tmp_path) == ["tests/required/utils/test_b.py", "tests/test_a.py"]
 
-    assert picked == ["tests/test_changed.py", "tests/test_direct.py", "tests/test_package.py"]
+
+# A module with f, called by the test, g, called at import time, and h, never called.
+# Only f counts as run by the test. Import-time calls do not.
+def test_functions_run_by_ignores_import_time(cmr: Any, tmp_path: Path) -> None:
+    (tmp_path / "inference_perf").mkdir()
+    (tmp_path / "inference_perf" / "__init__.py").write_text("")
+    (tmp_path / "inference_perf" / "m.py").write_text(
+        "def f():\n    return 1\n\n\ndef g():\n    return 2\n\n\ndef h():\n    return 3\n\n\nVALUE = g()\n"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_m.py").write_text("from inference_perf.m import f\n\n\ndef test_f():\n    assert f() == 1\n")
+
+    assert cmr.functions_run_by(tmp_path, ["tests/test_m.py"]) == {"inference_perf.m.x_f"}
 
 
 # A pyproject with [tool.mutmut] between two other tables. The rewrite drops the old table, keeps
@@ -213,7 +244,7 @@ def test_judge_fails_on_a_rise_and_reruns_only_rising_functions(cmr: Any, monkey
     verdict = cmr.judge(touched, base, head, [])
 
     assert all(m.startswith("inference_perf.m.x_g__") for m in rerun) and len(rerun) == 3
-    assert verdict.failures == ["Survivors in existing functions rose from 3 to 4"]
+    assert verdict.failures == ["Surviving mutants rose from 3 to 4"]
 
 
 # Same rise of one, but one of g's survivors is killed on rerun. It is reported as flaky and the
@@ -231,17 +262,36 @@ def test_judge_drops_flaky_survivors(cmr: Any, monkeypatch: pytest.MonkeyPatch) 
     assert (verdict.head_survivors, verdict.failures) == (3, [])
 
 
-# New function h: 6 killed or timed out, 4 survived or untested, 60.0%, which meets the floor.
-# One more survivor puts it at 54.5% and fails. A new function with no mutants is not scored.
-def test_judge_scores_new_functions_against_the_floor(cmr: Any) -> None:
-    touched = cmr.Touched(new=["inference_perf.m.x_h"])
-    at_floor = cmr.judge(touched, None, side(cmr, x_h={"killed": 5, "timeout": 1, "survived": 3, "no tests": 1}), [])
-    under = cmr.judge(touched, None, side(cmr, x_h={"killed": 6, "survived": 5}), [])
-    empty = cmr.judge(touched, None, side(cmr), [])
+# Code moved from deleted function d into new function h keeps its 2 survivors, so it passes.
+# A third survivor in h fails, and only h's survivors are rerun.
+def test_judge_counts_new_and_deleted_functions(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    rerun: list[str] = []
 
-    assert (at_floor.new_score, at_floor.failures) == (60.0, [])
-    assert under.failures == ["New functions score 54.5%, under the 60% floor"]
-    assert (empty.new_score, empty.failures) == (None, [])
+    def record(s: Any, mutant: str, a: Any) -> bool:
+        rerun.append(mutant)
+        return True
+
+    monkeypatch.setattr(cmr, "still_survives", record)
+    touched = cmr.Touched(new=["inference_perf.m.x_h"], deleted=["inference_perf.m.x_d"])
+    base = side(cmr, x_d={"killed": 4, "survived": 2})
+
+    moved = cmr.judge(touched, base, side(cmr, x_h={"killed": 4, "survived": 2}), [])
+    worse = cmr.judge(touched, base, side(cmr, x_h={"killed": 3, "survived": 3}), [])
+
+    assert (moved.base_survivors, moved.head_survivors, moved.failures) == (2, 2, [])
+    assert worse.failures == ["Surviving mutants rose from 2 to 3"]
+    assert len(rerun) == 3 and all(m.startswith("inference_perf.m.x_h__") for m in rerun)
+
+
+# New function h has no test running it. The deleted function's 10 survivors would cover the count,
+# but code no test runs cannot be paid for, so it fails.
+def test_judge_fails_on_a_new_function_no_test_runs(cmr: Any) -> None:
+    touched = cmr.Touched(new=["inference_perf.m.x_h"], deleted=["inference_perf.m.x_d"])
+    base = side(cmr, x_d={"survived": 10})
+
+    verdict = cmr.judge(touched, base, side(cmr, x_h={"no tests": 4}), [])
+
+    assert verdict.failures == ["No test runs `inference_perf.m.x_h`"]
 
 
 # Undecorated and lone-staticmethod functions are mutated, so they are absent. Bodies that only
