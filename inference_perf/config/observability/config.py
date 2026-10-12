@@ -11,8 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+
 from inference_perf.config.common import StrictBaseModel
 from pydantic import Field
+
+
+def default_metrics_host() -> str:
+    # kubelet sets this in every container. Outside hostNetwork a pod has only lo
+    # and eth0, so binding every interface there exposes just the pod IP a scraper dials.
+    return "0.0.0.0" if "KUBERNETES_SERVICE_HOST" in os.environ else "127.0.0.1"
 
 
 class RuntimeMetricsConfig(StrictBaseModel):
@@ -28,11 +36,11 @@ class RuntimeMetricsConfig(StrictBaseModel):
         ),
     )
     host: str = Field(
-        default="127.0.0.1",
+        default_factory=default_metrics_host,
         description=(
-            "Address the runtime metrics endpoint binds to. Loopback by default, so a run on a laptop or shared "
-            "host is not reachable from the network; set 0.0.0.0 where a scraper reaches the run by its pod or "
-            "host IP."
+            "Address the runtime metrics endpoint binds to. Defaults to 0.0.0.0 inside a Kubernetes pod, where a "
+            "scraper reaches the run by pod IP, and to 127.0.0.1 anywhere else, so a laptop run is not reachable "
+            "from the network. Set 0.0.0.0 to scrape a container published with docker run -p."
         ),
     )
     port: int = Field(
@@ -47,6 +55,6 @@ class RuntimeMetricsConfig(StrictBaseModel):
 
 class ObservabilityConfig(StrictBaseModel):
     metrics: RuntimeMetricsConfig = Field(
-        default=RuntimeMetricsConfig(),
+        default_factory=RuntimeMetricsConfig,
         description="Runtime metrics inference-perf exports about the benchmark run itself.",
     )
