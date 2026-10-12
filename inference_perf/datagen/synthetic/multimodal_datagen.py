@@ -176,8 +176,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         text_len = 100
         # Sample from the raw config value: the base-class attribute only
-        # carries the structured Distribution view, and this field may hold
-        # an expression string.
+        # carries the filter bounds.
         if self.config.input_distribution is not None:
             text_len = int(sample_lengths(self.config.input_distribution, 1, self.rng)[0])
         text_str = self._generate_dummy_text(text_len)

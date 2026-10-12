@@ -50,12 +50,12 @@ class TestSharedPrefixLengthExpressions:
         with pytest.raises(ValidationError, match="one or the other"):
             SharedPrefix(question_len="Normal(50, 10)", question_distribution=Distribution(mean=50.0, min=1, max=100))
 
-    # The pre-existing forms keep working: a plain int and an inline
-    # Distribution parse to their own types, not strings.
-    def test_int_and_distribution_forms_unchanged(self) -> None:
+    # A plain int stays an int. A legacy Distribution block is rewritten on
+    # load to the expression string it stood for, clamped to its [min, max].
+    def test_int_kept_and_legacy_block_rewritten(self) -> None:
         sp = SharedPrefix(question_len=50, output_len=Distribution(mean=25.0, min=1, max=100))
         assert sp.question_len == 50
-        assert isinstance(sp.output_len, Distribution)
+        assert sp.output_len == "Min(Max(Normal(25, 200), 1), 100)"
 
 
 class TestDataConfigDistributionExpressions:
@@ -71,20 +71,24 @@ class TestDataConfigDistributionExpressions:
         assert config.input_distribution == "LogNormal(5.0, 0.5)"
         assert config.output_distribution == "Uniform(10, 100)"
 
-    # shareGPT filters its dataset by the distribution's min/max, which an
-    # expression string does not define; the scope validator rejects it at
-    # config-load time.
-    def test_expression_string_rejected_for_dataset_types(self) -> None:
-        with pytest.raises(ValidationError, match="only supported by"):
+    # shareGPT filters its dataset by the value's provable bounds, so an
+    # expression with an open side is rejected at config-load time and a
+    # clamped one is accepted.
+    def test_unbounded_expression_rejected_for_dataset_types(self) -> None:
+        with pytest.raises(ValidationError, match="provably bounded on both sides"):
             DataConfig(type=DataGenType.ShareGPT, input_distribution="Normal(512, 200)")
+        config = DataConfig(type=DataGenType.ShareGPT, input_distribution="Min(Max(Normal(512, 200), 10), 1024)")
+        assert config.input_distribution == "Min(Max(Normal(512, 200), 10), 1024)"
 
     # Invalid expression strings fail field validation before the scope check.
     def test_invalid_expression_rejected(self) -> None:
         with pytest.raises(ValidationError, match="unknown function"):
             DataConfig(type=DataGenType.Synthetic, input_distribution="Nrml(512, 200)")
 
-    # A Distribution stays a Distribution: the widened union does not disturb
-    # the structured form dataset generators rely on.
-    def test_distribution_form_unchanged(self) -> None:
+    # A legacy Distribution block on an IO field is rewritten on load to the
+    # expression generate_distribution drew from, clamped to its [min, max].
+    def test_legacy_block_rewritten_on_io_fields(self) -> None:
         config = DataConfig(type=DataGenType.Synthetic, input_distribution=Distribution(mean=512.0, min=10, max=1024))
-        assert isinstance(config.input_distribution, Distribution)
+        assert config.input_distribution == "Min(Max(Normal(512, 200), 10), 1024)"
+        uniform = DataConfig(type=DataGenType.Random, output_distribution=Distribution(type="uniform", min=10, max=100))
+        assert uniform.output_distribution == "Uniform(10, 100)"

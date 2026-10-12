@@ -32,7 +32,6 @@ import numpy as np
 
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig
-from inference_perf.config.common import Distribution
 from inference_perf.datagen.replay.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import tag_user_facing_events
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
@@ -72,10 +71,10 @@ def child_rng(parent_seed: int, *path: int) -> np.random.Generator:
     return np.random.default_rng([parent_seed, *path])
 
 
-def sample_int(dist: Optional[Union[Distribution, str]], rng: np.random.Generator, fallback: Union[Distribution, str]) -> int:
+def sample_int(dist: Optional[Union[int, str]], rng: np.random.Generator, fallback: Union[int, str]) -> int:
     """Resolve `dist` (or `fallback` if None) and draw a single deterministic int.
 
-    `dist` is a Distribution or an expression string. Always passes `rng`
+    `dist` is a number or an expression string. Always passes `rng`
     explicitly -- the util's default (unseeded) RNG would break determinism.
     """
     d = dist if dist is not None else fallback
@@ -457,15 +456,16 @@ def _render_system_head(
 # Determinism: every random draw comes from a child_rng derived from the
 # per-session seed and a stable graph-path tuple; no wall-clock, no hash().
 
-# Fallbacks for optional distribution knobs (used when the config leaves them unset).
-_FB_STEPS = Distribution(type="fixed", mean=2)
-_FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
-_FB_SUB_AGENTS = Distribution(type="uniform", min=2, max=4)
-_FB_PARALLEL = Distribution(type="fixed", mean=1)
+# Fallbacks for optional knobs (used when the config leaves them unset).
+_FB_STEPS = 2
+_FB_TOOL_DEFS = 8
+# the legacy uniform(2, 4) block's exact compilation: 2 and 4 keep their half-weight edges
+_FB_SUB_AGENTS = "Min(Uniform(2, 5), 4)"
+_FB_PARALLEL = 1
 # Wait-time fallbacks (seconds), each set to a realistic value for what it models:
 # a tool round-trip is ~1s; a human reading an answer and typing a follow-up is ~10s.
-_FB_TOOL_LATENCY = Distribution(type="fixed", mean=1)
-_FB_USER_THINK = Distribution(type="fixed", mean=10)
+_FB_TOOL_LATENCY = 1.0
+_FB_USER_THINK = 10.0
 # Output size of a non-terminal async-notification ack turn ("one sub-agent reported,
 # still waiting on the rest").
 #
@@ -474,7 +474,7 @@ _FB_USER_THINK = Distribution(type="fixed", mean=10)
 # fixed content alone, which would make every ack in a chain the identical literal and
 # render the per-notification RNG salts inert. 48 clears that floor while keeping the
 # turn short-form.
-_FB_ACK_TOKENS = Distribution(type="fixed", mean=48)
+_FB_ACK_TOKENS = 48
 
 # Minimum events an agent occupies: one principal call whose output IS the answer
 # (tool loop depth 0, no spawn). A tool loop or a spawn adds its own events on top,

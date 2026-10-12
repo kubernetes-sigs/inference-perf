@@ -29,6 +29,7 @@ import pytest
 
 from inference_perf.config import Distribution, DistributionType
 from inference_perf.utils.numeric.distribution import (
+    compile_legacy_distribution,
     distribution_to_expression,
     sample_from_distribution,
     sample_lengths,
@@ -152,13 +153,17 @@ class TestSampleLengths:
         result = sample_lengths(42, 5)
         assert result.tolist() == [42, 42, 42, 42, 42]
 
-    # A Distribution routes through sample_from_distribution: same config and
-    # seed give the identical array either way.
-    def test_distribution_matches_sample_from_distribution(self) -> None:
+    # A legacy block compiled through compile_legacy_distribution samples the
+    # same distribution sample_from_distribution did: Normal(100, 10) clipped
+    # to [0, 1000], so 5000 draws of each land within 1 token in mean and std.
+    def test_compiled_block_matches_sample_from_distribution(self) -> None:
         config = Distribution(type=DistributionType.NORMAL, mean=100.0, min=0, max=1000, std_dev=10.0)
-        via_lengths = sample_lengths(config, 100, np.random.default_rng(12))
-        direct = sample_from_distribution(config, 100, np.random.default_rng(12))
-        np.testing.assert_array_equal(via_lengths, direct)
+        compiled = compile_legacy_distribution(config)
+        assert compiled == "Min(Max(Normal(100, 10), 0), 1000)"
+        via_lengths = sample_lengths(compiled, 5000, np.random.default_rng(12))
+        direct = sample_from_distribution(config, 5000, np.random.default_rng(12))
+        assert abs(via_lengths.mean() - direct.mean()) < 1.0
+        assert abs(via_lengths.std() - direct.std()) < 1.0
 
     # An expression string samples as written and rounds to integers:
     # Uniform(10, 20) draws stay in [10, 20], and no bound is clamped on top
