@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientResponse
 
-from inference_perf.apis import UnaryResponseMetrics
+from inference_perf.apis import StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis import chat as chat_module
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIType
@@ -178,6 +178,31 @@ async def test_process_response_streaming_uses_server_prompt_tokens() -> None:
     info = await data.process_response(response, _make_config(streaming=True), tokenizer)
 
     assert info.request_metrics.text.input_tokens == 17
+
+
+@pytest.mark.asyncio
+async def test_process_response_streaming_times_reasoning_chunks() -> None:
+    """Reasoning chunks must be timed, or the run reports no TTFT, TPOT or ITL."""
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="hi")])
+    tokenizer = _make_tokenizer()
+
+    sse = (
+        b'data: {"choices": [{"delta": {"role": "assistant", "content": ""}}]}\n\n'
+        b'data: {"choices": [{"delta": {"reasoning": "It"}}]}\n\n'
+        b'data: {"choices": [{"delta": {"reasoning": " seems"}}]}\n\n'
+        b'data: {"choices": [{"delta": {"reasoning_content": " so"}}]}\n\n'
+        b'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 3}}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    response = cast(ClientResponse, _FakeStreamingResponse([sse]))
+
+    info = await data.process_response(response, _make_config(streaming=True), tokenizer)
+
+    metrics = info.response_metrics
+    assert isinstance(metrics, StreamedResponseMetrics)
+    assert len(metrics.output_token_times) == 3
+    assert metrics.output_token_times == metrics.chunk_times
+    assert metrics.output_tokens == 3
 
 
 def _reset_multimodal_progress_state() -> None:
