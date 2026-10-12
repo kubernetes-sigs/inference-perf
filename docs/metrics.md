@@ -25,12 +25,15 @@ For the Prometheus metrics inference-perf exports about its own runtime (as oppo
 | **Normalized time per output token** | `e2e request latency / output tokens` | ms per output token | Normalizing the request latency at the output token level for comparing different use cases
 | **Inter Token Latency (ITL)** | `time between output token generation within a request` | ms per output token | Calculating the time it takes for the user to receive successive tokens after the first token, but at a more granular level than TPOT which averages the token latency within a request
 
+The ms units are what the CLI summary table shows. The JSON reports record every latency in seconds.
+
 ### Reasoning models
 
-Reasoning models stream their reasoning on a separate channel (`reasoning_content` or
-`reasoning` on OpenAI-compatible servers, `thinking` blocks on the Anthropic Messages API)
-before the answer. The server generates and counts those tokens like any other, so TTFT, TPOT,
-ITL and output token counts include them, and TTFT is the time to the first reasoning token.
+Reasoning models stream their reasoning on a separate channel (`reasoning` or
+`reasoning_content` on OpenAI-compatible servers, `reasoning` when a server sends both,
+`thinking` blocks on the Anthropic Messages API) before the answer. The server generates
+and counts those tokens like any other, so TTFT, TPOT, ITL and output token counts include
+them, and TTFT is the time to the first reasoning token.
 TTFO is the time to the first token of the answer itself. The gap between TTFT and TTFO is the
 time spent reasoning before the answer started.
 

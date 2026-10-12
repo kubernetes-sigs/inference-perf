@@ -554,10 +554,9 @@ REASONING_THEN_CONTENT_CHUNKS = [
 @pytest.mark.asyncio
 async def test_parse_sse_stream_reasoning_tracked_separately_from_content() -> None:
     """Reasoning models (gpt-oss, DeepSeek-R1, QwQ) stream delta.reasoning_content
-    before delta.content. The channels must stay separate (#559): reasoning
-    timestamps anchor TTFT, while output_text (the basis for output_len) and
-    chunk_times (the basis for TPOT/ITL) must remain content-only so reasoning
-    doesn't count as user-facing output."""
+    before delta.content. The parser keeps the channels apart (#559). TTFT, TPOT
+    and ITL read the merged timeline and output_len counts both texts, while
+    chunk_times stays the content channel alone and gives TTFO."""
     parsed = await parse_sse_stream(
         make_response(REASONING_THEN_CONTENT_CHUNKS), extract_delta_content, extract_delta_reasoning
     )

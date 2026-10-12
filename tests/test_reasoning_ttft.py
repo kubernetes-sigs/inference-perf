@@ -350,3 +350,116 @@ async def test_anthropic_unary_counts_thinking_without_usage() -> None:
 
     assert isinstance(info.response_metrics, UnaryResponseMetrics)
     assert info.response_metrics.output_tokens == 4
+
+
+# A streamed chat request with raw chunks, so the tokenizer correction runs.
+# content and reasoning are (arrival time, text) pairs; output_token_times is the
+# merged timeline the API layer records.
+def _chunked_metric(
+    start_time: float, content: List[tuple[float, str]], reasoning: Optional[List[tuple[float, str]]] = None
+) -> RequestLifecycleMetric:
+    reasoning = reasoning or []
+    return RequestLifecycleMetric(
+        scheduled_time=start_time,
+        start_time=start_time,
+        end_time=start_time + 10.0,
+        request_data="prompt",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=1)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=sum(len(text.split()) for _, text in content + reasoning),
+                response_chunks=[json.dumps({"choices": [{"delta": {"content": text}}]}) for _, text in content],
+                chunk_times=[t for t, _ in content],
+                reasoning_chunks=[json.dumps({"choices": [{"delta": {"reasoning_content": text}}]}) for _, text in reasoning],
+                reasoning_chunk_times=[t for t, _ in reasoning],
+                output_token_times=sorted(t for t, _ in content + reasoning),
+            ),
+        ),
+        error=None,
+    )
+
+
+# Start 1.0, content " " at 2.0 (0 words), "hello" at 2.5, "world" at 3.0.
+# The tokenizer drops the blank chunk, so TTFT = TTFO = 1.5 (not TTFO = 1.0).
+# With reasoning "think" at 1.5 first: TTFT = 0.5, TTFO = 1.5.
+def test_first_output_token_skips_chunks_that_tokenize_to_nothing() -> None:
+    """TTFO never lands before TTFT, since both read the timeline after
+    tokenizer correction."""
+    content = [(2.0, " "), (2.5, "hello"), (3.0, "world")]
+
+    plain = summarize_requests([_chunked_metric(1.0, content)], [50], tokenizer=_word_tokenizer())
+    assert plain.successes["latency"]["time_to_first_token"]["mean"] == pytest.approx(1.5)
+    assert plain.successes["latency"]["time_to_first_output_token"]["mean"] == pytest.approx(1.5)
+
+    reasoned = summarize_requests(
+        [_chunked_metric(1.0, content, reasoning=[(1.5, "think")])], [50], tokenizer=_word_tokenizer()
+    )
+    assert reasoned.successes["latency"]["time_to_first_token"]["mean"] == pytest.approx(0.5)
+    assert reasoned.successes["latency"]["time_to_first_output_token"]["mean"] == pytest.approx(1.5)
+
+
+# Tokenizer stub: one token per word, plus a BOS when add_special_tokens is on
+# (the default), the way a real tokenizer counts a sequence start.
+def _bos_word_tokenizer() -> MagicMock:
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = MagicMock(
+        side_effect=lambda text, add_special_tokens=True: len(text.split()) + (1 if add_special_tokens and text else 0)
+    )
+    return tokenizer
+
+
+# Non-streamed Anthropic, no usage, BOS-adding tokenizer. Thinking "a b c" plus
+# text "done" gives output_tokens = 4. Text "done" alone gives 1. No BOS either way.
+@pytest.mark.asyncio
+async def test_anthropic_fallback_count_adds_no_bos() -> None:
+    """Generated text continues the prompt, so the fallback counts it the way
+    the chat path does."""
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=False)
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
+
+    for content, expected in (
+        ([{"type": "thinking", "thinking": "a b c"}, {"type": "text", "text": "done"}], 4),
+        ([{"type": "text", "text": "done"}], 1),
+    ):
+        response = cast(ClientResponse, FakeStreamingResponse(json_body={"content": content}))
+        info = await data.process_response(response, config, _bos_word_tokenizer())
+        assert isinstance(info.response_metrics, UnaryResponseMetrics)
+        assert info.response_metrics.output_tokens == expected
+
+
+# A reasoning chunk carrying both fields, reasoning "new" and reasoning_content
+# "old old", then content "x" (server says 2). Every path reads "new": streamed
+# and unary output_tokens = 2, and the corrected timeline has 2 entries.
+@pytest.mark.asyncio
+async def test_reasoning_field_wins_over_reasoning_content() -> None:
+    """vLLM renamed reasoning_content to reasoning. The new name wins, the rule
+    the replay path already follows."""
+    sse = _build_sse(
+        [
+            {"choices": [{"delta": {"reasoning": "new", "reasoning_content": "old old"}}]},
+            {"choices": [{"delta": {"content": "x"}}]},
+            {"choices": [], "usage": {"completion_tokens": 2}},
+        ]
+    )
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
+    tokenizer = _word_tokenizer()
+
+    streamed = await data.process_response(
+        cast(ClientResponse, FakeStreamingResponse(sse)), APIConfig(type=APIType.Chat, streaming=True), tokenizer
+    )
+    assert isinstance(streamed.response_metrics, StreamedResponseMetrics)
+    assert streamed.response_metrics.output_tokens == 2
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=10.0, request_data="prompt", info=streamed, error=None
+    )
+    result = summarize_requests([metric], [50], tokenizer=tokenizer)
+    assert len(streamed.response_metrics.output_token_times) == 2
+    assert result.successes["token_count_mismatches"] == 0
+
+    body = {"choices": [{"message": {"content": "x", "reasoning": "new", "reasoning_content": "old old"}}]}
+    unary = await data.process_response(
+        cast(ClientResponse, FakeStreamingResponse(json_body=body)), APIConfig(type=APIType.Chat, streaming=False), tokenizer
+    )
+    assert isinstance(unary.response_metrics, UnaryResponseMetrics)
+    assert unary.response_metrics.output_tokens == 2

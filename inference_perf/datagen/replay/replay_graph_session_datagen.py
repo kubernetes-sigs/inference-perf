@@ -54,7 +54,7 @@ from inference_perf.apis.anthropic_messages import (
     parse_anthropic_stream_response,
     parse_anthropic_thinking,
 )
-from inference_perf.apis.chat import ChatMessage
+from inference_perf.apis.chat import ChatMessage, reasoning_field
 from inference_perf.payloads import RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
@@ -1020,11 +1020,10 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
 
         actual_tool_names: List[str] = []
         if config.streaming:
-            # Accumulate tool_call chunks and reasoning_content alongside text content.
+            # Accumulate tool_call chunks alongside text content.
             # delta.tool_calls is a list of partial objects; each chunk carries an
             # index that identifies which tool call it belongs to.
             tool_call_chunks = {}
-            reasoning_content_chunks: list[str] = []
 
             def _extract_streaming_content(data: Dict[str, Any]) -> Optional[str]:
                 delta = data.get("choices", [{}])[0].get("delta", {})
@@ -1044,24 +1043,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     if chunk.get("id"):
                         tool_call_chunks[idx]["id"] = chunk["id"]
 
-                # Accumulate reasoning chunks (prefer "reasoning", fall back to "reasoning_content")
-                reasoning_chunk = delta.get("reasoning") or delta.get("reasoning_content")
-                if reasoning_chunk is not None:
-                    reasoning_content_chunks.append(str(reasoning_chunk))
-
                 content = delta.get("content")
                 return str(content) if content is not None else None
 
             parsed = await parse_sse_stream(
                 response,
                 extract_content=_extract_streaming_content,
-                # Reasoning text itself is accumulated above (which also covers
-                # chunks carrying both channels); this extractor is what gets
-                # reasoning-only chunks timestamped into the token timeline (#559).
-                extract_reasoning=lambda data: (
-                    data.get("choices", [{}])[0].get("delta", {}).get("reasoning_content")
-                    or data.get("choices", [{}])[0].get("delta", {}).get("reasoning")
-                ),
+                extract_reasoning=lambda data: reasoning_field(data.get("choices", [{}])[0].get("delta", {})),
             )
             text_content, chunk_times, response_chunks, server_usage = (
                 parsed.output_text,
@@ -1072,7 +1060,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
             raw_content = parsed.raw_content
 
             # Combine reasoning_content with text_content in output_text (used for token count)
-            reasoning_text = "".join(reasoning_content_chunks) if reasoning_content_chunks else ""
+            reasoning_text = parsed.reasoning_text
             if reasoning_text:
                 output_text = reasoning_text + text_content
             else:

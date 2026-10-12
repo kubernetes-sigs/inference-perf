@@ -27,6 +27,7 @@ import numpy as np
 from pydantic import BaseModel, model_serializer
 
 from inference_perf.apis import RequestLifecycleMetric, ResponseMetrics, SessionLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis.chat import reasoning_field
 from inference_perf.client.server_metrics import ServerMetricsClient, PerfRuntimeParameters
 from inference_perf.client.server_metrics.base import ModelServerMetrics, StageRuntimeInfo, StageStatus
 from inference_perf.client.server_metrics.prometheus_client import PrometheusMetricsClient
@@ -609,9 +610,7 @@ def _extract_chunk_reasoning(data: dict[str, Any]) -> Optional[str]:
     """Reasoning text from a parsed SSE chunk: OpenAI-style delta fields or an Anthropic thinking event."""
     if choices := data.get("choices"):
         delta = choices[0].get("delta") or {}
-        if isinstance(delta, dict) and (reasoning := delta.get("reasoning_content") or delta.get("reasoning")):
-            return str(reasoning)
-        return None
+        return reasoning_field(delta) if isinstance(delta, dict) else None
     event_type = data.get("type")
     if event_type == "content_block_delta":
         delta = data.get("delta") or {}
@@ -652,12 +651,20 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     ):
         return False
 
-    output_token_times: list[float] = []
-    accumulated_tokens = 0
     expected_output_tokens = (
         m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
     )
+    output_token_times = retokenize_output_token_times(m.info.response_metrics, tokenizer)
+    m.info.response_metrics.output_token_times = output_token_times
+    # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
+    # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
 
+    return expected_output_tokens is not None and len(output_token_times) != expected_output_tokens
+
+
+def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tokenizer: CustomTokenizer) -> list[float]:
+    """One timestamp per generated token, from re-tokenizing the raw content and reasoning chunks."""
+    output_token_times: list[float] = []
     token_cache = getattr(tokenizer, "_count_tokens_cache", None)
     if not isinstance(token_cache, dict):
         token_cache = {}
@@ -669,7 +676,6 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     # Content and reasoning-only chunks, in arrival order. The server counts
     # reasoning tokens in completion_tokens, so they belong on the timeline
     # and in the mismatch accounting alike (#559).
-    response_metrics = m.info.response_metrics
     chunks = heapq.merge(
         zip(response_metrics.chunk_times, response_metrics.response_chunks, strict=True),
         zip(response_metrics.reasoning_chunk_times, response_metrics.reasoning_chunks, strict=True),
@@ -696,13 +702,8 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
             # latency: intra-chunk ITL is 0, inter-chunk ITL absorbs the full gap. TPOT still
             # reports the smoothed average.
             output_token_times.extend([chunk_time] * tokens_in_chunk)
-            accumulated_tokens += tokens_in_chunk
 
-    m.info.response_metrics.output_token_times = output_token_times
-    # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message
-    # count_tokens value, and surface the exact server count as `output_tokens`. See #564.
-
-    return expected_output_tokens is not None and accumulated_tokens != expected_output_tokens
+    return output_token_times
 
 
 def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optional[float]:
@@ -712,7 +713,10 @@ def first_content_token_time(response_metrics: StreamedResponseMetrics) -> Optio
     and no reasoning predates the split, so its output_token_times is content.
     """
     if response_metrics.chunk_times:
-        return response_metrics.chunk_times[0]
+        # Tokenizer correction drops chunks that re-tokenize to nothing from the
+        # timeline. Skipping them here too keeps TTFO from landing before TTFT.
+        token_times = set(response_metrics.output_token_times)
+        return next((t for t in response_metrics.chunk_times if t in token_times), None)
     if response_metrics.output_token_times and not response_metrics.reasoning_chunk_times:
         return response_metrics.output_token_times[0]
     return None

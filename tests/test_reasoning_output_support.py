@@ -501,6 +501,41 @@ class TestReasoningFieldFallback:
         assert msg is not None
         assert msg["reasoning_content"] == "New field wins."
 
+    # Streamed delta with reasoning "New field wins." and reasoning_content "Old
+    # field ignored.", then content "Answer.". Same rule as the non-streamed path:
+    # the stored reasoning_content is "New field wins.".
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_preferred_over_reasoning_content(self) -> None:
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+        deltas = [
+            {"reasoning": "New field wins.", "reasoning_content": "Old field ignored."},
+            {"content": "Answer."},
+        ]
+        response = _make_streaming_response(deltas, completion_tokens=4)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "New field wins.Answer."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["reasoning_content"] == "New field wins."
+
+    # One delta carrying reasoning "Think. " and content "Done.". The reasoning
+    # still lands in output_text, "Think. Done.", and in the stored message.
+    @pytest.mark.asyncio
+    async def test_streaming_chunk_with_both_channels_keeps_reasoning(self) -> None:
+        registry = EventOutputRegistry()
+        api_data = _make_session_api_data(registry=registry)
+        response = _make_streaming_response([{"reasoning": "Think. ", "content": "Done."}], completion_tokens=2)
+
+        info = await api_data.process_response(response, _make_config(streaming=True), _make_tokenizer())
+
+        assert info.output_text == "Think. Done."
+        msg = registry.get_message_by_event_id("session_1:event_0")
+        assert msg is not None
+        assert msg["reasoning_content"] == "Think. "
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -20,7 +20,7 @@ the partial-report's job (see ``test_partial_report.py``).
 
 import json
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pytest
 
@@ -321,3 +321,51 @@ def test_chunk_retokenization_counts_fragments_without_special_tokens() -> None:
     # TPOT spans the timeline over the client whole-message count (3 tokens).
     assert aggregate.latency.time_per_output_token is not None
     assert aggregate.latency.time_per_output_token.mean == pytest.approx(0.2 / 2, abs=1e-9)
+
+
+# Fallback path (no output_token_times). Reasoning "a b" at +0.2, content "c" at
+# +0.5: timeline [+0.2, +0.2, +0.5], so TTFT = 0.2 and ITL mean = 0.3 / 2 = 0.15.
+# Reasoning only, "a b" at +0.2 and "c" at +0.4: TTFT = 0.2 rather than missing.
+@pytest.mark.parametrize(
+    "content, reasoning, expected_itl",
+    [
+        ([(0.5, "c")], [(0.2, "a b")], 0.15),
+        ([], [(0.2, "a b"), (0.4, "c")], 0.1),
+    ],
+)
+def test_chunk_retokenization_counts_reasoning_chunks(
+    content: List[Tuple[float, str]], reasoning: List[Tuple[float, str]], expected_itl: float
+) -> None:
+    """The fallback re-tokenizes reasoning chunks the same way the native
+    reports do (#559)."""
+    start = 100.0
+    metric = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=start - 0.001,
+        start_time=start,
+        end_time=start + 0.8,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=128)),
+            response_metrics=StreamedResponseMetrics(
+                response_chunks=[json.dumps({"choices": [{"delta": {"content": text}}]}) for _, text in content],
+                chunk_times=[start + t for t, _ in content],
+                reasoning_chunks=[json.dumps({"choices": [{"delta": {"reasoning": text}}]}) for _, text in reasoning],
+                reasoning_chunk_times=[start + t for t, _ in reasoning],
+                output_tokens=3,
+                output_token_times=[],
+            ),
+        ),
+        error=None,
+    )
+
+    results = build_results([metric], tokenizer=_FragmentTokenizer())
+
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.latency is not None
+    assert aggregate.latency.time_to_first_token is not None
+    assert aggregate.latency.time_to_first_token.mean == pytest.approx(0.2, abs=1e-9)
+    assert aggregate.latency.inter_token_latency is not None
+    assert aggregate.latency.inter_token_latency.mean == pytest.approx(expected_itl, abs=1e-9)
