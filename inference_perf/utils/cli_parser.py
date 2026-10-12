@@ -4,6 +4,8 @@ import typing
 from enum import Enum
 from pydantic import BaseModel, SecretStr
 
+from inference_perf.config.common import Distribution, LegacyDistributionBlock
+
 
 def unwrap_type(annotation: typing.Any) -> typing.Tuple[typing.Any, bool]:
     origin = typing.get_origin(annotation)
@@ -73,6 +75,13 @@ def add_pydantic_args(
         help_text = field.description or f"Matches {prefix}{name} in config"
 
         annotation, is_optional = unwrap_type(field.annotation)
+        # Pydantic hoists a field's own Annotated metadata into field.metadata, but
+        # leaves it in place inside Optional[Annotated[...]]; look in both.
+        legacy_block = next((m for m in field.metadata if isinstance(m, LegacyDistributionBlock)), None)
+        if typing.get_origin(annotation) is typing.Annotated:
+            inner, *metadata = typing.get_args(annotation)
+            legacy_block = legacy_block or next((m for m in metadata if isinstance(m, LegacyDistributionBlock)), None)
+            annotation = inner
         origin = typing.get_origin(annotation)
 
         # Recurse into nested BaseModels
@@ -121,15 +130,10 @@ def add_pydantic_args(
             else:
                 parser.add_argument(arg_name, type=str, help=f"{help_text} (handled as string)", default=argparse.SUPPRESS)
                 docs.append(f"| `{arg_name}` | string | {help_text} |")
-                # A field that is a model OR a scalar (e.g. a Distribution or an expression
-                # string) keeps the model's nested flags too, so `--x.mean 600` still works.
-                models = [
-                    arg
-                    for arg in typing.get_args(annotation)
-                    if origin is typing.Union and isinstance(arg, type) and issubclass(arg, BaseModel)
-                ]
-                if len(models) == 1:
-                    add_pydantic_args(parser, models[0], prefix=f"{prefix}{name}.", docs=docs)
+                # A field that still accepts the deprecated distribution block keeps the
+                # block's nested flags too, so `--x.mean 600` works until the block goes.
+                if legacy_block is not None:
+                    add_pydantic_args(parser, Distribution, prefix=f"{prefix}{name}.", docs=docs)
 
     return docs
 

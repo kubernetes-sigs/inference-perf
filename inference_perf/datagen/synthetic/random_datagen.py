@@ -49,8 +49,7 @@ class RandomDataGenerator(DataGenerator, LazyLoadDataMixin):
 
         if self.trace is None:
             # Read the raw config values, not the base-class attributes: those
-            # only carry the structured Distribution view, and these fields
-            # may hold expression strings.
+            # only carry the filter bounds.
             input_spec = config.input_distribution
             output_spec = config.output_distribution
             if input_spec is None or output_spec is None:

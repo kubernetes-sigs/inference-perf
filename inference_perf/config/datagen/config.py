@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from enum import Enum
-from typing import Optional, Union
+from typing import Optional
 
-from pydantic import AliasChoices, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, ConfigDict, Field, model_validator
 
-from inference_perf.config.common import Distribution, StrictBaseModel, validate_length_expression
+from inference_perf.config.common import IOLengthValue, LengthValue, StrictBaseModel
 from inference_perf.config.datagen.multimodal import SyntheticMultimodalDatagenConfig
 from inference_perf.config.datagen.replay import (
     ConversationReplayConfig,
@@ -62,20 +63,20 @@ class SharedPrefix(StrictBaseModel):
         description="Number of prompts generated per shared system prompt.",
     )
 
-    system_prompt_len: Union[int, Distribution, str] = Field(
+    system_prompt_len: LengthValue = Field(
         default=100,
-        description="Length of the shared system prompt in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        description="Length of the shared system prompt in tokens: a fixed value or an expression string"
+        " like 'Min(Max(Normal(512, 200), 10), 1024)'.",
     )
-    question_len: Union[int, Distribution, str] = Field(
+    question_len: LengthValue = Field(
         default=50,
-        description="Length of the question part in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        description="Length of the question part in tokens: a fixed value or an expression string"
+        " like 'Min(Max(Normal(512, 200), 10), 1024)'.",
     )
-    output_len: Union[int, Distribution, str] = Field(
+    output_len: LengthValue = Field(
         default=50,
-        description="Requested output length in tokens: a fixed value, a distribution,"
-        " or an expression string like 'Normal(512, 200)'.",
+        description="Requested output length in tokens: a fixed value or an expression string"
+        " like 'Min(Max(Normal(512, 200), 10), 1024)'.",
     )
     max_model_len: Optional[int] = Field(
         default=None,
@@ -87,13 +88,13 @@ class SharedPrefix(StrictBaseModel):
     )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible prompt generation.")
 
-    # Legacy distribution fields — kept for backward compatibility.
-    # Prefer using inline distribution syntax on question_len/output_len instead.
-    question_distribution: Optional[Distribution] = Field(
-        default=None, description="Legacy question length distribution. Prefer an inline distribution on 'question_len'."
+    # Legacy distribution fields, kept for backward compatibility.
+    # Prefer an expression string on question_len/output_len instead.
+    question_distribution: Optional[LengthValue] = Field(
+        default=None, description="Legacy question length distribution. Prefer an expression string on 'question_len'."
     )
-    output_distribution: Optional[Distribution] = Field(
-        default=None, description="Legacy output length distribution. Prefer an inline distribution on 'output_len'."
+    output_distribution: Optional[LengthValue] = Field(
+        default=None, description="Legacy output length distribution. Prefer an expression string on 'output_len'."
     )
 
     enable_multi_turn_chat: bool = Field(
@@ -104,18 +105,11 @@ class SharedPrefix(StrictBaseModel):
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
     )
 
-    @field_validator("system_prompt_len", "question_len", "output_len", mode="after")
-    @classmethod
-    def validate_length_expressions(cls, value: Union[int, Distribution, str]) -> Union[int, Distribution, str]:
-        if isinstance(value, str):
-            validate_length_expression(value)
-        return value
-
     @model_validator(mode="after")
     def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
         # A plain int is the only question_len/output_len form the legacy
-        # fields may accompany; an inline distribution or expression string
-        # would silently lose to them otherwise.
+        # fields may accompany; an expression string would silently lose to
+        # them otherwise.
         if not isinstance(self.question_len, int) and self.question_distribution is not None:
             raise ValueError(
                 "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'."
@@ -147,17 +141,17 @@ class DataConfig(StrictBaseModel):
         description="Path to a text file to use as the prompt tokenization corpus instead of the default hardcoded sonnet",
     )
 
-    input_distribution: Optional[Union[Distribution, str]] = Field(
+    input_distribution: Optional[IOLengthValue] = Field(
         default=None,
-        description="Input (prompt) length distribution in tokens: a distribution, or (for the 'synthetic' and"
-        " 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's"
-        " min/max as filter bounds.",
+        description="Input (prompt) length in tokens: a fixed value or an expression string like"
+        " 'Min(Max(Normal(512, 200), 10), 1024)'. The 'synthetic' and 'random' types sample prompt lengths"
+        " from it; dataset types use its provable bounds as token filter bounds.",
     )
-    output_distribution: Optional[Union[Distribution, str]] = Field(
+    output_distribution: Optional[IOLengthValue] = Field(
         default=None,
-        description="Output length distribution in tokens: a distribution, or (for the 'synthetic' and"
-        " 'random' types) an expression string like 'Normal(512, 200)'. Dataset types use the distribution's"
-        " min/max as filter bounds.",
+        description="Output length in tokens: a fixed value or an expression string like"
+        " 'Min(Max(Normal(512, 200), 10), 1024)'. The 'synthetic' and 'random' types sample output lengths"
+        " from it; dataset types use its provable bounds as token filter bounds.",
     )
     shared_prefix: Optional[SharedPrefix] = Field(
         default=None, description="Shared prefix generator settings. Only used by the 'shared_prefix' type."
@@ -201,26 +195,25 @@ class DataConfig(StrictBaseModel):
         ),
     )
 
-    @field_validator("input_distribution", "output_distribution", mode="after")
-    @classmethod
-    def validate_distribution_expressions(
-        cls, value: Optional[Union[Distribution, str]]
-    ) -> Optional[Union[Distribution, str]]:
-        if isinstance(value, str):
-            validate_length_expression(value)
-        return value
-
     @model_validator(mode="after")
-    def validate_expression_distribution_scope(self) -> "DataConfig":
-        # Dataset generators use input/output_distribution min/max as filter
-        # bounds, which an expression string does not carry; only the
-        # generators that sample lengths from the field can take one.
-        if isinstance(self.input_distribution, str) or isinstance(self.output_distribution, str):
-            if self.type not in (DataGenType.Synthetic, DataGenType.Random):
+    def validate_dataset_filter_bounds(self) -> "DataConfig":
+        # Dataset generators use input/output_distribution as token filter
+        # bounds, so for them the value has to be provably bounded on both
+        # sides; only the generators that sample lengths from the field can
+        # take an open-ended expression.
+        if self.type in (DataGenType.Synthetic, DataGenType.Random):
+            return self
+        from inference_perf.utils.numeric.distribution import value_bounds
+
+        for name in ("input_distribution", "output_distribution"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            low, high = value_bounds(value)
+            if math.isinf(low) or math.isinf(high):
                 raise ValueError(
-                    f"An expression string for input_distribution/output_distribution is only supported by the"
-                    f" 'synthetic' and 'random' data generators; type '{self.type.value}' uses the distribution's"
-                    f" min/max bounds, which an expression does not define."
+                    f"{name} {value!r} is used by the '{self.type.value}' data generator as token filter bounds, so it"
+                    f" must be provably bounded on both sides, e.g. 'Uniform(10, 1024)' or 'Min(Max({value}, 10), 1024)'."
                 )
         return self
 

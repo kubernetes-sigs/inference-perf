@@ -58,33 +58,121 @@ def distribution_to_expression(config: "Distribution", *, integer: bool = True) 
 
     if config.type == DistributionType.NORMAL:
         if config.std_dev <= 0:
-            return repr(float(config.mean))
-        return f"Normal({float(config.mean)!r}, {float(config.std_dev)!r})"
+            return _num(config.mean)
+        return f"Normal({_num(config.mean)}, {_num(config.std_dev)})"
 
     if config.type == DistributionType.SKEW_NORMAL:
         if config.std_dev <= 0:
-            return repr(float(config.mean))
+            return _num(config.mean)
         delta = config.skew / sqrt(1.0 + config.skew**2)
         tail = sqrt(1.0 - delta**2)
-        return f"{float(config.mean)!r} + {float(config.std_dev)!r}*({delta!r}*Abs(Normal(0, 1)) + {tail!r}*Normal(0, 1))"
+        return f"{_num(config.mean)} + {_num(config.std_dev)}*({delta!r}*Abs(Normal(0, 1)) + {tail!r}*Normal(0, 1))"
 
     if config.type == DistributionType.LOGNORMAL:
         if config.mean <= 0:
             raise ValueError("Lognormal distribution requires mean > 0.")
         if config.std_dev <= 0:
-            return repr(float(config.mean))
+            return _num(config.mean)
         sigma_sq = log(1.0 + (config.std_dev / config.mean) ** 2)
         mu = log(config.mean) - sigma_sq / 2.0
         return f"LogNormal({mu!r}, {sqrt(sigma_sq)!r})"
 
     if config.type == DistributionType.UNIFORM:
-        return f"Uniform({float(config.min)!r}, {float(config.max + int(integer))!r})"
+        return f"Uniform({_num(config.min)}, {_num(config.max + int(integer))})"
 
     if config.type == DistributionType.POISSON:
         lam = config.mean if config.mean > 0 else 1.0
-        return f"Poisson({float(lam)!r})"
+        return f"Poisson({_num(lam)})"
 
     raise ValueError(f"Unsupported distribution type: {config.type}")
+
+
+def _num(value: float) -> str:
+    """Render a number the way a config author would write it: ``512`` not ``512.0``."""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else repr(value)
+
+
+def _io_distribution_core(min: int, max: int, mean: float, std_dev: float, dist_type: str) -> str:
+    """The expression :func:`generate_distribution` draws from, before its clip-and-round tail.
+
+    Its parameterisations differ from :func:`distribution_to_expression`: the
+    lognormal moment-matches ``(value - min)`` and shifts by ``min``, the
+    uniform draws from ``[min, max]`` inclusive, and "normal" rejects a mean
+    outside the bounds.
+    """
+    if dist_type == "uniform":
+        return f"Uniform({_num(min)}, {_num(max)})" if min < max else _num(min)
+    if dist_type == "lognormal":
+        # Parameterise the underlying normal so the *lognormal* has the
+        # requested mean/std_dev, then shift so that ``min`` maps to 0.
+        shifted_mean = mean - min
+        if shifted_mean <= 0:
+            shifted_mean = 1.0
+        if std_dev == 0:
+            return _num(min + shifted_mean)
+        sigma_sq = log(1.0 + (std_dev / shifted_mean) ** 2)
+        mu = log(shifted_mean) - sigma_sq / 2.0
+        return f"{_num(min)} + LogNormal({mu!r}, {sqrt(sigma_sq)!r})"
+    if dist_type == "normal":
+        if mean < min or mean > max:
+            raise ValueError("Mean cannot be outside min and max range.")
+        return f"Normal({_num(mean)}, {_num(std_dev)})" if std_dev > 0 else _num(mean)
+    raise ValueError(f"Unknown dist_type {dist_type!r}. Supported types: 'normal', 'lognormal', 'uniform', 'fixed'.")
+
+
+def compile_legacy_distribution(config: "Distribution", *, integer: bool = True, io: bool = False) -> Union[int, float, str]:
+    """Compile a legacy Distribution block into the config value that replaces it.
+
+    This is the rewrite a deprecation warning shows the config author, so it
+    carries the block's whole contract, clipping included: a ``fixed`` block
+    becomes its (truncated) mean as a bare number, a degenerate block with no
+    spread becomes its clamped mean, and every other block becomes its
+    distribution wrapped in ``Min``/``Max`` to the block's ``[min, max]``,
+    with a wrapper dropped when the distribution's own support already
+    respects that side. Rounding is not part of the string; the sampling site
+    decides that, as it does for any expression.
+
+    Args:
+        config: The legacy block.
+        integer: Whether the field holds whole numbers (lengths, counts) or
+            fractions (seconds), which decides the uniform's upper edge and
+            the type of a constant result.
+        io: Compile with :func:`generate_distribution`'s parameterisations,
+            which the IO distribution fields of the synthetic and random
+            generators used, instead of :func:`sample_from_distribution`'s.
+    """
+    from inference_perf.config import DistributionType
+
+    def constant(value: float) -> Union[int, float]:
+        return int(value) if integer else float(value)
+
+    if config.type == DistributionType.FIXED:
+        return constant(config.mean)
+
+    core: Optional[str] = None
+    if io and config.type in (DistributionType.NORMAL, DistributionType.LOGNORMAL, DistributionType.UNIFORM):
+        try:
+            core = _io_distribution_core(config.min, config.max, config.mean, config.std_dev, config.type.value)
+        except ValueError:
+            # A normal whose mean sits outside [min, max]: generate_distribution
+            # refused it, but a dataset type only ever read the bounds, so it
+            # has to keep loading. The clamped form keeps those bounds.
+            core = None
+    if core is None:
+        core = distribution_to_expression(config, integer=integer)
+
+    expression = Expression(core, allow_time=False)
+    if expression.is_constant:
+        return constant(min(max(float(expression.sample()), config.min), config.max))
+
+    bounds = expression.bounds
+    lo, hi = bounds if bounds is not None else (float("-inf"), float("inf"))
+    if lo < config.min:
+        core = f"Max({core}, {_num(config.min)})"
+    if hi > config.max:
+        core = f"Min({core}, {_num(config.max)})"
+    return core
 
 
 def generate_distribution(
@@ -132,26 +220,7 @@ def generate_distribution(
     if dist_type == "fixed":
         return cast(NDArray[np.int_], np.full(total_count, int(mean), dtype=int))
 
-    if dist_type == "uniform":
-        raw = f"Uniform({float(min)!r}, {float(max)!r})" if min < max else repr(float(min))
-    elif dist_type == "lognormal":
-        # Parameterise the underlying normal so the *lognormal* has the
-        # requested mean/std_dev, then shift so that ``min`` maps to 0.
-        shifted_mean = mean - min
-        if shifted_mean <= 0:
-            shifted_mean = 1.0
-        if std_dev == 0:
-            raw = repr(float(min + shifted_mean))
-        else:
-            sigma_sq = log(1.0 + (std_dev / shifted_mean) ** 2)
-            mu = log(shifted_mean) - sigma_sq / 2.0
-            raw = f"{float(min)!r} + LogNormal({mu!r}, {sqrt(sigma_sq)!r})"
-    elif dist_type == "normal":
-        if mean < min or mean > max:
-            raise ValueError("Mean cannot be outside min and max range.")
-        raw = f"Normal({float(mean)!r}, {float(std_dev)!r})" if std_dev > 0 else repr(float(mean))
-    else:
-        raise ValueError(f"Unknown dist_type {dist_type!r}. Supported types: 'normal', 'lognormal', 'uniform', 'fixed'.")
+    raw = _io_distribution_core(min, max, mean, std_dev, dist_type)
 
     if rng is None:
         rng = np.random.default_rng()
@@ -167,19 +236,15 @@ def generate_distribution(
 
 
 def sample_values(
-    value: Union[int, float, "Distribution", str],
+    value: Union[int, float, str],
     count: int,
     rng: Optional[np.random.Generator] = None,
     *,
     integer: bool,
 ) -> NDArray[np.float64]:
-    """Sample from any numeric config value: a number, a Distribution, or an expression string.
+    """Sample from any numeric config value: a number or an expression string.
 
     - number: the constant, repeated (no random draws are consumed).
-    - Distribution: :func:`sample_from_distribution`'s contract (draws clipped
-      into the config bounds). A ``fixed`` Distribution is never clipped, in
-      either mode: integer mode returns ``int(mean)`` as it always has, and
-      fractional mode returns ``mean`` itself.
     - str: an Expression sampled as written. The expression author owns the
       value range; nothing is clamped on top.
 
@@ -193,30 +258,21 @@ def sample_values(
     Returns:
         A float array of ``count`` values, whole-numbered when ``integer``.
     """
-    from inference_perf.config import DistributionType
-
     if count <= 0:
         raise ValueError("Count must be a positive integer.")
 
     if isinstance(value, (int, float)):
         return np.full(count, round(value) if integer else float(value), dtype=np.float64)
 
-    if isinstance(value, str):
-        if rng is None:
-            rng = np.random.default_rng()
-        expression = Expression(value, allow_time=False)
-        samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
-        return np.round(samples) if integer else samples
-
-    if not integer and value.type == DistributionType.FIXED:
-        return np.full(count, float(value.mean), dtype=np.float64)
-    if integer:
-        return sample_from_distribution(value, count, rng).astype(np.float64)
-    return sample_from_distribution(value, count, rng, integer=False)
+    if rng is None:
+        rng = np.random.default_rng()
+    expression = Expression(value, allow_time=False)
+    samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
+    return np.round(samples) if integer else samples
 
 
 def sample_lengths(
-    value: Union[int, "Distribution", str],
+    value: Union[int, str],
     count: int,
     rng: Optional[np.random.Generator] = None,
 ) -> NDArray[np.int_]:
@@ -224,25 +280,31 @@ def sample_lengths(
     return cast(NDArray[np.int_], sample_values(value, count, rng, integer=True).astype(int))
 
 
-def value_ceiling(value: Union[int, float, "Distribution", str]) -> Optional[float]:
+def value_bounds(value: Union[int, float, str]) -> tuple[float, float]:
+    """The provable ``(lowest, highest)`` values a numeric config value can produce.
+
+    A number is its own bounds. An expression string's bounds come from
+    :attr:`Expression.bounds`, infinite on a side nothing bounds (``Normal(50, 10)``
+    on both, ``Poisson(3)`` above) and on both sides when nothing can be proven.
+    """
+    if isinstance(value, (int, float)):
+        return float(value), float(value)
+    bounds = Expression(value, allow_time=False).bounds
+    return (float("-inf"), float("inf")) if bounds is None else bounds
+
+
+def value_ceiling(value: Union[int, float, str]) -> Optional[float]:
     """The largest value a numeric config value can produce, for worst-case budget checks.
 
-    A number is its own ceiling. A ``fixed`` Distribution is never clipped, so
-    its ceiling is ``mean``; every other Distribution is clipped to ``max``.
-    An expression string's ceiling is its provable upper bound
-    (:attr:`Expression.bounds`), which is ``inf`` for an unbounded expression
-    such as ``Normal(50, 10)``, and ``None`` when nothing can be proven.
+    A number is its own ceiling. An expression string's ceiling is its
+    provable upper bound (:attr:`Expression.bounds`), which is ``inf`` for an
+    unbounded expression such as ``Normal(50, 10)``, and ``None`` when nothing
+    can be proven.
     """
-    from inference_perf.config import DistributionType
-
     if isinstance(value, (int, float)):
         return float(value)
-    if isinstance(value, str):
-        bounds = Expression(value, allow_time=False).bounds
-        return None if bounds is None else bounds[1]
-    if value.type == DistributionType.FIXED:
-        return float(value.mean)
-    return float(value.max)
+    bounds = Expression(value, allow_time=False).bounds
+    return None if bounds is None else bounds[1]
 
 
 @overload

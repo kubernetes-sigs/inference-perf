@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 import numpy as np
-from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, DataConfig, Distribution, DataGenType
+from inference_perf.config import APIConfig, APIType, CustomTokenizerConfig, DataConfig, DataGenType
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.completion import CompletionAPIData
 from inference_perf.apis.user_session import UserSessionCompletionAPIData
@@ -51,21 +51,17 @@ def test_datagen_length_fuzz(gen_type: DataGenType) -> None:
         if gen_type == DataGenType.Random:
             data_config = DataConfig(
                 type=DataGenType.Random,
-                input_distribution=Distribution(
-                    min=target_len, max=target_len, mean=float(target_len), std_dev=0.0, total_count=10
-                ),
-                output_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=10),
+                input_distribution=target_len,
+                output_distribution=10,
             )
-            gen: DataGenerator = RandomDataGenerator(api_config, data_config, mock_tokenizer)
+            gen: DataGenerator = RandomDataGenerator(api_config, data_config, mock_tokenizer, total_count=10)
         elif gen_type == DataGenType.Synthetic:
             data_config = DataConfig(
                 type=DataGenType.Synthetic,
-                input_distribution=Distribution(
-                    min=target_len, max=target_len, mean=float(target_len), std_dev=0.0, total_count=10
-                ),
-                output_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=10),
+                input_distribution=target_len,
+                output_distribution=10,
             )
-            gen = SyntheticDataGenerator(api_config, data_config, mock_tokenizer)
+            gen = SyntheticDataGenerator(api_config, data_config, mock_tokenizer, total_count=10)
         elif gen_type == DataGenType.SharedPrefix:
             sp = SharedPrefix(
                 num_groups=2,
@@ -114,8 +110,8 @@ def test_shared_prefix_real_tokenizer_small_question_len(question_len_min: int) 
         num_groups=3,
         num_prompts_per_group=50,
         system_prompt_len=100,
-        question_distribution=Distribution(mean=float(question_len_min + 2), std_dev=2.0, min=question_len_min, max=20),
-        output_distribution=Distribution(mean=10.0, std_dev=1.0, min=1, max=20),
+        question_distribution=f"Min(Max(Normal({question_len_min + 2}, 2), {question_len_min}), 20)",
+        output_distribution="Min(Max(Normal(10, 1), 1), 20)",
         enable_multi_turn_chat=True,
     )
     data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)
@@ -151,8 +147,8 @@ def test_shared_prefix_server_tokens_stable_across_group() -> None:
         num_groups=3,
         num_prompts_per_group=30,
         system_prompt_len=100,
-        question_distribution=Distribution(mean=5.0, std_dev=2.0, min=1, max=15),
-        output_distribution=Distribution(mean=10.0, std_dev=1.0, min=1, max=20),
+        question_distribution="Min(Max(Normal(5, 2), 1), 15)",
+        output_distribution="Min(Max(Normal(10, 1), 1), 20)",
         enable_multi_turn_chat=True,
     )
     data_config = DataConfig(type=DataGenType.SharedPrefix, shared_prefix=shared_prefix_cfg)

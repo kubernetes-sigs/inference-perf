@@ -21,7 +21,6 @@ from inference_perf.config import (
     CustomTokenizerConfig,
     DataConfig,
     DataGenType,
-    Distribution,
 )
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -70,10 +69,10 @@ def test_random_datagen_chat_template_exact_prefill_length(chat_tokenizer: Custo
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution=Distribution(min=20, max=200, mean=100, std_dev=40, total_count=10),
-        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=10),
+        input_distribution="Min(Max(Normal(100, 40), 20), 200)",
+        output_distribution="Min(Max(Normal(7, 1), 5), 10)",
     )
-    generator = RandomDataGenerator(api_config, data_config, chat_tokenizer, seed=42)
+    generator = RandomDataGenerator(api_config, data_config, chat_tokenizer, seed=42, total_count=10)
 
     hf_tokenizer = chat_tokenizer.get_tokenizer()
     bos_id = hf_tokenizer.convert_tokens_to_ids("<bos>")
@@ -95,8 +94,8 @@ def test_random_datagen_chat_template_min_length_guard(chat_tokenizer: CustomTok
     data_config = DataConfig(
         type=DataGenType.Random,
         use_chat_template=True,
-        input_distribution=Distribution(min=overhead, max=overhead, mean=overhead, std_dev=0.0, total_count=5),
-        output_distribution=Distribution(min=5, max=5, mean=5, std_dev=0.0, total_count=5),
+        input_distribution=overhead,
+        output_distribution=5,
     )
     with pytest.raises(ValueError, match="chat template overhead"):
-        RandomDataGenerator(api_config, data_config, chat_tokenizer, seed=42)
+        RandomDataGenerator(api_config, data_config, chat_tokenizer, seed=42, total_count=5)
