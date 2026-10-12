@@ -32,7 +32,7 @@ class RuntimeMetricsConfig(StrictBaseModel):
         description=(
             "Address the runtime metrics endpoint binds to. Loopback by default, so a run on a laptop or shared "
             "host is not reachable from the network; set 0.0.0.0 where a scraper reaches the run by its pod or "
-            "host IP, as the Helm chart and deploy/ config do."
+            "host IP."
         ),
     )
     port: int = Field(
