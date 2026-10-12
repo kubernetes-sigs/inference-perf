@@ -21,22 +21,20 @@ JSONL row is one LLM invocation with serving-relevant token accounting::
 
 The public trace is sanitized: raw prompts, completions, and tool payloads
 are removed, but per-round token counts, tool-call metadata (names,
-latencies), and round ordering are preserved. See
+latencies), event timing, and round ordering are preserved. See
 https://tracelab.cs.washington.edu and https://arxiv.org/abs/2606.30560.
 
-Replay model (v1):
+Replay model:
 - Rows are grouped by ``session_id`` and ordered by ``round_index``.
 - Each round becomes one LLM call in a linear session chain. The prompt text
-  is synthetically reconstructed to match the recorded input token count
-  (deterministic corpus slices, so prefix-cache structure grows like the
-  original), and the expected output is sized to the recorded
-  ``output_tokens``.
-- Inter-round tool latency (sum of ``tools[].tool_wall_latency_ms``) is
-  preserved as event spacing, capped by ``trace_idle_gap_cap_seconds``.
-- Prefix reuse is reconstructed from ``prefix_tokens`` so the generated
-  prompt matches ``input_tokens_total`` exactly. The shared prefix is
-  capped at the previous round's total tokens (input + output) per the
-  dataset README.
+  is synthetically reconstructed so the full message list tokenizes to the
+  recorded ``input_tokens_total`` (deterministic corpus slices), and the
+  expected output is sized to the recorded ``output_tokens``.
+- Inter-round spacing comes from ``timing_events`` timestamps when present
+  (the gap between the previous round's last event and this round's first
+  event is the recorded think time), falling back to the round's tool
+  latency (sum of ``tools[].tool_wall_latency_ms``) otherwise. Gaps are
+  capped by ``trace_idle_gap_cap_seconds``.
 """
 
 import gzip
@@ -44,9 +42,10 @@ import hashlib
 import json
 import logging
 import random
+from datetime import datetime, timezone
 from multiprocessing.managers import SyncManager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -79,6 +78,13 @@ class TraceLabToolCall(BaseModel):
     tool_internal_latency_ms: Optional[float] = None
 
 
+class TraceLabTimingEvent(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    event_type: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
 class TraceLabRound(BaseModel):
     """One TraceLab JSONL row (one LLM invocation). Extra fields ignored."""
 
@@ -94,10 +100,37 @@ class TraceLabRound(BaseModel):
     newly_append_tokens: int = 0
     output_tokens: int
     tools: List[TraceLabToolCall] = Field(default_factory=list)
+    timing_events: List[TraceLabTimingEvent] = Field(default_factory=list)
 
 
-def _read_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
-    """Read TraceLab rows from .json / .jsonl / .jsonl.gz files."""
+def _parse_ts(ts: Optional[str]) -> Optional[float]:
+    """Parse an ISO-8601 timestamp to epoch seconds, None when unparseable."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _round_time_bounds(rnd: TraceLabRound) -> Tuple[Optional[float], Optional[float]]:
+    """First/last event timestamps of a round, (None, None) when absent."""
+    stamps = [_parse_ts(e.timestamp) for e in rnd.timing_events or []]
+    present = [s for s in stamps if s is not None]
+    if not present:
+        return (None, None)
+    return (min(present), max(present))
+
+
+def _read_jsonl_rows(path: Path) -> List[Tuple[int, Dict[str, Any]]]:
+    """Read TraceLab rows from .json / .jsonl / .jsonl.gz files.
+
+    Returns (line_number, row) tuples so validation errors can name the
+    file and line. JSON files report line 0.
+    """
     suffixes = "".join(path.suffixes)
     opener: Callable[..., Any]
     if suffixes.endswith(".gz"):
@@ -105,7 +138,7 @@ def _read_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
     else:
         opener = open
 
-    rows: List[Dict[str, Any]] = []
+    rows: List[Tuple[int, Dict[str, Any]]] = []
     with opener(path, "rt", encoding="utf-8") as f:
         first = f.read(1)
         if not first:
@@ -114,14 +147,14 @@ def _read_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
         if path.suffix == ".json" and not str(path).endswith(".jsonl"):
             blob = json.load(f)
             if isinstance(blob, list):
-                return [r for r in blob if isinstance(r, dict)]
+                return [(0, r) for r in blob if isinstance(r, dict)]
             if isinstance(blob, dict):
-                return [blob]
+                return [(0, blob)]
             return rows
-        for line in f:
+        for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if line:
-                rows.append(json.loads(line))
+                rows.append((line_no, json.loads(line)))
     return rows
 
 
@@ -206,7 +239,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         if filter_func:
             logger.info(f"Using filter expression: {self.tracelab_config.filter}")
 
-        raw_rows: List[Dict[str, Any]] = []
+        raw_rows: List[Tuple[str, int, Dict[str, Any]]] = []
         cfg = self.tracelab_config
 
         if cfg.trace_directory:
@@ -218,7 +251,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 raise ValueError(f"No TraceLab trace files found in {trace_dir}")
             for f in files:
                 try:
-                    raw_rows.extend(_read_jsonl_rows(f))
+                    raw_rows.extend((str(f), line_no, blob) for line_no, blob in _read_jsonl_rows(f))
                 except Exception as e:
                     logger.error(f"Failed to load trace file {f.name}: {e}")
                     if not cfg.skip_invalid_files:
@@ -229,25 +262,26 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 if not f.is_file():
                     raise ValueError(f"Trace file does not exist: {path}")
                 try:
-                    raw_rows.extend(_read_jsonl_rows(f))
+                    raw_rows.extend((str(f), line_no, blob) for line_no, blob in _read_jsonl_rows(f))
                 except Exception as e:
                     logger.error(f"Failed to load trace file {f.name}: {e}")
                     if not cfg.skip_invalid_files:
                         raise
         elif cfg.hf_dataset_path:
-            raw_rows = self._load_hf_rows(cfg.hf_dataset_path, cfg.num_dataset_entries, cfg.skip_invalid_files)
+            hf_rows = self._load_hf_rows(cfg.hf_dataset_path, cfg.num_dataset_entries, cfg.skip_invalid_files)
+            raw_rows.extend((f"hf:{cfg.hf_dataset_path}", line_no, blob) for line_no, blob in enumerate(hf_rows, start=1))
         else:
             raise ValueError("Either trace_directory, trace_files, or hf_dataset_path must be provided")
 
         grouped: Dict[str, List[TraceLabRound]] = {}
         n_invalid = 0
-        for idx, blob in enumerate(raw_rows):
+        for source, line_no, blob in raw_rows:
             try:
                 rnd = TraceLabRound.model_validate(blob)
             except Exception as e:
-                logger.error(f"Failed to validate TraceLab row {idx}: {e}")
+                logger.error(f"Failed to validate TraceLab row {source}:{line_no}: {e}")
                 if not cfg.skip_invalid_files:
-                    raise
+                    raise ValueError(f"Invalid TraceLab row at {source}:{line_no}: {e}") from e
                 n_invalid += 1
                 continue
             # session_id is required now (no default), so validation ensures it exists.
@@ -280,7 +314,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         if filter_func:
             logger.info(f"Filter applied: {len(kept)} sessions kept, {n_filtered} rejected of {len(grouped)} scanned")
         if n_invalid:
-            logger.warning(f"Skipped {n_invalid} invalid rows (use skip_invalid_files to suppress)")
+            logger.warning(f"Skipped {n_invalid} invalid rows (skip_invalid_files=True)")
         if not kept:
             raise ValueError("No valid TraceLab sessions found")
         logger.info(f"Loaded {len(kept)} TraceLab sessions ({sum(len(v) for v in kept.values())} rounds)")
@@ -356,7 +390,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         # Build rows by joining tools/timing, stopping at session limit.
         rows: List[Dict[str, Any]] = []
-        session_ids_seen: set = set()
+        session_ids_seen: Set[str] = set()
 
         for rnd in ds_rounds:
             if not isinstance(rnd, dict):
@@ -408,6 +442,28 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         decoded = self.tokenizer.get_tokenizer().decode(list(tokens))
         return decoded if isinstance(decoded, str) else " ".join(decoded)
 
+    def _round_gap_ms(self, prev: TraceLabRound, curr: TraceLabRound) -> Optional[int]:
+        """Recorded think time before ``curr``: its first event minus the
+        previous round's last event, in milliseconds.
+
+        Returns None when either round lacks usable ``timing_events``
+        timestamps so the caller can fall back to tool latency.
+        """
+        _, prev_end = _round_time_bounds(prev)
+        curr_start, _ = _round_time_bounds(curr)
+        if prev_end is None or curr_start is None:
+            return None
+        return max(int((curr_start - prev_end) * 1000.0), 0)
+
+    @staticmethod
+    def _tool_latency_ms(rnd: TraceLabRound) -> int:
+        total = 0
+        for t in rnd.tools or []:
+            lat = t.tool_wall_latency_ms if t.tool_wall_latency_ms is not None else t.tool_internal_latency_ms
+            if lat:
+                total += max(int(lat), 0)
+        return total
+
     def _reconstruct_raw_calls(self, session_id: str, rounds: List[TraceLabRound]) -> List[RawCall]:
         model_map = self._build_model_map([r.model or "" for r in rounds if r.model])
         cap_ms = int(self.tracelab_config.trace_idle_gap_cap_seconds * 1000.0)
@@ -419,6 +475,15 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         for i, rnd in enumerate(rounds):
             in_tokens = max(int(rnd.input_tokens_total or 0), 0)
             out_tokens = max(int(rnd.output_tokens or 0), 0)
+
+            # Spacing before this round: the recorded think time from
+            # timing_events when present, else the previous round's tool
+            # latency (those tools ran after that round's output).
+            if i > 0 and not self.tracelab_config.ignore_trace_delays:
+                gap = self._round_gap_ms(rounds[i - 1], rnd)
+                if gap is None:
+                    gap = self._tool_latency_ms(rounds[i - 1])
+                t_ms += min(gap, cap_ms)
 
             # Determine how many tokens the current history has.
             history_tokens = 0
@@ -452,8 +517,6 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
             out_message = ReplayMessage(role="assistant", text=out_text or " ")
             model = model_map.get(rnd.model or "", rnd.model or "tracelab-model")
 
-            # Record the call at current t_ms. This round's tool latency will
-            # create a wait AFTER this call (before the next round).
             calls.append(
                 RawCall(
                     call_id=f"round_{i}",
@@ -470,27 +533,21 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 )
             )
 
-            # Compute tool latency for THIS round's output.
-            # This wait goes before the NEXT round.
-            tool_wait_ms = 0
-            for t in rnd.tools or []:
-                lat = t.tool_wall_latency_ms if t.tool_wall_latency_ms is not None else t.tool_internal_latency_ms
-                if lat:
-                    tool_wait_ms += max(int(lat), 0)
-
-            # If ignore_trace_delays, no wait. Otherwise cap at trace_idle_gap_cap_seconds.
-            if not self.tracelab_config.ignore_trace_delays:
-                wait_ms = min(tool_wait_ms, cap_ms) if tool_wait_ms else 0
-            else:
-                wait_ms = 0
-
-            # Advance time for next round.
-            t_ms += wait_ms
-
             # Grow transcript for next round.
             history = history + [ReplayMessage(role="user", text=user_text or " "), out_message]
 
         return calls
+
+    @staticmethod
+    def _safe_session_id(session_id: str) -> str:
+        """Make a session id safe for qualified event ids.
+
+        The replay runtime splits qualified event ids on the first ':'
+        to recover the session, so a raw TraceLab id like 'claude:<uuid>'
+        would corrupt event resolution. Only the runtime id is rewritten;
+        the original stays in ``source_id``.
+        """
+        return session_id.replace(":", "_")
 
     def _build_sessions(self, sessions_by_id: Dict[str, List[TraceLabRound]]) -> List[ReplaySession]:
         sessions: List[ReplaySession] = []
@@ -503,7 +560,7 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 graph = build_graph(raw_calls, source_file=f"tracelab_trace_{session_id}")
                 sessions.append(
                     ReplaySession(
-                        session_id=f"tracelabtrace{trace_index}_{session_id}",
+                        session_id=f"tracelabtrace{trace_index}_{self._safe_session_id(session_id)}",
                         source_id=session_id,
                         session_index=trace_index,
                         graph=graph,

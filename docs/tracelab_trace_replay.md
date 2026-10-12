@@ -11,7 +11,12 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 > Note: the public TraceLab trace is sanitized — raw prompts, completions, and tool payloads are removed.
 > Prompts are synthetically reconstructed to match the recorded input token counts (deterministic corpus
 > slices, so prefix-cache structure grows like the original), and expected outputs are sized to the recorded
-> `output_tokens`. Tool latency between rounds is preserved as event spacing.
+> `output_tokens`. Inter-round spacing comes from `timing_events` timestamps when present, else the
+> round's tool latency.
+>
+> Tokenizer: reconstruction uses the run's configured `tokenizer`, so prompt sizes are measured with
+> the same tokenizer the benchmark runs against — point it at the target model's tokenizer for
+> faithful prefill sizes.
 
 ---
 
@@ -19,13 +24,17 @@ Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606
 
 1. **Trace Load**: rows are loaded from local TraceLab JSONL files (`.json`, `.jsonl`, `.jsonl.gz`) or a
    Hugging Face dataset (e.g. `UW-SyFI/TraceLab`), grouped by `session_id`, and ordered by `round_index`.
+   For Hugging Face, the `rounds` table is joined with the `tools` and `timing_events` tables on
+   `round_pk`, and `num_dataset_entries` caps sessions (not rows).
 2. **Graph Compilation**: each round becomes one LLM call in a linear session chain. The transcript grows
    round-over-round (prior outputs are carried as assistant messages), so the shared replay-graph runtime
    infers causal edges and replays with output substitution like OTel/Weka replay.
 3. **Session-based Execution**: a thread pool runs sessions concurrently. Within each session, events execute
    as soon as their predecessors complete.
-4. **Think-Time Simulation**: inter-round tool latency (sum of `tools[].tool_wall_latency_ms`) is preserved,
-   capped by `trace_idle_gap_cap_seconds`, or skipped with `ignore_trace_delays`.
+4. **Think-Time Simulation**: the gap between the previous round's last `timing_events` timestamp and
+   this round's first is replayed as think time (falling back to the previous round's tool latency when
+   timestamps are absent), capped by `trace_idle_gap_cap_seconds`, or skipped with `ignore_trace_delays`
+   (same knob shape as Weka replay).
 
 ---
 

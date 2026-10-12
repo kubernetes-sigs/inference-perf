@@ -89,6 +89,10 @@ def _real_rows() -> List[Dict[str, Any]]:
             "newly_append_tokens": 1500,
             "output_tokens": 200,
             "tools": [],
+            "timing_events": [
+                {"event_type": "user_message", "timestamp": "2026-06-01T10:00:10.000Z"},
+                {"event_type": "text", "timestamp": "2026-06-01T10:00:12.000Z"},
+            ],
         },
         {
             "round_pk": "claude-abc-2",
@@ -105,6 +109,12 @@ def _real_rows() -> List[Dict[str, Any]]:
                 {"tool_name": "bash", "tool_wall_latency_ms": 800.0},
                 {"tool_name": "edit", "tool_wall_latency_ms": 1200.0},
             ],
+            "timing_events": [
+                {"event_type": "user_message", "timestamp": "2026-06-01T10:00:12.500Z"},
+                {"event_type": "tool_call", "timestamp": "2026-06-01T10:00:13.000Z"},
+                {"event_type": "tool_result", "timestamp": "2026-06-01T10:00:15.000Z"},
+                {"event_type": "text", "timestamp": "2026-06-01T10:00:16.000Z"},
+            ],
         },
         {
             "round_pk": "claude-abc-3",
@@ -118,6 +128,10 @@ def _real_rows() -> List[Dict[str, Any]]:
             "newly_append_tokens": 300,
             "output_tokens": 300,
             "tools": [],
+            "timing_events": [
+                {"event_type": "user_message", "timestamp": "2026-06-01T10:00:16.700Z"},
+                {"event_type": "text", "timestamp": "2026-06-01T10:00:18.000Z"},
+            ],
         },
         # Session with cache miss (prefix resets to 0 mid-session)
         {
@@ -362,12 +376,12 @@ def test_tracelab_regression_existing_types_untouched() -> None:
 
 
 def test_tracelab_required_fields_reject_invalid_rows(tmp_path: Path) -> None:
-    """Rows missing required fields should fail validation."""
+    """Rows missing required fields fail with the file and line named."""
     bad_rows = [
         {"session_id": "s", "round_index": 0},  # missing input_tokens_total, output_tokens
     ]
     trace_file = _write_jsonl(tmp_path / "bad.jsonl", bad_rows)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match=r"bad\.jsonl:1"):
         _make_gen([str(trace_file)])
 
 
@@ -454,3 +468,123 @@ def test_tracelab_session_key_no_provider_duplication(tmp_path: Path) -> None:
     session = gen.sessions[0]
     assert session is not None
     assert session.source_id == "claude:abc123"
+
+
+def test_tracelab_runtime_session_id_has_no_colon(tmp_path: Path) -> None:
+    """Qualified event ids split on the first ':' to recover the session, so
+    the runtime session id must not contain ':' even when the trace id does."""
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", _real_rows())
+    gen = _make_gen([str(trace_file)])
+    for s in gen.sessions:
+        assert s is not None
+        assert ":" not in s.session_id, f"runtime session id carries ':': {s.session_id}"
+        for e in s.graph.events.values():
+            qualified = f"{s.session_id}:{e.event_id}"
+            assert qualified.split(":")[0] == s.session_id
+
+
+def test_tracelab_timing_events_gap(tmp_path: Path) -> None:
+    """Gaps from timing_events timestamps land before the following round."""
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", _real_rows())
+    gen = _make_gen([str(trace_file)])
+
+    sessions = {s.source_id: s for s in gen.sessions if s is not None}
+    sess = sessions["claude:abc"]
+    events = sorted(sess.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert len(events) == 3
+    # Round 0 -> round 1: 12.000 -> 12.500 = 500ms (round 0 has no tools).
+    assert events[1].wait_ms == 500
+    # Round 1 -> round 2: 16.000 -> 16.700 = 700ms.
+    assert events[2].wait_ms == 700
+
+    capped = _make_gen([str(trace_file)], trace_idle_gap_cap_seconds=0.6)
+    sessions = {s.source_id: s for s in capped.sessions if s is not None}
+    events = sorted(sessions["claude:abc"].graph.events.values(), key=lambda e: e.t_start_ms)
+    assert events[1].wait_ms == 500
+    assert events[2].wait_ms == 600
+
+
+def test_tracelab_hf_shaped_rows_without_tools_or_timing(tmp_path: Path) -> None:
+    """Rounds-table-shaped rows (no tools/timing_events keys) load with zero waits."""
+    rows = [
+        {
+            "round_pk": "s1-r1",
+            "session_id": "sess-hf",
+            "round_index": 0,
+            "provider": "codex",
+            "model": "gpt-5",
+            "input_tokens_total": 100,
+            "prefix_tokens": 0,
+            "newly_append_tokens": 100,
+            "output_tokens": 10,
+        },
+        {
+            "round_pk": "s1-r2",
+            "session_id": "sess-hf",
+            "round_index": 1,
+            "provider": "codex",
+            "model": "gpt-5",
+            "input_tokens_total": 150,
+            "prefix_tokens": 90,
+            "newly_append_tokens": 60,
+            "output_tokens": 10,
+        },
+    ]
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", rows)
+    gen = _make_gen([str(trace_file)])
+    assert gen.get_session_count() == 1
+    session = gen.sessions[0]
+    assert session is not None
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert len(events) == 2
+    assert events[1].wait_ms == 0
+    assert events[1].predecessor_event_ids == [events[0].event_id]
+
+
+def test_tracelab_determinism_across_subprocesses(tmp_path: Path) -> None:
+    """Same trace built under different PYTHONHASHSEEDs yields identical prompts.
+
+    Guards against hash()-based offsets, which randomize per process.
+    """
+    import os
+    import subprocess
+    import sys
+
+    trace_file = _write_jsonl(tmp_path / "trace.jsonl", _real_rows())
+    child = (
+        "import asyncio, json, sys, types;"
+        "m = types.ModuleType('uvloop');"
+        "m.EventLoopPolicy = asyncio.DefaultEventLoopPolicy;"
+        "sys.modules['uvloop'] = m;"
+        "from unittest.mock import MagicMock;"
+        "from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType;"
+        "from inference_perf.config.datagen.replay import TraceLabTraceReplayConfig;"
+        "from inference_perf.datagen.replay.tracelab_trace_replay_datagen import TraceLabTraceReplayDataGenerator;"
+        "tok = MagicMock();"
+        "tok.get_tokenizer().encode = lambda text: list(range(len(text)));"
+        "tok.get_tokenizer().decode = lambda toks: '<%d:%d>' % (toks[0], len(toks)) if toks else '';"
+        "api_cfg = APIConfig(type=APIType.Chat, streaming=False);"
+        "data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay);"
+        "data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(trace_files=[sys.argv[1]]);"
+        "gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=tok);"
+        "out = {};"
+        "[(out.setdefault(s.source_id, {}).__setitem__(e.event_id, "
+        "''.join((mm.get('content', '') if isinstance(mm, dict) else mm.text) for mm in e.call.messages))) "
+        "for s in gen.sessions if s is not None for e in s.graph.events.values()];"
+        "print(json.dumps(out, sort_keys=True))"
+    )
+    outputs = []
+    for seed in ("0", "1"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        proc = subprocess.run(
+            [sys.executable, "-c", child, str(trace_file)],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(Path(__file__).parent.parent),
+            timeout=300,
+        )
+        assert proc.returncode == 0, f"seed {seed} failed:\n{proc.stderr[-2000:]}"
+        outputs.append(proc.stdout)
+    assert outputs[0] == outputs[1], "prompts differ across hash seeds"
