@@ -369,3 +369,34 @@ def test_chunk_retokenization_counts_reasoning_chunks(
     assert aggregate.latency.time_to_first_token.mean == pytest.approx(0.2, abs=1e-9)
     assert aggregate.latency.inter_token_latency is not None
     assert aggregate.latency.inter_token_latency.mean == pytest.approx(expected_itl, abs=1e-9)
+
+
+# Fallback path with raw chunks but no tokenizer: nothing to re-tokenize with,
+# so no token times. TTFT is absent and the build does not fail.
+def test_chunk_retokenization_needs_a_tokenizer() -> None:
+    start = 100.0
+    metric = RequestLifecycleMetric(
+        stage_id=0,
+        scheduled_time=start - 0.001,
+        start_time=start,
+        end_time=start + 0.8,
+        request_data="{}",
+        response_data="ok",
+        info=InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=128)),
+            response_metrics=StreamedResponseMetrics(
+                response_chunks=[json.dumps({"choices": [{"delta": {"content": "a b"}}]})],
+                chunk_times=[start + 0.5],
+                output_tokens=2,
+                output_token_times=[],
+            ),
+        ),
+        error=None,
+    )
+
+    results = build_results([metric], tokenizer=None)
+
+    assert results.request_performance is not None
+    aggregate = results.request_performance.aggregate
+    assert aggregate is not None and aggregate.latency is not None
+    assert aggregate.latency.time_to_first_token is None

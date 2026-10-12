@@ -623,17 +623,18 @@ def _extract_chunk_reasoning(data: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _extract_chunk_generated_text(chunk_str: str) -> Optional[str]:
-    """All generated text in an SSE chunk: reasoning first, then content (#559)."""
+def _extract_chunk_generated_texts(chunk_str: str) -> list[str]:
+    """Generated text in an SSE chunk, one entry per channel: reasoning, then content (#559).
+
+    Kept apart because the server generated them as separate tokens. Joined, the
+    last reasoning word and the first content word can tokenize as one.
+    """
     try:
         data = json.loads(chunk_str)
-        reasoning = _extract_chunk_reasoning(data)
-        content = _chunk_content(data)
+        texts = [_extract_chunk_reasoning(data), _chunk_content(data)]
     except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
-        return None
-    if reasoning and content:
-        return reasoning + content
-    return reasoning or content
+        return []
+    return [text for text in texts if text]
 
 
 def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Optional[CustomTokenizer]) -> bool:
@@ -682,20 +683,19 @@ def retokenize_output_token_times(response_metrics: StreamedResponseMetrics, tok
         key=lambda pair: pair[0],
     )
     for chunk_time, chunk_str in chunks:
-        text = _extract_chunk_generated_text(chunk_str)
-        if not text:
-            continue
-
-        # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
-        # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
-        # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
-        # by the same factor. See #564.
-        if token_cache is not None and text in token_cache:
-            tokens_in_chunk = token_cache[text]
-        else:
-            tokens_in_chunk = tokenizer.count_tokens(text, add_special_tokens=False)
-            if token_cache is not None and len(token_cache) < 8192:
-                token_cache[text] = tokens_in_chunk
+        tokens_in_chunk = 0
+        for text in _extract_chunk_generated_texts(chunk_str):
+            # Count each chunk as a sequence fragment (add_special_tokens=False): re-tokenizing a
+            # chunk with special tokens prepends a BOS per chunk, which inflates the count (~2x at
+            # one token per chunk) and, since these timestamps are the basis for ITL, deflates ITL
+            # by the same factor. See #564.
+            if token_cache is not None and text in token_cache:
+                tokens_in_text = token_cache[text]
+            else:
+                tokens_in_text = tokenizer.count_tokens(text, add_special_tokens=False)
+                if token_cache is not None and len(token_cache) < 8192:
+                    token_cache[text] = tokens_in_text
+            tokens_in_chunk += tokens_in_text
 
         if tokens_in_chunk > 0:
             # Assign every token in a chunk the chunk's arrival time to match user-perceived

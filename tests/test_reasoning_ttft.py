@@ -33,7 +33,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import ClientResponse
 
-from inference_perf.apis.anthropic_messages import AnthropicMessagesAPIData
+from inference_perf.apis.anthropic_messages import AnthropicMessagesAPIData, parse_anthropic_thinking
 from inference_perf.apis.base import InferenceInfo, RequestLifecycleMetric, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatCompletionAPIData, ChatMessage
 from inference_perf.config import APIConfig, APIType
@@ -272,6 +272,7 @@ async def test_pipeline_counts_reasoning_in_output_and_timeline() -> None:
 
 # One chunk carrying reasoning "a b" and content "c", then content "d".
 # The first chunk is timestamped once, as content; output_tokens = 4 (a b c d).
+# Tokenizer correction re-reads both texts from that chunk: 4 timeline entries.
 @pytest.mark.asyncio
 async def test_chunk_with_both_channels_counts_both() -> None:
     """A chunk bearing reasoning and content is recorded once on the
@@ -292,6 +293,12 @@ async def test_chunk_with_both_channels_counts_both() -> None:
     assert len(response_metrics.chunk_times) == 2
     assert response_metrics.reasoning_chunks == []
     assert len(response_metrics.output_token_times) == 2
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=1.0, request_data="prompt", info=info, error=None
+    )
+    summarize_requests([metric], [50], tokenizer=_word_tokenizer())
+    assert len(response_metrics.output_token_times) == 4
 
 
 # Non-streamed chat: content "the answer" plus reasoning_content "x y z".
@@ -382,6 +389,7 @@ def _chunked_metric(
 # Start 1.0, content " " at 2.0 (0 words), "hello" at 2.5, "world" at 3.0.
 # The tokenizer drops the blank chunk, so TTFT = TTFO = 1.5 (not TTFO = 1.0).
 # With reasoning "think" at 1.5 first: TTFT = 0.5, TTFO = 1.5.
+# Reasoning "think" at 1.5 and "more" at 1.6 with only the blank content chunk: TTFO = None.
 def test_first_output_token_skips_chunks_that_tokenize_to_nothing() -> None:
     """TTFO never lands before TTFT, since both read the timeline after
     tokenizer correction."""
@@ -396,6 +404,12 @@ def test_first_output_token_skips_chunks_that_tokenize_to_nothing() -> None:
     )
     assert reasoned.successes["latency"]["time_to_first_token"]["mean"] == pytest.approx(0.5)
     assert reasoned.successes["latency"]["time_to_first_output_token"]["mean"] == pytest.approx(1.5)
+
+    blank = summarize_requests(
+        [_chunked_metric(1.0, [(2.0, " ")], reasoning=[(1.5, "think"), (1.6, "more")])], [50], tokenizer=_word_tokenizer()
+    )
+    assert blank.successes["latency"]["time_to_first_token"]["mean"] == pytest.approx(0.5)
+    assert blank.successes["latency"]["time_to_first_output_token"] is None
 
 
 # Tokenizer stub: one token per word, plus a BOS when add_special_tokens is on
@@ -463,3 +477,87 @@ async def test_reasoning_field_wins_over_reasoning_content() -> None:
     )
     assert isinstance(unary.response_metrics, UnaryResponseMetrics)
     assert unary.response_metrics.output_tokens == 2
+
+
+# Anthropic stream, no usage: a thinking block that opens with "pre", a
+# thinking_delta "one two", then text_deltas "hi" and " there". output_tokens = 5,
+# and after tokenizer correction the timeline also has 5 entries, thinking first.
+@pytest.mark.asyncio
+async def test_anthropic_thinking_counts_after_tokenizer_correction() -> None:
+    """The reportgen re-tokenizer reads Anthropic thinking events, including a
+    thinking block whose start event already carries text."""
+    sse = _build_sse(
+        [
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "pre"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": " one two"}},
+            {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " there"}},
+        ]
+    )
+    config = APIConfig(type=APIType.AnthropicMessages, streaming=True)
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
+    tokenizer = _word_tokenizer()
+    info = await data.process_response(cast(ClientResponse, FakeStreamingResponse(sse)), config, tokenizer)
+
+    response_metrics = info.response_metrics
+    assert isinstance(response_metrics, StreamedResponseMetrics)
+    assert response_metrics.output_tokens == 5
+    assert len(response_metrics.reasoning_chunks) == 2
+    assert len(response_metrics.response_chunks) == 2
+    assert info.extra_info["raw_response"]
+
+    metric = RequestLifecycleMetric(
+        scheduled_time=0.0, start_time=0.0, end_time=1.0, request_data="prompt", info=info, error=None
+    )
+    summarize_requests([metric], [50], tokenizer=tokenizer)
+    assert len(response_metrics.output_token_times) == 5
+    assert response_metrics.output_token_times[0] == response_metrics.reasoning_chunk_times[0]
+
+
+# Non-streamed Anthropic content: thinking "a", a text block, a thinking block
+# with no text, a stray string, then thinking "b". The thinking text is "ab".
+# Content that is not a list has no thinking: "".
+def test_parse_anthropic_thinking_reads_only_thinking_blocks() -> None:
+    """Text blocks, malformed entries and empty thinking blocks add nothing."""
+    content = [
+        {"type": "thinking", "thinking": "a"},
+        {"type": "text", "text": "x"},
+        {"type": "thinking"},
+        "stray",
+        {"type": "thinking", "thinking": "b"},
+    ]
+    assert parse_anthropic_thinking(content) == "ab"
+    assert parse_anthropic_thinking("not a list") == ""
+
+
+# Chat stream: reasoning "a b", a chunk with choices but no delta, a chunk with
+# no choices key, then content "c". The odd chunks are skipped: output_tokens = 3
+# streamed. Non-streamed, a choice with no message gives output_tokens = 0.
+@pytest.mark.asyncio
+async def test_chat_skips_chunks_without_choices_or_delta() -> None:
+    """Servers send finish and keep-alive chunks with no delta, or no choices
+    at all. Neither channel's extractor may fail on them."""
+    sse = _build_sse(
+        [
+            {"choices": [{"delta": {"reasoning": "a b"}}]},
+            {"choices": [{"index": 0, "finish_reason": "stop"}]},
+            {"usage": {"completion_tokens": 3}},
+            {"choices": [{"delta": {"content": "c"}}]},
+        ]
+    )
+    data = ChatCompletionAPIData(messages=[ChatMessage(role="user", content="prompt")], max_tokens=100)
+    streamed = await data.process_response(
+        cast(ClientResponse, FakeStreamingResponse(sse)), APIConfig(type=APIType.Chat, streaming=True), _word_tokenizer()
+    )
+    assert isinstance(streamed.response_metrics, StreamedResponseMetrics)
+    assert streamed.response_metrics.output_tokens == 3
+
+    body = {"choices": [{"index": 0, "finish_reason": "length"}]}
+    unary = await data.process_response(
+        cast(ClientResponse, FakeStreamingResponse(json_body=body)),
+        APIConfig(type=APIType.Chat, streaming=False),
+        _word_tokenizer(),
+    )
+    assert isinstance(unary.response_metrics, UnaryResponseMetrics)
+    assert unary.response_metrics.output_tokens == 0
