@@ -23,7 +23,7 @@ data:
   # Per-request payload media (fresh per request).
   multimodal:
     image:
-      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      count: 1
       insertion_point: 1.0  # after the text question
       resolutions:
         - resolution: "720p"
@@ -31,19 +31,19 @@ data:
   shared_prefix:
     num_groups: 5
     num_prompts_per_group: 10
-    system_prompt_len: { type: fixed, min: 200, max: 200, mean: 200 }
-    question_len: { type: fixed, min: 50, max: 50, mean: 50 }
-    output_len: { type: fixed, min: 64, max: 64, mean: 64 }
+    system_prompt_len: 200
+    question_len: 50
+    output_len: 64
     # Prefix-side media (cached across the group).
     multimodal:
       image:
-        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        count: 1
         insertion_point: 0.0
         resolutions:
           - resolution: "1080p"
             weight: 1.0
       video:
-        count: { type: fixed, min: 1, max: 1, mean: 1 }
+        count: 1
         insertion_point: 0.5
         # Frames-as-images representation: each video expands to N image_url
         # blocks at one insertion point. Avoids the model server's MP4 decode
