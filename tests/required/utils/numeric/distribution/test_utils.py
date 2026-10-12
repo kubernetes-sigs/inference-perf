@@ -169,3 +169,13 @@ def test_value_ceiling() -> None:
     assert value_ceiling("Min(LogNormal(6, 0.5), 4096)") == 4096.0
     assert value_ceiling("Normal(50, 10)") == float("inf")
     assert value_ceiling("Piecewise((1, Normal(0, 1) > 0), (2, True))") is None
+
+
+# A length expression whose mass crosses zero is clamped at 0 rather than yielding negative lengths. Inputs:
+# 'Normal(5, 40)' sampled 500 times as integer lengths and 'Normal(0.2, 1)' sampled 500 times as fractional
+# seconds. Expected: no value below 0 in either, and at least one exact 0 where a negative draw was clamped.
+def test_sample_values_clamps_draws_at_zero() -> None:
+    lengths = sample_lengths("Normal(5, 40)", 500, np.random.default_rng(0))
+    seconds = sample_values("Normal(0.2, 1)", 500, np.random.default_rng(0), integer=False)
+    assert lengths.min() == 0 and (lengths == 0).sum() > 50
+    assert seconds.min() == 0.0 and (seconds == 0.0).sum() > 50

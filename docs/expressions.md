@@ -110,6 +110,8 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
 
+Every length, count and duration field clamps random draws at 0: `Normal(50, 40)` as a token length never yields a negative count, it yields 0 for the mass below zero. A constant below zero, such as `-5`, is rejected when the config loads. Clamping piles that mass onto 0, so an expression that often crosses zero is better written with its own floor, for example `Max(Normal(50, 40), 1)`.
+
 Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
 
 | Expression | Lower | Upper |
