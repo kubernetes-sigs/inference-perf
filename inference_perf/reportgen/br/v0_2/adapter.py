@@ -207,7 +207,8 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
         video = VideoPayloadStats(
             count=_statistics((group.count if group else 0 for group in videos), Units.COUNT),
             filesize=_statistics((instance.bytes for instance in all_videos), Units.BYTES),
-            pixels=_statistics((instance.pixels for instance in all_videos), Units.PIXELS),
+            # BR counts pixels across frames; native Video.pixels is per-frame.
+            pixels=_statistics((instance.pixels * instance.frames for instance in all_videos), Units.PIXELS),
             aspect_ratio=_statistics(
                 (instance.aspect_ratio for instance in all_videos),
                 Units.RATIO,

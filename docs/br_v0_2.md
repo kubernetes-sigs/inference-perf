@@ -56,7 +56,9 @@ The `requests` block also includes `request_size` in UTF-8 bytes and a `multimod
 block for recorded image, video, and audio measurements. Counts are distributions
 across successful requests, including zero for requests without that modality.
 Filesize, pixels, aspect ratio, video frames, and audio duration describe individual
-media instances. Failed requests are excluded from these distributions.
+media instances. BR video pixels are summed across frames for each video, while
+the native lifecycle report records pixels per frame. Failed requests are excluded
+from these distributions.
 
 The `throughput` block includes `image_rate`, `video_rate`, and `audio_rate` for
 recorded modalities. Each rate is the successful media count divided by the same

@@ -107,7 +107,6 @@ def test_request_size_uses_successful_utf8_payloads(
         ("image", "aspect_ratio", "aspect_ratio", "ratio", 1.5),
         ("video", "count", "count", "count", 1),
         ("video", "filesize", "bytes", "bytes", 40),
-        ("video", "pixels", "pixels", "pixels", 400),
         ("video", "aspect_ratio", "aspect_ratio", "ratio", 1.5),
         ("video", "frames", "frames", "count", 4),
         ("audio", "count", "count", "count", 1),
@@ -197,3 +196,13 @@ def test_instance_statistics_are_not_averages_of_requests(
     assert image["filesize"]["mean"] == 40
     assert image["filesize"]["p50"] == 30
     assert image["aspect_ratio"]["mean"] == 2
+
+
+def test_video_pixels_sum_frames_per_instance(mixed_requests: list[RequestLifecycleMetric]) -> None:
+    stats = _aggregate(mixed_requests)["requests"]["multimodal"]["video"]["pixels"]
+    # Different frame counts catch multiplying the two means instead of each instance.
+    assert stats["units"] == "pixels"
+    assert stats["mean"] == pytest.approx(2000)
+    assert stats["min"] == 400
+    assert stats["max"] == 3600
+    assert stats["p50"] == pytest.approx(2000)
