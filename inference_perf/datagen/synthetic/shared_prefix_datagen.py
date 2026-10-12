@@ -13,7 +13,7 @@
 # limitations under the License.
 import logging
 from itertools import count
-from typing import ClassVar, Dict, Generator, Iterator, List, Optional, Tuple, Union
+from typing import ClassVar, Dict, Generator, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -69,21 +69,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
     # already-assigned string on each generator instance.
     _session_namespace_counter: ClassVar[Iterator[int]] = count()
 
-    @staticmethod
-    def _resolve_length(
-        param: Union[int, str],
-        legacy_dist: Optional[Union[int, str]] = None,
-    ) -> Union[int, str]:
-        """Resolve a length field plus its optional legacy distribution into the value to sample from.
-
-        The legacy field only applies when the inline field was left as a
-        plain int (the config validator rejects the ambiguous combinations);
-        sample_lengths handles each resulting form.
-        """
-        if isinstance(param, int) and legacy_dist is not None:
-            return legacy_dist
-        return param
-
     def __init__(self, api_config: APIConfig, config: DataConfig, tokenizer: Optional[CustomTokenizer]) -> None:
         super().__init__(api_config, config, tokenizer)
 
@@ -114,9 +99,10 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.payload_multimodal: Optional[SyntheticMultimodalDatagenConfig] = config.multimodal
 
         # Resolve each length field to the value to sample from
-        system_prompt_spec = self._resolve_length(self.shared_prefix.system_prompt_len)
-        question_spec = self._resolve_length(self.shared_prefix.question_len, self.shared_prefix.question_distribution)
-        output_spec = self._resolve_length(self.shared_prefix.output_len, self.shared_prefix.output_distribution)
+        # the config folds the deprecated question/output_distribution aliases into these
+        system_prompt_spec = self.shared_prefix.system_prompt_len
+        question_spec = self.shared_prefix.question_len
+        output_spec = self.shared_prefix.output_len
 
         if self.enable_multi_turn_chat:
             check_output_leaves_prompt_budget(output_spec, "output_len", self.max_model_len)
