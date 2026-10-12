@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import math
 from enum import Enum
 from typing import Optional
@@ -27,6 +28,9 @@ from inference_perf.config.datagen.replay import (
     TraceConfig,
 )
 from inference_perf.config.datagen.visionarena import VisionArenaConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataGenType(Enum):
@@ -88,13 +92,13 @@ class SharedPrefix(StrictBaseModel):
     )
     seed: Optional[int] = Field(default=None, description="Random seed for reproducible prompt generation.")
 
-    # Legacy distribution fields, kept for backward compatibility.
-    # Prefer an expression string on question_len/output_len instead.
+    # Deprecated aliases: folded into question_len/output_len on load and
+    # left as None, removed together with the distribution block.
     question_distribution: Optional[LengthValue] = Field(
-        default=None, description="Legacy question length distribution. Prefer an expression string on 'question_len'."
+        default=None, description="Deprecated: set 'question_len' to the distribution instead."
     )
     output_distribution: Optional[LengthValue] = Field(
-        default=None, description="Legacy output length distribution. Prefer an expression string on 'output_len'."
+        default=None, description="Deprecated: set 'output_len' to the distribution instead."
     )
 
     enable_multi_turn_chat: bool = Field(
@@ -106,20 +110,28 @@ class SharedPrefix(StrictBaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_no_ambiguous_distributions(self) -> "SharedPrefix":
+    def fold_legacy_distribution_aliases(self) -> "SharedPrefix":
         # A plain int is the only question_len/output_len form the legacy
         # fields may accompany; an expression string would silently lose to
-        # them otherwise.
-        if not isinstance(self.question_len, int) and self.question_distribution is not None:
-            raise ValueError(
-                "Cannot specify both inline distribution on 'question_len' and legacy 'question_distribution'."
-                " Use one or the other."
+        # them otherwise. The alias then replaces the int and is cleared, so
+        # the datagen reads one field.
+        for alias, field in (("question_distribution", "question_len"), ("output_distribution", "output_len")):
+            value = getattr(self, alias)
+            if value is None:
+                continue
+            if not isinstance(getattr(self, field), int):
+                raise ValueError(
+                    f"Cannot specify both inline distribution on '{field}' and legacy '{alias}'. Use one or the other."
+                )
+            shown = f'"{value}"' if isinstance(value, str) else str(value)
+            logger.warning(
+                "shared_prefix.%s is deprecated and will be removed in a future release. Set `%s: %s` instead.",
+                alias,
+                field,
+                shown,
             )
-        if not isinstance(self.output_len, int) and self.output_distribution is not None:
-            raise ValueError(
-                "Cannot specify both inline distribution on 'output_len' and legacy 'output_distribution'."
-                " Use one or the other."
-            )
+            setattr(self, field, value)
+            setattr(self, alias, None)
         return self
 
 
