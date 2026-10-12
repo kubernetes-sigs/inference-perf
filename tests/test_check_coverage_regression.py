@@ -22,11 +22,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_coverage_regre
 
 
 # Loads scripts/check_coverage_regression.py by path, since scripts/ is not a package.
-# Importing it sets two env vars. monkeypatch puts them back after each test.
+# Importing it has no side effects, the env vars it needs are set in main().
 @pytest.fixture
-def ccr(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    monkeypatch.delenv("COVERAGE_PROCESS_START", raising=False)
-    monkeypatch.delenv("PDM_IGNORE_ACTIVE_VENV", raising=False)
+def ccr() -> ModuleType:
     spec = importlib.util.spec_from_file_location("check_coverage_regression", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -59,3 +57,9 @@ def test_deleting_fully_covered_file_passes(ccr: ModuleType) -> None:
 # Total falls to 81.18% and uncovered rises 2590 -> 2629, so it fails.
 def test_untested_code_beside_a_move_fails(ccr: ModuleType) -> None:
     assert ccr.coverage_regressed(totals(11340, 13969), MAIN)
+
+
+# Adds 100 statements, 90 covered (90% > 81.41% baseline). Uncovered rises
+# 2590 -> 2600 but total rises 81.41% -> 81.47%, so it passes.
+def test_adding_above_average_covered_code_passes(ccr: ModuleType) -> None:
+    assert not ccr.coverage_regressed(totals(11430, 14030), MAIN)
