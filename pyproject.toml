@@ -124,6 +124,7 @@ setup = {shell = "pdm install && pre-commit install --config .pre-push-config.ya
 
 "check:cov" = {cmd = "python scripts/check_coverage_regression.py", help = "Check unit-test coverage for regressions"}
 "check:mutation" = {cmd = "python scripts/check_mutation_regression.py", help = "Mutation ratchet over the functions changed since the base branch"}
+"test:mutation" = {cmd = "python scripts/check_mutation_regression.py --all", help = "Mutation-test the whole package and list survivors per module (takes hours)"}
 
 "docker:e2e-test:build".cmd = "docker buildx b -f Dockerfile.e2e-test {args:-t inference-perf-e2e-test} ."
 "docker:e2e-test:build".help = "Build the e2e-test Docker image"
