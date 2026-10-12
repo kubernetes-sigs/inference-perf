@@ -64,7 +64,7 @@ class Config(StrictBaseModel):
         default=None, description="Circuit breakers that stop the run when observed metrics cross configured thresholds."
     )
     observability: ObservabilityConfig = Field(
-        default=ObservabilityConfig(),
+        default_factory=ObservabilityConfig,
         description="Runtime observability of the benchmark run itself: the metrics inference-perf exports.",
     )
 

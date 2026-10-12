@@ -21,11 +21,13 @@ config surface that turns the HTTP endpoint on.
 """
 
 import multiprocessing as mp
+import os
 import pickle
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Iterator, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import yaml
@@ -188,13 +190,25 @@ class TestHubLifecycleHooks(unittest.TestCase):
         self.assertEqual(seen, [2, 0])
 
 
+# Puts KUBERNETES_SERVICE_HOST=10.0.0.1 in the environment (as kubelet does in a pod)
+# or takes it out, so a test sees the same thing on a laptop and on a CI runner in a pod.
+@contextmanager
+def _pod_env(in_pod: bool) -> Iterator[None]:
+    with patch.dict(os.environ):
+        os.environ.pop("KUBERNETES_SERVICE_HOST", None)
+        if in_pod:
+            os.environ["KUBERNETES_SERVICE_HOST"] = "10.0.0.1"
+        yield
+
+
 class TestObservabilityConfig(unittest.TestCase):
     def test_defaults_are_on_and_port_matches_server_default(self) -> None:
-        # A Config with no observability block at all.
+        # A Config with no observability block, built outside a Kubernetes pod.
         # Expects the endpoint on and bound to loopback:9464, so a run is
         # scrapeable from its own host without having been configured for it
         # and exposes nothing to the network until asked to.
-        config = Config()
+        with _pod_env(False):
+            config = Config()
         self.assertTrue(config.observability.metrics.enabled)
         self.assertEqual(config.observability.metrics.host, "127.0.0.1")
         # The config default is a literal to avoid a config <-> observability
@@ -206,19 +220,30 @@ class TestObservabilityConfig(unittest.TestCase):
         # Expects both to survive parsing, since disabling is now the setting
         # a user has to write out rather than the default.
         config = Config.model_validate({"observability": {"metrics": {"enabled": False, "port": 0}}})
-        self.assertEqual(
-            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="127.0.0.1", port=0))
-        )
+        self.assertEqual(config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, port=0)))
 
-    def test_shipped_configs_keep_the_loopback_default(self) -> None:
+    def test_host_follows_kubernetes_unless_set(self) -> None:
+        # No host set, with and without KUBERNETES_SERVICE_HOST=10.0.0.1, which
+        # kubelet sets in every pod. Expects 0.0.0.0 in the pod, 127.0.0.1 outside.
+        # An explicit host wins either way: 127.0.0.1 in a pod, 0.0.0.0 for docker run -p.
+        with _pod_env(True):
+            self.assertEqual(RuntimeMetricsConfig().host, "0.0.0.0")
+            self.assertEqual(RuntimeMetricsConfig(host="127.0.0.1").host, "127.0.0.1")
+        with _pod_env(False):
+            self.assertEqual(RuntimeMetricsConfig().host, "127.0.0.1")
+            self.assertEqual(RuntimeMetricsConfig(host="0.0.0.0").host, "0.0.0.0")
+
+    def test_shipped_configs_leave_host_to_the_pod_check(self) -> None:
         # The Helm chart's default values, and the root config.yml that the README
         # quickstart, the Docker image and the deploy/ ConfigMap all run.
-        # Expects both on 127.0.0.1: nothing in the repo scrapes the endpoint, and
-        # config.yml also runs on laptops, where 0.0.0.0 exposes it to the network.
+        # Expects each on 0.0.0.0 when loaded in a pod and 127.0.0.1 on a laptop,
+        # so neither may pin host.
         repo = Path(__file__).resolve().parents[3]
         chart = yaml.safe_load((repo / "deploy" / "inference-perf" / "values.yaml").read_text())
-        for config in (Config.model_validate(chart["config"]), read_config(str(repo / "config.yml"))):
-            self.assertEqual(config.observability.metrics.host, "127.0.0.1")
+        for in_pod, expected in ((True, "0.0.0.0"), (False, "127.0.0.1")):
+            with _pod_env(in_pod):
+                for config in (Config.model_validate(chart["config"]), read_config(str(repo / "config.yml"))):
+                    self.assertEqual(config.observability.metrics.host, expected)
 
 
 class TestMetricsEndpointFailureLogging(unittest.TestCase):
