@@ -88,7 +88,7 @@ data:
     std_dev: 10
     total_count: 100
   # Alternatively (synthetic/random only), either field takes an expression
-  # string (see expressions.md). The expression owns its value range: nothing is clamped.
+  # string (see expressions.md). Draws below 0 are clamped to 0; any other range is the expression's.
   # output_distribution: "LogNormal(5.0, 0.5)"
   # output_distribution: "100 + Uniform(0, 400)"
   shared_prefix:              # For shared_prefix type
