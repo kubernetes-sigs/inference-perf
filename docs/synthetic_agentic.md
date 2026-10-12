@@ -64,8 +64,8 @@ data:
   type: synthetic_agentic
   synthetic_agentic:
     num_sessions: 100
-    input_tokens_per_turn:  {type: lognormal, mean: 600, std_dev: 400}
-    output_tokens_per_turn: {type: uniform, min: 40, max: 200}
+    input_tokens_per_turn: "Min(Max(LogNormal(6.21, 0.6), 10), 1024)"   # mean ~600, heavy right tail
+    output_tokens_per_turn: "Uniform(40, 200)"
 load:
   type: trace_session_replay
   stages: [{concurrent_sessions: 8}]
@@ -79,9 +79,10 @@ server:
 
 ## Configuration knobs
 
-All live under `data.synthetic_agentic`. Most sizing knobs are **distributions** (`{type: fixed |
-uniform | lognormal | normal, ...}`), sampled once per session (or per agent) so different sessions
-vary. Vocabulary: a *session* is one root agent; a *turn* is one user message to the root; within a
+All live under `data.synthetic_agentic`. Most sizing knobs take a **number or an
+[expression](./expressions.md) string** (`"Uniform(3, 8)"`, `"Min(LogNormal(7.6, 0.4), 4000)"`), sampled once
+per session (or per agent) so different sessions vary. The legacy `{type, min, max, mean, std_dev}` block
+still loads with a warning naming the expression to use instead. Vocabulary: a *session* is one root agent; a *turn* is one user message to the root; within a
 turn the agent runs a *tool loop* (call a tool, read the result, repeat) then answers, or spawns
 *sub-agents* that each run their own loop and report back (recursively, down to `max_depth`).
 
@@ -90,19 +91,19 @@ turn the agent runs a *tool loop* (call a tool, read the result, repeat) then an
 | `num_sessions` | Number of sessions to generate (load volume). | **required** |
 | `input_tokens_per_turn` | Size of each new user turn's content. | **required** |
 | `output_tokens_per_turn` | Size of a plain-text answer. (Tool-*call* outputs are sized from the call the generator builds, not this knob.) | **required** |
-| `turns_per_session` | User turns to the root agent (1 = autonomous, N = interactive multi-turn; context accumulates across turns). | fixed 1 |
+| `turns_per_session` | User turns to the root agent (1 = autonomous, N = interactive multi-turn; context accumulates across turns). | 1 |
 | `fanout_probability` | Chance an agent spawns sub-agents instead of just answering (rolled per root turn and per sub-agent). 0 = single-agent, 1 = full tree to `max_depth`. | 0 |
 | `theme_mix` | Content theme(s) + weights: `generic`, `db2_latency_incident`, `research_rag`, `code_change_task`. Each entry is `{name: {weight: W}}` (a bare `{name: W}` float is also accepted). | equal mix of all four |
-| `tool_loop_depth` | How many times an agent goes around its tool loop before answering. 0 = answer directly; total model calls = this + 1. | fixed 2 |
-| `parallel_tool_calls_per_step` | Tool calls emitted in a single response (one loop iteration's width). | fixed 1 |
-| `tool_catalog_size_per_agent` | Number of tools advertised to the agent (prefill / KV stress). | fixed 8 |
+| `tool_loop_depth` | How many times an agent goes around its tool loop before answering. 0 = answer directly; total model calls = this + 1. | 2 |
+| `parallel_tool_calls_per_step` | Tool calls emitted in a single response (one loop iteration's width). | 1 |
+| `tool_catalog_size_per_agent` | Number of tools advertised to the agent (prefill / KV stress). | 8 |
 | `sub_agents_per_spawn` | How many children a spawning agent creates. | uniform 2–4 |
 | `max_depth` | Hard cap on sub-agent tree depth (a depth-`max_depth` agent never spawns). | 2 |
 | `max_events_per_session` | Budget on LLM calls per session, so a dense fan-out can't explode. | 64 |
 | `shared_system_prompt_len` | Tokens of a fixed system-prompt head that opens **every** agent call (the standing "system head" real agents carry). Set 0 for a head-less baseline. | 1000 |
 | `context_compaction` | `{trigger_tokens, target_tokens}`: when a turn's accumulated input crosses `trigger_tokens`, the next turn starts fresh with a `target_tokens`-sized summary replacing the transcript (a prefill drop + KV reset). | off (pure growth) |
-| `tool_call_latency_sec` | Pause between an agent's steps, modelling tool round-trip time (an offline wait that frees the GPU). | fixed 1s |
-| `user_think_time_sec` | Pause before each follow-up turn (turns 2..N), modelling user read/think time. | fixed 10s |
+| `tool_call_latency_sec` | Pause between an agent's steps, modelling tool round-trip time (an offline wait that frees the GPU). | 1s |
+| `user_think_time_sec` | Pause before each follow-up turn (turns 2..N), modelling user read/think time. | 10s |
 | `max_model_len` | Fail-fast ceiling: reject a config whose worst-case peak request (inputs + output) would exceed the model's context window, instead of 400-ing mid-run. | off |
 | `seed` | Base seed for deterministic per-session generation. | 42 |
 
@@ -138,15 +139,15 @@ data:
   type: synthetic_agentic
   synthetic_agentic:
     num_sessions: 100
-    turns_per_session:  {type: uniform, min: 3, max: 8}
+    turns_per_session: "Uniform(3, 8)"
     theme_mix: {code_change_task: {weight: 1.0}}
-    tool_loop_depth: {type: uniform, min: 0, max: 4}     # some turns answer directly, some loop deep
-    tool_catalog_size_per_agent: {type: fixed, mean: 20}
-    input_tokens_per_turn:  {type: lognormal, mean: 2000, std_dev: 800}
-    output_tokens_per_turn: {type: fixed, mean: 150}
+    tool_loop_depth: "Uniform(0, 4)"                     # some turns answer directly, some loop deep
+    tool_catalog_size_per_agent: 20
+    input_tokens_per_turn: "Min(LogNormal(7.526, 0.385), 8000)"   # mean ~2000, std ~800
+    output_tokens_per_turn: 150
     context_compaction:
-      trigger_tokens: {type: fixed, mean: 8500}
-      target_tokens:  {type: fixed, mean: 1500}
+      trigger_tokens: 8500
+      target_tokens: 1500
 ```
 
 **Recursive multi-agent fan-out** (an orchestrator that spawns sub-agents, each running its own
@@ -158,12 +159,12 @@ data:
   synthetic_agentic:
     num_sessions: 100
     fanout_probability: 0.5                          # ~half the agents delegate
-    sub_agents_per_spawn: {type: uniform, min: 1, max: 3}
+    sub_agents_per_spawn: "Uniform(1, 3)"
     max_depth: 2
     theme_mix: {generic: {weight: 1.0}}
-    tool_loop_depth: {type: fixed, mean: 2}
-    input_tokens_per_turn:  {type: fixed, mean: 400}
-    output_tokens_per_turn: {type: fixed, mean: 80}
+    tool_loop_depth: 2
+    input_tokens_per_turn: 400
+    output_tokens_per_turn: 80
 ```
 
 Example configs covering the main shapes (bare, tool loop, parallel calls, orchestrator fan-out,

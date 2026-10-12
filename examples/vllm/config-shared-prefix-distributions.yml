@@ -22,19 +22,8 @@ data:
     num_unique_system_prompts: 10
     num_users_per_system_prompt: 10
     system_prompt_len: 100                # Fixed length (backward compatible)
-    question_len:                         # Inline distribution syntax
-      type: skew_normal
-      mean: 200
-      std_dev: 80
-      skew: 2.5
-      min: 10
-      max: 2000
-    output_len:
-      type: lognormal
-      mean: 150
-      std_dev: 60
-      min: 1
-      max: 4096
+    question_len: "Min(Max(200 + 80*(0.928*Abs(Normal(0, 1)) + 0.371*Normal(0, 1)), 10), 2000)"  # skew-normal (Azzalini form, skew 2.5) clipped to [10, 2000]
+    output_len: "Min(Max(LogNormal(4.936, 0.385), 1), 4096)"  # lognormal with mean 150, std dev 60
 metrics:
   type: prometheus
   prometheus:
