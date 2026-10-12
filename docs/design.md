@@ -61,6 +61,14 @@ Two rules keep the schema this small:
   round is a record holding that prompt, and `session_id` ties the rounds
   together. There is no per-turn switch for this.
 
+This layer covers formats that record lengths, block ids or plain text. A whole
+workload of that kind is small, so `WorkloadSource.load()` returns it at once.
+OTel traces stay on `RawCall` and `ComplexReplayMessage` for now. Moving them
+onto this layer needs a per-session load beside `load()`, because an OTel corpus
+carries full prompt text and is read one session at a time. It also needs parts
+for tool calls, `tool_call_id` and tool definitions. Those are optional fields,
+so they do not bump `v1alpha1`.
+
 ## Load Generator
 
 Load Generator is the component which generates different traffic patterns based
