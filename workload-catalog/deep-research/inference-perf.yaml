@@ -25,33 +25,8 @@ data:
     seed: 42
     num_conversations: 5
     shared_system_prompt_len: 2000
-    dynamic_system_prompt_len:
-      type: lognormal
-      min: 2000
-      max: 150000
-      mean: 45000
-      std_dev: 35000
-    turns_per_conversation:
-      type: normal
-      min: 2
-      max: 50
-      mean: 15
-      std_dev: 8.5
-    input_tokens_per_turn:
-      type: lognormal
-      min: 500
-      max: 15000
-      mean: 3000
-      std_dev: 2500
-    output_tokens_per_turn:
-      type: normal
-      min: 50
-      max: 4000
-      mean: 300
-      std_dev: 850
-    tool_call_latency_sec:
-      type: normal
-      min: 5
-      max: 60
-      mean: 25
-      std_dev: 12
+    dynamic_system_prompt_len: "Min(Max(LogNormal(10.478, 0.688), 2000), 150000)"
+    turns_per_conversation: "Min(Max(Normal(15, 8.5), 2), 50)"
+    input_tokens_per_turn: "Min(Max(LogNormal(7.743, 0.726), 500), 15000)"
+    output_tokens_per_turn: "Min(Max(Normal(300, 850), 50), 4000)"
+    tool_call_latency_sec: "Min(Max(Normal(25, 12), 5), 60)"

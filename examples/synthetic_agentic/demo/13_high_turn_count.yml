@@ -1,6 +1,6 @@
 # DEMO 13 — High turn count (turns_per_session fixed at 32, > 30).
 # Motivated by real-world usage data: Baumann et al., "SWE-chat: Coding Agent Interactions From
-# Real Users in the Wild" (arXiv:2604.20779), Figure 4(a) shows turns-per-session is heavily
+# Real Users in the Wild" (arXiv:2604.208), Figure 4(a) shows turns-per-session is heavily
 # right-skewed with a distinct 30+ bucket that alone accounts for ~5-6% of sessions. This demo
 # pins every session AT that tail value (fixed, not sampled) so the long-conversation shape is
 # reproducible and unmissable: context accumulates across 32 human turns, each with its own
@@ -17,14 +17,14 @@ data:
     num_sessions: 2
     seed: 13
     theme_mix: {code_change_task: {weight: 1.0}}
-    turns_per_session: {type: fixed, mean: 32}     # > 30: the paper's long-conversation tail
+    turns_per_session: 32  # > 30: the paper's long-conversation tail
     fanout_probability: 0.0
-    tool_loop_depth: {type: fixed, mean: 1}
-    tool_catalog_size_per_agent: {type: fixed, mean: 8}
+    tool_loop_depth: 1
+    tool_catalog_size_per_agent: 8
     max_events_per_session: 128                    # 32 turns x 2 calls/turn, plus headroom
-    input_tokens_per_turn:  {type: fixed, mean: 200}
-    output_tokens_per_turn: {type: fixed, mean: 60}
-    tool_call_latency_sec:  {type: fixed, mean: 1}
+    input_tokens_per_turn: 200
+    output_tokens_per_turn: 60
+    tool_call_latency_sec: 1.0
 load:
   type: trace_session_replay
   stages:

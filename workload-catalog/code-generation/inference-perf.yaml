@@ -27,33 +27,8 @@ data:
     max_model_len: 262144 # Update based on the model's context length
     num_conversations: 40
     shared_system_prompt_len: 3000
-    dynamic_system_prompt_len:
-      type: lognormal
-      min: 10000
-      max: 990000
-      mean: 160000
-      std_dev: 233600
-    turns_per_conversation:
-      type: lognormal
-      min: 1
-      max: 3000
-      mean: 540
-      std_dev: 48600
-    input_tokens_per_turn:
-      type: lognormal
-      min: 100
-      max: 10000
-      mean: 1500
-      std_dev: 1200
-    output_tokens_per_turn:
-      type: lognormal
-      min: 50
-      max: 10000
-      mean: 425
-      std_dev: 825
-    tool_call_latency_sec:
-      type: lognormal
-      min: 1
-      max: 100
-      mean: 15
-      std_dev: 55
+    dynamic_system_prompt_len: "Min(Max(LogNormal(11.412, 1.068), 10000), 990000)"
+    turns_per_conversation: "Min(Max(LogNormal(1.792, 3), 1), 3000)"
+    input_tokens_per_turn: "Min(Max(LogNormal(7.066, 0.703), 100), 10000)"
+    output_tokens_per_turn: "Min(Max(LogNormal(5.271, 1.25), 50), 10000)"
+    tool_call_latency_sec: "Min(Max(LogNormal(1.373, 1.634), 1), 100)"
