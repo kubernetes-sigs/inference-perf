@@ -55,12 +55,14 @@ class TestDeployMetricsPort(unittest.TestCase):
         self.assertEqual(fallbacks, [str(DEFAULT_PORT)])
 
     # Input: the chart's default values.yaml.
-    # Expects it not to set config.observability.metrics at all, so a default
-    # install serves on the tool's default port and the chart's fallback is
-    # what applies.
+    # Expects config.observability.metrics to set neither enabled nor port, so
+    # a default install serves on the tool's default port and the chart's
+    # fallback is what applies. Other keys there (host) are the tool's concern.
     def test_chart_values_leave_metrics_config_to_the_tool(self) -> None:
         values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
-        self.assertNotIn("observability", values["config"])
+        metrics = values["config"].get("observability", {}).get("metrics", {})
+        self.assertNotIn("enabled", metrics)
+        self.assertNotIn("port", metrics)
 
 
 if __name__ == "__main__":
