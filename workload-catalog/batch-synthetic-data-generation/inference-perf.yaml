@@ -25,18 +25,6 @@ data:
     seed: 42
     num_conversations: 40
     shared_system_prompt_len: 2000
-    turns_per_conversation:
-      type: fixed
-      mean: 1
-    input_tokens_per_turn:
-      type: lognormal
-      min: 50
-      max: 15000
-      mean: 500
-      std_dev: 1200
-    output_tokens_per_turn:
-      type: uniform
-      min: 500
-      max: 8000
-      mean: 4000
-      std_dev: 2500
+    turns_per_conversation: 1
+    input_tokens_per_turn: "Min(Max(LogNormal(5.259, 1.382), 50), 15000)"
+    output_tokens_per_turn: "Uniform(500, 8000)"
