@@ -38,14 +38,16 @@ def validate_length_expression(value: str) -> str:
     """Validate an expression-string length field at config-load time.
 
     Constructing the Expression is the validation: it raises ValueError for
-    unparseable input, unknown functions or symbols, and the time variable
-    ``t`` (a length never varies with stage time), which pydantic surfaces as
-    a field validation error. The value itself is returned unchanged; sampling
-    sites construct their own Expression from it.
+    unparseable input, unknown functions or symbols, the time variable ``t``
+    (a length never varies with stage time), and a constant below zero, which
+    pydantic surfaces as a field validation error. Random draws below zero are
+    clamped when sampled, the same bound :func:`sample_values` applies. The
+    value itself is returned unchanged; sampling sites construct their own
+    Expression from it.
     """
     from inference_perf.utils.numeric.expression import Expression
 
-    Expression(value, allow_time=False)
+    Expression(value, allow_time=False, minimum=0, clip=True)
     return value
 
 

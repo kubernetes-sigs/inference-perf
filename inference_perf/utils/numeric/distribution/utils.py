@@ -245,8 +245,10 @@ def sample_values(
     """Sample from any numeric config value: a number or an expression string.
 
     - number: the constant, repeated (no random draws are consumed).
-    - str: an Expression sampled as written. The expression author owns the
-      value range; nothing is clamped on top.
+    - str: an Expression sampled as written, except that draws below zero
+      are clamped to zero: every value sampled here is a length, a count or a
+      duration, and a negative one is never meant. Any other range is the
+      expression author's to enforce.
 
     Args:
         value: The configured value.
@@ -266,7 +268,7 @@ def sample_values(
 
     if rng is None:
         rng = np.random.default_rng()
-    expression = Expression(value, allow_time=False)
+    expression = Expression(value, allow_time=False, minimum=0, clip=True)
     samples = np.atleast_1d(np.asarray(expression.sample(rng=rng, size=count), dtype=np.float64))
     return np.round(samples) if integer else samples
 

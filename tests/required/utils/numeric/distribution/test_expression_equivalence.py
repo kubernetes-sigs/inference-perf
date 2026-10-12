@@ -166,8 +166,8 @@ class TestSampleLengths:
         assert abs(via_lengths.std() - direct.std()) < 1.0
 
     # An expression string samples as written and rounds to integers:
-    # Uniform(10, 20) draws stay in [10, 20], and no bound is clamped on top
-    # (the expression author owns the range).
+    # Uniform(10, 20) draws stay in [10, 20], and no upper bound is clamped
+    # on top (the expression author owns the range above zero).
     def test_expression_string_rounds_to_ints(self) -> None:
         result = sample_lengths("Uniform(10, 20)", 1000, np.random.default_rng(13))
         assert np.issubdtype(result.dtype, np.integer)

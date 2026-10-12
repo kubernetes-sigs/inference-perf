@@ -33,6 +33,14 @@ class TestSharedPrefixLengthExpressions:
         sp = SharedPrefix(**{field: "Normal(50, 10)"})
         assert getattr(sp, field) == "Normal(50, 10)"
 
+    # A constant length below zero ("-5") is rejected at config-load time, while
+    # a random expression that can cross zero ("Normal(5, 40)") is accepted and
+    # clamped when sampled.
+    def test_negative_constant_rejected_random_crossing_accepted(self) -> None:
+        with pytest.raises(ValidationError, match="outside the permitted range"):
+            SharedPrefix(question_len="-5")
+        assert SharedPrefix(question_len="Normal(5, 40)").question_len == "Normal(5, 40)"
+
     # A misspelled distribution name ("Nrml") fails at config-load time with
     # a field validation error, not at first sample.
     def test_unknown_function_rejected(self) -> None:
