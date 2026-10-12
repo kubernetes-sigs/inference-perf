@@ -1713,79 +1713,80 @@ class LoadGenerator:
                 if not isinstance(stage, StandardLoadStage):
                     raise TypeError(f"Non-multiprocessing run() only supports StandardLoadStage, got {type(stage)}")
 
-                timer = self.get_timer(stage.rate, stage.duration)
-                start_time_epoch = time.time()
-                start_time = time.perf_counter()
-                end_time = start_time + stage.duration
-                stage_status = StageStatus.RUNNING
-                logger.info("Stage %d - run started", stage_id)
-
-                num_requests = int(stage.rate * stage.duration)
-                # This path has no worker processes to sample, so it counts its
-                # own completions; reset per stage like the shared counters are.
-                self._local_finished = 0
-                stage_context = StageContext(
-                    stage_id=stage_id,
-                    planned_requests=num_requests,
-                    requests_finished=lambda: self._local_finished,
-                )
-                self._stage_started(stage_context)
-                stage_task = progress.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
-
-                if not isinstance(self.datagen, DataGenerator):
-                    raise TypeError("Non-multiprocessing run() requires DataGenerator")
-
-                async with TaskGroup() as tg:
-                    time_generator = timer.start_timer(start_time)
-                    for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
-                        progress.refresh()
-                        data.stage_id = stage_id
-                        request_data = LazyLoadDataMixin.get_request(self.datagen, data)
-                        lora_adapter = self._get_lora_adapter()
-                        if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                            logger.warning(
-                                f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.'
-                            )
-                            stage_status = StageStatus.FAILED
-                            break
-                        now = time.perf_counter()
-                        if time_index < end_time and now < end_time:
-                            if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
-                                logger.warning(
-                                    f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.'
-                                )
-                                stage_status = StageStatus.FAILED
-                                break
-                            if time_index > now:
-                                await sleep(time_index - time.perf_counter())
-                            tg.create_task(
-                                self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
-                            )
-                            continue
-                        else:
-                            break
-
-                progress.refresh(force=True)
-                stage_task.close()  # Clean up after completion
-
-                if stage_status == StageStatus.RUNNING:
-                    stage_status = StageStatus.COMPLETED
-                    logger.info("Stage %d - run completed", stage_id)
-                else:
-                    logger.info("Stage %d - run failed", stage_id)
-                self.stage_runtime_info[stage_id] = StageRuntimeInfo(
-                    stage_id=stage_id,
-                    rate=stage.rate,
-                    start_time=start_time_epoch,
-                    end_time=time.time(),
-                    status=stage_status,
-                    concurrency_level=None,
-                )
-                self._stage_ended(stage_context)
+                await self._run_reported_stage(stage_id, self._run_in_process_stage(client, stage_id, stage, progress))
                 progress.refresh(force=True)
                 LocalUserSession.clear_instances()
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
+
+    async def _run_in_process_stage(
+        self, client: ModelServerClient, stage_id: int, stage: StandardLoadStage, progress: ProgressBars
+    ) -> None:
+        """Send one stage's requests from this process and record its StageRuntimeInfo."""
+        timer = self.get_timer(stage.rate, stage.duration)
+        start_time_epoch = time.time()
+        start_time = time.perf_counter()
+        end_time = start_time + stage.duration
+        stage_status = StageStatus.RUNNING
+        logger.info("Stage %d - run started", stage_id)
+
+        # This path has no worker processes to sample, so it counts its
+        # own completions; reset per stage like the shared counters are.
+        self._local_finished = 0
+        self._stage_started(
+            StageContext(
+                stage_id=stage_id,
+                planned_requests=int(stage.rate * stage.duration),
+                requests_finished=lambda: self._local_finished,
+            )
+        )
+        stage_task = progress.open(STAGE_REQUESTS_BAR, stage=str(stage_id))
+
+        if not isinstance(self.datagen, DataGenerator):
+            raise TypeError("Non-multiprocessing run() requires DataGenerator")
+
+        async with TaskGroup() as tg:
+            time_generator = timer.start_timer(start_time)
+            for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
+                progress.refresh()
+                data.stage_id = stage_id
+                request_data = LazyLoadDataMixin.get_request(self.datagen, data)
+                lora_adapter = self._get_lora_adapter()
+                if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                    logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
+                    stage_status = StageStatus.FAILED
+                    break
+                now = time.perf_counter()
+                if time_index < end_time and now < end_time:
+                    if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
+                        logger.warning(f'Loadgen detects circuit breakers "{cb.name}" open, clean up stage and exit early.')
+                        stage_status = StageStatus.FAILED
+                        break
+                    if time_index > now:
+                        await sleep(time_index - time.perf_counter())
+                    tg.create_task(
+                        self._track_in_flight(client.process_request(request_data, stage_id, time_index, lora_adapter))
+                    )
+                    continue
+                else:
+                    break
+
+        progress.refresh(force=True)
+        stage_task.close()  # Clean up after completion
+
+        if stage_status == StageStatus.RUNNING:
+            stage_status = StageStatus.COMPLETED
+            logger.info("Stage %d - run completed", stage_id)
+        else:
+            logger.info("Stage %d - run failed", stage_id)
+        self.stage_runtime_info[stage_id] = StageRuntimeInfo(
+            stage_id=stage_id,
+            rate=stage.rate,
+            start_time=start_time_epoch,
+            end_time=time.time(),
+            status=stage_status,
+            concurrency_level=None,
+        )
 
     async def stop(self) -> None:
         for worker in self.workers:

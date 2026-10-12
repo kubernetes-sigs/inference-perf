@@ -21,7 +21,7 @@ than by one example per path.
 """
 
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple, Type
 
 import pytest
 
@@ -265,6 +265,48 @@ async def test_stage_is_ended_however_its_runner_exits(
             await loadgen._run_reported_stage(0, runner(loadgen))
     else:
         await loadgen._run_reported_stage(0, runner(loadgen))
+
+    assert recorder.events == [("start", 0), ("end", 0)]
+    assert _sample(recorder, "inference_perf_stage_running", {"stage": "0"}) == 0
+    assert _sample(recorder, "inference_perf_stages_completed") == 1
+
+
+# A client whose every request fails, so the stage's TaskGroup raises.
+class _FailingClient(MockModelServerClient):
+    async def process_request(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("request failed")
+
+
+# Swaps the datagen for one the in-process path rejects, after construction
+# so the swap is what fails rather than the constructor.
+def _swap_in_session_datagen(loadgen: LoadGenerator) -> None:
+    loadgen.datagen = _InstantSessionGenerator(1)
+
+
+# The in-process run() (num_workers=0) over one stage of 2 requests, where the
+# stage body raises after the stage started: either the datagen is not a
+# DataGenerator (TypeError before any request) or every request fails inside
+# the TaskGroup (ExceptionGroup). Expects the error to propagate out of run()
+# with stage 0 still ended: one start, one end, stage_running 0 and
+# stages_completed 1 rather than a stage left open for the rest of the run.
+@pytest.mark.parametrize(
+    "sabotage, client_cls, error",
+    [
+        pytest.param(_swap_in_session_datagen, MockModelServerClient, TypeError, id="bad-datagen"),
+        pytest.param(lambda loadgen: None, _FailingClient, ExceptionGroup, id="failed-request"),
+    ],
+)
+async def test_in_process_stage_is_ended_when_its_body_raises(
+    sabotage: Callable[[LoadGenerator], None], client_cls: Type[MockModelServerClient], error: Type[BaseException]
+) -> None:
+    load_config = LoadConfig(type=LoadType.CONSTANT, stages=[StandardLoadStage(rate=2, duration=1)], num_workers=0)
+    datagen = MockDataGenerator(APIConfig(type=APIType.Completion), DataConfig(type=DataGenType.Mock), None)
+    loadgen, recorder = _wired_loadgen(load_config, datagen)
+    sabotage(loadgen)
+    client = client_cls(LocalRequestMetricCollector(), APIConfig(type=APIType.Completion), mock_latency=0)
+
+    with pytest.raises(error):
+        await loadgen.run(client)
 
     assert recorder.events == [("start", 0), ("end", 0)]
     assert _sample(recorder, "inference_perf_stage_running", {"stage": "0"}) == 0
