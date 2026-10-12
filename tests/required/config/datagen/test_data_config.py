@@ -196,9 +196,10 @@ def test_shared_prefix_legacy_distribution_compat() -> None:
     )
     sp = config.data.shared_prefix
     assert sp is not None
-    assert sp.question_len == 50
-    # The legacy block is rewritten on load to the expression it stood for.
-    assert sp.question_distribution == "Min(Max(Normal(512, 200), 10), 1024)"
+    # The deprecated alias is rewritten to the expression it stood for and
+    # folded into question_len, which the datagen reads.
+    assert sp.question_len == "Min(Max(Normal(512, 200), 10), 1024)"
+    assert sp.question_distribution is None
 
 
 def test_shared_prefix_seed_field() -> None:
