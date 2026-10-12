@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Generator, List, Optional
-from inference_perf.config import APIConfig, APIType, DataConfig
+from inference_perf.config import APIConfig, APIType, DataConfig, RerankConfig
 from inference_perf.datagen.base import DataGenerator
 from inference_perf.apis import (
     AnthropicMessagesAPIData,
@@ -21,6 +21,7 @@ from inference_perf.apis import (
     CompletionAPIData,
     EmbeddingsAPIData,
     InferenceAPIData,
+    RerankAPIData,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
@@ -30,7 +31,7 @@ class MockDataGenerator(DataGenerator):
         super().__init__(api_config, config, tokenizer)
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings]
+        return [APIType.Completion, APIType.Chat, APIType.AnthropicMessages, APIType.Embeddings, APIType.Rerank]
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         i = 0
@@ -52,6 +53,13 @@ class MockDataGenerator(DataGenerator):
             while True:
                 i += 1
                 yield EmbeddingsAPIData.from_texts([f"mock prompt {i}-{j}" for j in range(batch_size)], options)
+        elif self.api_config.type == APIType.Rerank:
+            rerank_options = self.api_config.rerank
+            document_count = (rerank_options or RerankConfig()).document_count
+            while True:
+                i += 1
+                documents = [f"mock document {i}-{j}" for j in range(document_count)]
+                yield RerankAPIData.from_query_and_documents(f"mock query {i}", documents, rerank_options)
         else:
             raise Exception("Unsupported API type")
 
