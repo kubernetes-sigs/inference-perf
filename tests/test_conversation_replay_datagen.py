@@ -13,7 +13,7 @@
 # limitations under the License.
 """Tests for ConversationReplayDataGenerator."""
 
-from typing import Any, Generator, List
+from typing import Any, Generator, List, Union
 
 import pytest
 from unittest.mock import MagicMock
@@ -23,7 +23,6 @@ from inference_perf.config import (
     APIConfig,
     APIType,
     ConversationReplayConfig,
-    Distribution,
     DataConfig,
     DataGenType,
 )
@@ -69,10 +68,10 @@ def _make_config(
         seed=seed,
         num_conversations=num_conversations,
         shared_system_prompt_len=shared_system_prompt_len,
-        dynamic_system_prompt_len=Distribution(type="normal", min=50, max=200, mean=100, std_dev=30),
-        turns_per_conversation=Distribution(type="normal", min=turns_min, max=turns_max, mean=turns_mean, std_dev=1),
-        input_tokens_per_turn=Distribution(type="normal", min=10, max=100, mean=50, std_dev=20),
-        output_tokens_per_turn=Distribution(type="normal", min=10, max=100, mean=50, std_dev=20),
+        dynamic_system_prompt_len="Min(Max(Normal(100, 30), 50), 200)",
+        turns_per_conversation=f"Min(Max(Normal({turns_mean}, 1), {turns_min}), {turns_max})",
+        input_tokens_per_turn="Min(Max(Normal(50, 20), 10), 100)",
+        output_tokens_per_turn="Min(Max(Normal(50, 20), 10), 100)",
     )
     data_config = DataConfig(
         type=DataGenType.ConversationReplay,
@@ -229,14 +228,14 @@ class TestConversationReplayDataGenerator:
             num_conversations=1,
             shared_system_prompt_len=50,
             max_model_len=1000,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            turns_per_conversation=1,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
             # 900 + 200 buffer >= 1000, so no prompt could ever fit.
-            output_tokens_per_turn=Distribution(type="normal", min=10, max=900, mean=100, std_dev=50),
+            output_tokens_per_turn="Min(Max(Normal(100, 50), 10), 900)",
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
-        with pytest.raises(ValueError, match="leaves no room for a prompt"):
+        with pytest.raises(ValueError, match="no room for a prompt"):
             ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
     def test_fixed_output_distribution_validates_mean_not_max(self) -> None:
@@ -247,14 +246,14 @@ class TestConversationReplayDataGenerator:
             num_conversations=1,
             shared_system_prompt_len=50,
             max_model_len=1000,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            turns_per_conversation=1,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
             # max is well within budget, but fixed sampling ignores it and yields 5000.
-            output_tokens_per_turn=Distribution(type="fixed", min=10, max=100, mean=5000, std_dev=0),
+            output_tokens_per_turn=5000,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
-        with pytest.raises(ValueError, match=r"output_tokens_per_turn\.mean \(5000\)"):
+        with pytest.raises(ValueError, match=r"output_tokens_per_turn \(5000\)"):
             ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
 
     def test_omitted_output_distribution_validates_the_default(self) -> None:
@@ -266,8 +265,8 @@ class TestConversationReplayDataGenerator:
             shared_system_prompt_len=10,
             # 256 fallback + 200 buffer >= 400, so even the default cannot fit.
             max_model_len=400,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            turns_per_conversation=1,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
             output_tokens_per_turn=None,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
@@ -283,10 +282,10 @@ class TestConversationReplayDataGenerator:
             num_conversations=1,
             shared_system_prompt_len=50,
             max_model_len=1000,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            turns_per_conversation=1,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
             # 799 + 200 < 1000, so a prompt still fits.
-            output_tokens_per_turn=Distribution(type="normal", min=10, max=799, mean=100, std_dev=50),
+            output_tokens_per_turn="Min(Max(Normal(100, 50), 10), 799)",
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
@@ -300,10 +299,10 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=2,
             shared_system_prompt_len=50,
-            turns_per_conversation=Distribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            tool_call_latency_sec=Distribution(type="fixed", min=5, max=5, mean=5, std_dev=0),
+            turns_per_conversation=3,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            tool_call_latency_sec=5,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
@@ -322,28 +321,28 @@ class TestConversationReplayDataGenerator:
     # (mean 0.5, std 0.1) clipped to [0, 1]. Expected: every turn 0.5 exactly; then values inside [0, 1] with at
     # least one strictly between 0 and 1. Integer sampling turned these into 0s and 1s.
     def test_tool_call_latency_keeps_fractional_seconds(self) -> None:
-        fixed = self._tool_latencies(Distribution(type="fixed", min=0, max=1, mean=0.5, std_dev=0))
+        fixed = self._tool_latencies(0.5)
         assert fixed and all(x == 0.5 for x in fixed), fixed
-        normal = self._tool_latencies(Distribution(type="normal", min=0, max=1, mean=0.5, std_dev=0.1))
+        normal = self._tool_latencies("Min(Max(Normal(0.5, 0.1), 0), 1)")
         assert all(0 <= x <= 1 for x in normal) and any(0 < x < 1 for x in normal), normal
 
     # Builds a 2-conversation, 3-turn generator with the given tool-call latency and returns every turn's latency.
     @staticmethod
-    def _tool_latencies(latency: Distribution) -> List[float]:
+    def _tool_latencies(latency: Union[float, str]) -> List[float]:
         cr_config = ConversationReplayConfig(
             seed=42,
             num_conversations=2,
             shared_system_prompt_len=50,
-            turns_per_conversation=Distribution(type="fixed", min=3, max=3, mean=3, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
+            turns_per_conversation=3,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
             tool_call_latency_sec=latency,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
         gen = ConversationReplayDataGenerator(APIConfig(type=APIType.Completion), data_config, _make_mock_tokenizer())
         return [lat for bp in gen.blueprints for lat in bp.turn_tool_call_latencies]
 
-    # Every conversation_replay Distribution knob also takes an expression string. Inputs: turns '3', dynamic
+    # Every conversation_replay length knob also takes an expression string. Inputs: turns '3', dynamic
     # prompt 'Uniform(20, 40)', input 'Min(Normal(20, 5), 50)', output 'Uniform(10, 50)', latency
     # 'Uniform(0.1, 0.4)'. Expected: 3 turns per conversation, fractional latencies inside [0.1, 0.4].
     def test_expression_knobs(self) -> None:
@@ -442,10 +441,11 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=3,
             shared_system_prompt_len=50,
-            turns_per_conversation=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
-            input_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            output_tokens_per_turn=Distribution(type="normal", min=10, max=50, mean=20, std_dev=5),
-            tool_call_latency_sec=Distribution(type="lognormal", min=1, max=30, mean=8, std_dev=6),
+            turns_per_conversation=10,
+            input_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            output_tokens_per_turn="Min(Max(Normal(20, 5), 10), 50)",
+            # LogNormal moment-matched to mean 8s, std 6s, clamped to [1, 30]
+            tool_call_latency_sec="Min(Max(LogNormal(1.856, 0.668), 1), 30)",
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
         gen = ConversationReplayDataGenerator(api_config, data_config, _make_mock_tokenizer())
@@ -465,9 +465,9 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=2,
             shared_system_prompt_len=50,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
-            output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            turns_per_conversation=1,
+            input_tokens_per_turn=10,
+            output_tokens_per_turn=10,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
@@ -522,9 +522,9 @@ class TestConversationReplayDataGenerator:
             seed=42,
             num_conversations=2,
             shared_system_prompt_len=50,
-            turns_per_conversation=Distribution(type="fixed", min=1, max=1, mean=1, std_dev=0),
-            input_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
-            output_tokens_per_turn=Distribution(type="fixed", min=10, max=10, mean=10, std_dev=0),
+            turns_per_conversation=1,
+            input_tokens_per_turn=10,
+            output_tokens_per_turn=10,
         )
         data_config = DataConfig(type=DataGenType.ConversationReplay, conversation_replay=cr_config)
 
