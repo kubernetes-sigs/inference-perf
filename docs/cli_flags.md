@@ -80,7 +80,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.output_len.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
 | `--data.shared_prefix.max_model_len` | int | Maximum model context length in tokens for multi-turn sessions. Defaults to 225000 when omitted, matching conversation_replay. |
 | `--data.shared_prefix.seed` | int | Random seed for reproducible prompt generation. |
-| `--data.shared_prefix.question_distribution` | string | Legacy question length distribution. Prefer an expression string on 'question_len'. |
+| `--data.shared_prefix.question_distribution` | string | Deprecated: set 'question_len' to the distribution instead. |
 | `--data.shared_prefix.question_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.question_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.question_distribution.mean` | float | Mean of the distribution. |
@@ -89,7 +89,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.question_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.question_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.question_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.output_distribution` | string | Legacy output length distribution. Prefer an expression string on 'output_len'. |
+| `--data.shared_prefix.output_distribution` | string | Deprecated: set 'output_len' to the distribution instead. |
 | `--data.shared_prefix.output_distribution.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.output_distribution.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.output_distribution.mean` | float | Mean of the distribution. |
