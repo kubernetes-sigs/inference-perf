@@ -746,9 +746,60 @@ def test_chat_conversion_rejects_finish_event_after_done(tmp_path: Path) -> None
     assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
 
 
-def test_chat_conversion_rejects_unterminated_done_event(tmp_path: Path) -> None:
+def test_chat_conversion_accepts_trimmed_final_event(tmp_path: Path) -> None:
     record = streaming_chat_record(content_fragments=["complete"])
     record["response"] = record["response"].rstrip("\n")
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+    assert json.loads(attrs["gen_ai.output.messages"])[0]["parts"] == [{"type": "text", "content": "complete"}]
+
+
+def test_chat_conversion_omits_usage_attributes_when_stream_has_no_usage(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["complete"])
+    events = record["response"].split("\n\n")
+    record["response"] = "\n\n".join(event for event in events if '"choices": []' not in event)
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert "gen_ai.usage.input_tokens" not in attrs
+    assert "gen_ai.usage.output_tokens" not in attrs
+
+
+@pytest.mark.parametrize(
+    "bad_tool_call",
+    [
+        {"index": "0", "id": "call-1", "function": {"name": "run", "arguments": "{}"}},
+        {"index": True, "id": "call-1", "function": {"name": "run", "arguments": "{}"}},
+        {"index": 0, "function": {"name": "run", "arguments": "{}"}},
+    ],
+    ids=["string-index", "boolean-index", "missing-id"],
+)
+def test_chat_conversion_rejects_invalid_finished_tool_call(tmp_path: Path, bad_tool_call: Dict[str, Any]) -> None:
+    record = streaming_chat_record(tool_call_fragments=[bad_tool_call])
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_sse_based_on_response_not_request_flag(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["partial"], include_done=False)
+    request = json.loads(record["request"])
+    request["stream"] = False
+    record["request"] = json.dumps(request)
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+@pytest.mark.parametrize("response", ["", "event: chat.completion.chunk\n"])
+def test_chat_conversion_rejects_streaming_request_with_response_truncated_before_data(tmp_path: Path, response: str) -> None:
+    record = streaming_chat_record(content_fragments=["partial"])
+    record["response"] = response
+
+    assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
+
+
+def test_chat_conversion_rejects_boolean_choice_index(tmp_path: Path) -> None:
+    record = streaming_chat_record(content_fragments=["partial"])
+    record["response"] = record["response"].replace('"index": 0', '"index": true', 1)
 
     assert convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["span_count"] == 0
 
@@ -839,6 +890,20 @@ def test_responses_conversion_parses_sse_completed(tmp_path: Path) -> None:
     assert attrs["gen_ai.response.finish_reasons"] == ["stop"]
     parts = json.loads(attrs["gen_ai.output.messages"])[0]["parts"]
     assert parts == [{"type": "text", "content": "answer"}]
+
+
+@pytest.mark.parametrize("separator", ["\n", "\n\n"])
+def test_responses_conversion_accepts_legacy_and_trimmed_sse_framing(tmp_path: Path, separator: str) -> None:
+    record = responses_record()
+    if separator == "\n":
+        record["response"] = record["response"].replace("\n\n", "\n")
+    else:
+        record["response"] = record["response"].rstrip("\n")
+
+    attrs = convert_wire_file(write_jsonl(tmp_path / "calls.jsonl", [record]))["spans"][0]["attributes"]
+
+    assert attrs["gen_ai.response.id"] == "resp-test"
+    assert attrs["gen_ai.usage.output_tokens"] == 7
 
 
 def test_responses_conversion_non_streaming_string_input_and_instructions(tmp_path: Path) -> None:

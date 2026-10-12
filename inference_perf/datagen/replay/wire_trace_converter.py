@@ -161,11 +161,23 @@ def detect_trace_format(path: Path) -> str:
 
 
 def _iter_sse_data(response_text: Any) -> Iterator[str]:
-    """Yield SSE event payloads, joining multiple data fields per the SSE specification."""
+    """Yield SSE payloads, including legacy captures without blank-line framing."""
     if not isinstance(response_text, str):
         return
+
+    # Some wire collectors collapse SSE's blank event separators to a single newline.
+    # Preserve the old converter's tolerance for those captures. When a blank separator
+    # exists, use normal SSE framing so multiline data fields are still joined.
+    lines = response_text.splitlines()
+    if "" not in lines:
+        for line in lines:
+            field, _, value = line.partition(":")
+            if field == "data":
+                yield value[1:] if value.startswith(" ") else value
+        return
+
     data_lines: List[str] = []
-    for line in response_text.splitlines():
+    for line in lines:
         if not line:
             if data_lines:
                 yield "\n".join(data_lines)
@@ -175,6 +187,13 @@ def _iter_sse_data(response_text: Any) -> Iterator[str]:
         if field != "data":
             continue
         data_lines.append(value[1:] if value.startswith(" ") else value)
+    if data_lines:
+        yield "\n".join(data_lines)
+
+
+def _looks_like_sse(response_text: Any) -> bool:
+    """Return whether a response body contains an SSE data field."""
+    return isinstance(response_text, str) and any(line.partition(":")[0] == "data" for line in response_text.splitlines())
 
 
 def _iter_sse_json_events(response_text: Any) -> Iterator[Dict[str, Any]]:
@@ -275,7 +294,7 @@ def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, A
             if not isinstance(chunk_choice, dict):
                 return None
             choice_index = chunk_choice.get("index", position)
-            if not isinstance(choice_index, int):
+            if type(choice_index) is not int:
                 return None
             delta = chunk_choice.get("delta") or {}
             if not isinstance(delta, dict):
@@ -306,8 +325,8 @@ def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, A
                 if not isinstance(tool_delta, dict):
                     return None
                 tool_index = tool_delta.get("index", tool_position)
-                if not isinstance(tool_index, int):
-                    continue
+                if type(tool_index) is not int:
+                    return None
                 tool = tool_calls.setdefault(choice_index, {}).setdefault(
                     tool_index,
                     {"index": tool_index, "type": "function", "id": "", "function": {"name": "", "arguments": ""}},
@@ -338,6 +357,8 @@ def _parse_chat_completions_response(response_text: Any) -> Optional[Dict[str, A
         return None
     first_choice = next(iter(choices.values()))
     if not saw_done or first_choice.get("finish_reason") is None:
+        return None
+    if any(not tool.get("id") for accumulated in tool_calls.values() for tool in accumulated.values()):
         return None
     for choice_index, accumulated_tools in tool_calls.items():
         choices[choice_index]["message"]["tool_calls"] = [accumulated_tools[i] for i in sorted(accumulated_tools)]
@@ -799,8 +820,8 @@ def _build_span(
     start_time: str,
     end_time: str,
     http_status: int,
-    input_tokens: int,
-    output_tokens: int,
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
     cached_tokens: int,
     response_id: str,
     finish_reason: Optional[str],
@@ -823,8 +844,6 @@ def _build_span(
             "gen_ai.operation.name": "chat",
             "gen_ai.request.model": model,
             "gen_ai.response.model": model,
-            "gen_ai.usage.input_tokens": input_tokens,
-            "gen_ai.usage.output_tokens": output_tokens,
             "http.response.status_code": http_status,
         },
         "resource_attributes": {
@@ -837,6 +856,10 @@ def _build_span(
     }
 
     attrs = span["attributes"]
+    if input_tokens is not None:
+        attrs["gen_ai.usage.input_tokens"] = input_tokens
+    if output_tokens is not None:
+        attrs["gen_ai.usage.output_tokens"] = output_tokens
     if cached_tokens:
         attrs["gen_ai.usage.cache_read_tokens"] = cached_tokens
     if response_id:
@@ -934,7 +957,7 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_
     response_body = record.get("response") or ""
     http_status = int(record.get("status", 200))
     resp = _parse_chat_completions_response(response_body)
-    if request.get("stream") is True and 200 <= http_status < 300 and resp is None:
+    if 200 <= http_status < 300 and (request.get("stream") is True or _looks_like_sse(response_body)) and resp is None:
         logger.warning("Skipping incomplete or invalid Chat Completions SSE wire record at line %d", line_no)
         return None
     usage = (resp or {}).get("usage") or {}
@@ -949,8 +972,8 @@ def convert_chat_completions_record(record: Dict[str, Any], trace_id: str, line_
         start_time=start_time,
         end_time=end_time,
         http_status=http_status,
-        input_tokens=usage.get("prompt_tokens", 0),
-        output_tokens=usage.get("completion_tokens", 0),
+        input_tokens=usage.get("prompt_tokens"),
+        output_tokens=usage.get("completion_tokens"),
         cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
         response_id=(resp or {}).get("id", ""),
         finish_reason=finish_reason,
