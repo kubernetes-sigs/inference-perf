@@ -369,6 +369,15 @@ def print_summary_table(reports: List[ReportFile]) -> None:
     print_error_summary_table(reports)
 
 
+def _fmt(value: Optional[float], places: int) -> str:
+    """A dash for a statistic that does not exist, rather than a misleading 0.00.
+
+    reportgen writes None for a distribution it had no samples for. Printing 0.00 there
+    would read as "sessions took no time" instead of "no session finished".
+    """
+    return "-" if value is None else f"{value:.{places}f}"
+
+
 def print_session_summary_tables(reports: List[ReportFile]) -> None:
     """Print session-level summary tables for session-based data generators."""
     session_reports: Dict[int, Dict[str, Any]] = {}
@@ -521,53 +530,40 @@ def print_session_summary_tables(reports: List[ReportFile]) -> None:
             session_row.append(f"[{retry_color}]{total_retry_attempts} ({total_retries_recovered})[/]")
         session_summary_table.add_row(*session_row)
 
-        # num_sessions_completed == 0 indicates all sessions timed-out, printing only summary table
-        if num_sessions_completed == 0:
-            continue
-
-        # Extract session duration metrics
-        session_duration = contents.get("session_duration_sec", {})
-        duration_mean = session_duration.get("mean", 0.0)
-        duration_median = session_duration.get("median", 0.0)
-        duration_p90 = session_duration.get("p90", 0.0)
-
-        # Extract events per session metrics
-        num_events = contents.get("num_events", {})
-        events_mean = num_events.get("mean", 0.0)
-        events_median = num_events.get("median", 0.0)
-        events_p90 = num_events.get("p90", 0.0)
+        # Extract session duration metrics. session_duration_sec covers completed sessions
+        # only, so a stage whose deadline is shorter than one session has none to summarize
+        # and reportgen writes None -- present, not absent, so a .get() default never fires.
+        # Every read below tolerates that, so the stage still gets a row instead of being
+        # skipped: "this stage completed nothing" is worth showing, and a dash says it
+        # without implying the sessions took no time.
+        session_duration = contents.get("session_duration_sec") or {}
+        num_events = contents.get("num_events") or {}
 
         # Populate Table 2
         session_duration_table.add_row(
             str(stage_id),
-            f"{duration_mean:.2f}",
-            f"{duration_median:.2f}",
-            f"{duration_p90:.2f}",
-            f"{events_mean:.1f}",
-            f"{events_median:.1f}",
-            f"{events_p90:.1f}",
+            _fmt(session_duration.get("mean"), 2),
+            _fmt(session_duration.get("median"), 2),
+            _fmt(session_duration.get("p90"), 2),
+            _fmt(num_events.get("mean"), 1),
+            _fmt(num_events.get("median"), 1),
+            _fmt(num_events.get("p90"), 1),
         )
 
-        # Extract token metrics
-        total_input_tokens = contents.get("total_input_tokens", {})
-        input_mean = total_input_tokens.get("mean", 0.0)
-        input_median = total_input_tokens.get("median", 0.0)
-        input_p90 = total_input_tokens.get("p90", 0.0)
-
-        total_output_tokens = contents.get("total_output_tokens", {})
-        output_mean = total_output_tokens.get("mean", 0.0)
-        output_median = total_output_tokens.get("median", 0.0)
-        output_p90 = total_output_tokens.get("p90", 0.0)
+        # Extract token metrics. None for the same reason as above: every session that
+        # could have carried a token count was truncated before it reported one.
+        total_input_tokens = contents.get("total_input_tokens") or {}
+        total_output_tokens = contents.get("total_output_tokens") or {}
 
         # Populate Table 3
         session_tokens_table.add_row(
             str(stage_id),
-            f"{input_mean:.1f}",
-            f"{input_median:.1f}",
-            f"{input_p90:.1f}",
-            f"{output_mean:.1f}",
-            f"{output_median:.1f}",
-            f"{output_p90:.1f}",
+            _fmt(total_input_tokens.get("mean"), 1),
+            _fmt(total_input_tokens.get("median"), 1),
+            _fmt(total_input_tokens.get("p90"), 1),
+            _fmt(total_output_tokens.get("mean"), 1),
+            _fmt(total_output_tokens.get("median"), 1),
+            _fmt(total_output_tokens.get("p90"), 1),
         )
 
         # Extract TFUT metrics

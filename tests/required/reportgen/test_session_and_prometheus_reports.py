@@ -114,6 +114,7 @@ def _stage_info(
     end_time: float = 10.0,
     rate: float = 2.0,
     max_stage_duration: Optional[float] = None,
+    duration: Optional[float] = None,
     concurrency_level: Optional[int] = None,
 ) -> StageRuntimeInfo:
     return StageRuntimeInfo(
@@ -123,6 +124,7 @@ def _stage_info(
         end_time=end_time,
         status=status,
         max_stage_duration=max_stage_duration,
+        duration=duration,
         concurrency_level=concurrency_level,
     )
 
@@ -150,6 +152,39 @@ class TestSummarizeSessionsRollups:
 
         # span = 20.0 - 0.0, so 2 sessions / 20s.
         assert summary["sessions_per_second"] == pytest.approx(0.1)
+
+    def test_sessions_per_second_counts_completed_sessions_only(self) -> None:
+        """It is a completion rate, like requests_per_sec: a truncated session never finished.
+
+        Truncated rows still widen the span (they were running inside the window), but
+        counting them as well would turn the metric into a start rate whenever a stage
+        cuts sessions off at its deadline.
+        """
+        gen = _make_generator()
+        cut_short = [
+            SessionLifecycleMetric(
+                session_id=sid,
+                stage_id=0,
+                file_path=f"{sid}.json",
+                start_time=4.0,
+                end_time=10.0,
+                duration_sec=6.0,
+                num_events=4,
+                num_events_completed=1,
+                truncated=True,
+            )
+            for sid in ("t1", "t2")
+        ]
+        sessions = [
+            _sess(session_id="s1", start_time=0.0, end_time=4.0),
+            _sess(session_id="s2", start_time=1.0, end_time=8.0),
+            *cut_short,
+        ]
+
+        summary = gen.summarize_sessions(sessions, [], PERCENTILES)
+
+        # 2 completed over the 0..10 span; the 2 truncated rows are not completions.
+        assert summary["sessions_per_second"] == pytest.approx(0.2)
 
     def test_sessions_per_second_is_zero_for_a_zero_length_span(self) -> None:
         """Sessions that all start and end at the same instant must report 0.0 rather
@@ -299,12 +334,40 @@ class TestGenerateSessionReports:
             "stage_id": 0,
             "status": "COMPLETED",
             "max_stage_duration_configured": 30.0,
+            # None for a count-bounded stage; set when the stage was bounded by time.
+            "duration_configured": None,
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }
+
+    def test_duration_bounded_stage_reports_the_window_it_asked_for(self) -> None:
+        """A time-bounded stage reports COMPLETED plus the duration it was given.
+
+        duration_configured next to actual_duration is what tells a reader of the report
+        whether the stage ran its full window or ended early because the corpus ran out —
+        both of which report COMPLETED.
+        """
+        gen = _make_generator()
+        runtime = _runtime(
+            {0: _stage_info(0, start_time=1.0, end_time=7.0, max_stage_duration=30.0, duration=20.0, concurrency_level=4)}
+        )
+
+        reports = gen.generate_session_reports(
+            [_sess(stage_id=0)],
+            SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False),
+            PERCENTILES,
+            runtime,
+            100,
+        )
+
+        metadata = reports[0].contents["stage_metadata"]
+        assert metadata["status"] == "COMPLETED"
+        assert metadata["duration_configured"] == 20.0
+        # Ran 6s of a 20s window: the corpus ran out before the deadline.
+        assert metadata["actual_duration"] == 6.0
 
     def test_a_stage_with_no_runtime_info_reports_measurements_without_metadata(self) -> None:
         gen = _make_generator()
