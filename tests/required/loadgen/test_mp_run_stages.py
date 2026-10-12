@@ -29,7 +29,6 @@ from inference_perf.config import (
     APIType,
     DataConfig,
     DataGenType,
-    Distribution,
     LoadConfig,
     LoadType,
     StandardLoadStage,
@@ -78,10 +77,10 @@ class TestMpRunMultiStage(unittest.IsolatedAsyncioTestCase):
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
-            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=requests_per_stage),
-            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=requests_per_stage),
+            input_distribution=10,
+            output_distribution=5,
         )
-        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer())
+        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer(), total_count=requests_per_stage)
 
         collector = MultiprocessRequestMetricCollector()
         client = MockModelServerClient(collector, api_config, mock_latency=0)

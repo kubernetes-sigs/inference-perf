@@ -40,7 +40,6 @@ from inference_perf.config import (
     Config,
     DataConfig,
     DataGenType,
-    Distribution,
     LoadConfig,
     LoadType,
     ObservabilityConfig,
@@ -302,10 +301,10 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
-            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=num_requests),
-            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=num_requests),
+            input_distribution=10,
+            output_distribution=5,
         )
-        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer())
+        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer(), total_count=num_requests)
 
         collector = MultiprocessRequestMetricCollector()
         hub = build_metrics(Config())
@@ -344,10 +343,10 @@ class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
         api_config = APIConfig(type=APIType.Completion, streaming=False)
         data_config = DataConfig(
             type=DataGenType.Random,
-            input_distribution=Distribution(min=10, max=10, mean=10.0, std_dev=0.0, total_count=num_requests),
-            output_distribution=Distribution(min=5, max=5, mean=5.0, std_dev=0.0, total_count=num_requests),
+            input_distribution=10,
+            output_distribution=5,
         )
-        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer())
+        datagen = RandomDataGenerator(api_config, data_config, _DummyCustomTokenizer(), total_count=num_requests)
         image = Images(count=1, instances=[Image(pixels=1024 * 1024, bytes=2000, aspect_ratio=1.0)])
 
         collector = MultiprocessRequestMetricCollector()
