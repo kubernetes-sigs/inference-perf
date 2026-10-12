@@ -24,9 +24,11 @@ import multiprocessing as mp
 import pickle
 import sys
 import unittest
+from pathlib import Path
 from typing import Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import yaml
 from prometheus_client import Counter, Gauge  # noqa: TID251 (throwaway metrics for these tests)
 
 from inference_perf.apis import InferenceAPIData
@@ -45,6 +47,7 @@ from inference_perf.config import (
     ObservabilityConfig,
     RuntimeMetricsConfig,
     StandardLoadStage,
+    read_config,
 )
 from inference_perf.datagen import DataGenerator
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
@@ -188,11 +191,12 @@ class TestHubLifecycleHooks(unittest.TestCase):
 class TestObservabilityConfig(unittest.TestCase):
     def test_defaults_are_on_and_port_matches_server_default(self) -> None:
         # A Config with no observability block at all.
-        # Expects the endpoint on and bound to 0.0.0.0:9464, so a run is
-        # scrapeable without having been configured for it.
+        # Expects the endpoint on and bound to loopback:9464, so a run is
+        # scrapeable from its own host without having been configured for it
+        # and exposes nothing to the network until asked to.
         config = Config()
         self.assertTrue(config.observability.metrics.enabled)
-        self.assertEqual(config.observability.metrics.host, "0.0.0.0")
+        self.assertEqual(config.observability.metrics.host, "127.0.0.1")
         # The config default is a literal to avoid a config <-> observability
         # import cycle; this pins it to the server's default.
         self.assertEqual(config.observability.metrics.port, DEFAULT_PORT)
@@ -203,8 +207,18 @@ class TestObservabilityConfig(unittest.TestCase):
         # a user has to write out rather than the default.
         config = Config.model_validate({"observability": {"metrics": {"enabled": False, "port": 0}}})
         self.assertEqual(
-            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="0.0.0.0", port=0))
+            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="127.0.0.1", port=0))
         )
+
+    def test_in_cluster_configs_bind_all_interfaces(self) -> None:
+        # The Helm chart's default values and the config the deploy/ README
+        # turns into a ConfigMap, both run as a Job scraped by pod IP.
+        # Expects both to set host 0.0.0.0, since the loopback default would
+        # leave an in-cluster run unscrapeable.
+        repo = Path(__file__).resolve().parents[3]
+        chart = yaml.safe_load((repo / "deploy" / "inference-perf" / "values.yaml").read_text())
+        for config in (Config.model_validate(chart["config"]), read_config(str(repo / "config.yml"))):
+            self.assertEqual(config.observability.metrics.host, "0.0.0.0")
 
 
 class TestMetricsEndpointFailureLogging(unittest.TestCase):

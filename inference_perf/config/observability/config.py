@@ -27,7 +27,14 @@ class RuntimeMetricsConfig(StrictBaseModel):
             "without being configured for it; set false to keep the port free."
         ),
     )
-    host: str = Field(default="0.0.0.0", description="Address the runtime metrics endpoint binds to.")
+    host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Address the runtime metrics endpoint binds to. Loopback by default, so a run on a laptop or shared "
+            "host is not reachable from the network; set 0.0.0.0 where a scraper reaches the run by its pod or "
+            "host IP, as the Helm chart and deploy/ config do."
+        ),
+    )
     port: int = Field(
         # Keep in sync with inference_perf.observability.metrics.prometheus.DEFAULT_PORT
         # (not imported here to avoid a config <-> observability import cycle; a test pins them).
