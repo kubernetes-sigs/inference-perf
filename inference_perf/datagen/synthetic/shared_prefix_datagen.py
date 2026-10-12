@@ -25,7 +25,6 @@ from inference_perf.config import (
     APIConfig,
     APIType,
     DataConfig,
-    Distribution,
     SyntheticMultimodalDatagenConfig,
 )
 from inference_perf.datagen.multimodal_sampling import (
@@ -72,9 +71,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
 
     @staticmethod
     def _resolve_length(
-        param: Union[int, Distribution, str],
-        legacy_dist: Optional[Distribution] = None,
-    ) -> Union[int, Distribution, str]:
+        param: Union[int, str],
+        legacy_dist: Optional[Union[int, str]] = None,
+    ) -> Union[int, str]:
         """Resolve a length field plus its optional legacy distribution into the value to sample from.
 
         The legacy field only applies when the inline field was left as a

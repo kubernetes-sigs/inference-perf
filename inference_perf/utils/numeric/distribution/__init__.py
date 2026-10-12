@@ -12,19 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .utils import (
+    compile_legacy_distribution,
     distribution_to_expression,
     generate_distribution,
     sample_from_distribution,
     sample_lengths,
     sample_values,
+    value_bounds,
     value_ceiling,
 )
 
 __all__ = [
+    "compile_legacy_distribution",
     "distribution_to_expression",
     "generate_distribution",
     "sample_from_distribution",
     "sample_lengths",
     "sample_values",
+    "value_bounds",
     "value_ceiling",
 ]
