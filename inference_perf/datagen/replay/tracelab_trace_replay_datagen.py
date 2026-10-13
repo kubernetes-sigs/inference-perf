@@ -324,11 +324,11 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         """Load TraceLab rounds from HF and join tools/timing_events tables.
 
         The UW-SyFI/TraceLab dataset has multiple configs:
-        - "rounds" (default): one row per LLM invocation
-        - "tools": one row per tool call, with round_pk foreign key
+        - default ("rounds" table): one row per LLM invocation
+        - "tool_calls": one row per tool call, with round_pk foreign key
         - "timing_events": one row per timing event, with round_pk foreign key
 
-        We load the rounds table and join tools/timing_events by round_pk.
+        We load the rounds table and join tool_calls/timing_events by round_pk.
         The limit applies to SESSIONS, not rows.
         """
         from datasets import load_dataset
@@ -342,51 +342,57 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
 
         logger.info(f"Downloading TraceLab traces from Hugging Face dataset: {path}")
 
+        def _as_split(ds: Any) -> Any:
+            if hasattr(ds, "keys"):
+                split = kwargs.get("split", "train")
+                keys = list(ds.keys())
+                return ds[split] if split in keys else ds[keys[0]]
+            return ds
+
         # Load rounds table (default config)
         try:
-            ds_rounds = load_dataset(path, **kwargs)
+            ds_rounds = _as_split(load_dataset(path, **kwargs))
         except Exception as e:
             raise ValueError(f"Failed to load Hugging Face dataset {path}: {e}") from e
 
-        if hasattr(ds_rounds, "keys"):
-            split = kwargs.get("split", "train")
-            ds_rounds = ds_rounds[split] if split in ds_rounds.keys() else ds_rounds[list(ds_rounds.keys())[0]]
+        def _load_aux_table(name: str) -> Any:
+            try:
+                return _as_split(load_dataset(path, name=name, **kwargs))
+            except Exception as e:
+                msg = (
+                    f"Could not load '{name}' table from {path}: {e}. "
+                    "Rounds will replay without it (tool-latency waits or "
+                    "timestamp gaps from that table will be 0)."
+                )
+                if not skip_invalid:
+                    raise ValueError(msg) from e
+                logger.warning(msg)
+                return []
 
-        # Load tools table if available
+        # Load tool_calls table, keyed by round_pk (int on the hub; normalize
+        # to str so JSONL-shaped rows join the same way).
         tools_by_round: Dict[str, List[Dict[str, Any]]] = {}
-        try:
-            ds_tools = load_dataset(path, name="tools", **kwargs)
-            if hasattr(ds_tools, "keys"):
-                split = kwargs.get("split", "train")
-                ds_tools = ds_tools[split] if split in ds_tools.keys() else ds_tools[list(ds_tools.keys())[0]]
-            for t in ds_tools:
-                if isinstance(t, dict):
-                    rpk = t.get("round_pk")
-                    if rpk:
-                        tools_by_round.setdefault(rpk, []).append(
-                            {
-                                "tool_name": t.get("tool_name"),
-                                "tool_wall_latency_ms": t.get("tool_wall_latency_ms"),
-                                "tool_internal_latency_ms": t.get("tool_internal_latency_ms"),
-                            }
-                        )
-        except Exception as e:
-            logger.warning(f"Could not load tools table from {path}: {e}")
+        for t in _load_aux_table("tool_calls"):
+            if isinstance(t, dict):
+                rpk = t.get("round_pk")
+                if rpk is not None:
+                    tools_by_round.setdefault(str(rpk), []).append(
+                        {
+                            "tool_name": t.get("tool_name"),
+                            "tool_wall_latency_ms": t.get("tool_wall_latency_ms"),
+                            "tool_internal_latency_ms": t.get("tool_internal_latency_ms"),
+                        }
+                    )
 
         # Load timing_events table if available
         timing_by_round: Dict[str, List[Dict[str, Any]]] = {}
-        try:
-            ds_timing = load_dataset(path, name="timing_events", **kwargs)
-            if hasattr(ds_timing, "keys"):
-                split = kwargs.get("split", "train")
-                ds_timing = ds_timing[split] if split in ds_timing.keys() else ds_timing[list(ds_timing.keys())[0]]
-            for te in ds_timing:
-                if isinstance(te, dict):
-                    rpk = te.get("round_pk")
-                    if rpk:
-                        timing_by_round.setdefault(rpk, []).append(te)
-        except Exception as e:
-            logger.warning(f"Could not load timing_events table from {path}: {e}")
+        for te in _load_aux_table("timing_events"):
+            if isinstance(te, dict):
+                rpk = te.get("round_pk")
+                if rpk is not None:
+                    timing_by_round.setdefault(str(rpk), []).append(
+                        {"event_type": te.get("event_type"), "timestamp": te.get("timestamp")}
+                    )
 
         # Build rows by joining tools/timing, stopping at session limit.
         rows: List[Dict[str, Any]] = []
@@ -405,11 +411,12 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     break
 
             # Join tools and timing_events by round_pk
-            rpk = rnd.get("round_pk", "")
-            if rpk and rpk in tools_by_round:
-                rnd["tools"] = tools_by_round[rpk]
-            if rpk and rpk in timing_by_round:
-                rnd["timing_events"] = timing_by_round[rpk]
+            rpk = rnd.get("round_pk")
+            key = str(rpk) if rpk is not None else ""
+            if key and key in tools_by_round:
+                rnd["tools"] = tools_by_round[key]
+            if key and key in timing_by_round:
+                rnd["timing_events"] = timing_by_round[key]
 
             rows.append(dict(rnd))
 
@@ -442,6 +449,42 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         decoded = self.tokenizer.get_tokenizer().decode(list(tokens))
         return decoded if isinstance(decoded, str) else " ".join(decoded)
 
+    def _measure_tokens(self, text: str) -> int:
+        assert self.tokenizer is not None
+        return len(self.tokenizer.get_tokenizer().encode(text))
+
+    def _build_prompt_tail(self, session_id: str, round_index: int, shared_text: str, target_total: int) -> str:
+        """Build the new (unshared) prompt tail so the full prompt tokenizes
+        to exactly ``target_total`` tokens.
+
+        Decode/re-encode is not idempotent at BPE boundaries, so candidate
+        slice lengths around the target are measured and the best kept.
+        Deterministic: every candidate derives from the stable session offset.
+        """
+        assert self.tokenizer is not None
+        base = self._stable_offset(session_id, round_index, 7919)
+        shared_measured = self._measure_tokens(shared_text) if shared_text else 0
+        need_new = max(target_total - shared_measured, 0)
+
+        best_text = ""
+        best_diff: Optional[int] = None
+        tried = 0
+        for delta in range(0, 17):
+            candidates = (need_new,) if delta == 0 else (need_new + delta, need_new - delta)
+            for n in candidates:
+                if n < 0:
+                    continue
+                tail = self._text_for_tokens(n, offset=base + tried * 131071)
+                tried += 1
+                full = shared_text + tail if shared_text else tail
+                diff = abs(self._measure_tokens(full) - target_total)
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_text = tail
+                    if diff == 0:
+                        return best_text
+        return best_text
+
     def _round_gap_ms(self, prev: TraceLabRound, curr: TraceLabRound) -> Optional[int]:
         """Recorded think time before ``curr``: its first event minus the
         previous round's last event, in milliseconds.
@@ -469,7 +512,11 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
         cap_ms = int(self.tracelab_config.trace_idle_gap_cap_seconds * 1000.0)
 
         calls: List[RawCall] = []
-        history: List[ReplayMessage] = []
+        # Previous round's full text (prompt + output) and recorded totals.
+        # A round records its whole prompt: the next round reuses the leading
+        # ``prefix_tokens`` of this text and drops the rest (compaction).
+        prev_text = ""
+        prev_recorded_total = 0
         t_ms = 0
 
         for i, rnd in enumerate(rounds):
@@ -485,29 +532,33 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                     gap = self._tool_latency_ms(rounds[i - 1])
                 t_ms += min(gap, cap_ms)
 
-            # Determine how many tokens the current history has.
-            history_tokens = 0
-            if self.tokenizer and history:
-                full_history_text = "".join(m.text for m in history)
-                history_tokens = len(self.tokenizer.get_tokenizer().encode(full_history_text))
+            # Shared prefix: leading tokens of the previous full text, capped
+            # at the previous round's recorded size per the dataset README.
+            # A cache miss (prefix_tokens=0) shares nothing.
+            shared = 0
+            shared_text = ""
+            if i > 0 and prev_text:
+                prev_ids = self.tokenizer.get_tokenizer().encode(prev_text) if self.tokenizer else []
+                budget = min(int(rnd.prefix_tokens or 0), prev_recorded_total, len(prev_ids))
+                shared = max(budget, 0)
+                if shared > 0:
+                    decoded = self.tokenizer.get_tokenizer().decode(list(prev_ids[:shared])) if self.tokenizer else ""
+                    shared_text = decoded if isinstance(decoded, str) else " ".join(decoded)
 
-            # The user message should make total tokens ≈ in_tokens.
-            need_user_tokens = max(in_tokens - history_tokens, 1)
-            user_text = self._text_for_tokens(
-                need_user_tokens,
-                offset=self._stable_offset(session_id, i, 7919),
+            prompt_text = (
+                shared_text + self._build_prompt_tail(session_id, i, shared_text, in_tokens)
+                if shared_text
+                else self._build_prompt_tail(session_id, i, "", in_tokens)
             )
+            messages = [ReplayMessage(role="user", text=prompt_text or " ")]
 
-            messages = list(history) + [ReplayMessage(role="user", text=user_text or " ")]
-
-            # Verify the built prompt tokenizes to approximately input_tokens_total.
+            # Verify the built prompt tokenizes to the recorded size.
             if self.tokenizer:
-                built_prompt = "".join(m.text for m in messages)
-                built_tokens = len(self.tokenizer.get_tokenizer().encode(built_prompt))
-                if abs(built_tokens - in_tokens) > max(4, in_tokens * 0.1):
+                built_tokens = self._measure_tokens(prompt_text or " ")
+                if built_tokens != in_tokens:
                     logger.warning(
                         f"Session {session_id} round {i}: built prompt {built_tokens} tokens "
-                        f"vs recorded {in_tokens} (history={history_tokens}, need_user={need_user_tokens})"
+                        f"vs recorded {in_tokens} (shared={shared})"
                     )
 
             out_text = self._text_for_tokens(
@@ -533,8 +584,8 @@ class TraceLabTraceReplayDataGenerator(ReplayGraphSessionGeneratorBase):
                 )
             )
 
-            # Grow transcript for next round.
-            history = history + [ReplayMessage(role="user", text=user_text or " "), out_message]
+            prev_text = (prompt_text or " ") + (out_text or " ")
+            prev_recorded_total = in_tokens + out_tokens
 
         return calls
 
