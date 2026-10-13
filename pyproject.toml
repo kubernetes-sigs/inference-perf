@@ -267,4 +267,4 @@ do_not_mutate = ["inference_perf/datagen/synthetic_agentic/synthetic_agentic_dat
 pytest_add_cli_args = ["-p", "no:cacheprovider", "-o", "log_cli=false", "-q"]
 process_isolation = "forkserver"
 # Repo files the unit tests read at runtime, outside tests/.
-also_copy = ["examples", "workload-catalog", "docs", "scripts", "config.yml", "config-weka.yaml", "e2e", "tools", "deploy"]
+also_copy = [".github", "examples", "workload-catalog", "docs", "scripts", "config.yml", "config-weka.yaml", "e2e", "tools", "deploy"]
