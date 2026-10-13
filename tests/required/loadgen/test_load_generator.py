@@ -252,9 +252,6 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
 
-        # Small sleep to let queue populate
-        await asyncio.sleep(0.1)
-
         drained = q.drain(0)
         self.assertEqual(drained, 2)
         self.assertTrue(q.get_channel(0).empty())

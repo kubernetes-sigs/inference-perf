@@ -88,6 +88,8 @@ class RequestQueue(Generic[T]):
                         channel_drained,
                         _DRAIN_TIMEOUT_SECONDS,
                     )
+                    # The items left behind are discarded, so exit need not wait to flush them.
+                    queue.cancel_join_thread()
                     break
                 if item is None:
                     break

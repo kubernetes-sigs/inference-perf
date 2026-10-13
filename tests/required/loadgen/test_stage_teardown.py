@@ -200,6 +200,30 @@ class ChainClient(_TestClientBase):
             f.write("done\n")
 
 
+class LargePromptDataGenerator(MockDataGenerator):
+    """8 KB prompts, so a stage's backlog outgrows the queue's pipe and waits in its feeder buffer."""
+
+    def get_data(self) -> Generator[InferenceAPIData, None, None]:
+        while True:
+            yield ChatCompletionAPIData(messages=[ChatMessage(role="user", content="x" * 8192)])
+
+
+class StageLogClient(_TestClientBase):
+    """Logs the stage of each dispatched request; stage 0 requests hang until cancelled."""
+
+    def __init__(self, dispatch_log: str) -> None:
+        super().__init__()
+        self.dispatch_log = dispatch_log
+
+    async def process_request(
+        self, data: InferenceAPIData, stage_id: int, scheduled_time: float, lora_adapter: Optional[str] = None
+    ) -> None:
+        with open(self.dispatch_log, "a") as f:
+            f.write(f"{stage_id}\n")
+        if stage_id == 0:
+            await asyncio.sleep(3600)
+
+
 def _line_count(path: str) -> int:
     if not os.path.exists(path):
         return 0
@@ -378,6 +402,29 @@ async def test_saturated_worker_reaches_boundary_and_drops_backlog() -> None:
         assert harness.loadgen.workers[0].is_alive()
     finally:
         harness.shutdown()
+
+
+async def test_forced_teardown_drops_the_whole_backlog(tmp_path: object) -> None:
+    """Requests still in the queue's feeder buffer at teardown are dropped and counted,
+    so none of them is dispatched in the next stage."""
+    dispatch_log = os.path.join(str(tmp_path), "dispatch.log")
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = LargePromptDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    harness = _Harness(StageLogClient(dispatch_log), teardown_grace_seconds=1.0, datagen=datagen)
+    try:
+        # Stage 0: 200 requests, 4 hang in flight, 196 never leave the queue.
+        await harness.run_stage(0, timeout=1.0, rate=200)
+        assert harness.loadgen.stage_runtime_info[0].dropped_requests == 196
+
+        await harness.run_stage(1, timeout=3.0, rate=2)
+        with open(dispatch_log) as f:
+            dispatched_stage_ids = [int(line) for line in f]
+        assert dispatched_stage_ids == [0, 0, 0, 0, 1, 1]
+    finally:
+        harness.shutdown()
+        # Leftover items would otherwise block this process's exit when the assertions fail.
+        for channel in harness.request_queue.queues:
+            channel.cancel_join_thread()
 
 
 async def test_cancel_hostile_task_failure_does_not_kill_worker() -> None:

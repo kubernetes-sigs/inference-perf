@@ -1,7 +1,9 @@
 import logging
+import multiprocessing as mp
 import threading
 import time
 from collections.abc import Callable, Iterator
+from typing import Optional
 
 import pytest
 
@@ -13,6 +15,15 @@ ITEMS = 2000
 PAYLOAD = "x" * 1024
 
 MakeQueue = Callable[..., RequestQueue[str]]
+
+
+def exits_cleanly(channel: "mp.Queue[Optional[str]]") -> bool:
+    """Whether process exit's join of the channel's feeder thread returns."""
+    channel.close()
+    joined = threading.Thread(target=channel.join_thread, daemon=True)
+    joined.start()
+    joined.join(timeout=10)
+    return not joined.is_alive()
 
 
 @pytest.fixture
@@ -49,13 +60,7 @@ def test_a_drained_queue_lets_its_process_exit(make_queue: MakeQueue) -> None:
         queue.put(PAYLOAD)
     queue.drain()
 
-    channel = queue.get_channel(0)
-    channel.close()
-    joined = threading.Thread(target=channel.join_thread, daemon=True)
-    joined.start()
-    joined.join(timeout=10)
-
-    assert not joined.is_alive()
+    assert exits_cleanly(queue.get_channel(0))
 
 
 def test_drain_gives_up_on_a_channel_a_dead_worker_left_locked(
@@ -64,7 +69,8 @@ def test_drain_gives_up_on_a_channel_a_dead_worker_left_locked(
     monkeypatch.setattr(request_queue, "_DRAIN_TIMEOUT_SECONDS", 0.2)
     queue = make_queue(2)
     queue.put(PAYLOAD, channel_id=0)
-    queue.put(PAYLOAD, channel_id=1)
+    for _ in range(ITEMS):
+        queue.put(PAYLOAD, channel_id=1)
     # What a worker killed inside get() leaves behind.
     queue.get_channel(1)._rlock.acquire()  # type: ignore[attr-defined]
 
@@ -75,3 +81,4 @@ def test_drain_gives_up_on_a_channel_a_dead_worker_left_locked(
     assert drained == 1
     assert time.monotonic() - started < 2
     assert "Drain of channel 1 stopped after 0 item(s)" in caplog.text
+    assert exits_cleanly(queue.get_channel(1))
