@@ -22,7 +22,11 @@ A test counts as changed when it is added, edited, deleted or renamed, or when
 a helper, conftest.py or package __init__.py it runs is.
 
 There is no in-code way to opt out. `# pragma: no mutate` is stripped before
-mutating, and hiding code from mutmut behind a decorator fails on its own.
+mutating. Some checks need no mutants and fail a change even when nothing is
+in scope: statements mutmut never mutates cannot rise across the changed files,
+inference_perf/ cannot import repo code from outside it, a new root module
+cannot shadow an installed one, no source or test may name the harness, and
+mutmut must be the pinned release.
 
 `--all` mutates the whole package instead and reports survivors per module.
 """
@@ -47,7 +51,7 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 # A new survivor is rerun up to this many times. It stops counting only when every rerun kills it,
 # which means the first run missed. A test that kills it only sometimes is flaky, and a flaky
@@ -77,6 +81,16 @@ SPINNER = re.compile(r"^\s*[⠀-⣿] ")
 HARNESS_WORDS = ("mutmut", "mutant")
 # The script's own tests have to name the harness. #876's gate list covers this file.
 HARNESS_WORDS_ALLOWED_IN = {"tests/required/scripts/test_check_mutation_regression.py"}
+
+# The mutmut release every run uses and its files' hashes in pdm.lock. A PR may only change them by
+# changing this script, which #876 lands alone in front of an owner, so a swapped mutmut cannot grade itself.
+MUTMUT_VERSION = "3.8.0"
+MUTMUT_HASHES = {
+    "sha256:4c0abcef6b8d1116f2adfaad19df12e1c621e4a402d4367ef15bf8cba497b91d",
+    "sha256:bc670276518f893ab356f1d28826c49b7e606e7cf89c300e3888c0b52fc1d2ed",
+}
+# pdm.lock keys that install a package from somewhere other than the package index
+NON_INDEX_SOURCES = ("git", "url", "path", "editable")
 
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
@@ -1143,10 +1157,48 @@ def harness_references(paths: list[str]) -> list[str]:
     return sorted(hits)
 
 
+class Distribution(Protocol):
+    @property
+    def version(self) -> str: ...
+
+    def read_text(self, filename: str) -> str | None: ...
+
+
+def installed_mutmut() -> Distribution | None:
+    try:
+        return importlib.metadata.distribution("mutmut")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def mutmut_pin_problems(lock_text: str, installed: Distribution | None) -> list[str]:
+    """Ways the locked or installed mutmut differs from the pinned release on the package index."""
+    entries = [p for p in tomllib.loads(lock_text).get("package", []) if p.get("name") == "mutmut"]
+    problems = [] if len(entries) == 1 else [f"pdm.lock has {len(entries)} mutmut entries, not 1"]
+    for entry in entries:
+        if entry.get("version") != MUTMUT_VERSION:
+            problems.append(f"pdm.lock pins mutmut {entry.get('version')}, not {MUTMUT_VERSION}")
+        if {f.get("hash") for f in entry.get("files", [])} != MUTMUT_HASHES:
+            problems.append("pdm.lock's mutmut file hashes are not the pinned release's")
+        problems += [f"pdm.lock installs mutmut from {key}" for key in NON_INDEX_SOURCES if key in entry]
+    if installed is None:
+        problems.append("mutmut is not installed")
+    elif installed.version != MUTMUT_VERSION:
+        problems.append(f"The installed mutmut is {installed.version}, not {MUTMUT_VERSION}")
+    elif installed.read_text("direct_url.json") is not None:
+        # PEP 610: pip and pdm write this file only for an install from a URL, a path or a VCS
+        problems.append("The installed mutmut came from a direct URL, not the package index")
+    return problems
+
+
 def static_checks(merge_base: str, config: dict[str, Any]) -> Checks:
     checks = Checks()
     check_unchecked(checks, merge_base, config)
     head, base = head_files(), base_files(merge_base)
+    lock = Path("pdm.lock")
+    pin = mutmut_pin_problems(lock.read_text() if lock.is_file() else "", installed_mutmut())
+    if pin:
+        checks.fail("mutmut is not the pinned release", "mutmut pin", pin)
     references = harness_references(head)
     if references:
         checks.fail(

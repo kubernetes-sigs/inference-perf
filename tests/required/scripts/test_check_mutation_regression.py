@@ -686,17 +686,18 @@ MUTMUT_CONFIG: dict[str, Any] = {
 }
 
 
-# Commits `base` files, writes `head` over them in the working tree, and returns the failures of the
-# checks that need no mutants, with MUTMUT_CONFIG as the base's [tool.mutmut].
+# Commits `base` files plus a pdm.lock pinning mutmut, writes `head` over them in the working tree, and
+# returns the failures of the checks that need no mutants, with MUTMUT_CONFIG as the base's [tool.mutmut].
 def static_failures(
     cmr: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]
 ) -> list[str]:
-    write_tree(repo, {"inference_perf/__init__.py": "", **base})
+    write_tree(repo, {"inference_perf/__init__.py": "", "pdm.lock": MUTMUT_LOCK_ENTRY, **base})
     git(repo, "init", "-q")
     git(repo, "add", ".")
     git(repo, "commit", "-qm", "base")
     write_tree(repo, head)
     monkeypatch.chdir(repo)
+    monkeypatch.setattr(cmr, "installed_mutmut", lambda: FakeDistribution("3.8.0"), raising=False)
     failures: list[str] = cmr.static_checks("HEAD", MUTMUT_CONFIG).failures
     return failures
 
@@ -933,3 +934,63 @@ def test_tripwire_fails_code_that_names_the_harness(cmr: Any, tmp_path: Path, mo
         "inference_perf/m.py:5",
         "tests/conftest.py:3",
     ]
+
+
+MUTMUT_LOCK_ENTRY = """[[package]]
+name = "mutmut"
+version = "3.8.0"
+requires_python = ">=3.10"
+summary = "mutation testing for Python 3"
+groups = ["mutation"]
+files = [
+    {file = "mutmut-3.8.0-py3-none-any.whl", hash = "sha256:4c0abcef6b8d1116f2adfaad19df12e1c621e4a402d4367ef15bf8cba497b91d"},
+    {file = "mutmut-3.8.0.tar.gz", hash = "sha256:bc670276518f893ab356f1d28826c49b7e606e7cf89c300e3888c0b52fc1d2ed"},
+]
+"""
+
+
+# Stands in for importlib.metadata's view of the installed mutmut.
+class FakeDistribution:
+    def __init__(self, version: str, direct_url: str | None = None) -> None:
+        self.version, self.direct_url = version, direct_url
+
+    def read_text(self, name: str) -> str | None:
+        return self.direct_url if name == "direct_url.json" else None
+
+
+# The locked and installed mutmut are the pinned 3.8.0 from the index: no problems. Each other case
+# swaps one thing: the locked version, a file hash, a git source, the installed version, or an
+# install from a direct URL. Each one is reported.
+def test_mutmut_pin_problems(cmr: Any) -> None:
+    good = FakeDistribution("3.8.0")
+    forked = MUTMUT_LOCK_ENTRY.replace(
+        'groups = ["mutation"]', 'groups = ["mutation"]\ngit = "https://example.com/mutmut.git"'
+    )
+
+    assert cmr.mutmut_pin_problems(MUTMUT_LOCK_ENTRY, good) == []
+    assert cmr.mutmut_pin_problems(MUTMUT_LOCK_ENTRY.replace('version = "3.8.0"', 'version = "3.9.0"'), good) == [
+        "pdm.lock pins mutmut 3.9.0, not 3.8.0"
+    ]
+    assert cmr.mutmut_pin_problems(MUTMUT_LOCK_ENTRY.replace("4c0abcef", "00000000"), good) == [
+        "pdm.lock's mutmut file hashes are not the pinned release's"
+    ]
+    assert cmr.mutmut_pin_problems(forked, good) == ["pdm.lock installs mutmut from git"]
+    assert cmr.mutmut_pin_problems(MUTMUT_LOCK_ENTRY, FakeDistribution("3.9.0")) == [
+        "The installed mutmut is 3.9.0, not 3.8.0"
+    ]
+    assert cmr.mutmut_pin_problems(MUTMUT_LOCK_ENTRY, FakeDistribution("3.8.0", "{}")) == [
+        "The installed mutmut came from a direct URL, not the package index"
+    ]
+    assert cmr.mutmut_pin_problems("", good) == ["pdm.lock has 0 mutmut entries, not 1"]
+
+
+# The change repoints pdm.lock's mutmut at a git fork and keeps everything else. The check fails
+# before mutating anything.
+def test_a_swapped_mutmut_fails(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    forked = MUTMUT_LOCK_ENTRY.replace(
+        'groups = ["mutation"]', 'groups = ["mutation"]\ngit = "https://example.com/mutmut.git"'
+    )
+
+    failures = static_failures(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, {"pdm.lock": forked})
+
+    assert "mutmut is not the pinned release" in failures
