@@ -72,6 +72,12 @@ NOTHING_MATCHES = "nothing matches"
 SETUP_FAILURES = ("failed to collect stats", "Failed to run clean test")
 SPINNER = re.compile(r"^\s*[⠀-⣿] ")
 
+# Code that can tell it runs under mutmut can kill every mutant without checking anything, and no
+# test needs to know. Matched case-insensitively: "mutant" also covers MUTANT_UNDER_TEST and mutants/.
+HARNESS_WORDS = ("mutmut", "mutant")
+# The script's own tests have to name the harness. #876's gate list covers this file.
+HARNESS_WORDS_ALLOWED_IN = {"tests/required/scripts/test_check_mutation_regression.py"}
+
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
 
@@ -1123,10 +1129,31 @@ def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> 
         )
 
 
+def harness_references(paths: list[str]) -> list[str]:
+    """file:line of each line under the source or test tree that names the mutation harness."""
+    hits = []
+    for rel in paths:
+        if not rel.startswith((SOURCE_PREFIX, TESTS_PREFIX)) or rel in HARNESS_WORDS_ALLOWED_IN:
+            continue
+        try:
+            text = Path(rel).read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        hits += [f"{rel}:{n}" for n, line in enumerate(text.splitlines(), 1) if any(w in line.lower() for w in HARNESS_WORDS)]
+    return sorted(hits)
+
+
 def static_checks(merge_base: str, config: dict[str, Any]) -> Checks:
     checks = Checks()
     check_unchecked(checks, merge_base, config)
     head, base = head_files(), base_files(merge_base)
+    references = harness_references(head)
+    if references:
+        checks.fail(
+            "Code under inference_perf/ or tests/ names the mutation harness",
+            "Lines that name the mutation harness",
+            references,
+        )
     sources = [p for p in head if p.startswith(SOURCE_PREFIX) and p.endswith(".py")]
     hits = outside_imports(Path("."), sources, first_party_roots(head))
     if hits:

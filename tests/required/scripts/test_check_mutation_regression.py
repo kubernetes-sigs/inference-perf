@@ -912,3 +912,24 @@ def test_canary_id_cannot_be_special_cased(cmr: Any, tmp_path: Path) -> None:
     side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "killed"})
 
     assert not cmr.canary_passes(side, ["m.x_f"], [])
+
+
+# The change adds a conftest.py that fails every test while a real mutant is active, and a source
+# file that reads the active mutant id. Both name the harness, so the change fails and the report
+# points at each line. The script's own test file may name it and is not reported.
+def test_tripwire_fails_code_that_names_the_harness(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    head = {
+        "tests/conftest.py": "import os\n\nIN_HARNESS = 'mutants' in __file__\n",
+        "inference_perf/m.py": GT + "\n\nACTIVE = __import__('os').environ.get('MUTANT_UNDER_TEST')\n",
+        "tests/required/scripts/test_check_mutation_regression.py": "# runs mutmut\n",
+    }
+
+    failures = static_failures(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, head)
+
+    assert "Code under inference_perf/ or tests/ names the mutation harness" in failures
+    assert cmr.harness_references(
+        ["tests/conftest.py", "inference_perf/m.py", "tests/required/scripts/test_check_mutation_regression.py"]
+    ) == [
+        "inference_perf/m.py:5",
+        "tests/conftest.py:3",
+    ]
