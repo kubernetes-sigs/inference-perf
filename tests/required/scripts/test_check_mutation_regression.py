@@ -407,3 +407,51 @@ def test_judge_fails_when_the_canary_fails(cmr: Any) -> None:
     verdict = cmr.judge(cmr.Touched(new=["inference_perf.m.x_h"]), None, head, [])
 
     assert verdict.failures == ["Tests fail with an active mutant id that changes no code, so they react to the harness"]
+
+
+# A mutation tree whose tests/test_a.py has one passing and one failing test. The plain rerun names
+# only the failing one and keeps the pytest summary line in the tail.
+def test_diagnose_setup_failure_names_failing_tests(cmr: Any, tmp_path: Path) -> None:
+    tests = tmp_path / "mutants" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_a.py").write_text("def test_ok():\n    pass\n\n\ndef test_bad():\n    assert 1 == 2\n")
+
+    failure = cmr.diagnose_setup_failure(cmr.Side(tree=tmp_path, tests=["tests/test_a.py"]), [])
+
+    assert failure.failing == ["tests/test_a.py::test_bad"]
+    assert "1 failed, 1 passed" in failure.tail
+
+
+# mutmut's stats run fails twice in a row, so run_mutmut raises the diagnosis after exactly two runs.
+# Failing once and passing on retry returns normally and leaves a note.
+def test_run_mutmut_diagnoses_a_setup_failure_that_repeats(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    failed = subprocess.CompletedProcess([], 1, "failed to collect stats. runner returned 1\n", "")
+    passed = subprocess.CompletedProcess([], 0, "done\n", "")
+    diagnosis = cmr.SetupFailure(Path("tree"), ["tests/test_a.py::test_bad"], "1 failed")
+    monkeypatch.setattr(cmr, "diagnose_setup_failure", lambda side, args: diagnosis)
+
+    runs = iter([failed, failed])
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: next(runs))
+    with pytest.raises(cmr.SetupFailure) as raised:
+        cmr.run_mutmut(cmr.Side(tree=Path("tree")), [], 1, [])
+    assert raised.value is diagnosis and next(runs, None) is None
+
+    runs = iter([failed, passed])
+    flaky = cmr.Side(tree=Path("tree"))
+    assert cmr.run_mutmut(flaky, [], 1, []) == ("done\n", False)
+    assert flaky.note == "mutmut's setup test run failed once and passed on retry"
+
+
+# Inside GitHub Actions an error prints one ::error annotation with the first line, and the whole
+# message goes to the job summary in a code block.
+def test_report_error_annotates_and_summarises(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    cmr.report_error("The base branch is red.\nFailing tests:\n  tests/test_a.py::test_bad")
+
+    assert capsys.readouterr().out == "::error title=Mutation ratchet::The base branch is red.\n"
+    assert "```\nThe base branch is red.\nFailing tests:\n  tests/test_a.py::test_bad\n```" in summary.read_text()
