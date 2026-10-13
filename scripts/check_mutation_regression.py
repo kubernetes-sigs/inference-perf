@@ -48,6 +48,9 @@ from typing import Any
 # and miss them on the next.
 RERUNS = 3
 
+# Where [tool.mutmut] comes from when the base commit has none.
+DEFAULT_BRANCH = "origin/main"
+
 SOURCE_PREFIX = "inference_perf/"
 TESTS_PREFIX = "tests/"
 EXCLUDED_TEST_PREFIXES = ("tests/optional/",)
@@ -644,15 +647,20 @@ def report_error(message: str) -> None:
 
 
 def load_config(merge_base: str) -> dict[str, Any]:
-    """[tool.mutmut] as the base branch has it, so a change cannot loosen its own check."""
-    try:
-        config: dict[str, Any] = tomllib.loads(git("show", f"{merge_base}:pyproject.toml"))["tool"]["mutmut"]
-        return config
-    except KeyError:
-        # only until [tool.mutmut] first lands on the base branch
-        print("The base branch has no [tool.mutmut]; using the working tree's.")
-        fallback: dict[str, Any] = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["mutmut"]
-        return fallback
+    """[tool.mutmut] as the base branch has it, so a change cannot loosen its own check.
+
+    A base cut before the table landed, like an older feature branch, gets main's instead.
+    """
+    for ref in (merge_base, DEFAULT_BRANCH):
+        try:
+            config: dict[str, Any] = tomllib.loads(git("show", f"{ref}:pyproject.toml"))["tool"]["mutmut"]
+            return config
+        except (KeyError, subprocess.CalledProcessError):
+            continue
+    # reachable only until [tool.mutmut] first lands on main
+    print(f"Neither the base branch nor {DEFAULT_BRANCH} has [tool.mutmut]. Using the working tree's.")
+    fallback: dict[str, Any] = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["mutmut"]
+    return fallback
 
 
 def whole_package(args: argparse.Namespace) -> None:
