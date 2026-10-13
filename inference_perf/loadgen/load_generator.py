@@ -1252,7 +1252,7 @@ class LoadGenerator:
 
         # Nobody is pulling anymore: remove undispatched items left in the queue.
         dropped = request_queue.drain()
-        if dropped.removed or not dropped.exact:
+        if dropped:
             logger.warning(
                 "Stage %d: dropped %s%d request(s) that were never dispatched to the model server",
                 stage_id,

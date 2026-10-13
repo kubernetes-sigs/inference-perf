@@ -55,7 +55,7 @@ from inference_perf.config import (
 )
 from inference_perf.datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, Worker
-from inference_perf.utils.request_queue import RequestQueue
+from inference_perf.utils.request_queue import Drained, RequestQueue
 
 
 class _TestClientBase(ModelServerClient):
@@ -425,6 +425,22 @@ async def test_forced_teardown_drops_the_whole_backlog(tmp_path: object) -> None
         # Leftover items would otherwise block this process's exit when the assertions fail.
         for channel in harness.request_queue.queues:
             channel.cancel_join_thread()
+
+
+async def test_an_inexact_drop_count_reaches_the_stage_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness = _Harness(QuickClient(), teardown_grace_seconds=1.0)
+    real_drain = harness.request_queue.drain
+    monkeypatch.setattr(harness.request_queue, "drain", lambda: Drained(real_drain().removed + 3, False))
+    try:
+        await harness.run_stage(0, timeout=1.0)
+
+        info = harness.loadgen.stage_runtime_info[0]
+        assert (info.dropped_requests, info.dropped_requests_exact) == (3, False)
+        assert "Stage 0: dropped at least 3 request(s)" in caplog.text
+    finally:
+        harness.shutdown()
 
 
 async def test_cancel_hostile_task_failure_does_not_kill_worker() -> None:

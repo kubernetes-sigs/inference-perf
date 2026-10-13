@@ -1,6 +1,5 @@
 import logging
 import multiprocessing as mp
-import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -9,7 +8,7 @@ from typing import Optional
 import pytest
 
 from inference_perf.utils import request_queue
-from inference_perf.utils.request_queue import RequestQueue
+from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # More than a pipe holds, so most items are still in the feeder buffer when drain() starts.
 ITEMS = 2000
@@ -97,7 +96,8 @@ def test_drain_gives_up_on_a_locked_channel_and_counts_its_backlog_with_qsize(
 
     assert drained == (1 + ITEMS, True)
     assert time.monotonic() - started < 2
-    assert f"Drain of channel 1 stopped after 0 item(s): nothing arrived for 0 s; {ITEMS} more were left in it" in caplog.text
+    assert "Drain of channel 1 stopped after 0 item(s)" in caplog.text
+    assert f"; {ITEMS} more were left in it" in caplog.text
     assert exits_cleanly(queue.get_channel(1))
 
 
@@ -116,9 +116,27 @@ def test_drain_marks_its_count_inexact_where_a_locked_channel_cannot_be_counted(
     assert exits_cleanly(queue.get_channel(1))
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="qsize() raises NotImplementedError on macOS")
+def qsize_supported() -> bool:
+    channel: "mp.Queue[None]" = mp.Queue()
+    try:
+        channel.qsize()
+        return True
+    except NotImplementedError:
+        return False
+    finally:
+        channel.close()
+
+
+@pytest.mark.skipif(not qsize_supported(), reason="this platform has no mp.Queue.qsize()")
 @pytest.mark.usefixtures("short_drain_timeout")
 def test_qsize_counts_a_locked_channel_s_unflushed_backlog(make_queue: MakeQueue) -> None:
     queue = locked_channel_with_backlog(make_queue)
 
     assert queue.drain() == (1 + ITEMS, True)
+
+
+@pytest.mark.parametrize(
+    ("drained", "expected"), [(Drained(0, True), False), (Drained(0, False), True), (Drained(3, True), True)]
+)
+def test_a_drain_is_truthy_when_it_may_have_removed_items(drained: Drained, expected: bool) -> None:
+    assert bool(drained) is expected

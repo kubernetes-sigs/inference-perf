@@ -302,7 +302,7 @@ class TestGenerateSessionReports:
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
-            "dropped_requests_exact": True,
+            "dropped_requests_exact": None,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }

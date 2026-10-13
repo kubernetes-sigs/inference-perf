@@ -53,7 +53,7 @@ class StageRuntimeInfo(BaseModel):
     # server because the stage ended first; > 0 marks a truncated stage.
     dropped_requests: Optional[int] = None
     # False when the queue could not count every dropped request, which makes dropped_requests a lower bound.
-    dropped_requests_exact: bool = True
+    dropped_requests_exact: Optional[bool] = None
     # Session-replay stages only: sessions still active (dispatched but not finished) or
     # pending (never dispatched) when the stage ended.
     sessions_not_completed_active: int = 0

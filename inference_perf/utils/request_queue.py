@@ -29,6 +29,10 @@ class Drained(NamedTuple):
     # False when a channel's leftovers could not be counted, which makes removed a lower bound.
     exact: bool
 
+    def __bool__(self) -> bool:
+        """Whether anything may have been removed; a tuple's truthiness would always be True."""
+        return bool(self.removed) or not self.exact
+
 
 class RequestQueue(Generic[T]):
     """Multi-channel request queue between the main process and workers.
