@@ -1615,6 +1615,7 @@ class ReportGenerator:
                         "actual_duration": stage_info.end_time - stage_info.start_time,
                         "teardown_duration": stage_info.teardown_duration,
                         "dropped_requests": stage_info.dropped_requests,
+                        "dropped_requests_exact": stage_info.dropped_requests_exact,
                         "concurrent_sessions": stage_info.concurrency_level,
                         "session_rate": stage_info.rate if stage_info.rate > 0 else None,
                     }

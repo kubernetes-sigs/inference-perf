@@ -25,7 +25,7 @@ from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueDat
 from inference_perf.config import LoadConfig, LoadType, TraceConfig, TraceFormat, StandardLoadStage
 from inference_perf.client.modelserver import ModelServerClient
 from inference_perf.apis import InferenceAPIData
-from inference_perf.utils.request_queue import RequestQueue
+from inference_perf.utils.request_queue import Drained, RequestQueue
 
 # Patch asyncio.TaskGroup for Python < 3.11
 if sys.version_info < (3, 11):
@@ -219,7 +219,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         mock_time.perf_counter.side_effect = count(0, 10)  # simulate time passing
 
         request_queue = MagicMock(spec=RequestQueue)
-        request_queue.drain = MagicMock(return_value=0)
+        request_queue.drain = MagicMock(return_value=Drained(0, True))
         active_counter = MagicMock()
         active_counter.value = 0
         finished_counter = MagicMock()
@@ -299,7 +299,7 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         q.put(RequestQueueData(0, dummy_data, 0.0, None), 0)
 
         drained = q.drain(0)
-        self.assertEqual(drained, 2)
+        self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
 
     def test_sigint_handler(self) -> None:

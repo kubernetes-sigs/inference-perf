@@ -14,7 +14,7 @@
 import logging
 import multiprocessing as mp
 from queue import Empty
-from typing import Generic, List, Optional, TypeVar
+from typing import Generic, List, NamedTuple, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,16 @@ T = TypeVar("T")
 
 # Caps the wait on a channel that a killed worker left locked.
 _DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+class Drained(NamedTuple):
+    removed: int
+    # False when a channel's leftovers could not be counted, which makes removed a lower bound.
+    exact: bool
+
+    def __bool__(self) -> bool:
+        """Whether anything may have been removed; a tuple's truthiness would always be True."""
+        return bool(self.removed) or not self.exact
 
 
 class RequestQueue(Generic[T]):
@@ -61,7 +71,7 @@ class RequestQueue(Generic[T]):
         self.queues[channel_id % self.num_channels] = queue
         return queue
 
-    def drain(self, channel_id: int = -1) -> int:
+    def drain(self, channel_id: int = -1) -> Drained:
         """
         drain the specific queue by giving channel id, when id is -1, drain all queues.
 
@@ -69,9 +79,10 @@ class RequestQueue(Generic[T]):
             channel_id (int, optional): the id of the queue to drain. Defaults to -1 (all queues).
 
         Returns:
-            int: number of items removed.
+            Drained: number of items removed and whether that number is exact.
         """
         drained = 0
+        exact = True
         channel_ids = range(self.num_channels) if channel_id == -1 else [channel_id % self.num_channels]
         for index in channel_ids:
             queue = self.queues[index]
@@ -82,12 +93,22 @@ class RequestQueue(Generic[T]):
                 try:
                     item = queue.get(timeout=_DRAIN_TIMEOUT_SECONDS)
                 except Empty:
+                    try:
+                        # Counts the None put above too; takes no lock a dead worker could hold.
+                        left: Optional[int] = queue.qsize() - 1
+                    except NotImplementedError:  # macOS
+                        left = None
                     logger.warning(
-                        "Drain of channel %d stopped after %d item(s): nothing arrived for %.0f s",
+                        "Drain of channel %d stopped after %d item(s): nothing arrived for %.0f s; %s",
                         index,
                         channel_drained,
                         _DRAIN_TIMEOUT_SECONDS,
+                        "the rest cannot be counted on this platform" if left is None else f"{left} more were left in it",
                     )
+                    if left is None:
+                        exact = False
+                    else:
+                        channel_drained += left
                     # The items left behind are discarded, so exit need not wait to flush them.
                     queue.cancel_join_thread()
                     break
@@ -95,7 +116,7 @@ class RequestQueue(Generic[T]):
                     break
                 channel_drained += 1
             drained += channel_drained
-        return drained
+        return Drained(drained, exact)
 
     def put(self, item: T, channel_id: int = -1) -> None:
         """
