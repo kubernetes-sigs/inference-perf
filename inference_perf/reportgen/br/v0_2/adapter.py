@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from inference_perf.apis import RequestLifecycleMetric, StreamedResponseMetrics
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric, StreamedResponseMetrics
 from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
 
@@ -40,6 +40,8 @@ from .schema import (
     VideoPayloadStats,
     RequestPerformance,
     Results,
+    SessionPerformance,
+    SessionRequests,
     Statistics,
     Units,
 )
@@ -56,6 +58,9 @@ def build_results(
     request_metrics: List[RequestLifecycleMetric],
     tokenizer: Optional["CustomTokenizer"] = None,
     use_server_output_tokens: bool = False,
+    *,
+    session_metrics: Optional[List[SessionLifecycleMetric]] = None,
+    sessions_not_completed: int = 0,
 ) -> Results:
     """Build a BR0.2 ``Results`` from inference-perf request metrics.
 
@@ -65,9 +70,24 @@ def build_results(
 
     ``use_server_output_tokens`` must match the value used for the native
     lifecycle reports so both reports of the same run agree on token counts.
+
+    ``session_metrics`` carries the session lifecycle metrics of the same stage,
+    already enriched with per-session token totals. When empty or omitted —
+    every non-session workload — ``session_performance`` stays ``None`` so the
+    emitted partial is unchanged.
+
+    ``sessions_not_completed`` is the stage's count of sessions that were still
+    active or never dispatched when the stage ended (the
+    ``sessions_not_completed_active + sessions_not_completed_pending`` of the
+    stage's ``StageRuntimeInfo``). Those sessions leave no lifecycle metric
+    behind, so they are counted here rather than through ``session_metrics``:
+    without them a stage cut short by ``max_stage_duration`` would report only
+    the sessions that happened to finish, which reads as a clean run. Like the
+    native session report, they count towards ``total`` and nothing else.
     """
     return Results(
         request_performance=_build_request_performance(request_metrics, tokenizer, use_server_output_tokens),
+        session_performance=_build_session_performance(session_metrics or [], sessions_not_completed),
     )
 
 
@@ -84,6 +104,77 @@ def _build_request_performance(
     if not metrics:
         return None
     return RequestPerformance(aggregate=_build_aggregate(metrics, tokenizer, use_server_output_tokens))
+
+
+# ---------------------------------------------------------------------------
+# Session performance aggregation
+# ---------------------------------------------------------------------------
+
+
+def _build_session_performance(
+    metrics: List[SessionLifecycleMetric], sessions_not_completed: int = 0
+) -> Optional[SessionPerformance]:
+    sessions = _build_session_requests(metrics, sessions_not_completed)
+    if sessions is None:
+        return None
+    return SessionPerformance(sessions=sessions)
+
+
+def _build_session_requests(
+    metrics: List[SessionLifecycleMetric], sessions_not_completed: int = 0
+) -> Optional[SessionRequests]:
+    """Aggregate per-session metrics into BR0.2 ``SessionRequests``.
+
+    Mirrors ``reportgen/base.py:summarize_sessions``, which renders the same
+    figures in the native session lifecycle report, so both reports of a run
+    agree on session counts, rates and per-session distributions.
+
+    The metrics are expected to be enriched (see
+    ``SessionMetricsCollector.enrich_metrics``) by the time they reach here:
+    per-session token totals come from that step, not from the session metrics
+    themselves.
+
+    ``sessions_not_completed`` counts the stage's sessions that produced no
+    metric, so ``total`` matches the native ``num_sessions``. The rest of the
+    block describes the sessions that did report: ``succeeded`` and ``failed``
+    mirror ``num_sessions_succeeded`` / ``num_sessions_failed``, and the
+    distributions are computed over recorded sessions only — an unrecorded
+    session has no duration or event data to contribute. Returns ``None`` when
+    the stage ran no sessions at all, so the block is omitted rather than
+    emitted as zeros.
+    """
+    total = len(metrics) + sessions_not_completed
+    if total == 0:
+        return None
+
+    # Same span convention as the native summary: first session start to last
+    # session end, over the sessions that reported. A zero-length span omits the
+    # rate rather than dividing by it.
+    session_rate: Optional[Statistics] = None
+    total_span = max(m.end_time for m in metrics) - min(m.start_time for m in metrics) if metrics else 0.0
+    if total_span > 0:
+        session_rate = _scalar_statistics(len(metrics) / total_span, Units.QUERY_PER_S)
+
+    return SessionRequests(
+        total=total,
+        succeeded=sum(1 for m in metrics if m.success is True),
+        failed=sum(1 for m in metrics if m.success is False),
+        total_events=sum(m.num_events for m in metrics),
+        total_events_completed=sum(m.num_events_completed for m in metrics),
+        total_events_cancelled=sum(m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None),
+        session_rate=session_rate,
+        session_duration=_statistics((m.duration_sec for m in metrics), Units.S),
+        events_per_session=_statistics((m.num_events for m in metrics), Units.COUNT),
+        events_cancelled_per_session=_statistics(
+            (m.num_events_cancelled for m in metrics if m.num_events_cancelled is not None), Units.COUNT
+        ),
+        input_tokens_per_session=_statistics(
+            (m.total_input_tokens for m in metrics if m.total_input_tokens is not None), Units.COUNT
+        ),
+        output_tokens_per_session=_statistics(
+            (m.total_output_tokens for m in metrics if m.total_output_tokens is not None), Units.COUNT
+        ),
+    )
 
 
 def _build_aggregate(

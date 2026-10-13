@@ -28,6 +28,7 @@ from inference_perf.apis import (
     ErrorResponseInfo,
     InferenceInfo,
     RequestLifecycleMetric,
+    SessionLifecycleMetric,
     StreamedResponseMetrics,
     UnaryResponseMetrics,
 )
@@ -400,3 +401,127 @@ def test_chunk_retokenization_needs_a_tokenizer() -> None:
     aggregate = results.request_performance.aggregate
     assert aggregate is not None and aggregate.latency is not None
     assert aggregate.latency.time_to_first_token is None
+
+
+def _session_metric(
+    session_id: str,
+    start: float,
+    duration: float = 1.0,
+    num_events: int = 3,
+    num_events_completed: int = 3,
+    success: Optional[bool] = True,
+    input_tokens: Optional[int] = 100,
+    output_tokens: Optional[int] = 50,
+) -> SessionLifecycleMetric:
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"/traces/{session_id}.json",
+        start_time=start,
+        end_time=start + duration,
+        duration_sec=duration,
+        num_events=num_events,
+        num_events_completed=num_events_completed,
+        success=success,
+        total_input_tokens=input_tokens,
+        total_output_tokens=output_tokens,
+    )
+
+
+# Every non-session workload takes this path: no sessions means no
+# session_performance block, so the emitted partial is unchanged.
+def test_build_results_without_session_metrics_omits_session_performance() -> None:
+    results = build_results([_streaming_metric(time.time())])
+
+    assert results.request_performance is not None
+    assert results.session_performance is None
+
+
+def test_build_results_session_performance_aggregates_sessions() -> None:
+    now = time.time()
+    sessions = [
+        _session_metric("s1", now, duration=2.0, num_events=4),
+        _session_metric("s2", now + 2.0, duration=1.0, num_events=2, success=False),
+    ]
+
+    results = build_results([], session_metrics=sessions)
+
+    assert results.request_performance is None
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 2
+    assert aggregate.succeeded == 1
+    assert aggregate.failed == 1
+    assert aggregate.total_events == 6
+    assert aggregate.total_events_completed == 6
+    assert aggregate.session_duration is not None
+    assert aggregate.session_duration.mean == pytest.approx(1.5, abs=1e-9)
+    assert aggregate.events_per_session is not None
+    assert aggregate.events_per_session.mean == pytest.approx(3.0, abs=1e-9)
+    assert aggregate.input_tokens_per_session is not None
+    assert aggregate.input_tokens_per_session.mean == pytest.approx(100.0, abs=1e-9)
+    assert aggregate.output_tokens_per_session is not None
+    assert aggregate.output_tokens_per_session.mean == pytest.approx(50.0, abs=1e-9)
+    # Two sessions over the 3s window that spans them.
+    assert aggregate.session_rate is not None
+    assert aggregate.session_rate.units == Units.QUERY_PER_S
+    assert aggregate.session_rate.mean == pytest.approx(2 / 3, abs=1e-9)
+
+
+# Token totals come from the enrichment step: an unrecorded distribution must
+# stay absent rather than be reported as a measured zero.
+def test_build_results_session_token_totals_absent_when_not_recorded() -> None:
+    now = time.time()
+    sessions = [_session_metric("s1", now, input_tokens=None, output_tokens=None)]
+
+    results = build_results([], session_metrics=sessions)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 1
+    assert aggregate.input_tokens_per_session is None
+    assert aggregate.output_tokens_per_session is None
+
+
+# A stage cut short by max_stage_duration leaves no metric behind for the
+# sessions it stranded, so their count arrives beside the metrics, not in them.
+# Landing them in `total` is what keeps a truncated stage from reading as a
+# clean run: 1 completed + 3 stranded is not "1 session, 1 succeeded".
+def test_build_results_counts_stranded_sessions_in_total() -> None:
+    now = time.time()
+    results = build_results([], session_metrics=[_session_metric("s1", now)], sessions_not_completed=3)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 4
+    assert aggregate.succeeded == 1
+    assert aggregate.failed == 0
+    # The distributions describe the sessions that reported, not the ones that
+    # never got to run a request.
+    assert aggregate.session_duration is not None
+    assert aggregate.session_duration.mean == pytest.approx(1.0, abs=1e-9)
+    assert aggregate.input_tokens_per_session is not None
+    assert aggregate.input_tokens_per_session.mean == pytest.approx(100.0, abs=1e-9)
+
+
+# A stage where every session stranded still reports its count, so the block is
+# emitted for a non-zero total even with no session metrics to describe.
+def test_build_results_reports_a_fully_stranded_stage() -> None:
+    results = build_results([], sessions_not_completed=2)
+
+    assert results.session_performance is not None
+    aggregate = results.session_performance.sessions
+    assert aggregate is not None
+    assert aggregate.total == 2
+    assert aggregate.succeeded == 0
+    assert aggregate.failed == 0
+    # Nothing to measure over: event totals are sums over an empty set (0, as in
+    # the native report), everything distribution-shaped stays absent.
+    assert aggregate.total_events == 0
+    assert aggregate.total_events_completed == 0
+    assert aggregate.session_rate is None
+    assert aggregate.session_duration is None
+    assert aggregate.events_per_session is None

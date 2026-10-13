@@ -26,6 +26,7 @@ from typing import Any, Dict
 from inference_perf.apis import (
     InferenceInfo,
     RequestLifecycleMetric,
+    SessionLifecycleMetric,
     StreamedResponseMetrics,
 )
 from inference_perf.payloads import RequestMetrics, Text
@@ -223,6 +224,75 @@ def test_partial_report_deep_merges_cleanly_with_other_producer() -> None:
     assert "start" in merged["run"]["time"]
     assert merged["scenario"]["stack"][0]["name"] == "vllm"
     assert "request_performance" in merged["results"]
+
+
+def _session_metric(session_id: str, start: float, duration: float = 1.0) -> SessionLifecycleMetric:
+    return SessionLifecycleMetric(
+        session_id=session_id,
+        stage_id=0,
+        file_path=f"/traces/{session_id}.json",
+        start_time=start,
+        end_time=start + duration,
+        duration_sec=duration,
+        num_events=3,
+        num_events_completed=3,
+        success=True,
+        total_input_tokens=128,
+        total_output_tokens=64,
+    )
+
+
+# The block is only emitted for stages that actually ran sessions, so a partial
+# from a non-session workload yq-merges exactly as it did before the field was
+# populated.
+def test_partial_omits_session_performance_without_sessions() -> None:
+    partial = build_partial_report([_metric(100.0, 101.0)], None, run_uid="ip-uid")
+
+    assert "session_performance" not in partial["results"]
+
+
+def test_partial_includes_session_performance_for_session_stages() -> None:
+    partial = build_partial_report(
+        [_metric(100.0, 101.0)],
+        None,
+        run_uid="ip-uid",
+        session_metrics=[_session_metric("s1", 100.0), _session_metric("s2", 102.0)],
+    )
+
+    sessions = partial["results"]["session_performance"]["sessions"]
+    assert sessions["total"] == 2
+    assert sessions["succeeded"] == 2
+    assert sessions["total_events"] == 6
+
+
+# Sessions the stage stranded have no metric to be passed alongside, so their
+# count travels as its own argument and lands in `total`.
+def test_partial_counts_stranded_sessions_in_the_session_total() -> None:
+    partial = build_partial_report(
+        [_metric(100.0, 101.0)],
+        None,
+        run_uid="ip-uid",
+        session_metrics=[_session_metric("s1", 100.0)],
+        sessions_not_completed=3,
+    )
+
+    sessions = partial["results"]["session_performance"]["sessions"]
+    assert sessions["total"] == 4
+    assert sessions["succeeded"] == 1
+    assert sessions["failed"] == 0
+
+
+# A stage whose sessions all stranded has no request metrics either: the
+# partial still carries the session block, and the results map simply has no
+# request side to report.
+def test_partial_reports_a_fully_stranded_stage() -> None:
+    partial = build_partial_report([], None, run_uid="ip-uid", sessions_not_completed=2)
+
+    sessions = partial["results"]["session_performance"]["sessions"]
+    assert sessions["total"] == 2
+    assert sessions["succeeded"] == 0
+    assert sessions["failed"] == 0
+    assert "request_performance" not in partial["results"]
 
 
 def _deep_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
