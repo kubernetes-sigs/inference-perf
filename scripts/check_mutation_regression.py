@@ -213,12 +213,25 @@ def run_bounded(
     try:
         out, err = proc.communicate(timeout=limit)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        _kill_group(proc.pid)
         out, err = proc.communicate()
         if BUDGET.spent():
             raise BudgetExhausted() from None
         raise subprocess.TimeoutExpired(command, limit or 0, output=out, stderr=err) from None
+    except BaseException:
+        # the new session keeps a Ctrl-C from reaching the group, so pass it on
+        _kill_group(proc.pid)
+        raise
+    # a test's Worker processes can outlive the pytest run that started them
+    _kill_group(proc.pid)
     return subprocess.CompletedProcess(command, proc.returncode, out, err)
+
+
+def _kill_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def git(*args: str) -> str:

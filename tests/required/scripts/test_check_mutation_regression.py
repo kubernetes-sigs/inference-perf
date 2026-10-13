@@ -994,3 +994,17 @@ def test_a_swapped_mutmut_fails(cmr: Any, tmp_path: Path, monkeypatch: pytest.Mo
     failures = static_failures(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, {"pdm.lock": forked})
 
     assert "mutmut is not the pinned release" in failures
+
+
+# The command's shell starts a 30 s background sleep with its output closed and exits at once, the way
+# a test can leave a Worker process behind. The run returns normally and the leftover sleep is killed.
+def test_run_bounded_kills_what_a_finished_command_left_behind(cmr: Any, tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid"
+
+    cmr.run_bounded(["sh", "-c", f"sleep 30 > /dev/null 2>&1 & echo $! > {pid_file}"], cwd=tmp_path)
+
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        for _ in range(50):
+            os.kill(pid, 0)
+            time.sleep(0.1)
