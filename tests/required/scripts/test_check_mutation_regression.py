@@ -892,3 +892,23 @@ def test_main_reports_what_the_budget_did_not_reach(
     assert exited.value.code == 1
     assert json.loads(output.read_text())["failures"] == [failure]
     assert failure in capsys.readouterr().out
+
+
+# A test that reads the active mutant id and fails whenever one is set, except the id ending in
+# 999999999 that a fixed canary would use. It would kill every real mutant and still pass that
+# canary. A canary id picked at random each run fails it.
+def test_canary_id_cannot_be_special_cased(cmr: Any, tmp_path: Path) -> None:
+    tests = tmp_path / "mutants" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_a.py").write_text(
+        "import os\n\n\n"
+        "def test_rigged():\n"
+        "    active = os.environ.get('MUTANT' + '_UNDER_TEST', '')\n"
+        "    assert not active or active.endswith('999999999')\n"
+    )
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        '{"tests_by_mangled_function_name": {"m.x_f": ["tests/test_a.py::test_rigged"]}, "duration_by_test": {}}'
+    )
+    side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "killed"})
+
+    assert not cmr.canary_passes(side, ["m.x_f"], [])
