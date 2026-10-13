@@ -195,6 +195,10 @@ async def test_tracelab_session_replay(tmp_path: Path) -> None:
                         "trace_files": [str(trace)],
                         "use_static_model": True,
                         "static_model_name": TEST_MODEL_NAME,
+                        # Keep built prompts on the wire: with live-output
+                        # substitution the sim's outputs would resize the
+                        # successor prompts and exact size asserts would flake.
+                        "disable_output_substitution": True,
                     },
                 },
                 "load": {"type": "trace_session_replay", "num_workers": 2, "stages": [{"concurrent_sessions": 2}]},

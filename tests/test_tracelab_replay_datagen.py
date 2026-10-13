@@ -260,20 +260,24 @@ def test_tracelab_groups_orders_and_chains(tmp_path: Path) -> None:
 
 
 def test_tracelab_prompt_size_matches_recorded(tmp_path: Path) -> None:
-    """Built prompt should tokenize to recorded input_tokens_total (or close)."""
-    trace_file = _write_jsonl(tmp_path / "trace.jsonl", _rows())
-    gen = _make_gen([str(trace_file)])
+    """Built prompt should tokenize to recorded input_tokens_total.
 
-    for s in gen.sessions:
-        assert s is not None
-        for e in s.graph.events.values():
-            # Tokenize the built messages and compare to recorded total_input_tokens.
-            built_tokens = _tokenize_messages(_mock_tokenizer(), e.call.messages)
-            recorded = e.call.total_input_tokens
-            # Allow small drift due to tokenizer quirks.
-            assert abs(built_tokens - recorded) <= max(4, recorded * 0.1), (
-                f"Event {e.event_id}: built {built_tokens} vs recorded {recorded}"
-            )
+    Runs over growing (_rows), cache-miss, and compacting (_real_rows)
+    sessions: shrinking rounds must truncate history to the shared prefix,
+    not replay the full transcript.
+    """
+    for rows in (_rows(), _real_rows()):
+        trace_file = _write_jsonl(tmp_path / "trace.jsonl", rows)
+        gen = _make_gen([str(trace_file)])
+        tok = _mock_tokenizer()
+
+        for s in gen.sessions:
+            assert s is not None
+            for e in s.graph.events.values():
+                # Tokenize the built messages and compare to recorded total_input_tokens.
+                built_tokens = _tokenize_messages(tok, e.call.messages)
+                recorded = e.call.total_input_tokens
+                assert built_tokens == recorded, f"Event {e.event_id}: built {built_tokens} vs recorded {recorded}"
 
 
 def test_tracelab_idle_gap_cap_and_ignore_delays(tmp_path: Path) -> None:
@@ -502,6 +506,113 @@ def test_tracelab_timing_events_gap(tmp_path: Path) -> None:
     events = sorted(sessions["claude:abc"].graph.events.values(), key=lambda e: e.t_start_ms)
     assert events[1].wait_ms == 500
     assert events[2].wait_ms == 600
+
+
+def test_tracelab_hf_join_uses_tool_calls_config() -> None:
+    """The HF join must read the tool_calls/timing_events configs (not tools)
+    and join them onto rounds by round_pk."""
+    import sys
+    from unittest.mock import patch
+
+    rounds = [
+        {
+            "round_pk": 1,
+            "session_id": "claude:s1",
+            "round_index": 0,
+            "provider": "claude",
+            "model": "m",
+            "input_tokens_total": 20,
+            "prefix_tokens": 0,
+            "newly_append_tokens": 20,
+            "output_tokens": 5,
+        },
+        {
+            "round_pk": 2,
+            "session_id": "claude:s1",
+            "round_index": 1,
+            "provider": "claude",
+            "model": "m",
+            "input_tokens_total": 30,
+            "prefix_tokens": 20,
+            "newly_append_tokens": 10,
+            "output_tokens": 5,
+        },
+    ]
+    tool_calls = [
+        {"round_pk": 1, "tool_name": "bash", "tool_wall_latency_ms": 1200, "tool_internal_latency_ms": None},
+    ]
+    timing_events = [
+        {"round_pk": 1, "event_type": "user_message", "timestamp": "2026-06-01T10:00:10.000Z"},
+        {"round_pk": 1, "event_type": "text", "timestamp": "2026-06-01T10:00:11.000Z"},
+        {"round_pk": 2, "event_type": "user_message", "timestamp": "2026-06-01T10:00:11.500Z"},
+        {"round_pk": 2, "event_type": "text", "timestamp": "2026-06-01T10:00:12.000Z"},
+    ]
+
+    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+        name = kwargs.get("name")
+        if name == "tool_calls":
+            return tool_calls
+        if name == "timing_events":
+            return timing_events
+        assert name is None, f"unexpected config name: {name!r}"
+        return rounds
+
+    fake_datasets = MagicMock()
+    fake_datasets.load_dataset = fake_load_dataset
+    with patch.dict(sys.modules, {"datasets": fake_datasets}):
+        api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+        data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+        data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(hf_dataset_path="UW-SyFI/TraceLab")
+        gen = TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+    assert gen.get_session_count() == 1
+    session = gen.sessions[0]
+    assert session is not None
+    events = sorted(session.graph.events.values(), key=lambda e: e.t_start_ms)
+    assert len(events) == 2
+    # Tools joined from tool_calls (1200ms on round 0); timing gap 500ms wins
+    # as the recorded think time before round 1.
+    assert events[1].wait_ms == 500
+
+
+def test_tracelab_hf_missing_aux_table_is_loud() -> None:
+    """A missing aux table warns under skip_invalid_files, else raises."""
+    import sys
+    from unittest.mock import patch
+
+    rounds = [
+        {
+            "round_pk": 1,
+            "session_id": "s",
+            "round_index": 0,
+            "provider": "claude",
+            "model": "m",
+            "input_tokens_total": 10,
+            "output_tokens": 5,
+        },
+    ]
+
+    def fake_load_dataset(path: str, **kwargs: Any) -> Any:
+        if kwargs.get("name") in ("tool_calls", "timing_events"):
+            raise ValueError("no such config")
+        return rounds
+
+    fake_datasets = MagicMock()
+    fake_datasets.load_dataset = fake_load_dataset
+
+    def _make(skip_invalid: bool) -> TraceLabTraceReplayDataGenerator:
+        api_cfg = APIConfig(type=APIType.Chat, streaming=False)
+        data_cfg = DataConfig(type=DataGenType.TraceLabTraceReplay)
+        data_cfg.tracelab_trace_replay = TraceLabTraceReplayConfig(
+            hf_dataset_path="UW-SyFI/TraceLab", skip_invalid_files=skip_invalid
+        )
+        return TraceLabTraceReplayDataGenerator(api_config=api_cfg, config=data_cfg, tokenizer=_mock_tokenizer())
+
+    with patch.dict(sys.modules, {"datasets": fake_datasets}):
+        gen = _make(True)
+        assert gen.get_session_count() == 1
+        with pytest.raises(ValueError, match="tool_calls"):
+            _make(False)
 
 
 def test_tracelab_hf_shaped_rows_without_tools_or_timing(tmp_path: Path) -> None:

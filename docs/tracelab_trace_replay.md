@@ -9,10 +9,11 @@ concurrently, maintaining causal/dependency fidelity.
 Dataset + paper: https://tracelab.cs.washington.edu / https://arxiv.org/abs/2606.30560
 
 > Note: the public TraceLab trace is sanitized — raw prompts, completions, and tool payloads are removed.
-> Prompts are synthetically reconstructed to match the recorded input token counts (deterministic corpus
-> slices, so prefix-cache structure grows like the original), and expected outputs are sized to the recorded
-> `output_tokens`. Inter-round spacing comes from `timing_events` timestamps when present, else the
-> round's tool latency.
+> Each round's prompt is reconstructed as a single user message holding the whole prompt: the leading
+> `prefix_tokens` of the previous round's text are reused and the rest is fresh synthetic text, sized so
+> the message tokenizes to exactly `input_tokens_total` (cache misses share nothing; compacting rounds
+> shrink). Expected outputs are sized to the recorded `output_tokens`. Inter-round spacing comes from
+> `timing_events` timestamps when present, else the round's tool latency.
 >
 > Tokenizer: reconstruction uses the run's configured `tokenizer`, so prompt sizes are measured with
 > the same tokenizer the benchmark runs against — point it at the target model's tokenizer for
@@ -73,8 +74,10 @@ data:
     use_static_model: true
     static_model_name: "mock-model"
     skip_invalid_files: true
-    trace_idle_gap_cap_seconds: 1.0 # Caps tool-latency delay between rounds to 1s
+    trace_idle_gap_cap_seconds: 1.0 # Caps think-time delay between rounds to 1s
     # ignore_trace_delays: true # Run rounds back-to-back
+    # disable_output_substitution: true # Replay built prompts verbatim instead of
+    #   substituting live predecessor outputs (dependency timing still enforced)
 
 report:
   request_lifecycle:
