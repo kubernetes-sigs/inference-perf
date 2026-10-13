@@ -867,21 +867,52 @@ class Verdict:
     flaky: list[str]
     unexecuted: list[str]
     failures: list[str]
+    # head survivors whose mutation also survived on the base, counted on both sides and never rerun
+    carried: list[str] = field(default_factory=list)
+
+
+def mutation_lines(side: Side, mutant: str) -> tuple[str, ...]:
+    """The lines a mutant changes, without diff headers or context, so the same mutation matches across versions."""
+    shown = mutmut(side.tree, "show", mutant).stdout.splitlines()
+    return tuple(sorted(line.rstrip() for line in shown if line[:1] in "+-" and not line.startswith(("+++", "---"))))
+
+
+def carried_over(touched: Touched, base: Side | None, head: Side, candidates: list[str]) -> list[str]:
+    """Candidates whose function survived the identical mutation on the base, matched one for one."""
+    if base is None:
+        return []
+    base_name = {h: b for b, h in touched.existing}
+    pools: dict[str, Counter[tuple[str, ...]]] = {}
+    carried: list[str] = []
+    for mutant in candidates:
+        function = mutant.partition("__mutmut_")[0]
+        if function not in base_name:
+            continue
+        if function not in pools:
+            pools[function] = Counter(mutation_lines(base, m) for m in survivors(base, [base_name[function]]))
+        lines = mutation_lines(head, mutant)
+        if pools[function][lines]:
+            pools[function][lines] -= 1
+            carried.append(mutant)
+    return carried
 
 
 def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str]) -> Verdict:
     base_surv = survivors(base, touched.base_names)
     head_surv = survivors(head, touched.head_names)
     flaky: list[str] = []
+    carried: list[str] = []
     if len(head_surv) > len(base_surv):
         # only a function whose own count rose can hold a survivor the change added
         before, after = by_function(base_surv), by_function(head_surv)
         rose = {h for b, h in touched.existing if after[h] > before[b]} | {n for n in touched.new if after[n]}
-        flaky = [m for m in head_surv if m.partition("__mutmut_")[0] in rose and not still_survives(head, m, pytest_args)]
+        candidates = [m for m in head_surv if m.partition("__mutmut_")[0] in rose]
+        carried = carried_over(touched, base, head, candidates)
+        flaky = [m for m in candidates if m not in carried and not still_survives(head, m, pytest_args)]
         head_surv = [m for m in head_surv if m not in flaky]
     # unlike a surviving mutant, code no test runs cannot be an equivalent mutant, so nothing can pay for it
     unexecuted = sorted({m.partition("__mutmut_")[0] for m, s in head.results.items() if s == "no tests"} & set(touched.new))
-    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [])
+    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [], carried)
     if verdict.head_survivors > verdict.base_survivors:
         verdict.failures.append(f"Surviving mutants rose from {verdict.base_survivors} to {verdict.head_survivors}")
     if unexecuted:
@@ -1073,6 +1104,8 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
             lines.append(f"{label}: {side.note}.")
     if head.pragmas_stripped:
         lines += ["", f"Stripped {head.pragmas_stripped} `# pragma: no mutate` comments before mutating. They have no effect."]
+    if verdict.carried:
+        lines += ["", f"{len(verdict.carried)} surviving mutants on the head also survived on the base. Not rerun."]
     if verdict.flaky:
         lines += ["", f"Flaky, killed on rerun and not counted: {', '.join(f'`{m}`' for m in verdict.flaky)}"]
     shown = [m for m in survivors(head, touched.head_names) if m not in verdict.flaky]

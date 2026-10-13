@@ -235,6 +235,7 @@ def test_judge_fails_on_a_rise_and_reruns_only_rising_functions(cmr: Any, monkey
         return True
 
     monkeypatch.setattr(cmr, "still_survives", record)
+    monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (str(id(s)), m))
     touched = cmr.Touched(
         existing=[("inference_perf.m.x_f", "inference_perf.m.x_f"), ("inference_perf.m.x_g", "inference_perf.m.x_g")]
     )
@@ -252,6 +253,7 @@ def test_judge_fails_on_a_rise_and_reruns_only_rising_functions(cmr: Any, monkey
 def test_judge_drops_flaky_survivors(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     flaky = "inference_perf.m.x_g__mutmut_2"
     monkeypatch.setattr(cmr, "still_survives", lambda s, m, a: m != flaky)
+    monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (str(id(s)), m))
     touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
     base = side(cmr, x_g={"survived": 3})
     head = side(cmr, x_g={"survived": 4})
@@ -769,3 +771,33 @@ def test_declarations_and_mutated_code_pass(cmr: Any, tmp_path: Path, monkeypatc
     )
 
     assert static_failures(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, {"inference_perf/m.py": head}) == []
+
+
+# g survives 2 mutants on the base, `x > 1` to `x >= 1` and `x > 1` to `x > 2`. The head keeps both
+# and adds a third, `y + 1` to `y - 1`. Only the third is rerun, and it still survives, so 2 rises to 3.
+# The two the base already had count on both sides, so a rerun that killed one by chance cannot lower the head.
+def test_judge_reruns_only_survivors_new_on_the_head(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = side(cmr, x_g={"survived": 2})
+    head = side(cmr, x_g={"survived": 3})
+    diffs = {
+        (id(base), "inference_perf.m.x_g__mutmut_1"): ("-    return x > 1", "+    return x >= 1"),
+        (id(base), "inference_perf.m.x_g__mutmut_2"): ("-    return x > 1", "+    return x > 2"),
+        (id(head), "inference_perf.m.x_g__mutmut_1"): ("-    y = y + 1", "+    y = y - 1"),
+        (id(head), "inference_perf.m.x_g__mutmut_2"): ("-    return x > 1", "+    return x > 2"),
+        (id(head), "inference_perf.m.x_g__mutmut_3"): ("-    return x > 1", "+    return x >= 1"),
+    }
+    monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: diffs[(id(s), m)])
+    rerun: list[str] = []
+
+    def record(s: Any, mutant: str, a: Any) -> bool:
+        rerun.append(mutant)
+        return True
+
+    monkeypatch.setattr(cmr, "still_survives", record)
+    touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
+
+    verdict = cmr.judge(touched, base, head, [])
+
+    assert rerun == ["inference_perf.m.x_g__mutmut_1"]
+    assert verdict.carried == ["inference_perf.m.x_g__mutmut_2", "inference_perf.m.x_g__mutmut_3"]
+    assert (verdict.base_survivors, verdict.head_survivors) == (2, 3)
