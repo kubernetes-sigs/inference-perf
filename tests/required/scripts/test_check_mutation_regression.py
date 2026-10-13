@@ -1008,3 +1008,24 @@ def test_run_bounded_kills_what_a_finished_command_left_behind(cmr: Any, tmp_pat
         for _ in range(50):
             os.kill(pid, 0)
             time.sleep(0.1)
+
+
+# Two more ways a test reaches support code: test_req.py puts tests/optional on sys.path itself and
+# imports harness.slots by that name, and sub/conftest.py loads tests/plugins/fix.py through
+# pytest_plugins, which every test under sub/ then runs. A change to either file reaches those tests.
+def test_tests_using_follows_sys_path_names_and_pytest_plugins(cmr: Any, tmp_path: Path) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "tests/optional/harness/__init__.py": "",
+            "tests/optional/harness/slots.py": "X = 1\n",
+            "tests/test_req.py": "import sys\n\nsys.path.insert(0, 'tests/optional')\nfrom harness.slots import X\n",
+            "tests/plugins/fix.py": "",
+            "tests/sub/conftest.py": "pytest_plugins = ['tests.plugins.fix']\n",
+            "tests/sub/test_s.py": "",
+            "tests/test_other.py": "",
+        },
+    )
+
+    assert cmr.tests_using(tmp_path, ["tests/optional/harness/slots.py"]) == {"tests/test_req.py"}
+    assert cmr.tests_using(tmp_path, ["tests/plugins/fix.py"]) == {"tests/sub/test_s.py"}
