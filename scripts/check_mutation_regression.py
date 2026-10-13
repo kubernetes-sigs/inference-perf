@@ -36,9 +36,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tokenize
 import tomllib
 from collections import Counter
@@ -135,6 +137,66 @@ class SetupFailure(MutationRunError):
             or "  none in a plain rerun, so it is flaky or specific to mutmut's run"
         )
         return f"Failing tests:\n{shown}\nLast lines of the pytest run:\n{self.tail}"
+
+
+class BudgetExhausted(Exception):
+    """The run used up --budget-minutes. The workflow's own timeout would otherwise kill it without a summary."""
+
+
+class Budget:
+    def __init__(self, minutes: float | None) -> None:
+        self.minutes = minutes
+        self.deadline = None if minutes is None else time.monotonic() + minutes * 60
+
+    def limit(self, timeout: float | None) -> float | None:
+        """The tighter of `timeout` and what is left. Raises BudgetExhausted when nothing is."""
+        if self.deadline is None:
+            return timeout
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise BudgetExhausted()
+        return left if timeout is None else min(timeout, left)
+
+    def spent(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+
+BUDGET = Budget(None)
+
+
+@dataclass
+class Progress:
+    """Where a run is, so running out of budget can say what was left."""
+
+    stage: str = "starting"
+    # functions whose verdict the current stage was still working out
+    pending: list[str] = field(default_factory=list)
+
+
+PROGRESS = Progress()
+
+
+def run_bounded(
+    command: list[str], cwd: Path, env: dict[str, str] | None = None, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run a command within `timeout` and the budget, killing its whole process group when either runs out.
+
+    mutmut's workers and the Worker processes tests start are grandchildren, which a plain timeout leaves running.
+    Raises BudgetExhausted when the budget ran out, and TimeoutExpired when `timeout` did.
+    """
+    limit = BUDGET.limit(timeout)
+    proc = subprocess.Popen(
+        command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
+    )
+    try:
+        out, err = proc.communicate(timeout=limit)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, err = proc.communicate()
+        if BUDGET.spent():
+            raise BudgetExhausted() from None
+        raise subprocess.TimeoutExpired(command, limit or 0, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(command, proc.returncode, out, err)
 
 
 def git(*args: str) -> str:
@@ -615,18 +677,10 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     env = {k: v for k, v in os.environ.items() if k != "COVERAGE_PROCESS_START"}
     env.update(COVERAGE_FILE=str(data), PYTHONPATH=str(tree))
     cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report="]
-    subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "log_cli=false", *cov, *tests],
-        cwd=tree,
-        env=env,
-        capture_output=True,
+    run_bounded(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "log_cli=false", *cov, *tests], tree, env
     )
-    subprocess.run(
-        [sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)],
-        cwd=tree,
-        env=env,
-        capture_output=True,
-    )
+    run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
     if not report.exists():
         raise MutationRunError(f"coverage over the changed tests produced no report in {tree}")
     found: set[str] = set()
@@ -686,7 +740,7 @@ def export_working_tree(dest: Path) -> None:
 
 
 def mutmut(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "mutmut", *args], cwd=tree, capture_output=True, text=True)
+    return run_bounded([sys.executable, "-m", "mutmut", *args], tree)
 
 
 def pytest_command(tests: list[str], pytest_args: list[str]) -> list[str]:
@@ -737,15 +791,9 @@ def rerun(side: Side, tests: list[str], mutant: str, pytest_args: list[str]) -> 
 
     Returns pytest's exit code, or None if it hung, and its output.
     """
+    env = {**os.environ, "MUTANT_UNDER_TEST": mutant}
     try:
-        run = subprocess.run(
-            pytest_command(tests, pytest_args),
-            cwd=side.tree / "mutants",
-            env={**os.environ, "MUTANT_UNDER_TEST": mutant},
-            capture_output=True,
-            text=True,
-            timeout=rerun_timeout(side.tree, tests),
-        )
+        run = run_bounded(pytest_command(tests, pytest_args), side.tree / "mutants", env, rerun_timeout(side.tree, tests))
         return run.returncode, run.stdout + run.stderr
     except subprocess.TimeoutExpired:
         return None, ""
@@ -775,13 +823,10 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     command += ["-p", "no:random-order", f"--timeout={DIAGNOSIS_TEST_TIMEOUT_S}", *side.tests, *pytest_args]
     env = {**os.environ, "MUTANT_UNDER_TEST": "setup" + CANARY_SUFFIX}
     try:
-        run = subprocess.run(
-            command, cwd=side.tree / "mutants", env=env, capture_output=True, text=True, timeout=DIAGNOSIS_TIMEOUT_S
-        )
+        run = run_bounded(command, side.tree / "mutants", env, DIAGNOSIS_TIMEOUT_S)
         output = run.stdout + run.stderr
     except subprocess.TimeoutExpired as e:
-        # captured output is bytes here even with text=True
-        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else ""
+        partial = e.stdout if isinstance(e.stdout, str) else ""
         output = partial + f"\nThe suite was still running after {DIAGNOSIS_TIMEOUT_S} s and was stopped."
     return SetupFailure(side.tree, failed_tests(output), "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:]))
 
@@ -926,6 +971,7 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
         before, after = by_function(base_surv), by_function(head_surv)
         rose = {h for b, h in touched.existing if after[h] > before[b]} | {n for n in touched.new if after[n]}
         candidates = [m for m in head_surv if m.partition("__mutmut_")[0] in rose]
+        PROGRESS.stage, PROGRESS.pending = "rerunning new survivors", sorted(rose)
         carried = carried_over(touched, base, head, candidates)
         outcomes = {m: still_survives(head, m, pytest_args) for m in candidates if m not in carried}
         flukes = [m for m, survival in outcomes.items() if not survival.counts]
@@ -1100,6 +1146,35 @@ def publish(summary: str, record: dict[str, Any], output: str) -> None:
         sys.exit(1)
 
 
+def out_of_budget(
+    args: argparse.Namespace, merge_base: str, touched: Touched, base: Side | None, head: Side | None, checks: Checks
+) -> None:
+    """Fail with what the run knew when the budget ran out, so the author sees more than a cancelled job."""
+    pending = ", ".join(f"`{n}`" for n in PROGRESS.pending)
+    failure = f"Ran out of the {args.budget_minutes:g} minute budget while {PROGRESS.stage}."
+    failure += f" Not reached: {pending}" if pending else ""
+    failures = [failure, *checks.failures]
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::error title=Mutation ratchet::{failure}")
+    scope = f"In scope: {len(touched.existing)} existing, {len(touched.new)} new and {len(touched.deleted)} deleted functions."
+    lines = [f"## Mutation ratchet against `{args.base}`", "", scope, *(f"\n{s}" for s in checks.notes + checks.sections)]
+    lines += ["", "FAIL: " + "; ".join(failures)]
+    record: dict[str, Any] = {
+        "base": args.base,
+        "merge_base": merge_base,
+        "existing": touched.existing,
+        "new": touched.new,
+        "deleted": touched.deleted,
+        "base_results": base.results if base else {},
+        "head_results": head.results if head else {},
+        "budget_minutes": args.budget_minutes,
+        "stage": PROGRESS.stage,
+        "not_reached": PROGRESS.pending,
+        "failures": failures,
+    }
+    publish("\n".join(lines) + "\n", record, args.output)
+
+
 def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, checks: Checks) -> None:
     """End a run with no function in scope. Passes unless a check that needs no mutants failed."""
     if not checks.failures:
@@ -1136,8 +1211,13 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     if shown:
         lines += ["", f"<details><summary>{len(shown)} surviving mutants on the head</summary>", ""]
         for mutant in shown[:MAX_SHOWN_SURVIVORS]:
+            try:
+                diff = mutmut(head.tree, "show", mutant).stdout.strip()
+            except BudgetExhausted:
+                lines.append("Out of time for the remaining diffs.")
+                break
             # mutmut show already heads the diff with the mutant name and status
-            lines += ["```diff", mutmut(head.tree, "show", mutant).stdout.strip(), "```", ""]
+            lines += ["```diff", diff, "```", ""]
         if len(shown) > MAX_SHOWN_SURVIVORS:
             lines.append(f"{len(shown) - MAX_SHOWN_SURVIVORS} more not shown.")
         lines.append("</details>")
@@ -1215,7 +1295,14 @@ def main() -> None:
     parser.add_argument("--max-children", type=int, default=os.cpu_count() or 4, help="Parallel mutmut workers")
     parser.add_argument("--keep", action="store_true", help="Keep the mutation trees for debugging")
     parser.add_argument("--output", default="mutation.json", help="Where to write the full results")
+    parser.add_argument(
+        "--budget-minutes",
+        type=float,
+        help="Stop and fail with a partial report after this long, inside the CI job's own timeout",
+    )
     args = parser.parse_args()
+    global BUDGET
+    BUDGET = Budget(args.budget_minutes)
     if args.all:
         whole_package(args)
         return
@@ -1233,11 +1320,14 @@ def main() -> None:
 
     pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
     workdir = Path(tempfile.mkdtemp(prefix="mutation-"))
+    base: Side | None = None
+    head: Side | None = None
     try:
         export_base(merge_base, workdir / "base")
         (workdir / "head").mkdir()
         export_working_tree(workdir / "head")
         stripped = {side: strip_no_mutate_pragmas(workdir / side) for side in ("base", "head")}
+        PROGRESS.stage = "finding the functions the changed tests run"
         tests = tests_in_scope(merge_base, workdir / "base", workdir / "head")
         if tests:
             add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", tests)
@@ -1248,8 +1338,8 @@ def main() -> None:
             f"Mutating {len(touched.existing)} existing ({len(touched.via_tests)} via changed tests), "
             f"{len(touched.new)} new and {len(touched.deleted)} deleted functions against {args.base} ({merge_base[:8]})."
         )
-        base = None
         if touched.base_names:
+            PROGRESS.stage, PROGRESS.pending = "mutating the base", sorted(set(touched.base_names) | set(touched.head_names))
             try:
                 base = run_side(workdir / "base", touched.base_names, config, args.max_children, stripped["base"])
             except SetupFailure as e:
@@ -1260,10 +1350,14 @@ def main() -> None:
                 ) from e
         head = Side(tree=workdir / "head", pragmas_stripped=stripped["head"])
         if touched.head_names:
+            PROGRESS.stage, PROGRESS.pending = "mutating the head", sorted(touched.head_names)
             head = run_side(workdir / "head", touched.head_names, config, args.max_children, stripped["head"], canary=True)
         verdict = judge(touched, base, head, pytest_args)
         verdict.failures += checks.failures
+        PROGRESS.stage, PROGRESS.pending = "writing the report", []
         summary = report(args.base, touched, base, head, verdict, checks)
+    except BudgetExhausted:
+        out_of_budget(args, merge_base, touched, base, head, checks)
     except MutationRunError as e:
         print(f"ERROR: {e}")
         report_error(str(e))
@@ -1274,6 +1368,8 @@ def main() -> None:
         else:
             shutil.rmtree(workdir, ignore_errors=True)
 
+    # every path that leaves head unset has already exited
+    assert head is not None
     record: dict[str, Any] = {
         "base": args.base,
         "merge_base": merge_base,
