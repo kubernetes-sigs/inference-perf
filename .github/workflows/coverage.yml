@@ -138,9 +138,11 @@ jobs:
         if: steps.changes.outputs.code == 'true'
         run: |
           pdm sync -d -G analysis -G otel
+      # The budget sits 10 minutes under the job's timeout-minutes, which also covers setup and the
+      # upload, so a slow run fails with a summary instead of being cancelled without one.
       - name: Run mutation ratchet
         if: steps.changes.outputs.code == 'true'
-        run: pdm run check:mutation --base "origin/${{ github.base_ref }}"
+        run: pdm run check:mutation --base "origin/${{ github.base_ref }}" --budget-minutes 50
       - name: Upload mutation results
         if: always() && steps.changes.outputs.code == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
