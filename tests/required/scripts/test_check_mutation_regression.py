@@ -565,3 +565,76 @@ def test_renaming_a_test_file_away_brings_what_it_ran_into_scope(
 
     assert cmr.changed_test_files("HEAD") == ["tests/checks_m.py", "tests/test_m.py"]
     assert scope_after_change(cmr, repo, tmp_path).via_tests == {"inference_perf.m.x_f"}
+
+
+# Writes each {path: source} under `root`, creating directories.
+def write_tree(root: Path, files: dict[str, str]) -> None:
+    for rel, source in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(source)
+
+
+# tests/test_m.py imports the sibling helper check from tests/helpers.py. The change loosens check to
+# assert nothing and touches no test file. test_m.py still counts as changed, so f comes into scope.
+def test_loosening_a_test_helper_brings_what_its_tests_run_into_scope(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    write_tree(
+        repo,
+        {
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": "def f(x):\n    return x > 1\n",
+            "tests/helpers.py": "def check(value, expected):\n    assert value == expected\n",
+            "tests/test_m.py": "from helpers import check\n\nfrom inference_perf.m import f\n\n\n"
+            "def test_f():\n    check(f(2), True)\n    check(f(1), False)\n",
+        },
+    )
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    (repo / "tests" / "helpers.py").write_text("def check(value, expected):\n    pass\n")
+    monkeypatch.chdir(repo)
+    base_tree = tmp_path / "base-tree"
+    cmr.export_base("HEAD", base_tree)
+
+    assert cmr.changed_test_files("HEAD") == []
+    tests = cmr.tests_in_scope("HEAD", base_tree, repo)
+    assert tests == ["tests/test_m.py"]
+    touched = cmr.touched_functions("HEAD", [])
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, tests)
+    assert touched.via_tests == {"inference_perf.m.x_f"}
+
+
+# One tree, four ways a test reaches changed support code:
+# a/test_a.py imports a/helpers.py as a sibling, which imports a/base.py.
+# pkg/test_p.py imports pkg/helpers.py relatively, inside a package.
+# deep/x/test_x.py imports tests.shared.util by its full name.
+# sub/test_s.py only shares sub/conftest.py, and sub/inner/test_i.py sits below it.
+# tests/optional never counts. A change to a/base.py reaches only a/test_a.py, through helpers.py.
+def test_tests_using_follows_imports_and_conftests(cmr: Any, tmp_path: Path) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "tests/a/base.py": "X = 1\n",
+            "tests/a/helpers.py": "from base import X\n",
+            "tests/a/test_a.py": "from helpers import X\n",
+            "tests/a/test_other.py": "import os\n",
+            "tests/pkg/__init__.py": "",
+            "tests/pkg/helpers.py": "Y = 1\n",
+            "tests/pkg/test_p.py": "from .helpers import Y\n",
+            "tests/shared/util.py": "Z = 1\n",
+            "tests/deep/x/test_x.py": "from tests.shared import util\n",
+            "tests/sub/conftest.py": "",
+            "tests/sub/test_s.py": "",
+            "tests/sub/inner/test_i.py": "",
+            "tests/optional/test_opt.py": "from tests.shared.util import Z\n",
+        },
+    )
+
+    assert cmr.tests_using(tmp_path, ["tests/a/base.py"]) == {"tests/a/test_a.py"}
+    assert cmr.tests_using(tmp_path, ["tests/pkg/helpers.py"]) == {"tests/pkg/test_p.py"}
+    assert cmr.tests_using(tmp_path, ["tests/shared/util.py"]) == {"tests/deep/x/test_x.py"}
+    assert cmr.tests_using(tmp_path, ["tests/sub/conftest.py"]) == {"tests/sub/test_s.py", "tests/sub/inner/test_i.py"}
+    assert cmr.tests_using(tmp_path, ["tests/pkg/__init__.py"]) == {"tests/pkg/test_p.py"}
+    assert cmr.tests_using(tmp_path, ["tests/gone.py"]) == set()
