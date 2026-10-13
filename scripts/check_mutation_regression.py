@@ -439,15 +439,13 @@ class _UncheckedScan:
             return f"{node.name} is never mutated"
         return ""
 
-    def header(self, node: FunctionNode | ast.ClassDef | ast.Lambda) -> None:
+    def header(self, node: FunctionNode | ast.ClassDef) -> None:
         """Decorators, base classes and default arguments run at definition time, and mutmut leaves them alone."""
-        parts: list[ast.expr] = []
+        parts: list[ast.expr] = list(node.decorator_list)
         if isinstance(node, ast.ClassDef):
             parts += node.bases + [k.value for k in node.keywords]
         else:
             parts += node.args.defaults + [d for d in node.args.kw_defaults if d is not None]
-        if not isinstance(node, ast.Lambda):
-            parts += node.decorator_list
         if not all(_plain(part, data=True) for part in parts):
             self.found.append(Unchecked(node.lineno, "decorator, base class or default argument"))
 
@@ -464,8 +462,10 @@ class _UncheckedScan:
         for stmt in body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.header(stmt)
-                if mutmut_skips(stmt) or stmt.name in NEVER_MUTATED_FUNCTIONS:
+                if mutmut_skips(stmt):
                     self.skipped_function(stmt, "decorated function")
+                elif stmt.name in NEVER_MUTATED_FUNCTIONS:
+                    self.skipped_function(stmt, f"{stmt.name} is never mutated")
                 else:
                     self.mutated(stmt.body)
                 continue
