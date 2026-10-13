@@ -465,3 +465,35 @@ def test_mutable_matches_do_not_mutate_like_mutmut(cmr: Any) -> None:
     assert not cmr.mutable("inference_perf/datagen/sub/b.py", patterns)
     assert cmr.mutable("inference_perf/loadgen/skip.py", patterns)
     assert cmr.mutable("inference_perf/loadgen/a.py", patterns)
+
+
+# Stats measured test a at 2 s and b at 10 s. Rerunning a plus a test with no measurement gets
+# 60 s of grace plus 5 x 2 s, so 70 s.
+def test_rerun_timeout_scales_the_measured_durations(cmr: Any, tmp_path: Path) -> None:
+    (tmp_path / "mutants").mkdir()
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text('{"duration_by_test": {"a": 2.0, "b": 10.0}}')
+
+    assert cmr.rerun_timeout(tmp_path, ["a", "missing"]) == 70.0
+
+
+# With a 1 s rerun limit, test_slow_fail sleeps 20 s and then fails, and test_slow_pass sleeps 20 s
+# and then passes. Both hang. The survivor still counts, since a hang is not a kill, and the canary
+# fails, since a hang is not a pass. Without the limit each answer flips.
+def test_hung_reruns_fail_closed(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tests = tmp_path / "mutants" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_a.py").write_text(
+        "import time\n\n\n"
+        "def test_slow_fail():\n    time.sleep(20)\n    assert False\n\n\n"
+        "def test_slow_pass():\n    time.sleep(20)\n"
+    )
+    (tmp_path / "mutants" / "mutmut-stats.json").write_text(
+        '{"tests_by_mangled_function_name": {"m.x_f": ["tests/test_a.py::test_slow_pass"]}, "duration_by_test": {}}'
+    )
+    monkeypatch.setattr(cmr, "RERUN_GRACE_S", 1)
+    listed = subprocess.CompletedProcess([], 0, "tests/test_a.py::test_slow_fail\n", "")
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: listed)
+    side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "survived"})
+
+    assert cmr.still_survives(side, "m.x_f__mutmut_1", [])
+    assert not cmr.canary_passes(side, ["m.x_f"], [])

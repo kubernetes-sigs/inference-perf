@@ -70,6 +70,11 @@ MAX_SHOWN_SURVIVORS = 30
 # function runs unmutated. Tests that still fail are reacting to the harness.
 CANARY_SUFFIX = "__mutmut_999999999"
 
+# A rerun gets its tests' measured time, scaled for a busier runner, plus room for pytest to start.
+# Past that it is hung, and a hang must not run into the workflow's 60 minute limit.
+RERUN_SLOWDOWN = 5
+RERUN_GRACE_S = 60
+
 # Limits for the plain suite run that explains a failed setup. mutmut's own run
 # has neither, so one hung test would otherwise hold the job to the workflow timeout.
 DIAGNOSIS_TEST_TIMEOUT_S = 300
@@ -418,19 +423,35 @@ def tests_covering(tree: Path, names: list[str]) -> list[str]:
     return sorted({test for name in names for test in by_function.get(name, [])})
 
 
+def rerun_timeout(tree: Path, tests: list[str]) -> float:
+    """Wall-clock limit for one rerun of `tests`, from the durations mutmut's stats run measured."""
+    stats = tree / "mutants" / "mutmut-stats.json"
+    durations: dict[str, float] = json.loads(stats.read_text()).get("duration_by_test", {}) if stats.exists() else {}
+    return RERUN_GRACE_S + RERUN_SLOWDOWN * sum(durations.get(test, 0.0) for test in tests)
+
+
+def rerun(side: Side, tests: list[str], mutant: str, pytest_args: list[str]) -> int | None:
+    """Run `tests` with `mutant` active in the side's mutation tree. Returns pytest's exit code, or None if it hung."""
+    try:
+        return subprocess.run(
+            pytest_command(tests, pytest_args),
+            cwd=side.tree / "mutants",
+            env={**os.environ, "MUTANT_UNDER_TEST": mutant},
+            capture_output=True,
+            timeout=rerun_timeout(side.tree, tests),
+        ).returncode
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
     """Run the tests covering `names` with an active mutant id that matches no mutant. One pass clears a flaky test."""
     tests = tests_covering(side.tree, names)
     if not tests:
         return True
     for _ in range(RERUNS):
-        run = subprocess.run(
-            pytest_command(tests, pytest_args),
-            cwd=side.tree / "mutants",
-            env={**os.environ, "MUTANT_UNDER_TEST": names[0] + CANARY_SUFFIX},
-            capture_output=True,
-        )
-        if run.returncode in (0, 5):  # 5: nothing collected
+        # a hang counts as a failed run, so tests that only hang under the harness still fail the canary
+        if rerun(side, tests, names[0] + CANARY_SUFFIX, pytest_args) in (0, 5):  # 5: nothing collected
             return True
     return False
 
@@ -524,13 +545,11 @@ def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> bool:
         return True
     tests = [t for t in mutmut(side.tree, "tests-for-mutant", mutant).stdout.splitlines() if "::" in t]
     for _ in range(RERUNS):
-        rerun = subprocess.run(
-            pytest_command(tests, pytest_args),
-            cwd=side.tree / "mutants",
-            env={**os.environ, "MUTANT_UNDER_TEST": mutant},
-            capture_output=True,
-        )
-        if rerun.returncode != 0:
+        code = rerun(side, tests, mutant, pytest_args)
+        if code is None:
+            # a hang is not a kill. Dropping the mutant as flaky would lower the count the change is held to
+            return True
+        if code != 0:
             return False
     return True
 
