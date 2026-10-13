@@ -294,10 +294,10 @@ def test_judge_fails_on_a_new_function_no_test_runs(cmr: Any) -> None:
     assert verdict.failures == ["No test runs `inference_perf.m.x_h`"]
 
 
-# Undecorated and lone-staticmethod functions are mutated, so they are absent. Bodies that only
-# delegate count 0: a property returning an attribute, a setter assigning one, a validator calling
-# a helper, an abstract stub. Anything else counts every statement: a one-line return with
-# arithmetic is 1, a validator with an if, an assignment and a return is 3.
+# Undecorated and lone-staticmethod functions are mutated, so they add nothing. Skipped bodies that
+# only delegate add nothing either: a property returning an attribute, a setter assigning one, a
+# validator calling a helper, an abstract stub. Anything else adds every statement: one's cached
+# return at line 25, fat's if, assignment and return at 28-30, and both's two lines at 34-35.
 def test_unchecked_statements_counts_skipped_functions_that_do_work(cmr: Any) -> None:
     source = (
         "import functools\n"
@@ -313,15 +313,17 @@ def test_unchecked_statements_counts_skipped_functions_that_do_work(cmr: Any) ->
         "    def fat(self):\n        if self.x:\n            self.y = 1\n        return self\n"
         "    @staticmethod\n    @functools.cache\n    def both(x):\n        y = x\n        return y\n"
     )
-    assert cmr.unchecked_statements(source) == {
-        "xǁCǁp": 0,
-        "xǁCǁq": 0,
-        "xǁCǁthin": 0,
-        "xǁCǁstub": 0,
-        "xǁCǁone": 1,
-        "xǁCǁfat": 3,
-        "xǁCǁboth": 2,
-    }
+
+    found = [(u.line, u.why) for u in cmr.unchecked_statements(source, [])]
+
+    assert found == [
+        (25, "decorated function"),
+        (28, "decorated function"),
+        (29, "decorated function"),
+        (30, "decorated function"),
+        (34, "decorated function"),
+        (35, "decorated function"),
+    ]
 
 
 # Three pragma comments, one trailing code and a start/end pair on their own lines, plus a string
@@ -371,27 +373,6 @@ def test_load_config_falls_back_to_main(cmr: Any, tmp_path: Path, monkeypatch: p
     assert cmr.load_config("HEAD") == {"do_not_mutate": ["inference_perf/a.py"]}
 
 
-# The base has a 3-statement function f. The working tree wraps it in functools.cache, which mutmut
-# skips. f stays an existing function and its unchecked statements go from 0 to 3.
-def test_touched_functions_records_a_new_decorator_as_unchecked(
-    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pkg = tmp_path / "inference_perf"
-    pkg.mkdir()
-    body = "def f(x):\n    y = x + 1\n    z = y * 2\n    return z\n"
-    (pkg / "mod.py").write_text(body)
-    git(tmp_path, "init", "-q")
-    git(tmp_path, "add", ".")
-    git(tmp_path, "commit", "-qm", "base")
-    (pkg / "mod.py").write_text("import functools\n\n\n@functools.cache\n" + body)
-    monkeypatch.chdir(tmp_path)
-
-    touched = cmr.touched_functions("HEAD", [])
-
-    assert touched.existing == [("inference_perf.mod.x_f", "inference_perf.mod.x_f")]
-    assert touched.unchecked == {"inference_perf.mod.x_f": (0, 3)}
-
-
 # g had 4 mutants on the base and none with the change, as when a decorator hides it. That fails
 # even though its survivors fell from 1 to 0.
 def test_judge_fails_when_a_function_loses_all_its_mutants(cmr: Any) -> None:
@@ -401,19 +382,6 @@ def test_judge_fails_when_a_function_loses_all_its_mutants(cmr: Any) -> None:
     verdict = cmr.judge(touched, base, side(cmr), [])
 
     assert verdict.failures == ["`inference_perf.m.x_g` had 4 mutants on the base and none with this change"]
-
-
-# Unchecked statements across touched functions go from 2 to 3, so it fails. Equal counts pass.
-def test_judge_fails_when_unchecked_statements_rise(cmr: Any) -> None:
-    worse = cmr.Touched(
-        new=["inference_perf.m.x_v"], unchecked={"inference_perf.m.x_w": (2, 2), "inference_perf.m.x_v": (0, 1)}
-    )
-    held = cmr.Touched(unchecked={"inference_perf.m.x_w": (2, 2)})
-
-    assert cmr.judge(worse, None, side(cmr), []).failures == [
-        "Statements mutmut cannot check rose from 2 to 3. Decorated functions should delegate to an undecorated one"
-    ]
-    assert cmr.judge(held, None, side(cmr), []).failures == []
 
 
 # The head's tests failed the canary run, so they react to the mutation harness. That fails on its
@@ -705,3 +673,99 @@ def test_main_fails_on_a_shadowing_module_with_nothing_to_mutate(
 
     assert exited.value.code == 1
     assert "`yaml`" in capsys.readouterr().out
+
+
+MUTMUT_CONFIG: dict[str, Any] = {
+    "do_not_mutate_patterns": ["logger\\.", "raise \\w+\\("],
+    "do_not_mutate": ["inference_perf/skip.py"],
+}
+
+
+# Commits `base` files, writes `head` over them in the working tree, and returns the failures of the
+# checks that need no mutants, with MUTMUT_CONFIG as the base's [tool.mutmut].
+def static_failures(
+    cmr: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]
+) -> list[str]:
+    write_tree(repo, {"inference_perf/__init__.py": "", **base})
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    write_tree(repo, head)
+    monkeypatch.chdir(repo)
+    failures: list[str] = cmr.static_checks("HEAD", MUTMUT_CONFIG).failures
+    return failures
+
+
+GT = "def f(x):\n    return x > 1\n"
+
+# Each change moves f's `x > 1` somewhere mutmut 3.8 never mutates, keeping behaviour the same.
+HIDING_SPOTS = {
+    "module-level lambda": "_gt = lambda x: x > 1\n\n\ndef f(x):\n    return _gt(x)\n",
+    "class body": "class C:\n    BIG = [i for i in range(5) if i > 1]\n\n\ndef f(x):\n    return x in C.BIG\n",
+    "nested class method": "class C:\n    class Inner:\n        def gt(self, x):\n            return x > 1\n\n\n"
+    "def f(x):\n    return C.Inner().gt(x)\n",
+    "nested decorated function": "import functools\n\n\ndef f(x):\n    @functools.cache\n    def gt(y):\n"
+    "        return y > 1\n\n    return gt(x)\n",
+    "function inside a module-level if": "import sys\n\nif sys.platform:\n\n    def gt(x):\n        return x > 1\n\n\n"
+    "def f(x):\n    return gt(x)\n",
+    "logger line": "import logging\n\nlogger = logging.getLogger(__name__)\n\n\n"
+    "def f(x):\n    return x > 1 or logger.disabled\n",
+    "comment matching a pattern": "def f(x):\n    return x > 1  # see logger.debug\n",
+    "len() argument": "def f(x):\n    return len(range(x - 1)) > 0\n",
+    "exec": "def f(x):\n    scope = {'x': x}\n    exec('r = x > 1', scope)\n    return scope['r']\n",
+    "default argument": "def f(x, big=lambda y: y > 1):\n    return big(x)\n",
+    "decorated function": "import functools\n\n\n@functools.cache\ndef f(x):\n    y = x\n    return y > 1\n",
+}
+
+
+# Base: inference_perf/m.py with f(x) = x > 1, fully mutated. Head: the same logic moved to one of
+# HIDING_SPOTS. Unchecked statements rise from 0, so the change fails.
+@pytest.mark.parametrize("spot", sorted(HIDING_SPOTS))
+def test_logic_moved_where_mutmut_never_looks_fails(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spot: str
+) -> None:
+    failures = static_failures(
+        cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, {"inference_perf/m.py": HIDING_SPOTS[spot]}
+    )
+
+    assert any(f.startswith("Statements mutmut never mutates rose from 0 to ") for f in failures), failures
+
+
+# Base: skip.py, which do_not_mutate excludes, holds g, which only returns 1. Head adds gt(x) = x > 1
+# to it and f calls it. gt's return is unchecked and g's plain return is not, so 0 rises to 1.
+def test_logic_moved_into_an_excluded_file_fails(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = {"inference_perf/m.py": GT, "inference_perf/skip.py": "def g():\n    return 1\n"}
+    head = {
+        "inference_perf/m.py": "from inference_perf.skip import gt\n\n\ndef f(x):\n    return gt(x)\n",
+        "inference_perf/skip.py": "def g():\n    return 1\n\n\ndef gt(x):\n    return x > 1\n",
+    }
+
+    failures = static_failures(cmr, tmp_path, monkeypatch, base, head)
+
+    assert "Statements mutmut never mutates rose from 0 to 1" in failures
+
+
+# Head adds only declarations next to f: constants, constant arithmetic, __all__, a type alias, a
+# TYPE_CHECKING import block, a docstring, a pydantic field with Field(...), a delegating validator,
+# a staticmethod with logic, and a log call and a raise inside f. None of it is unchecked logic.
+def test_declarations_and_mutated_code_pass(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    head = (
+        '"""Module docstring."""\n'
+        "import logging\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "from pydantic import BaseModel, Field, field_validator\n\n"
+        "if TYPE_CHECKING:\n    import os\n\n"
+        "__all__ = ['f']\n"
+        "TIMEOUT_S = 60 * 5\n"
+        "Number = int | float\n"
+        "logger = logging.getLogger(__name__)\n\n\n"
+        "class Config(BaseModel):\n"
+        '    """Config."""\n\n'
+        "    limit: int = Field(default=3, ge=0)\n\n"
+        "    @field_validator('limit')\n    @classmethod\n    def check(cls, v):\n        return _check(v)\n\n"
+        "    @staticmethod\n    def half(x):\n        return x / 2\n\n\n"
+        "def _check(v):\n    if v > 10:\n        raise ValueError(f'limit {v} is over 10')\n    return v\n\n\n"
+        "def f(x):\n    logger.info('f(%s)', x)\n    return x > 1\n"
+    )
+
+    assert static_failures(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": GT}, {"inference_perf/m.py": head}) == []
