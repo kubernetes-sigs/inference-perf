@@ -353,6 +353,24 @@ def test_load_config_reads_the_base_branch(cmr: Any, tmp_path: Path, monkeypatch
     assert cmr.load_config("HEAD") == {"do_not_mutate": ["inference_perf/a.py"]}
 
 
+# The base commit predates [tool.mutmut]. Main's table excludes a.py and the working tree's
+# excludes b.py. Main's wins, so a PR into an older branch cannot write its own config either.
+def test_load_config_falls_back_to_main(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("[tool.other]\n")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "old base")
+    git(tmp_path, "checkout", "-qb", "main-tip")
+    (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\ndo_not_mutate = ["inference_perf/a.py"]\n')
+    git(tmp_path, "commit", "-qam", "table lands")
+    git(tmp_path, "checkout", "-q", "HEAD~1")
+    (tmp_path / "pyproject.toml").write_text('[tool.mutmut]\ndo_not_mutate = ["inference_perf/b.py"]\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmr, "DEFAULT_BRANCH", "main-tip")
+
+    assert cmr.load_config("HEAD") == {"do_not_mutate": ["inference_perf/a.py"]}
+
+
 # The base has a 3-statement function f. The working tree wraps it in functools.cache, which mutmut
 # skips. f stays an existing function and its unchecked statements go from 0 to 3.
 def test_touched_functions_records_a_new_decorator_as_unchecked(
