@@ -235,7 +235,7 @@ class Worker(mp.Process):
         self,
         id: int,
         client: ModelServerClient,
-        request_queue: "mp.Queue[RequestQueueData]",
+        request_queue: "mp.Queue[Optional[RequestQueueData]]",
         datagen: BaseGenerator,
         max_concurrency: int,
         stop_signal: SyncEvent,
@@ -1264,7 +1264,9 @@ class LoadGenerator:
                 self.workers[idx].start()
         return TeardownResult(clean=clean, dropped_requests=dropped)
 
-    def _respawn_worker(self, dead: Worker, request_channel: Optional["mp.Queue[RequestQueueData]"] = None) -> Worker:
+    def _respawn_worker(
+        self, dead: Worker, request_channel: Optional["mp.Queue[Optional[RequestQueueData]]"] = None
+    ) -> Worker:
         """Build a replacement for a dead worker, sharing the same IPC objects.
 
         The replacement forks from the main process' current state, and its
