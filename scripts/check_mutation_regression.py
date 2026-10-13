@@ -98,8 +98,6 @@ class Touched:
     deleted: list[str] = field(default_factory=list)
     # head names of existing functions in scope only because a changed test, or a test using a changed helper, runs them
     via_tests: set[str] = field(default_factory=set)
-    # name -> (base, head) statements mutmut cannot check, for functions it skips
-    unchecked: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def base_names(self) -> list[str]:
@@ -181,14 +179,58 @@ def mutmut_skips(node: FunctionNode) -> bool:
     return not (isinstance(only, ast.Name) and only.id in ("staticmethod", "classmethod"))
 
 
-def _plain(expr: ast.expr | None) -> bool:
-    """Names, attributes, constants and calls built only from those: nothing a mutation could flip."""
+# mutmut 3.8 never mutates functions with these names (file_mutation.NEVER_MUTATE_FUNCTION_NAMES)
+NEVER_MUTATED_FUNCTIONS = {"__getattribute__", "__setattr__", "__new__"}
+# nor a call to these, arguments included (file_mutation.NEVER_MUTATE_FUNCTION_CALLS)
+NEVER_MUTATED_CALLS = {"len", "isinstance"}
+# code passed as a string runs without ever being mutated
+DYNAMIC_CODE = {"exec", "eval", "compile", "__import__"}
+
+
+def _called_name(func: ast.expr) -> str:
+    return func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+
+
+def _runs_code_from_text(call: ast.Call) -> bool:
+    """A call to the exec, eval, compile or __import__ builtin, bare or as builtins.<name>."""
+    func = call.func
+    if isinstance(func, ast.Attribute) and not (isinstance(func.value, ast.Name) and func.value.id == "builtins"):
+        return False
+    return _called_name(func) in DYNAMIC_CODE
+
+
+def _plain(expr: ast.AST | None, data: bool = False) -> bool:
+    """Names, attributes, constants, containers and calls built only from those: nothing a mutation could flip.
+
+    With `data`, also what a declaration holds: subscripts, f-strings, arithmetic on constants, and
+    lambdas that only build such data, like a pydantic default_factory.
+    """
     if expr is None or isinstance(expr, (ast.Name, ast.Constant)):
         return True
     if isinstance(expr, (ast.Attribute, ast.Starred, ast.Await)):
-        return _plain(expr.value)
+        return _plain(expr.value, data)
     if isinstance(expr, ast.Call):
-        return _plain(expr.func) and all(_plain(a) for a in expr.args) and all(_plain(k.value) for k in expr.keywords)
+        args = [expr.func, *expr.args, *(k.value for k in expr.keywords)]
+        return not _runs_code_from_text(expr) and all(_plain(a, data) for a in args)
+    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+        return all(_plain(e, data) for e in expr.elts)
+    if isinstance(expr, ast.Dict):
+        return all(_plain(k, data) for k in expr.keys) and all(_plain(v, data) for v in expr.values)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+        # a type union like `int | None`
+        return _plain(expr.left, data) and _plain(expr.right, data)
+    if not data:
+        return False
+    if isinstance(expr, ast.Subscript):
+        return _plain(expr.value, data) and _plain(expr.slice, data)
+    if isinstance(expr, ast.Slice):
+        return all(_plain(part, data) for part in (expr.lower, expr.upper, expr.step))
+    if isinstance(expr, (ast.JoinedStr, ast.FormattedValue)):
+        return all(_plain(part, data) for part in ast.iter_child_nodes(expr))
+    if isinstance(expr, (ast.BinOp, ast.UnaryOp)):
+        return all(isinstance(n, (ast.Constant, ast.operator, ast.unaryop, ast.BinOp, ast.UnaryOp)) for n in ast.walk(expr))
+    if isinstance(expr, ast.Lambda):
+        return not (expr.args.defaults or any(expr.args.kw_defaults)) and _plain(expr.body, data)
     return False
 
 
@@ -204,21 +246,172 @@ def _delegates(stmt: ast.stmt) -> bool:
     return False
 
 
-def unchecked_statements(source: str) -> dict[str, int]:
-    """Statements in each function mutmut skips. A body that only delegates, like `return helper(self)`, counts 0."""
-    counts: dict[str, int] = {}
-    for name, node in functions(source).items():
-        if not mutmut_skips(node):
-            continue
+def _declares(stmt: ast.stmt) -> bool:
+    """A module or class level statement that only declares: imports, docstrings, names bound to plain data."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass, ast.Delete, ast.Global, ast.Nonlocal)):
+        return True
+    if isinstance(stmt, getattr(ast, "TypeAlias", ())):
+        return True
+    if isinstance(stmt, ast.Expr):
+        return _plain(stmt.value, data=True)
+    if isinstance(stmt, ast.Assign):
+        return all(_plain(t, data=True) for t in stmt.targets) and _plain(stmt.value, data=True)
+    if isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+        return _plain(stmt.target, data=True) and _plain(stmt.value, data=True)
+    return False
+
+
+def _type_checking(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.If) and _called_name(stmt.test) == "TYPE_CHECKING"
+
+
+def _log_or_raise(stmt: ast.stmt) -> bool:
+    """`logger.<method>(...)` or `raise X(...)`: the text do_not_mutate_patterns exempts, carrying no logic out."""
+    if any(isinstance(n, (ast.NamedExpr, ast.Lambda, ast.Await, ast.Yield, ast.YieldFrom)) for n in ast.walk(stmt)):
+        return False
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and isinstance(stmt.value.func, ast.Attribute):
+        return _called_name(stmt.value.func.value).endswith("logger")
+    return isinstance(stmt, ast.Raise) and isinstance(stmt.exc, ast.Call) and isinstance(stmt.exc.func, ast.Name)
+
+
+def _blocks(stmt: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists nested in a compound statement: bodies, else branches, handlers, match cases."""
+    blocks: list[list[ast.stmt]] = []
+    for _, value in ast.iter_fields(stmt):
+        if isinstance(value, list):
+            blocks += [value] if value and isinstance(value[0], ast.stmt) else []
+            blocks += [item.body for item in value if isinstance(item, (ast.ExceptHandler, ast.match_case))]
+    return blocks
+
+
+def _own_nodes(stmt: ast.stmt) -> list[ast.AST]:
+    """A statement's expressions, without the statements nested in it."""
+    found: list[ast.AST] = []
+    pending: list[ast.AST] = [stmt]
+    while pending:
+        for child in ast.iter_child_nodes(pending.pop()):
+            if not isinstance(child, ast.stmt):
+                found.append(child)
+                pending.append(child)
+    return found
+
+
+@dataclass(frozen=True)
+class Unchecked:
+    line: int
+    why: str
+
+
+class _UncheckedScan:
+    """Walks a module the way mutmut 3.8 decides what to mutate (file_mutation.py) and records what it never will."""
+
+    def __init__(self, source: str, patterns: list[str], excluded: bool) -> None:
+        self.pattern_lines = {n for n, text in enumerate(source.splitlines(), 1) if any(re.search(p, text) for p in patterns)}
+        self.excluded = excluded
+        self.found: list[Unchecked] = []
+
+    def declarations(self, body: list[ast.stmt], where: str) -> None:
+        """A module, class or module-level block body. `where` is "module", "class" for a module-level class, or "other"."""
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.header(stmt)
+                why = self.skipped_because(stmt, where)
+                if why:
+                    self.skipped_function(stmt, why)
+                else:
+                    self.mutated(stmt.body)
+            elif isinstance(stmt, ast.ClassDef):
+                self.header(stmt)
+                self.declarations(stmt.body, "class" if where == "module" else "other")
+            elif _type_checking(stmt):
+                for block in _blocks(stmt):
+                    self.declarations(block, "other")
+            elif not _declares(stmt):
+                self.found.append(Unchecked(stmt.lineno, "module or class level code"))
+                for block in _blocks(stmt):
+                    self.declarations(block, "other")
+
+    def skipped_because(self, node: FunctionNode, where: str) -> str:
+        if self.excluded:
+            return "in a file do_not_mutate excludes"
+        if where == "other":
+            return "function outside module level and module-level classes"
+        if mutmut_skips(node):
+            return "decorated function"
+        if node.name in NEVER_MUTATED_FUNCTIONS:
+            return f"{node.name} is never mutated"
+        return ""
+
+    def header(self, node: FunctionNode | ast.ClassDef | ast.Lambda) -> None:
+        """Decorators, base classes and default arguments run at definition time, and mutmut leaves them alone."""
+        parts: list[ast.expr] = []
+        if isinstance(node, ast.ClassDef):
+            parts += node.bases + [k.value for k in node.keywords]
+        else:
+            parts += node.args.defaults + [d for d in node.args.kw_defaults if d is not None]
+        if not isinstance(node, ast.Lambda):
+            parts += node.decorator_list
+        if not all(_plain(part, data=True) for part in parts):
+            self.found.append(Unchecked(node.lineno, "decorator, base class or default argument"))
+
+    def skipped_function(self, node: FunctionNode, why: str) -> None:
         body = node.body
         if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-            if isinstance(body[0].value.value, str):
-                body = body[1:]  # docstring
+            body = body[1:]  # docstring
         if len(body) <= 1 and all(_delegates(stmt) for stmt in body):
-            counts[name] = 0
-        else:
-            counts[name] = sum(1 for stmt in body for sub in ast.walk(stmt) if isinstance(sub, ast.stmt))
-    return counts
+            return
+        self.found += [Unchecked(sub.lineno, why) for stmt in body for sub in ast.walk(stmt) if isinstance(sub, ast.stmt)]
+
+    def mutated(self, body: list[ast.stmt]) -> None:
+        """A body mutmut mutates, minus what it skips inside one."""
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.header(stmt)
+                if mutmut_skips(stmt) or stmt.name in NEVER_MUTATED_FUNCTIONS:
+                    self.skipped_function(stmt, "decorated function")
+                else:
+                    self.mutated(stmt.body)
+                continue
+            if isinstance(stmt, ast.ClassDef):
+                self.header(stmt)
+                self.mutated(stmt.body)
+                continue
+            why = self.skipped_inside(stmt)
+            if why:
+                self.found.append(Unchecked(stmt.lineno, why))
+            for block in _blocks(stmt):
+                self.mutated(block)
+
+    def skipped_inside(self, stmt: ast.stmt) -> str:
+        own = _own_nodes(stmt)
+        calls = [n for n in own if isinstance(n, ast.Call)]
+        if any(_runs_code_from_text(c) for c in calls):
+            return "exec, eval, compile or __import__"
+        hidden = [c for c in calls if isinstance(c.func, ast.Name) and c.func.id in NEVER_MUTATED_CALLS]
+        if any(not all(_plain(a, data=True) for a in c.args) for c in hidden):
+            return "len() or isinstance() argument"
+        lambdas = [n for n in own if isinstance(n, ast.Lambda)]
+        if any(not all(_plain(d, data=True) for d in [*n.args.defaults, *n.args.kw_defaults]) for n in lambdas):
+            return "decorator, base class or default argument"
+        blocks = _blocks(stmt)
+        header_end = max(stmt.lineno, blocks[0][0].lineno - 1) if blocks else stmt.end_lineno or stmt.lineno
+        on_pattern = any(n in self.pattern_lines for n in range(stmt.lineno, header_end + 1))
+        if on_pattern and not (_log_or_raise(stmt) or _delegates(stmt)):
+            return "line matching do_not_mutate_patterns"
+        return ""
+
+
+def unchecked_statements(source: str, patterns: list[str], excluded: bool = False) -> list[Unchecked]:
+    """Statements mutmut never mutates that do more than declare or delegate, one entry per statement.
+
+    mutmut mutates the bodies of module-level functions and of methods of module-level classes. Inside
+    those it skips decorated functions, a few names, len() and isinstance() calls, defaults and
+    decorators, and expressions starting on a line that matches do_not_mutate_patterns. A decorated
+    function whose body is one plain delegation counts 0. `excluded` marks a file do_not_mutate skips.
+    """
+    scan = _UncheckedScan(source, patterns, excluded)
+    scan.declarations(ast.parse(source).body, "module")
+    return scan.found
 
 
 def touched_names(spans: dict[str, tuple[int, int]], lines: set[int]) -> set[str]:
@@ -247,10 +440,10 @@ def mutable(path: str | None, do_not_mutate: list[str]) -> bool:
     return path is not None and path.endswith(".py") and not any(fnmatch.fnmatch(path, p) for p in do_not_mutate)
 
 
-def changed_source_files(base: str, do_not_mutate: list[str]) -> list[tuple[str | None, str | None]]:
-    """(base path, head path) for each changed source file, following renames. None marks a side without the file.
+def changed_source_pairs(base: str) -> list[tuple[str | None, str | None]]:
+    """(base path, head path) for each changed Python file under the source tree, following renames.
 
-    The head is the working tree, so uncommitted and untracked files count.
+    None marks a side without the file. The head is the working tree, so uncommitted and untracked files count.
     """
     pairs: list[tuple[str | None, str | None]] = []
     for line in git("diff", "--name-status", "-M", base, "--", SOURCE_PREFIX).splitlines():
@@ -265,6 +458,12 @@ def changed_source_files(base: str, do_not_mutate: list[str]) -> list[tuple[str 
             pairs.append((paths[0], paths[0]))
     for path in git("ls-files", "--others", "--exclude-standard", "--", SOURCE_PREFIX).splitlines():
         pairs.append((None, path))
+    return [(b, h) for b, h in pairs if (b or "").endswith(".py") or (h or "").endswith(".py")]
+
+
+def changed_source_files(base: str, do_not_mutate: list[str]) -> list[tuple[str | None, str | None]]:
+    """changed_source_pairs, minus the files do_not_mutate excludes."""
+    pairs = changed_source_pairs(base)
     kept = [(b if mutable(b, do_not_mutate) else None, h if mutable(h, do_not_mutate) else None) for b, h in pairs]
     return [(b, h) for b, h in kept if b or h]
 
@@ -275,7 +474,6 @@ def touched_functions(base: str, do_not_mutate: list[str]) -> Touched:
         base_src = git("show", f"{base}:{base_path}") if base_path else ""
         head_src = Path(head_path).read_text() if head_path else ""
         base_spans, head_spans = function_spans(base_src), function_spans(head_src)
-        base_unchecked, head_unchecked = unchecked_statements(base_src), unchecked_statements(head_src)
         if base_path and head_path:
             old_lines, new_lines = parse_hunks(git("diff", "-U0", "-M", base, "--", base_path, head_path))
             hit = touched_names(base_spans, old_lines) | touched_names(head_spans, new_lines)
@@ -290,9 +488,6 @@ def touched_functions(base: str, do_not_mutate: list[str]) -> Touched:
                 touched.new.append(head_name)
             elif base_name:
                 touched.deleted.append(base_name)
-            counts = (base_unchecked.get(name, 0), head_unchecked.get(name, 0))
-            if any(counts):
-                touched.unchecked[head_name or base_name or name] = counts
     return touched
 
 
@@ -696,13 +891,6 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
     for b, h in touched.existing:
         if base_mutants[b] and not head_mutants[h]:
             verdict.failures.append(f"`{h}` had {base_mutants[b]} mutants on the base and none with this change")
-    unchecked_base = sum(b for b, _ in touched.unchecked.values())
-    unchecked_head = sum(h for _, h in touched.unchecked.values())
-    if unchecked_head > unchecked_base:
-        verdict.failures.append(
-            f"Statements mutmut cannot check rose from {unchecked_base} to {unchecked_head}. "
-            "Decorated functions should delegate to an undecorated one"
-        )
     if head.canary_failed:
         verdict.failures.append("Tests fail with an active mutant id that changes no code, so they react to the harness")
     return verdict
@@ -715,6 +903,10 @@ class Checks:
     failures: list[str] = field(default_factory=list)
     # one markdown block per failure, for the summary
     sections: list[str] = field(default_factory=list)
+    # markdown blocks shown whether or not anything failed
+    notes: list[str] = field(default_factory=list)
+    # changed file -> unchecked statements on the base and with the change
+    unchecked: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def fail(self, failure: str, title: str, lines: list[str]) -> None:
         self.failures.append(failure)
@@ -739,10 +931,6 @@ def first_party_roots(paths: list[str]) -> set[str]:
             top, sep, _ = path.partition("/")
             roots.add(top if sep else top.removesuffix(".py"))
     return roots - {SOURCE_PREFIX.rstrip("/")}
-
-
-def _called_name(func: ast.expr) -> str:
-    return func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
 
 
 def outside_imports(tree: Path, files: list[str], roots: set[str]) -> list[str]:
@@ -784,8 +972,51 @@ def shadowing_roots(base_paths: list[str], head_paths: list[str]) -> list[str]:
     return sorted((root_modules(head_paths) - root_modules(base_paths)) & taken)
 
 
-def static_checks(merge_base: str) -> Checks:
+def unchecked_by_file(merge_base: str, config: dict[str, Any]) -> list[tuple[str, list[Unchecked], list[Unchecked]]]:
+    """(path, base findings, head findings) of unchecked statements for each changed source file."""
+    patterns = [str(p) for p in config.get("do_not_mutate_patterns", [])]
+    do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
+    rows = []
+    for base_path, head_path in changed_source_pairs(merge_base):
+        before, after = [], []
+        if base_path and base_path.endswith(".py"):
+            source = git("show", f"{merge_base}:{base_path}")
+            before = unchecked_statements(source, patterns, excluded=not mutable(base_path, do_not_mutate))
+        if head_path and head_path.endswith(".py"):
+            source = Path(head_path).read_text()
+            after = unchecked_statements(source, patterns, excluded=not mutable(head_path, do_not_mutate))
+        rows.append((head_path or base_path or "", before, after))
+    return rows
+
+
+def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> None:
+    """Statements mutmut never mutates, summed over the changed files, cannot rise."""
+    try:
+        rows = unchecked_by_file(merge_base, config)
+    except SyntaxError as e:
+        checks.fail(f"{e.filename or 'A changed file'} does not parse", "Unparseable source", [str(e)])
+        return
+    checks.unchecked = {path: (len(b), len(a)) for path, b, a in rows if b or a}
+    if checks.unchecked:
+        table = ["| File | Statements mutmut never mutates, base | Head |", "|---|---|---|"]
+        checks.notes.append("\n".join(table + [f"| `{p}` | {b} | {a} |" for p, (b, a) in checks.unchecked.items()]))
+    before, after = sum(b for b, _ in checks.unchecked.values()), sum(a for _, a in checks.unchecked.values())
+    if after > before:
+        found = [f"{path}:{u.line} {u.why}" for path, b, a in rows if len(a) > len(b) for u in a]
+        shown = found[:MAX_SHOWN_SURVIVORS] + (
+            [f"{len(found) - MAX_SHOWN_SURVIVORS} more"] if len(found) > MAX_SHOWN_SURVIVORS else []
+        )
+        checks.fail(
+            f"Statements mutmut never mutates rose from {before} to {after}",
+            "Statements mutmut never mutates, in the files where they rose. "
+            "Move the logic into an undecorated module-level function or method",
+            shown,
+        )
+
+
+def static_checks(merge_base: str, config: dict[str, Any]) -> Checks:
     checks = Checks()
+    check_unchecked(checks, merge_base, config)
     head, base = head_files(), base_files(merge_base)
     sources = [p for p in head if p.startswith(SOURCE_PREFIX) and p.endswith(".py")]
     hits = outside_imports(Path("."), sources, first_party_roots(head))
@@ -822,7 +1053,7 @@ def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, c
     if not checks.failures:
         print(message)
         return
-    lines = [f"## Mutation ratchet against `{args.base}`", "", message, *(f"\n{s}" for s in checks.sections)]
+    lines = [f"## Mutation ratchet against `{args.base}`", "", message, *(f"\n{s}" for s in checks.notes + checks.sections)]
     lines += ["", "FAIL: " + "; ".join(checks.failures)]
     publish("\n".join(lines) + "\n", {"base": args.base, "merge_base": merge_base, "failures": checks.failures}, args.output)
 
@@ -840,9 +1071,6 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     for side, label in ((base, "Base"), (head, "Head")):
         if side is not None and side.note:
             lines.append(f"{label}: {side.note}.")
-    if touched.unchecked:
-        lines += ["", "| Function mutmut skips | Unchecked statements, base | Head |", "|---|---|---|"]
-        lines += [f"| `{name}` | {b} | {h} |" for name, (b, h) in touched.unchecked.items()]
     if head.pragmas_stripped:
         lines += ["", f"Stripped {head.pragmas_stripped} `# pragma: no mutate` comments before mutating. They have no effect."]
     if verdict.flaky:
@@ -856,7 +1084,7 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
         if len(shown) > MAX_SHOWN_SURVIVORS:
             lines.append(f"{len(shown) - MAX_SHOWN_SURVIVORS} more not shown.")
         lines.append("</details>")
-    lines += [f"\n{section}" for section in checks.sections]
+    lines += [f"\n{section}" for section in checks.notes + checks.sections]
     lines += ["", "FAIL: " + "; ".join(verdict.failures) if verdict.failures else "PASS"]
     return "\n".join(lines) + "\n"
 
@@ -938,7 +1166,7 @@ def main() -> None:
     merge_base = git("merge-base", args.base, "HEAD").strip()
     config = load_config(merge_base)
     do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
-    checks = static_checks(merge_base)
+    checks = static_checks(merge_base, config)
     touched = touched_functions(merge_base, do_not_mutate)
     changed_tests = changed_test_files(merge_base) + changed_test_support(merge_base)
     if not (touched.existing or touched.new or touched.deleted or changed_tests):
@@ -999,7 +1227,7 @@ def main() -> None:
         "base_results": base.results if base else {},
         "head_results": head.results,
         "flaky": verdict.flaky,
-        "unchecked": touched.unchecked,
+        "unchecked": checks.unchecked,
         "pragmas_stripped": head.pragmas_stripped,
         "canary_failed": head.canary_failed,
         "failures": verdict.failures,
