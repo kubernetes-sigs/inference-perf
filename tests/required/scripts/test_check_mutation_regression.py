@@ -638,3 +638,70 @@ def test_tests_using_follows_imports_and_conftests(cmr: Any, tmp_path: Path) -> 
     assert cmr.tests_using(tmp_path, ["tests/sub/conftest.py"]) == {"tests/sub/test_s.py", "tests/sub/inner/test_i.py"}
     assert cmr.tests_using(tmp_path, ["tests/pkg/__init__.py"]) == {"tests/pkg/test_p.py"}
     assert cmr.tests_using(tmp_path, ["tests/gone.py"]) == set()
+
+
+# Repo roots: inference_perf, tests, tools (with a nested .py) and a root helper.py. docs/ holds no
+# Python. Every root holding Python except inference_perf itself is first-party code outside it.
+def test_first_party_roots_are_every_python_root_but_the_package(cmr: Any) -> None:
+    paths = ["inference_perf/a.py", "tests/test_a.py", "tools/x/y.py", "helper.py", "docs/a.md", "README.md"]
+
+    assert cmr.first_party_roots(paths) == {"tests", "tools", "helper"}
+
+
+# inference_perf/a.py imports tests.util, inference_perf/b.py imports tools and loads e2e.run by name,
+# and inference_perf/c.py only imports yaml, its own package and a sibling. a and b fail, c does not.
+def test_outside_imports_flags_first_party_code_outside_the_package(cmr: Any, tmp_path: Path) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "inference_perf/a.py": "from tests.util import check\n",
+            "inference_perf/b.py": "import importlib\nimport tools.gen\n\nrun = importlib.import_module('e2e.run')\n",
+            "inference_perf/c.py": "import yaml\nfrom inference_perf import a\nfrom . import b\n",
+        },
+    )
+
+    hits = cmr.outside_imports(
+        tmp_path, ["inference_perf/a.py", "inference_perf/b.py", "inference_perf/c.py"], {"tests", "tools", "e2e"}
+    )
+
+    assert hits == [
+        "inference_perf/a.py:1 imports `tests`",
+        "inference_perf/b.py:2 imports `tools`",
+        "inference_perf/b.py:4 imports `e2e`",
+    ]
+
+
+# The change adds yaml.py, a json package and mine.py at the repo root, and keeps the existing tests/.
+# yaml is installed and json is in the standard library, so both shadow. mine.py shadows nothing.
+def test_shadowing_roots_flags_new_root_modules_with_taken_names(cmr: Any) -> None:
+    base = ["inference_perf/a.py", "tests/__init__.py"]
+    head = base + ["yaml.py", "json/__init__.py", "mine.py"]
+
+    assert cmr.shadowing_roots(base, head) == ["json", "yaml"]
+
+
+# The change only adds a root yaml.py, so no function or test is in scope. The check still fails on
+# the shadowing module instead of passing with nothing to mutate.
+def test_main_fails_on_a_shadowing_module_with_nothing_to_mutate(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_tree(
+        tmp_path,
+        {
+            "pyproject.toml": '[tool.mutmut]\nsource_paths = ["inference_perf"]\n',
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": "import yaml\n",
+        },
+    )
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / "yaml.py").write_text("def safe_load(s):\n    return {}\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD"])
+
+    with pytest.raises(SystemExit) as exited:
+        cmr.main()
+
+    assert exited.value.code == 1
+    assert "`yaml`" in capsys.readouterr().out
