@@ -1603,8 +1603,9 @@ class LoadGenerator:
         are rebuilt in a fresh interpreter, which takes long enough to stretch
         the run window and deflate every rate derived from it.
 
-        Never fatal: on a dead worker or a timeout this logs and returns, so a
-        run that would have proceeded before still proceeds.
+        Never fatal: once every worker is ready or dead, on SIGINT, or on a
+        timeout this logs and returns, so a run that would have proceeded
+        before still proceeds.
         """
         watched = self.workers if workers is None else workers
         want = self.num_workers if expected is None else expected
@@ -1616,11 +1617,15 @@ class LoadGenerator:
                 logger.debug(f"all {want} workers ready")
                 return
             exited = [w for w in watched if w.exitcode is not None]
-            if exited:
+            # A dead worker never signals, so stop on it only once the live ones have.
+            if ready + len(exited) >= want:
                 logger.error(
                     f"{len(exited)} of {want} workers exited during startup "
                     f"(exit codes {[w.exitcode for w in exited]}); starting load with {ready} ready"
                 )
+                return
+            if self.interrupt_sig:
+                logger.warning(f"interrupted with {ready} of {want} workers ready")
                 return
             if time.monotonic() >= deadline:
                 logger.warning(
