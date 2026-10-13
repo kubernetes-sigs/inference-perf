@@ -18,6 +18,8 @@ functions in the change's scope can move that number, so they are mutated
 twice, on the merge base and on the working tree, with the base branch's
 [tool.mutmut] config and each side's full unit suite. The scope is every
 function the diff touches or deletes, plus every function a changed test runs.
+A test counts as changed when it is added, edited, deleted or renamed, or when
+a helper, conftest.py or package __init__.py it runs is.
 
 There is no in-code way to opt out. `# pragma: no mutate` is stripped before
 mutating, and hiding code from mutmut behind a decorator fails on its own.
@@ -93,7 +95,7 @@ class Touched:
     existing: list[tuple[str, str]] = field(default_factory=list)
     new: list[str] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
-    # head names of existing functions in scope only because a changed test runs them
+    # head names of existing functions in scope only because a changed test, or a test using a changed helper, runs them
     via_tests: set[str] = field(default_factory=set)
     # name -> (base, head) statements mutmut cannot check, for functions it skips
     unchecked: dict[str, tuple[int, int]] = field(default_factory=dict)
@@ -312,6 +314,92 @@ def changed_test_files(base: str) -> list[str]:
         p for p in git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines() if is_test_file(p)
     )
     return sorted(changed)
+
+
+def changed_test_support(base: str) -> list[str]:
+    """Python files under tests/ the change touches that are not test files: helpers, conftests, package inits."""
+    changed: set[str] = set()
+    for line in git("diff", "--name-status", "-M", base, "--", TESTS_PREFIX).splitlines():
+        _, *paths = line.split("\t")
+        changed.update(paths)
+    changed.update(git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines())
+    return sorted(p for p in changed if p.endswith(".py") and not is_test_file(p))
+
+
+def _dotted_file(tree: Path, root: Path, dotted: str) -> str | None:
+    for candidate in (root / (dotted.replace(".", "/") + ".py"), root / dotted.replace(".", "/") / "__init__.py"):
+        if candidate.is_file():
+            return str(candidate.relative_to(tree))
+    return None
+
+
+def imports_of(tree: Path, rel: str) -> set[str]:
+    """Files under tests/ that `rel` imports, resolved every way pytest's default import mode makes them importable."""
+    path = tree / rel
+    try:
+        module = ast.parse(path.read_text())
+    except (SyntaxError, UnicodeDecodeError):
+        return set()
+    # pytest puts the first directory above the test's package on sys.path, and runs from the repo root
+    basedir = path.parent
+    while (basedir / "__init__.py").is_file() and basedir != tree:
+        basedir = basedir.parent
+    roots = {tree, path.parent, basedir}
+    found: set[str] = set()
+    for node in ast.walk(module):
+        wanted: list[tuple[set[Path], str]]
+        if isinstance(node, ast.Import):
+            wanted = [(roots, ".".join(a.name.split(".")[: i + 1])) for a in node.names for i in range(a.name.count(".") + 1)]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            wanted = [(roots, node.module)] + [(roots, f"{node.module}.{a.name}") for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            package = path.parent
+            for _ in range(node.level - 1):
+                package = package.parent
+            prefix = f"{node.module}." if node.module else ""
+            wanted = [({package}, f"{prefix}{a.name}") for a in node.names]
+            if node.module:
+                wanted.append(({package}, node.module))
+        else:
+            continue
+        for search, dotted in wanted:
+            for root in search:
+                hit = _dotted_file(tree, root, dotted)
+                if hit and hit.startswith(TESTS_PREFIX):
+                    found.add(hit)
+    return found
+
+
+def tests_using(tree: Path, support: list[str]) -> set[str]:
+    """Unit test files that run any of `support`.
+
+    A test runs a helper it imports, directly or through other helpers, and every conftest.py and
+    package __init__.py in the directories above it.
+    """
+    importers: dict[str, set[str]] = {}
+    for path in (tree / TESTS_PREFIX).rglob("*.py"):
+        rel = str(path.relative_to(tree))
+        for imported in imports_of(tree, rel):
+            importers.setdefault(imported, set()).add(rel)
+    reached = {p for p in support if (tree / p).is_file()}
+    pending = list(reached)
+    while pending:
+        for importer in importers.get(pending.pop(), set()) - reached:
+            reached.add(importer)
+            pending.append(importer)
+    suite = unit_suite(tree)
+    found = {p for p in reached if p in suite}
+    for rel in reached:
+        if Path(rel).name in ("conftest.py", "__init__.py"):
+            directory = str(Path(rel).parent) + "/"
+            found.update(t for t in suite if t.startswith(directory))
+    return found
+
+
+def tests_in_scope(base: str, base_tree: Path, head_tree: Path) -> list[str]:
+    """Changed test files plus the unit tests that run changed helpers, conftests or package inits, on either side."""
+    support = changed_test_support(base)
+    return sorted(set(changed_test_files(base)) | tests_using(base_tree, support) | tests_using(head_tree, support))
 
 
 def unit_suite(tree: Path) -> list[str]:
@@ -624,7 +712,7 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     after = by_function([m for m in survivors(head, touched.head_names) if m not in verdict.flaky])
     lines = [f"## Mutation ratchet against `{base_ref}`", "", "| Function | Why | Base | Head |", "|---|---|---|---|"]
     for b, h in touched.existing:
-        why = "a changed test runs it" if h in touched.via_tests else "changed"
+        why = "a changed test or test helper runs it" if h in touched.via_tests else "changed"
         lines.append(f"| `{h}` | {why} | {before[b]} | {after[h]} |")
     lines += [f"| `{n}` | new | | {after[n]} |" for n in touched.new]
     lines += [f"| `{b}` | deleted | {before[b]} | |" for b in touched.deleted]
@@ -730,7 +818,7 @@ def main() -> None:
     config = load_config(merge_base)
     do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
     touched = touched_functions(merge_base, do_not_mutate)
-    changed_tests = changed_test_files(merge_base)
+    changed_tests = changed_test_files(merge_base) + changed_test_support(merge_base)
     if not (touched.existing or touched.new or touched.deleted or changed_tests):
         print(f"No functions under {SOURCE_PREFIX} and no tests changed since {args.base}. Nothing to mutate.")
         return
@@ -742,8 +830,9 @@ def main() -> None:
         (workdir / "head").mkdir()
         export_working_tree(workdir / "head")
         stripped = {side: strip_no_mutate_pragmas(workdir / side) for side in ("base", "head")}
-        if changed_tests:
-            add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", changed_tests)
+        tests = tests_in_scope(merge_base, workdir / "base", workdir / "head")
+        if tests:
+            add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", tests)
         if not (touched.base_names or touched.head_names):
             print(f"No function in scope since {args.base}. Nothing to mutate.")
             return
