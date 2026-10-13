@@ -85,6 +85,33 @@ jobs:
         run: |
           nix develop -c pdm sync -d
 
+      # guidellm is the second tool in the cross-tool parity test
+      # (e2e/tests/test_reasoning_metric_parity.py). It gets its own venv,
+      # outside the Nix shell and pdm.lock, because its dependency set
+      # (pydantic, datasets, torch) is not inference-perf's. The lock file is
+      # the cache key, so bumping the pin is a reviewed change that rebuilds
+      # the venv. GUIDELLM_REQUIRED turns "guidellm not found" and "wrong
+      # version" from a skip into a failure: this job gates merges.
+      - name: Restore guidellm venv
+        id: guidellm-venv
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/guidellm-venv
+          key: guidellm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('e2e/guidellm_requirements.txt') }}
+
+      - name: Install guidellm
+        run: |
+          set -euxo pipefail
+          if [ "${{ steps.guidellm-venv.outputs.cache-hit }}" != "true" ]; then
+            rm -rf ~/guidellm-venv
+            python3 -m venv ~/guidellm-venv
+            ~/guidellm-venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+              -r e2e/guidellm_requirements.txt
+          fi
+          ~/guidellm-venv/bin/guidellm --version
+          echo "GUIDELLM_BIN=$HOME/guidellm-venv/bin/guidellm" >> "$GITHUB_ENV"
+          echo "GUIDELLM_REQUIRED=1" >> "$GITHUB_ENV"
+
       # The vLLM live-oracle modules (e2e/tests/test_vllm_cpu_*.py) skip in
       # this invocation: no server is up yet. They run against every table
       # version in the next step.

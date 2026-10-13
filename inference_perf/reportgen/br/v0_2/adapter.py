@@ -21,13 +21,12 @@ by the user via the partial report; see ``partial_report.py``.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Iterable, List, Optional, Tuple
 
 import numpy as np
 
 from inference_perf.apis import RequestLifecycleMetric, StreamedResponseMetrics
-from inference_perf.reportgen.base import effective_output_tokens
+from inference_perf.reportgen.base import effective_output_tokens, retokenize_output_token_times
 from inference_perf.payloads import Audios, Images, Videos
 
 from .schema import (
@@ -227,12 +226,11 @@ def _build_multimodal(successful: List[RequestLifecycleMetric]) -> Optional[Mult
 
 # ---------------------------------------------------------------------------
 # Per-request latency derivation.
-# Mirrors the chunk-parsing + latency math in
-# reportgen/base.py:summarize_requests without mutating the input metrics:
-# timestamps come from output_token_times (or a chunk re-tokenization
-# fallback), token counts from effective_output_tokens, matching the native
-# lifecycle reports. TODO: extract into a single shared helper once both
-# paths are stable.
+# Mirrors the latency math in reportgen/base.py:summarize_requests without
+# mutating the input metrics: timestamps come from output_token_times (or the
+# same chunk re-tokenization the native reports use), token counts from
+# effective_output_tokens. TODO: share the latency math too once both paths
+# are stable.
 # ---------------------------------------------------------------------------
 
 
@@ -281,34 +279,10 @@ def _resolve_token_times(
     if info.output_token_times:
         return list(info.output_token_times)
 
-    if not info.response_chunks or tokenizer is None:
+    if not (info.response_chunks or info.reasoning_chunks) or tokenizer is None:
         return []
 
-    token_times: List[float] = []
-    for chunk_str, chunk_time in zip(info.response_chunks, info.chunk_times, strict=False):
-        try:
-            data = json.loads(chunk_str)
-        except json.JSONDecodeError:
-            continue
-        choices = data.get("choices") or []
-        if not choices:
-            continue
-        delta = choices[0]
-        text = delta.get("text") or delta.get("delta", {}).get("content")
-        if not text:
-            continue
-        # Count each chunk as a sequence fragment (add_special_tokens=False):
-        # re-tokenizing with special tokens prepends a BOS per chunk, which
-        # inflates counts and deflates ITL. See #564.
-        n = tokenizer.count_tokens(text, add_special_tokens=False)
-        if n <= 0:
-            continue
-        # Every token in a chunk gets the chunk's arrival time, matching
-        # summarize_requests: intra-chunk ITL is 0, inter-chunk ITL absorbs
-        # the full gap.
-        token_times.extend([chunk_time] * n)
-
-    return token_times
+    return retokenize_output_token_times(info, tokenizer)
 
 
 # ---------------------------------------------------------------------------

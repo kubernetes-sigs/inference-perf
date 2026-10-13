@@ -43,6 +43,34 @@ live-tier cases under `tests/optional` auto-skip unless you pass
 under pytest-xdist; each test binds free ports for its own sim and Prometheus,
 so concurrent copies do not clash.
 
+### Cross-tool parity (guidellm)
+
+`e2e/tests/test_reasoning_metric_parity.py` runs inference-perf and
+[guidellm](https://github.com/vllm-project/guidellm) against the same scripted
+reasoning model (`FakeOpenAIServer` in
+`tests/required/integration/fake_openai_server.py`, shared with the
+integration tier) and
+checks TTFT, time to first output token, per-token latency and output token
+counts three ways: each tool against the server's own send timestamps, and the
+two tools against each other.
+
+guidellm is not an inference-perf dependency. Its pin lives in
+`e2e/guidellm_requirements.in`, locked in `e2e/guidellm_requirements.txt`, and
+it is installed into its own venv. CI does this in the `E2E Test on change`
+workflow and sets `GUIDELLM_REQUIRED=1`, so the comparison gates merges: a
+missing or wrong-version guidellm fails the job. Locally the guidellm legs
+skip unless guidellm is on `PATH` or `GUIDELLM_BIN` points at it:
+
+```sh
+python3 -m venv /tmp/guidellm
+/tmp/guidellm/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r e2e/guidellm_requirements.txt
+GUIDELLM_BIN=/tmp/guidellm/bin/guidellm pdm run test:e2e -k reasoning_metric_parity
+```
+
+To bump guidellm, edit the `.in` file and regenerate the lock with the command
+in its header.
+
 ## Running the live-oracle slice (CPU-mode vLLM)
 
 The slice is every `e2e/tests/test_vllm_*.py` module. Selection is by naming
