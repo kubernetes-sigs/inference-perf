@@ -302,9 +302,24 @@ class TestGenerateSessionReports:
             "actual_duration": 6.0,
             "teardown_duration": None,
             "dropped_requests": None,
+            "dropped_requests_exact": True,
             "concurrent_sessions": 4,
             "session_rate": 2.0,
         }
+
+    def test_a_dropped_count_that_could_not_be_completed_is_marked_inexact(self) -> None:
+        info = _stage_info(0).model_copy(update={"dropped_requests": 12, "dropped_requests_exact": False})
+
+        reports = _make_generator().generate_session_reports(
+            [_sess(stage_id=0)],
+            SessionLifecycleReportConfig(summary=False, per_stage=True, per_session=False),
+            PERCENTILES,
+            _runtime({0: info}),
+            100,
+        )
+
+        metadata = reports[0].contents["stage_metadata"]
+        assert (metadata["dropped_requests"], metadata["dropped_requests_exact"]) == (12, False)
 
     def test_a_stage_with_no_runtime_info_reports_measurements_without_metadata(self) -> None:
         gen = _make_generator()

@@ -118,6 +118,7 @@ def _counter_value_nolock(counter: "Synchronized[int]") -> int:
 class TeardownResult(NamedTuple):
     clean: bool
     dropped_requests: int
+    dropped_requests_exact: bool
 
 
 class StageLifecycleObserver(Protocol):
@@ -1178,6 +1179,7 @@ class LoadGenerator:
             max_stage_duration=max_stage_duration,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
+            dropped_requests_exact=teardown.dropped_requests_exact,
             sessions_not_completed_active=sessions_not_completed_active,
             sessions_not_completed_pending=sessions_not_completed_pending,
         )
@@ -1250,8 +1252,13 @@ class LoadGenerator:
 
         # Nobody is pulling anymore: remove undispatched items left in the queue.
         dropped = request_queue.drain()
-        if dropped:
-            logger.warning("Stage %d: dropped %d request(s) that were never dispatched to the model server", stage_id, dropped)
+        if dropped.removed or not dropped.exact:
+            logger.warning(
+                "Stage %d: dropped %s%d request(s) that were never dispatched to the model server",
+                stage_id,
+                "" if dropped.exact else "at least ",
+                dropped.removed,
+            )
         if self._force_stop_signal is not None:
             self._force_stop_signal.clear()
         if cancel_signal is not None:
@@ -1285,7 +1292,7 @@ class LoadGenerator:
                 fresh_channel = request_queue.replace_channel(worker.id) if request_queue.num_channels > 1 else None
                 self.workers[idx] = self._respawn_worker(worker, request_channel=fresh_channel)
                 self.workers[idx].start()
-        return TeardownResult(clean=clean, dropped_requests=dropped)
+        return TeardownResult(clean=clean, dropped_requests=dropped.removed, dropped_requests_exact=dropped.exact)
 
     def _respawn_worker(
         self, dead: Worker, request_channel: Optional["mp.Queue[Optional[RequestQueueData]]"] = None
@@ -1454,6 +1461,7 @@ class LoadGenerator:
             max_stage_duration=timeout,
             teardown_duration=teardown_duration,
             dropped_requests=teardown.dropped_requests,
+            dropped_requests_exact=teardown.dropped_requests_exact,
         )
         logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         if report_stage:

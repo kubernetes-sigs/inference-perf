@@ -1,5 +1,6 @@
 import logging
 import multiprocessing as mp
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -49,8 +50,8 @@ def test_drain_removes_items_the_feeder_has_not_flushed_yet(make_queue: MakeQueu
         for i in range(ITEMS):
             queue.put(PAYLOAD, channel_id=i)
 
-        assert queue.drain() == ITEMS
-        assert queue.drain() == 0
+        assert queue.drain() == (ITEMS, True)
+        assert queue.drain() == (0, True)
 
 
 def test_a_drained_queue_lets_its_process_exit(make_queue: MakeQueue) -> None:
@@ -63,22 +64,61 @@ def test_a_drained_queue_lets_its_process_exit(make_queue: MakeQueue) -> None:
     assert exits_cleanly(queue.get_channel(0))
 
 
-def test_drain_gives_up_on_a_channel_a_dead_worker_left_locked(
-    make_queue: MakeQueue, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setattr(request_queue, "_DRAIN_TIMEOUT_SECONDS", 0.2)
+def locked_channel_with_backlog(make_queue: MakeQueue) -> RequestQueue[str]:
+    """One item on channel 0 and ITEMS on channel 1, which is locked the way a worker killed inside get() leaves it."""
     queue = make_queue(2)
     queue.put(PAYLOAD, channel_id=0)
     for _ in range(ITEMS):
         queue.put(PAYLOAD, channel_id=1)
-    # What a worker killed inside get() leaves behind.
     queue.get_channel(1)._rlock.acquire()  # type: ignore[attr-defined]
+    return queue
+
+
+def unsupported() -> int:
+    raise NotImplementedError
+
+
+@pytest.fixture
+def short_drain_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(request_queue, "_DRAIN_TIMEOUT_SECONDS", 0.2)
+
+
+@pytest.mark.usefixtures("short_drain_timeout")
+def test_drain_gives_up_on_a_locked_channel_and_counts_its_backlog_with_qsize(
+    make_queue: MakeQueue, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    queue = locked_channel_with_backlog(make_queue)
+    # What qsize() returns on Linux: the backlog plus the None that drain() puts behind it.
+    monkeypatch.setattr(queue.get_channel(1), "qsize", lambda: ITEMS + 1)
 
     started = time.monotonic()
     with caplog.at_level(logging.WARNING):
         drained = queue.drain()
 
-    assert drained == 1
+    assert drained == (1 + ITEMS, True)
     assert time.monotonic() - started < 2
-    assert "Drain of channel 1 stopped after 0 item(s)" in caplog.text
+    assert f"Drain of channel 1 stopped after 0 item(s): nothing arrived for 0 s; {ITEMS} more were left in it" in caplog.text
     assert exits_cleanly(queue.get_channel(1))
+
+
+@pytest.mark.usefixtures("short_drain_timeout")
+def test_drain_marks_its_count_inexact_where_a_locked_channel_cannot_be_counted(
+    make_queue: MakeQueue, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    queue = locked_channel_with_backlog(make_queue)
+    monkeypatch.setattr(queue.get_channel(1), "qsize", unsupported)
+
+    with caplog.at_level(logging.WARNING):
+        drained = queue.drain()
+
+    assert drained == (1, False)
+    assert "the rest cannot be counted on this platform" in caplog.text
+    assert exits_cleanly(queue.get_channel(1))
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="qsize() raises NotImplementedError on macOS")
+@pytest.mark.usefixtures("short_drain_timeout")
+def test_qsize_counts_a_locked_channel_s_unflushed_backlog(make_queue: MakeQueue) -> None:
+    queue = locked_channel_with_backlog(make_queue)
+
+    assert queue.drain() == (1 + ITEMS, True)
