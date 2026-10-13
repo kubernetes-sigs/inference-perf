@@ -18,6 +18,7 @@ tokenizer:
 data:
   type: weka_trace_replay
   weka_trace_replay:
+    # separate_subagent_session_ids: true # Requires api.session_id_header_key to send IDs in headers.
     hf_dataset_path: "semianalysisai/cc-traces-weka-with-subagents-060826-256k"
     num_dataset_entries: 5
     use_static_model: true

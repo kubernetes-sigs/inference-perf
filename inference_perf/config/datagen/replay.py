@@ -298,6 +298,14 @@ class OTelTraceReplayConfig(SessionReplayConfig):
 class WekaTraceReplayConfig(SessionReplayConfig):
     """Configuration for Weka trace replay data generator."""
 
+    separate_subagent_session_ids: bool = Field(
+        False,
+        description=(
+            "Give each subagent stream its own request session ID, shaped as "
+            "<parent_id>::sa:<agent_id>:s<stream_index>. Parent IDs stay unchanged. "
+            "Defaults to False so all requests in a trace share the parent ID."
+        ),
+    )
     trace_directory: Optional[str] = Field(None, description="Directory containing Weka JSON trace files")
     trace_files: Optional[List[str]] = Field(None, description="List of paths to specific Weka JSON trace files")
     hf_dataset_path: Optional[Union[str, Dict[str, Any]]] = Field(

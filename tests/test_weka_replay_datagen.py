@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,9 @@ import pytest
 
 from inference_perf.config import APIConfig, APIType, DataConfig, DataGenType
 from inference_perf.config.datagen.replay import WekaTraceReplayConfig
+from inference_perf.datagen.base import LazyLoadDataMixin
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import graph_to_dict
+from inference_perf.datagen.replay.replay_graph_session_datagen import SessionChatCompletionAPIData
 from inference_perf.datagen.replay.weka_trace_replay_datagen import (
     FilterExpressionError,
     HashIdRandomGenerator,
@@ -582,6 +585,115 @@ def _mock_tokenizer() -> MagicMock:
     mock_tokenizer.get_tokenizer().encode = lambda x: [9] * len(x)
     mock_tokenizer.get_tokenizer().decode = lambda x: "".join(str(i) for i in x)
     return mock_tokenizer
+
+
+def _subagent_session_trace() -> Dict[str, Any]:
+    def request(t: float, hash_id: int) -> Dict[str, Any]:
+        return {"t": t, "type": "n", "model": "m", "in": 4, "out": 2, "hash_ids": [hash_id, hash_id + 1], "api_time": 0.5}
+
+    return {
+        "id": "session_ids",
+        "models": ["m"],
+        "block_size": 2,
+        "requests": [
+            request(0.0, 10),
+            {
+                "t": 1.0,
+                "type": "subagent",
+                "agent_id": "alpha",
+                "subagent_type": "Subagent",
+                # Two overlapping calls form separate streams; the third rejoins s0.
+                "requests": [request(1.0, 20), request(1.1, 30), request(2.0, 40)],
+            },
+            {
+                "t": 3.0,
+                "type": "subagent",
+                "agent_id": "beta",
+                "subagent_type": "Subagent",
+                "requests": [request(3.0, 50)],
+            },
+            {"t": 4.0, "type": "subagent", "agent_id": "empty", "subagent_type": "Subagent", "requests": []},
+            request(5.0, 60),
+        ],
+    }
+
+
+def _session_id_generator(
+    tmp_path: Path, separate: Optional[bool], api_type: APIType = APIType.Chat
+) -> WekaTraceReplayDataGenerator:
+    trace_file = tmp_path / "session_ids.json"
+    trace_file.write_text(json.dumps(_subagent_session_trace()))
+    weka_cfg = WekaTraceReplayConfig(
+        trace_files=[str(trace_file)], datagen_workers=1, duplicate_sessions_target=3, ignore_trace_delays=True
+    )
+    if separate is not None:
+        weka_cfg.separate_subagent_session_ids = separate
+    return WekaTraceReplayDataGenerator(
+        api_config=APIConfig(type=api_type, streaming=False, session_id_header_key="x-session-id"),
+        config=DataConfig(type=DataGenType.WekaTraceReplay, weka_trace_replay=weka_cfg),
+        tokenizer=_mock_tokenizer(),
+        num_workers=1,
+    )
+
+
+@pytest.mark.parametrize("separate", [None, False, True], ids=["default", "disabled", "enabled"])
+@pytest.mark.parametrize("api_type", [APIType.Chat, APIType.AnthropicMessages])
+def test_weka_subagent_session_ids(tmp_path: Path, separate: Optional[bool], api_type: APIType) -> None:
+    gen = _session_id_generator(tmp_path, separate, api_type)
+    expected_suffixes = {
+        "parent_turn_0": "",
+        "parent_turn_1": "",
+        "sa_alpha_s0_turn_0": "::sa:alpha:s0",
+        "sa_alpha_s0_turn_1": "::sa:alpha:s0",
+        "sa_alpha_s1_turn_0": "::sa:alpha:s1",
+        "sa_beta_s0_turn_0": "::sa:beta:s0",
+    }
+    child_ids: set[str] = set()
+    assert gen.get_session_count() == 3
+    original = gen._get_session(0)
+    for idx in range(gen.get_session_count()):
+        session = gen._get_session(idx)
+        assert session.session_id == "wekatrace0_session_ids" + (f"_dup{idx}" if idx else "")
+        assert session.graph is original.graph
+        scheduled = gen.get_session_events(idx)
+        assert len(scheduled) == len(expected_suffixes)
+        for lazy_data in scheduled:
+            # Exercise the same wrapper used by loadgen workers. Routing identity
+            # must survive propagation of the scheduler's reporting identity.
+            lazy_data.session_id = session.session_id
+            request = LazyLoadDataMixin.get_request(gen, lazy_data)
+            assert isinstance(request, SessionChatCompletionAPIData)
+            assert lazy_data.session_id == session.session_id
+            assert request._extract_session_id() == session.session_id
+            assert request.graph_event_id is not None
+            call_id = session.graph.events[request.graph_event_id].call.call_id
+            suffix = expected_suffixes[call_id] if separate else ""
+            assert request.session_id == session.session_id
+            assert request.request_session_id == (session.session_id + suffix if suffix else None)
+            assert request.total_events_in_session == len(expected_suffixes)
+            if suffix:
+                assert request.request_session_id is not None
+                child_ids.add(request.request_session_id)
+    # Each of three replay sessions has three distinct child streams.
+    assert len(child_ids) == (9 if separate else 0)
+
+
+def test_weka_session_id_setting_preserves_graph_content(tmp_path: Path) -> None:
+    default_gen = _session_id_generator(tmp_path, None)
+    separated_gen = _session_id_generator(tmp_path, True)
+    default_graph = graph_to_dict(default_gen._get_session(0).graph)
+    separated_graph = graph_to_dict(separated_gen._get_session(0).graph)
+    for event in default_graph["events"].values():
+        assert "session_id_suffix" not in event["call"]
+    for event in separated_graph["events"].values():
+        call = event["call"]
+        if call["call_id"].startswith("sa_"):
+            assert call.pop("session_id_suffix").startswith("::sa:")
+        else:
+            assert "session_id_suffix" not in call
+    # Enabling request identity must preserve prompts, completions, timing,
+    # dependencies and deterministic synthesis (including partial-tail seeds).
+    assert separated_graph == default_graph
 
 
 def _build_generator(trace_files: list[str], datagen_workers: int, skip_invalid_files: bool) -> WekaTraceReplayDataGenerator:

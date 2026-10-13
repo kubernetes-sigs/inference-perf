@@ -5,7 +5,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -517,6 +517,7 @@ class RawCall:
     max_tokens_recorded: Optional[int]
     tool_definitions: Optional[List[Dict[str, Any]]] = None
     extra_attributes: Dict[str, Any] = field(default_factory=dict)
+    session_id_suffix: Optional[str] = None
 
 
 def filter_duplicate_spans(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1356,6 +1357,7 @@ def build_graph(
             expected_output_is_tool_call=effective_is_tool_call,
             expected_output_tool_names=expected_output_tool_names or None,
             attributes=rc.extra_attributes or None,
+            session_id_suffix=rc.session_id_suffix,
         )
 
         # Compute wait_ms: gap between when the last predecessor ends and this call starts
@@ -1515,6 +1517,8 @@ def graph_call_to_dict(gc: GraphCall) -> Dict[str, Any]:
         d["expected_output_tool_names"] = gc.expected_output_tool_names
     if gc.attributes is not None:
         d["attributes"] = gc.attributes
+    if gc.session_id_suffix is not None:
+        d["session_id_suffix"] = gc.session_id_suffix
     return d
 
 
