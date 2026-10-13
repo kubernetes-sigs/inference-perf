@@ -461,7 +461,7 @@ def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
 
 def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     """Run the side's suite unmutated to the end and name what fails. mutmut's setup run swallows pytest's output."""
-    command = [sys.executable, "-m", "pytest", "--rootdir=.", "-rfE", "--tb=short", "-p", "no:randomly"]
+    command = [sys.executable, "-m", "pytest", "--rootdir=.", "-rfE", "--tb=short", "--disable-warnings", "-p", "no:randomly"]
     command += ["-p", "no:random-order", f"--timeout={DIAGNOSIS_TEST_TIMEOUT_S}", *side.tests, *pytest_args]
     env = {**os.environ, "MUTANT_UNDER_TEST": "setup" + CANARY_SUFFIX}
     try:
