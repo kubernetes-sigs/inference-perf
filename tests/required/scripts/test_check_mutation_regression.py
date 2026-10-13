@@ -230,9 +230,9 @@ def test_judge_passes_when_survivors_hold(cmr: Any, monkeypatch: pytest.MonkeyPa
 def test_judge_fails_on_a_rise_and_reruns_only_rising_functions(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     rerun: list[str] = []
 
-    def record(s: Any, mutant: str, a: Any) -> bool:
+    def record(s: Any, mutant: str, a: Any) -> Any:
         rerun.append(mutant)
-        return True
+        return cmr.Survival(True, [])
 
     monkeypatch.setattr(cmr, "still_survives", record)
     monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (str(id(s)), m))
@@ -248,11 +248,11 @@ def test_judge_fails_on_a_rise_and_reruns_only_rising_functions(cmr: Any, monkey
     assert verdict.failures == ["Surviving mutants rose from 3 to 4"]
 
 
-# Same rise of one, but one of g's survivors is killed on rerun. It is reported as flaky and the
-# total falls back to 3, so the change passes.
-def test_judge_drops_flaky_survivors(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    flaky = "inference_perf.m.x_g__mutmut_2"
-    monkeypatch.setattr(cmr, "still_survives", lambda s, m, a: m != flaky)
+# Same rise of one. Every rerun kills g's survivor 2, so the first run missed it and it does not
+# count. The total falls back to 3 and the change passes.
+def test_judge_drops_survivors_every_rerun_kills(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    fluke = "inference_perf.m.x_g__mutmut_2"
+    monkeypatch.setattr(cmr, "still_survives", lambda s, m, a: cmr.Survival(m != fluke, ["t"] if m == fluke else []))
     monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (str(id(s)), m))
     touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
     base = side(cmr, x_g={"survived": 3})
@@ -260,7 +260,7 @@ def test_judge_drops_flaky_survivors(cmr: Any, monkeypatch: pytest.MonkeyPatch) 
 
     verdict = cmr.judge(touched, base, head, [])
 
-    assert verdict.flaky == [flaky]
+    assert (verdict.flukes, verdict.flaky) == ([fluke], {})
     assert (verdict.head_survivors, verdict.failures) == (3, [])
 
 
@@ -269,9 +269,9 @@ def test_judge_drops_flaky_survivors(cmr: Any, monkeypatch: pytest.MonkeyPatch) 
 def test_judge_counts_new_and_deleted_functions(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     rerun: list[str] = []
 
-    def record(s: Any, mutant: str, a: Any) -> bool:
+    def record(s: Any, mutant: str, a: Any) -> Any:
         rerun.append(mutant)
-        return True
+        return cmr.Survival(True, [])
 
     monkeypatch.setattr(cmr, "still_survives", record)
     touched = cmr.Touched(new=["inference_perf.m.x_h"], deleted=["inference_perf.m.x_d"])
@@ -483,7 +483,7 @@ def test_hung_reruns_fail_closed(cmr: Any, tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(cmr, "mutmut", lambda *a: listed)
     side = cmr.Side(tree=tmp_path, results={"m.x_f__mutmut_1": "survived"})
 
-    assert cmr.still_survives(side, "m.x_f__mutmut_1", [])
+    assert cmr.still_survives(side, "m.x_f__mutmut_1", []).counts
     assert not cmr.canary_passes(side, ["m.x_f"], [])
 
 
@@ -789,9 +789,9 @@ def test_judge_reruns_only_survivors_new_on_the_head(cmr: Any, monkeypatch: pyte
     monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: diffs[(id(s), m)])
     rerun: list[str] = []
 
-    def record(s: Any, mutant: str, a: Any) -> bool:
+    def record(s: Any, mutant: str, a: Any) -> Any:
         rerun.append(mutant)
-        return True
+        return cmr.Survival(True, [])
 
     monkeypatch.setattr(cmr, "still_survives", record)
     touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
@@ -801,3 +801,20 @@ def test_judge_reruns_only_survivors_new_on_the_head(cmr: Any, monkeypatch: pyte
     assert rerun == ["inference_perf.m.x_g__mutmut_1"]
     assert verdict.carried == ["inference_perf.m.x_g__mutmut_2", "inference_perf.m.x_g__mutmut_3"]
     assert (verdict.base_survivors, verdict.head_survivors) == (2, 3)
+
+
+# g goes from 1 survivor to 2, and survivor 1 is the base's own. The new one is rerun: test_r kills it
+# on the first rerun and misses it on the second, the way a test that fails at random would. Killed in
+# only some reruns, it still counts, so the change fails and the report names test_r.
+def test_judge_counts_a_survivor_only_some_reruns_kill(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes = iter([(1, "FAILED tests/test_a.py::test_r - assert 0\n"), (0, "1 passed\n")])
+    monkeypatch.setattr(cmr, "rerun", lambda *a: next(outcomes))
+    listed = subprocess.CompletedProcess([], 0, "tests/test_a.py::test_r\n", "")
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: listed)
+    monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (m,))
+    touched = cmr.Touched(existing=[("inference_perf.m.x_g", "inference_perf.m.x_g")])
+
+    verdict = cmr.judge(touched, side(cmr, x_g={"survived": 1}), side(cmr, x_g={"survived": 2}), [])
+
+    assert verdict.failures == ["Surviving mutants rose from 1 to 2"]
+    assert verdict.flaky == {"inference_perf.m.x_g__mutmut_2": ["tests/test_a.py::test_r"]}

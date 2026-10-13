@@ -44,11 +44,11 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
-# A survivor only counts against the change once it survives this many
-# reruns of its tests. Timing-dependent tests kill some mutants on one run
-# and miss them on the next.
+# A new survivor is rerun up to this many times. It stops counting only when every rerun kills it,
+# which means the first run missed. A test that kills it only sometimes is flaky, and a flaky
+# kill is not evidence the tests check the code.
 RERUNS = 3
 
 # Where [tool.mutmut] comes from when the base commit has none.
@@ -732,18 +732,29 @@ def rerun_timeout(tree: Path, tests: list[str]) -> float:
     return RERUN_GRACE_S + RERUN_SLOWDOWN * sum(durations.get(test, 0.0) for test in tests)
 
 
-def rerun(side: Side, tests: list[str], mutant: str, pytest_args: list[str]) -> int | None:
-    """Run `tests` with `mutant` active in the side's mutation tree. Returns pytest's exit code, or None if it hung."""
+def rerun(side: Side, tests: list[str], mutant: str, pytest_args: list[str]) -> tuple[int | None, str]:
+    """Run `tests` with `mutant` active in the side's mutation tree.
+
+    Returns pytest's exit code, or None if it hung, and its output.
+    """
     try:
-        return subprocess.run(
+        run = subprocess.run(
             pytest_command(tests, pytest_args),
             cwd=side.tree / "mutants",
             env={**os.environ, "MUTANT_UNDER_TEST": mutant},
             capture_output=True,
+            text=True,
             timeout=rerun_timeout(side.tree, tests),
-        ).returncode
+        )
+        return run.returncode, run.stdout + run.stderr
     except subprocess.TimeoutExpired:
-        return None
+        return None, ""
+
+
+def failed_tests(output: str) -> list[str]:
+    """Test ids pytest's short summary reports as failed or errored."""
+    lines = output.splitlines()
+    return sorted({line.split(" ")[1] for line in lines if line.startswith(("FAILED ", "ERROR ")) and " " in line})
 
 
 def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
@@ -753,7 +764,7 @@ def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
         return True
     for _ in range(RERUNS):
         # a hang counts as a failed run, so tests that only hang under the harness still fail the canary
-        if rerun(side, tests, names[0] + CANARY_SUFFIX, pytest_args) in (0, 5):  # 5: nothing collected
+        if rerun(side, tests, names[0] + CANARY_SUFFIX, pytest_args)[0] in (0, 5):  # 5: nothing collected
             return True
     return False
 
@@ -772,9 +783,7 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
         # captured output is bytes here even with text=True
         partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else ""
         output = partial + f"\nThe suite was still running after {DIAGNOSIS_TIMEOUT_S} s and was stopped."
-    lines = output.splitlines()
-    failing = sorted({line.split(" ")[1] for line in lines if line.startswith(("FAILED ", "ERROR ")) and " " in line})
-    return SetupFailure(side.tree, failing, "\n".join(lines[-DIAGNOSIS_TAIL_LINES:]))
+    return SetupFailure(side.tree, failed_tests(output), "\n".join(output.splitlines()[-DIAGNOSIS_TAIL_LINES:]))
 
 
 def run_mutmut(side: Side, globs: list[str], max_children: int, pytest_args: list[str]) -> tuple[str, bool]:
@@ -841,19 +850,25 @@ def survivors(side: Side | None, names: list[str]) -> list[str]:
     return sorted(found, key=mutant_order)
 
 
-def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> bool:
-    """Rerun the tests that cover a surviving mutant. Killed in any rerun means flaky."""
+class Survival(NamedTuple):
+    counts: bool
+    # tests that killed it in some rerun
+    killed_by: list[str]
+
+
+def still_survives(side: Side, mutant: str, pytest_args: list[str]) -> Survival:
+    """Rerun the tests that cover a surviving mutant. It stops counting only when every rerun kills it."""
     if side.results.get(mutant) == "no tests":
-        return True
+        return Survival(True, [])
     tests = [t for t in mutmut(side.tree, "tests-for-mutant", mutant).stdout.splitlines() if "::" in t]
+    killed_by: set[str] = set()
     for _ in range(RERUNS):
-        code = rerun(side, tests, mutant, pytest_args)
-        if code is None:
-            # a hang is not a kill. Dropping the mutant as flaky would lower the count the change is held to
-            return True
-        if code != 0:
-            return False
-    return True
+        code, output = rerun(side, tests, mutant, pytest_args)
+        # a hang is not a kill
+        if code is None or code == 0:
+            return Survival(True, sorted(killed_by))
+        killed_by.update(failed_tests(output) or ["(no failing test named)"])
+    return Survival(False, sorted(killed_by))
 
 
 def by_function(mutants: list[str]) -> Counter[str]:
@@ -864,11 +879,14 @@ def by_function(mutants: list[str]) -> Counter[str]:
 class Verdict:
     base_survivors: int
     head_survivors: int
-    flaky: list[str]
+    # survivor -> tests that killed it in some reruns but not all. It counts
+    flaky: dict[str, list[str]]
     unexecuted: list[str]
     failures: list[str]
     # head survivors whose mutation also survived on the base, counted on both sides and never rerun
     carried: list[str] = field(default_factory=list)
+    # survivors every rerun killed, so the first run missed. They do not count
+    flukes: list[str] = field(default_factory=list)
 
 
 def mutation_lines(side: Side, mutant: str) -> tuple[str, ...]:
@@ -900,7 +918,8 @@ def carried_over(touched: Touched, base: Side | None, head: Side, candidates: li
 def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str]) -> Verdict:
     base_surv = survivors(base, touched.base_names)
     head_surv = survivors(head, touched.head_names)
-    flaky: list[str] = []
+    flaky: dict[str, list[str]] = {}
+    flukes: list[str] = []
     carried: list[str] = []
     if len(head_surv) > len(base_surv):
         # only a function whose own count rose can hold a survivor the change added
@@ -908,11 +927,13 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
         rose = {h for b, h in touched.existing if after[h] > before[b]} | {n for n in touched.new if after[n]}
         candidates = [m for m in head_surv if m.partition("__mutmut_")[0] in rose]
         carried = carried_over(touched, base, head, candidates)
-        flaky = [m for m in candidates if m not in carried and not still_survives(head, m, pytest_args)]
-        head_surv = [m for m in head_surv if m not in flaky]
+        outcomes = {m: still_survives(head, m, pytest_args) for m in candidates if m not in carried}
+        flukes = [m for m, survival in outcomes.items() if not survival.counts]
+        flaky = {m: survival.killed_by for m, survival in outcomes.items() if survival.counts and survival.killed_by}
+        head_surv = [m for m in head_surv if m not in flukes]
     # unlike a surviving mutant, code no test runs cannot be an equivalent mutant, so nothing can pay for it
     unexecuted = sorted({m.partition("__mutmut_")[0] for m, s in head.results.items() if s == "no tests"} & set(touched.new))
-    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [], carried)
+    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [], carried, flukes)
     if verdict.head_survivors > verdict.base_survivors:
         verdict.failures.append(f"Surviving mutants rose from {verdict.base_survivors} to {verdict.head_survivors}")
     if unexecuted:
@@ -1091,7 +1112,7 @@ def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, c
 
 def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdict: Verdict, checks: Checks) -> str:
     before = by_function(survivors(base, touched.base_names))
-    after = by_function([m for m in survivors(head, touched.head_names) if m not in verdict.flaky])
+    after = by_function([m for m in survivors(head, touched.head_names) if m not in verdict.flukes])
     lines = [f"## Mutation ratchet against `{base_ref}`", "", "| Function | Why | Base | Head |", "|---|---|---|---|"]
     for b, h in touched.existing:
         why = "a changed test or test helper runs it" if h in touched.via_tests else "changed"
@@ -1106,9 +1127,12 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
         lines += ["", f"Stripped {head.pragmas_stripped} `# pragma: no mutate` comments before mutating. They have no effect."]
     if verdict.carried:
         lines += ["", f"{len(verdict.carried)} surviving mutants on the head also survived on the base. Not rerun."]
+    if verdict.flukes:
+        lines += ["", f"Killed in every rerun, so not counted: {', '.join(f'`{m}`' for m in verdict.flukes)}"]
     if verdict.flaky:
-        lines += ["", f"Flaky, killed on rerun and not counted: {', '.join(f'`{m}`' for m in verdict.flaky)}"]
-    shown = [m for m in survivors(head, touched.head_names) if m not in verdict.flaky]
+        lines += ["", "Killed in some reruns but not all. They count, and these tests are flaky:"]
+        lines += [f"- `{m}`: {', '.join(f'`{t}`' for t in tests)}" for m, tests in verdict.flaky.items()]
+    shown = [m for m in survivors(head, touched.head_names) if m not in verdict.flukes]
     if shown:
         lines += ["", f"<details><summary>{len(shown)} surviving mutants on the head</summary>", ""]
         for mutant in shown[:MAX_SHOWN_SURVIVORS]:
@@ -1260,6 +1284,8 @@ def main() -> None:
         "base_results": base.results if base else {},
         "head_results": head.results,
         "flaky": verdict.flaky,
+        "flukes": verdict.flukes,
+        "carried": verdict.carried,
         "unchecked": checks.unchecked,
         "pragmas_stripped": head.pragmas_stripped,
         "canary_failed": head.canary_failed,
