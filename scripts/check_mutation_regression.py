@@ -626,14 +626,18 @@ def _dotted_file(tree: Path, root: Path, dotted: str) -> str | None:
     return None
 
 
-def imports_of(tree: Path, rel: str) -> set[str]:
-    """Files under tests/ that `rel` imports, resolved every way pytest's default import mode makes them importable."""
+def imports_of(tree: Path, rel: str, test_dirs: set[Path]) -> set[str]:
+    """Files under tests/ that `rel` imports or loads as a pytest plugin.
+
+    An absolute name resolves where pytest's default import mode puts it: the repo root, the file's own
+    directory, or the first directory above its package. A name none of those has resolves from every
+    directory under tests/, since a test can put any of them on sys.path itself.
+    """
     path = tree / rel
     try:
         module = ast.parse(path.read_text())
     except (SyntaxError, UnicodeDecodeError):
         return set()
-    # pytest puts the first directory above the test's package on sys.path, and runs from the repo root
     basedir = path.parent
     while (basedir / "__init__.py").is_file() and basedir != tree:
         basedir = basedir.parent
@@ -641,7 +645,10 @@ def imports_of(tree: Path, rel: str) -> set[str]:
     found: set[str] = set()
     for node in ast.walk(module):
         wanted: list[tuple[set[Path], str]]
-        if isinstance(node, ast.Import):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pytest_plugins" for t in node.targets):
+            plugins = [node.value] if isinstance(node.value, ast.Constant) else getattr(node.value, "elts", [])
+            wanted = [(roots, p.value) for p in plugins if isinstance(p, ast.Constant) and isinstance(p.value, str)]
+        elif isinstance(node, ast.Import):
             wanted = [(roots, ".".join(a.name.split(".")[: i + 1])) for a in node.names for i in range(a.name.count(".") + 1)]
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             wanted = [(roots, node.module)] + [(roots, f"{node.module}.{a.name}") for a in node.names]
@@ -656,10 +663,10 @@ def imports_of(tree: Path, rel: str) -> set[str]:
         else:
             continue
         for search, dotted in wanted:
-            for root in search:
-                hit = _dotted_file(tree, root, dotted)
-                if hit and hit.startswith(TESTS_PREFIX):
-                    found.add(hit)
+            hits = {_dotted_file(tree, root, dotted) for root in search} - {None}
+            if not hits and search is roots:
+                hits = {_dotted_file(tree, root, dotted) for root in test_dirs} - {None}
+            found.update(h for h in hits if h and h.startswith(TESTS_PREFIX))
     return found
 
 
@@ -669,10 +676,12 @@ def tests_using(tree: Path, support: list[str]) -> set[str]:
     A test runs a helper it imports, directly or through other helpers, and every conftest.py and
     package __init__.py in the directories above it.
     """
+    sources = sorted((tree / TESTS_PREFIX).rglob("*.py"))
+    test_dirs = {d for path in sources for d in path.parents if d.is_relative_to(tree / TESTS_PREFIX)}
     importers: dict[str, set[str]] = {}
-    for path in (tree / TESTS_PREFIX).rglob("*.py"):
+    for path in sources:
         rel = str(path.relative_to(tree))
-        for imported in imports_of(tree, rel):
+        for imported in imports_of(tree, rel, test_dirs):
             importers.setdefault(imported, set()).add(rel)
     reached = {p for p in support if (tree / p).is_file()}
     pending = list(reached)
