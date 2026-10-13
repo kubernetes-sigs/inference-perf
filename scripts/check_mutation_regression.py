@@ -293,10 +293,25 @@ def touched_functions(base: str, do_not_mutate: list[str]) -> Touched:
     return touched
 
 
+def is_test_file(path: str) -> bool:
+    return Path(path).name.startswith("test_") and path.endswith(".py")
+
+
 def changed_test_files(base: str) -> list[str]:
-    changed = git("diff", "--name-only", "--diff-filter=d", base, "--", TESTS_PREFIX).splitlines()
-    changed += git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines()
-    return sorted({p for p in changed if Path(p).name.startswith("test_") and p.endswith(".py")})
+    """Test files the change adds, edits, deletes or renames, under their names on both sides.
+
+    A deleted test, or one renamed out of the suite, still exists on the base, and what it ran there
+    is where the change can let survivors through.
+    """
+    changed: set[str] = set()
+    for line in git("diff", "--name-status", "-M", base, "--", TESTS_PREFIX).splitlines():
+        _, *paths = line.split("\t")
+        if any(is_test_file(p) for p in paths):
+            changed.update(paths)
+    changed.update(
+        p for p in git("ls-files", "--others", "--exclude-standard", "--", TESTS_PREFIX).splitlines() if is_test_file(p)
+    )
+    return sorted(changed)
 
 
 def unit_suite(tree: Path) -> list[str]:
