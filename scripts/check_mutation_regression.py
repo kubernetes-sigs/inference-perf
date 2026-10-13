@@ -30,6 +30,7 @@ mutating, and hiding code from mutmut behind a decorator fails on its own.
 import argparse
 import ast
 import fnmatch
+import importlib.metadata
 import io
 import json
 import os
@@ -707,7 +708,126 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
     return verdict
 
 
-def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdict: Verdict) -> str:
+@dataclass
+class Checks:
+    """Findings that need no mutants. They fail a change even when nothing is in scope to mutate."""
+
+    failures: list[str] = field(default_factory=list)
+    # one markdown block per failure, for the summary
+    sections: list[str] = field(default_factory=list)
+
+    def fail(self, failure: str, title: str, lines: list[str]) -> None:
+        self.failures.append(failure)
+        self.sections.append("\n".join([f"{title}:", "", *(f"- {line}" for line in lines)]))
+
+
+def head_files() -> list[str]:
+    """Every file in the working tree that git tracks or would track."""
+    listed = git("ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+    return [p for p in listed if p and Path(p).is_file()]
+
+
+def base_files(base: str) -> list[str]:
+    return [p for p in git("ls-tree", "-r", "-z", "--name-only", base).split("\0") if p]
+
+
+def first_party_roots(paths: list[str]) -> set[str]:
+    """Top-level import names that reach repo code outside the package: root modules and root directories holding Python."""
+    roots = set()
+    for path in paths:
+        if path.endswith(".py"):
+            top, sep, _ = path.partition("/")
+            roots.add(top if sep else top.removesuffix(".py"))
+    return roots - {SOURCE_PREFIX.rstrip("/")}
+
+
+def _called_name(func: ast.expr) -> str:
+    return func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+
+
+def outside_imports(tree: Path, files: list[str], roots: set[str]) -> list[str]:
+    """file:line of each import in `files` of a name in `roots`, including a module loaded by its name as a string.
+
+    mutmut only mutates inference_perf/, so logic moved outside it and imported back is never checked.
+    """
+    hits: list[tuple[str, int, str]] = []
+    for rel in files:
+        try:
+            module = ast.parse((tree / rel).read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(module):
+            if not isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
+                continue
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            elif isinstance(node, ast.Call) and _called_name(node.func) in ("import_module", "__import__") and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    names = [first.value]
+            hits += [(rel, node.lineno, top) for top in (n.partition(".")[0] for n in names) if top in roots]
+    return [f"{rel}:{line} imports `{top}`" for rel, line, top in sorted(hits)]
+
+
+def root_modules(paths: list[str]) -> set[str]:
+    """Modules and regular packages at the repo root. Running from the root, they win over anything installed."""
+    modules = {p.removesuffix(".py") for p in paths if "/" not in p and p.endswith(".py")}
+    return modules | {p.split("/")[0] for p in paths if p.count("/") == 1 and p.endswith("/__init__.py")}
+
+
+def shadowing_roots(base_paths: list[str], head_paths: list[str]) -> list[str]:
+    """Root modules the change adds under a name the standard library or an installed distribution already uses."""
+    taken = set(sys.stdlib_module_names) | set(importlib.metadata.packages_distributions())
+    return sorted((root_modules(head_paths) - root_modules(base_paths)) & taken)
+
+
+def static_checks(merge_base: str) -> Checks:
+    checks = Checks()
+    head, base = head_files(), base_files(merge_base)
+    sources = [p for p in head if p.startswith(SOURCE_PREFIX) and p.endswith(".py")]
+    hits = outside_imports(Path("."), sources, first_party_roots(head))
+    if hits:
+        checks.fail(
+            "Code under inference_perf/ imports repo code outside it, which is never mutated",
+            "Imports from outside inference_perf/",
+            hits,
+        )
+    shadowing = shadowing_roots(base, head)
+    if shadowing:
+        names = ", ".join(f"`{n}`" for n in shadowing)
+        checks.fail(
+            f"New root modules shadow an installed or standard library module: {names}",
+            "Root modules that shadow an import",
+            [f"`{n}`" for n in shadowing],
+        )
+    return checks
+
+
+def publish(summary: str, record: dict[str, Any], output: str) -> None:
+    """Print the summary, add it to the job summary, write the record, and exit 1 if the record holds failures."""
+    print(summary)
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(summary)
+    Path(output).write_text(json.dumps(record, indent=2) + "\n")
+    if record["failures"]:
+        sys.exit(1)
+
+
+def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, checks: Checks) -> None:
+    """End a run with no function in scope. Passes unless a check that needs no mutants failed."""
+    if not checks.failures:
+        print(message)
+        return
+    lines = [f"## Mutation ratchet against `{args.base}`", "", message, *(f"\n{s}" for s in checks.sections)]
+    lines += ["", "FAIL: " + "; ".join(checks.failures)]
+    publish("\n".join(lines) + "\n", {"base": args.base, "merge_base": merge_base, "failures": checks.failures}, args.output)
+
+
+def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdict: Verdict, checks: Checks) -> str:
     before = by_function(survivors(base, touched.base_names))
     after = by_function([m for m in survivors(head, touched.head_names) if m not in verdict.flaky])
     lines = [f"## Mutation ratchet against `{base_ref}`", "", "| Function | Why | Base | Head |", "|---|---|---|---|"]
@@ -736,6 +856,7 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
         if len(shown) > MAX_SHOWN_SURVIVORS:
             lines.append(f"{len(shown) - MAX_SHOWN_SURVIVORS} more not shown.")
         lines.append("</details>")
+    lines += [f"\n{section}" for section in checks.sections]
     lines += ["", "FAIL: " + "; ".join(verdict.failures) if verdict.failures else "PASS"]
     return "\n".join(lines) + "\n"
 
@@ -817,10 +938,12 @@ def main() -> None:
     merge_base = git("merge-base", args.base, "HEAD").strip()
     config = load_config(merge_base)
     do_not_mutate = [str(p) for p in config.get("do_not_mutate", [])]
+    checks = static_checks(merge_base)
     touched = touched_functions(merge_base, do_not_mutate)
     changed_tests = changed_test_files(merge_base) + changed_test_support(merge_base)
     if not (touched.existing or touched.new or touched.deleted or changed_tests):
-        print(f"No functions under {SOURCE_PREFIX} and no tests changed since {args.base}. Nothing to mutate.")
+        message = f"No functions under {SOURCE_PREFIX} and no tests changed since {args.base}. Nothing to mutate."
+        nothing_to_mutate(message, args, merge_base, checks)
         return
 
     pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
@@ -834,7 +957,7 @@ def main() -> None:
         if tests:
             add_functions_run_by_changed_tests(touched, workdir / "base", workdir / "head", tests)
         if not (touched.base_names or touched.head_names):
-            print(f"No function in scope since {args.base}. Nothing to mutate.")
+            nothing_to_mutate(f"No function in scope since {args.base}. Nothing to mutate.", args, merge_base, checks)
             return
         print(
             f"Mutating {len(touched.existing)} existing ({len(touched.via_tests)} via changed tests), "
@@ -854,7 +977,8 @@ def main() -> None:
         if touched.head_names:
             head = run_side(workdir / "head", touched.head_names, config, args.max_children, stripped["head"], canary=True)
         verdict = judge(touched, base, head, pytest_args)
-        summary = report(args.base, touched, base, head, verdict)
+        verdict.failures += checks.failures
+        summary = report(args.base, touched, base, head, verdict, checks)
     except MutationRunError as e:
         print(f"ERROR: {e}")
         report_error(str(e))
@@ -865,11 +989,7 @@ def main() -> None:
         else:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    print(summary)
-    if os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-            f.write(summary)
-    record = {
+    record: dict[str, Any] = {
         "base": args.base,
         "merge_base": merge_base,
         "existing": touched.existing,
@@ -884,9 +1004,7 @@ def main() -> None:
         "canary_failed": head.canary_failed,
         "failures": verdict.failures,
     }
-    Path(args.output).write_text(json.dumps(record, indent=2) + "\n")
-    if verdict.failures:
-        sys.exit(1)
+    publish(summary, record, args.output)
 
 
 if __name__ == "__main__":
