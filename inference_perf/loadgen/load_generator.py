@@ -410,7 +410,14 @@ class Worker(mp.Process):
                                 permit_acquired = True
                             except (AsyncioTimeoutError, TimeoutError):
                                 continue
-                        if not permit_acquired or self.draining:
+                        # The stage signals may change while acquire() is
+                        # pending, before the worker loop observes teardown.
+                        if (
+                            not permit_acquired
+                            or self.draining
+                            or not self.request_phase.is_set()
+                            or self.cancel_signal.is_set()
+                        ):
                             return
 
                         with self.active_requests_counter.get_lock():

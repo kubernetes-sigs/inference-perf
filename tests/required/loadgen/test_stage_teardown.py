@@ -33,6 +33,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
+from contextlib import suppress
 from typing import Any, Generator, List, Optional, Tuple
 
 import pytest
@@ -55,7 +56,7 @@ from inference_perf.config import (
     TraceSessionReplayLoadStage,
 )
 from inference_perf.datagen import MockDataGenerator, SessionGenerator
-from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, Worker
+from inference_perf.loadgen.load_generator import LoadGenerator, RequestQueueData, TeardownResult, Worker
 from inference_perf.utils.request_queue import Drained, RequestQueue
 
 
@@ -157,12 +158,16 @@ class ChainedChatData(ChatCompletionAPIData):
     modeling a session-replay successor parked on its predecessor."""
 
     wait_flag_path: Optional[str] = None
+    permit_wait_ready_path: Optional[str] = None
 
     async def wait_for_predecessors_and_substitute(self) -> None:
         if self.wait_flag_path is None:
             return
         while not os.path.exists(self.wait_flag_path):
             await asyncio.sleep(0.05)
+        if self.permit_wait_ready_path is not None:
+            with open(self.permit_wait_ready_path, "w") as f:
+                f.write("ready\n")
 
 
 class ChainDataGenerator(MockDataGenerator):
@@ -427,6 +432,101 @@ async def test_dependency_wait_does_not_consume_request_concurrency(tmp_path: ob
     finally:
         with open(predecessor_done, "w") as f:
             f.write("done\n")
+        harness.shutdown()
+
+
+async def test_permit_released_after_teardown_does_not_dispatch_waiter(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session request that acquires the only permit after the parent has
+    signalled teardown must not be dispatched before the worker starts its
+    local wind-down."""
+    dispatch_log = os.path.join(str(tmp_path), "dispatches.log")
+    release_root = os.path.join(str(tmp_path), "release-root.flag")
+    predecessor_done = os.path.join(str(tmp_path), "predecessor.done")
+    waiter_ready = os.path.join(str(tmp_path), "waiter-ready.flag")
+    allow_wind_down = os.path.join(str(tmp_path), "allow-wind-down.flag")
+    with open(predecessor_done, "w") as f:
+        f.write("done\n")
+
+    # Keep the worker's local draining flag false until the waiter has reacted
+    # to the released permit. This isolates the shared-signal recheck added by
+    # the fix: without it, the waiter dispatches before wind-down is allowed.
+    original_wind_down = Worker._wind_down_stage
+
+    async def delayed_wind_down(worker: Worker, tasks: List[asyncio.Task[None]]) -> None:
+        while not os.path.exists(allow_wind_down):
+            await asyncio.sleep(0.01)
+        await original_wind_down(worker, tasks)
+
+    # The autouse fixture forces fork, so the child inherits this patch. The
+    # parent-side monkeypatch cleanup is sufficient once the child exits.
+    monkeypatch.setattr(Worker, "_wind_down_stage", delayed_wind_down)
+
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    harness = _Harness(
+        RecordingGateClient(dispatch_log, release_root),
+        teardown_grace_seconds=2.0,
+        datagen=datagen,
+        worker_max_concurrency=1,
+    )
+
+    now = time.perf_counter()
+    root = ChainedChatData(messages=[ChatMessage(role="user", content="session-root")])
+    waiter = ChainedChatData(
+        messages=[ChatMessage(role="user", content="session-waiter")],
+        wait_flag_path=predecessor_done,
+        permit_wait_ready_path=waiter_ready,
+    )
+    harness.request_queue.put(RequestQueueData(0, root, now, None), 0)
+    harness.request_queue.put(RequestQueueData(0, waiter, now, None), 0)
+
+    teardown: Optional[asyncio.Task[TeardownResult]] = None
+    try:
+        await _wait_for_line(dispatch_log, "session-root")
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(waiter_ready) and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert os.path.exists(waiter_ready), "second request did not reach permit admission"
+        await asyncio.sleep(0.1)
+
+        teardown = asyncio.create_task(
+            harness.loadgen._teardown_stage(
+                0,
+                harness.request_queue,
+                harness.request_phase,
+                harness.cancel_signal,
+            )
+        )
+        deadline = time.monotonic() + 5.0
+        while (not harness.cancel_signal.is_set() or harness.request_phase.is_set()) and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert harness.cancel_signal.is_set()
+        assert not harness.request_phase.is_set()
+        with open(release_root, "w") as f:
+            f.write("done\n")
+
+        deadline = time.monotonic() + 5.0
+        while harness.finished_counter.value < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert harness.finished_counter.value == 2, "waiter did not react to the released permit"
+        with open(dispatch_log) as f:
+            dispatches_before_wind_down = f.read().splitlines()
+
+        with open(allow_wind_down, "w") as f:
+            f.write("continue\n")
+        await teardown
+
+        assert dispatches_before_wind_down == ["session-root"]
+    finally:
+        if not os.path.exists(allow_wind_down):
+            with open(allow_wind_down, "w") as f:
+                f.write("continue\n")
+        if teardown is not None and not teardown.done():
+            teardown.cancel()
+            with suppress(asyncio.CancelledError):
+                await teardown
         harness.shutdown()
 
 
