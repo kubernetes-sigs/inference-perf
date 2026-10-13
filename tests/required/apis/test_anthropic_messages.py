@@ -29,7 +29,7 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
 
 def _mock_tokenizer() -> MagicMock:
     tokenizer = MagicMock()
-    tokenizer.count_tokens.side_effect = lambda text: len((text or "").split())
+    tokenizer.count_tokens.side_effect = lambda text, *args, **kwargs: len((text or "").split())
     return tokenizer
 
 
@@ -142,7 +142,10 @@ async def test_anthropic_messages_process_response_uses_anthropic_usage() -> Non
 
     assert info.request_metrics.text.input_tokens == 3
     assert info.response_metrics is not None
-    assert info.response_metrics.output_tokens == 5
+    # output_tokens is the client re-tokenized count ("hello back" -> 2),
+    # the server's output_tokens stays in server_usage for provenance (#885).
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
     assert info.extra_info["stop_reason"] == "end_turn"
 
 
@@ -168,7 +171,8 @@ async def test_anthropic_messages_streaming_preserves_usage_across_events() -> N
 
     assert info.request_metrics.text.input_tokens == 3
     assert info.response_metrics is not None
-    assert info.response_metrics.output_tokens == 5
+    # Client count ("hello back" -> 2), not the server's output_tokens=5 (#885).
+    assert info.response_metrics.output_tokens == 2
     assert info.response_metrics.server_usage == {"input_tokens": 3, "output_tokens": 5}
     assert info.extra_info["output_text"] == "hello back"
     assert info.extra_info["output_message"] == {"role": "assistant", "content": "hello back"}
@@ -208,6 +212,10 @@ async def test_session_anthropic_messages_records_tool_use_for_replay() -> None:
     )
 
     assert info.output_text is None
+    assert info.response_metrics is not None
+    # Tool-only response has no text: client count is 0, server count stays in server_usage (#885).
+    assert info.response_metrics.output_tokens == 0
+    assert info.response_metrics.server_usage == {"input_tokens": 4, "output_tokens": 6}
     assert registry.get_output_by_event_id("session_1:event_1") == ""
     assert registry.get_message_by_event_id("session_1:event_1") == {
         "role": "assistant",
@@ -264,7 +272,7 @@ async def test_session_anthropic_messages_streaming_records_tool_use_for_replay(
     assert info.output_text is None
     assert info.request_metrics.text.input_tokens == 4
     assert info.response_metrics is not None
-    assert info.response_metrics.output_tokens == 6
+    assert info.response_metrics.output_tokens == 0
     assert info.response_metrics.server_usage == {"input_tokens": 4, "output_tokens": 6}
     assert registry.get_output_by_event_id("session_1:event_1") == ""
     assert registry.get_message_by_event_id("session_1:event_1") == {
@@ -278,3 +286,47 @@ async def test_session_anthropic_messages_streaming_records_tool_use_for_replay(
         ],
     }
     assert tracker.is_event_completed("session_1", "event_1")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_unary_without_usage_falls_back_to_client_count() -> None:
+    """No usage reported: output is the client count and server_usage is None (#885)."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_response(
+        {
+            "content": [{"type": "text", "text": "hello back"}],
+            "stop_reason": "end_turn",
+        }
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage is None
+
+
+@pytest.mark.asyncio
+async def test_anthropic_streaming_without_usage_falls_back_to_client_count() -> None:
+    """Streaming with no usage chunk: client count, no server provenance (#885)."""
+    data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
+    response = _mock_stream_response(
+        [
+            b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hello back"}}\n\n',
+            b'data: {"type": "message_stop"}\n\n',
+        ]
+    )
+
+    info = await data.process_response(
+        response=response,
+        config=APIConfig(type=APIType.AnthropicMessages, streaming=True),
+        tokenizer=_mock_tokenizer(),
+    )
+
+    assert info.response_metrics is not None
+    assert info.response_metrics.output_tokens == 2
+    assert info.response_metrics.server_usage is None
