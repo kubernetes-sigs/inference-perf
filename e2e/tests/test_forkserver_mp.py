@@ -23,6 +23,7 @@ multiprocessing path (num_workers > 0) with a real tokenizer-backed datagen and
 the mock server (so no real model is required).
 """
 
+from pathlib import Path
 from typing import Any, Dict
 
 import pytest
@@ -37,6 +38,8 @@ _TOKENIZER = "gpt2"
 _RATE = 2
 _DURATION = 5
 _EXPECTED_REQUESTS = _RATE * _DURATION
+
+_OTEL_TRACES = Path(__file__).resolve().parents[2] / "examples" / "otel" / "test_traces" / "simple"
 
 
 def _config(datagen_type: str) -> Dict[str, Any]:
@@ -58,6 +61,24 @@ def _config(datagen_type: str) -> Dict[str, Any]:
         "server": {"type": "mock", "base_url": "http://0.0.0.0:8000"},
         "tokenizer": {"pretrained_model_name_or_path": _TOKENIZER},
         "report": {"request_lifecycle": {"summary": True, "per_stage": True, "per_request": True}},
+    }
+
+
+# Wraps a replay data block in a 2-worker trace_session_replay run against the mock server,
+# 2 sessions in flight at once.
+def _replay_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "data": data,
+        "load": {
+            "type": "trace_session_replay",
+            "stages": [{"concurrent_sessions": 2}],
+            "num_workers": 2,
+            "worker_max_concurrency": 4,
+        },
+        "api": {"type": "chat"},
+        "server": {"type": "mock", "base_url": "http://0.0.0.0:8000"},
+        "tokenizer": {"pretrained_model_name_or_path": _TOKENIZER},
+        "report": {"request_lifecycle": {"summary": True, "per_stage": True}},
     }
 
 
@@ -84,4 +105,60 @@ async def test_real_datagen_pickles_into_forkserver_workers(datagen_type: str) -
     assert "use of fork() may lead to deadlocks" not in result.stdout, (
         f"fork() deprecation warning present for datagen={datagen_type}; "
         f"workers are not using the forkserver context.\n{result.stdout}"
+    )
+
+
+# Session replay datagens are built with the run's SyncManager, which cannot be pickled.
+# 4 synthetic agentic sessions x 2 turns = 8 requests, the two sample OTel chains = 6.
+# Each run uses 2 workers and every request must succeed.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data, expected_requests",
+    [
+        pytest.param(
+            {
+                "type": "synthetic_agentic",
+                "synthetic_agentic": {
+                    "num_sessions": 4,
+                    "seed": 1,
+                    "theme_mix": {"generic": {"weight": 1.0}},
+                    "turns_per_session": {"type": "fixed", "mean": 2},
+                    "fanout_probability": 0.0,
+                    "tool_loop_depth": {"type": "fixed", "mean": 0},
+                    "tool_catalog_size_per_agent": {"type": "fixed", "mean": 0},
+                    "input_tokens_per_turn": {"type": "fixed", "mean": 50},
+                    "output_tokens_per_turn": {"type": "fixed", "mean": 10},
+                    "tool_call_latency_sec": {"type": "fixed", "mean": 0},
+                },
+            },
+            8,
+            id="synthetic_agentic",
+        ),
+        pytest.param(
+            {
+                "type": "otel_trace_replay",
+                "otel_trace_replay": {
+                    "trace_files": [
+                        str(_OTEL_TRACES / "simple_chain.json"),
+                        str(_OTEL_TRACES / "simple_chain_alt.json"),
+                    ],
+                    "use_static_model": True,
+                    "static_model_name": "mock_model",
+                },
+            },
+            6,
+            id="otel_trace_replay",
+        ),
+    ],
+)
+async def test_replay_datagen_pickles_into_forkserver_workers(data: Dict[str, Any], expected_requests: int) -> None:
+    result = await run_benchmark_minimal(_replay_config(data), timeout_sec=180)
+
+    assert result.success, (
+        f"Benchmark failed for datagen={data['type']} "
+        f"(rc={result.return_code}, timed_out={result.timed_out}).\n{result.stdout}"
+    )
+    summary = result.reports["summary_lifecycle_metrics.json"]
+    assert summary["successes"]["count"] == expected_requests, (
+        f"expected {expected_requests} successful requests, got {summary['successes']['count']}"
     )
