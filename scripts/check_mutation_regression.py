@@ -35,6 +35,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -74,9 +75,10 @@ SPINNER = re.compile(r"^\s*[⠀-⣿] ")
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
 
-# The canary sets the active mutant to an id mutmut never generates, so every
-# function runs unmutated. Tests that still fail are reacting to the harness.
-CANARY_SUFFIX = "__mutmut_999999999"
+# The canary sets the active mutant to an id mutmut never generated, so every
+# function runs unmutated. Tests that still fail are reacting to the harness. The
+# id is random per run, so a test cannot recognise the canary and pass only for it.
+CANARY_RANGE = 10**9
 
 # A rerun gets its tests' measured time, scaled for a busier runner, plus room for pytest to start.
 # Past that it is hung, and a hang must not run into the workflow's 60 minute limit.
@@ -805,14 +807,23 @@ def failed_tests(output: str) -> list[str]:
     return sorted({line.split(" ")[1] for line in lines if line.startswith(("FAILED ", "ERROR ")) and " " in line})
 
 
+def canary_id(name: str, taken: set[str]) -> str:
+    """A mutant id for `name` in mutmut's format that is not in `taken`, picked at random."""
+    while True:
+        candidate = f"{name}__mutmut_{secrets.randbelow(CANARY_RANGE) + 1}"
+        if candidate not in taken:
+            return candidate
+
+
 def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
     """Run the tests covering `names` with an active mutant id that matches no mutant. One pass clears a flaky test."""
     tests = tests_covering(side.tree, names)
     if not tests:
         return True
+    canary = canary_id(names[0], set(side.results))
     for _ in range(RERUNS):
         # a hang counts as a failed run, so tests that only hang under the harness still fail the canary
-        if rerun(side, tests, names[0] + CANARY_SUFFIX, pytest_args)[0] in (0, 5):  # 5: nothing collected
+        if rerun(side, tests, canary, pytest_args)[0] in (0, 5):  # 5: nothing collected
             return True
     return False
 
@@ -821,7 +832,7 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     """Run the side's suite unmutated to the end and name what fails. mutmut's setup run swallows pytest's output."""
     command = [sys.executable, "-m", "pytest", "--rootdir=.", "-rfE", "--tb=short", "--disable-warnings", "-p", "no:randomly"]
     command += ["-p", "no:random-order", f"--timeout={DIAGNOSIS_TEST_TIMEOUT_S}", *side.tests, *pytest_args]
-    env = {**os.environ, "MUTANT_UNDER_TEST": "setup" + CANARY_SUFFIX}
+    env = {**os.environ, "MUTANT_UNDER_TEST": canary_id("setup", set())}
     try:
         run = run_bounded(command, side.tree / "mutants", env, DIAGNOSIS_TIMEOUT_S)
         output = run.stdout + run.stderr
