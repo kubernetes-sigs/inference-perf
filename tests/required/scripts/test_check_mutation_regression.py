@@ -515,3 +515,53 @@ def test_hung_reruns_fail_closed(cmr: Any, tmp_path: Path, monkeypatch: pytest.M
 
     assert cmr.still_survives(side, "m.x_f__mutmut_1", [])
     assert not cmr.canary_passes(side, ["m.x_f"], [])
+
+
+# Commits inference_perf/m.py with f(x) = x > 1 and tests/test_m.py, whose test_f pins both sides of
+# the comparison. Returns the repo root.
+def tested_function_repo(tmp_path: Path) -> Path:
+    (tmp_path / "inference_perf").mkdir(parents=True)
+    (tmp_path / "inference_perf" / "__init__.py").write_text("")
+    (tmp_path / "inference_perf" / "m.py").write_text("def f(x):\n    return x > 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "from inference_perf.m import f\n\n\ndef test_f():\n    assert f(2)\n    assert not f(1)\n"
+    )
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-qm", "base")
+    return tmp_path
+
+
+# Scope after a change: the functions the diff touches plus those the changed tests run, using an
+# export of HEAD as the base tree and the working tree as the head.
+def scope_after_change(cmr: Any, repo: Path, tmp_path: Path) -> Any:
+    touched = cmr.touched_functions("HEAD", [])
+    base_tree = tmp_path / "base-tree"
+    cmr.export_base("HEAD", base_tree)
+    cmr.add_functions_run_by_changed_tests(touched, base_tree, repo, cmr.changed_test_files("HEAD"))
+    return touched
+
+
+# The change deletes tests/test_m.py and touches nothing else. The deleted file still counts as a
+# changed test, so f, which only it ran, comes into scope and its survivors can rise.
+def test_deleting_a_test_file_brings_what_it_ran_into_scope(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tested_function_repo(tmp_path / "repo")
+    (repo / "tests" / "test_m.py").unlink()
+    monkeypatch.chdir(repo)
+
+    assert cmr.changed_test_files("HEAD") == ["tests/test_m.py"]
+    assert scope_after_change(cmr, repo, tmp_path).via_tests == {"inference_perf.m.x_f"}
+
+
+# The change renames tests/test_m.py to tests/checks_m.py, so it drops out of the unit suite. Both
+# names count as changed tests, and f comes into scope.
+def test_renaming_a_test_file_away_brings_what_it_ran_into_scope(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tested_function_repo(tmp_path / "repo")
+    git(repo, "mv", "tests/test_m.py", "tests/checks_m.py")
+    monkeypatch.chdir(repo)
+
+    assert cmr.changed_test_files("HEAD") == ["tests/checks_m.py", "tests/test_m.py"]
+    assert scope_after_change(cmr, repo, tmp_path).via_tests == {"inference_perf.m.x_f"}
