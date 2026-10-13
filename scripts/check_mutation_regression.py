@@ -69,6 +69,12 @@ MAX_SHOWN_SURVIVORS = 30
 # function runs unmutated. Tests that still fail are reacting to the harness.
 CANARY_SUFFIX = "__mutmut_999999999"
 
+# Limits for the plain suite run that explains a failed setup. mutmut's own run
+# has neither, so one hung test would otherwise hold the job to the workflow timeout.
+DIAGNOSIS_TEST_TIMEOUT_S = 300
+DIAGNOSIS_TIMEOUT_S = 20 * 60
+DIAGNOSIS_TAIL_LINES = 40
+
 
 @dataclass
 class Touched:
@@ -104,6 +110,21 @@ class Side:
 
 class MutationRunError(Exception):
     pass
+
+
+class SetupFailure(MutationRunError):
+    """mutmut's unmutated setup run failed twice. Carries what a plain run of the same suite shows."""
+
+    def __init__(self, tree: Path, failing: list[str], tail: str) -> None:
+        self.failing, self.tail = failing, tail
+        super().__init__(f"Unit tests fail in the mutation tree {tree} before any mutant runs.\n{self.details()}")
+
+    def details(self) -> str:
+        shown = (
+            "\n".join(f"  {test}" for test in self.failing)
+            or "  none in a plain rerun, so it is flaky or specific to mutmut's run"
+        )
+        return f"Failing tests:\n{shown}\nLast lines of the pytest run:\n{self.tail}"
 
 
 def git(*args: str) -> str:
@@ -412,7 +433,26 @@ def canary_passes(side: Side, names: list[str], pytest_args: list[str]) -> bool:
     return False
 
 
-def run_mutmut(side: Side, globs: list[str], max_children: int) -> tuple[str, bool]:
+def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
+    """Run the side's suite unmutated to the end and name what fails. mutmut's setup run swallows pytest's output."""
+    command = [sys.executable, "-m", "pytest", "--rootdir=.", "-rfE", "--tb=short", "-p", "no:randomly"]
+    command += ["-p", "no:random-order", f"--timeout={DIAGNOSIS_TEST_TIMEOUT_S}", *side.tests, *pytest_args]
+    env = {**os.environ, "MUTANT_UNDER_TEST": "setup" + CANARY_SUFFIX}
+    try:
+        run = subprocess.run(
+            command, cwd=side.tree / "mutants", env=env, capture_output=True, text=True, timeout=DIAGNOSIS_TIMEOUT_S
+        )
+        output = run.stdout + run.stderr
+    except subprocess.TimeoutExpired as e:
+        # captured output is bytes here even with text=True
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else ""
+        output = partial + f"\nThe suite was still running after {DIAGNOSIS_TIMEOUT_S} s and was stopped."
+    lines = output.splitlines()
+    failing = sorted({line.split(" ")[1] for line in lines if line.startswith(("FAILED ", "ERROR ")) and " " in line})
+    return SetupFailure(side.tree, failing, "\n".join(lines[-DIAGNOSIS_TAIL_LINES:]))
+
+
+def run_mutmut(side: Side, globs: list[str], max_children: int, pytest_args: list[str]) -> tuple[str, bool]:
     """Run mutmut, retrying once when its setup test runs fail. Returns the output and whether no test covered anything."""
     for attempt in range(2):
         run = mutmut(side.tree, "run", "--max-children", str(max_children), *globs)
@@ -420,10 +460,11 @@ def run_mutmut(side: Side, globs: list[str], max_children: int) -> tuple[str, bo
         uncovered = NO_COVERING_TESTS in output
         if run.returncode == 0 or uncovered or NOTHING_MATCHES in output:
             return output, uncovered
-        if attempt == 0 and any(marker in output for marker in SETUP_FAILURES):
-            side.note = "mutmut's setup test run failed once and passed on retry"
-            continue
-        break
+        if not any(marker in output for marker in SETUP_FAILURES):
+            break
+        if attempt == 1:
+            raise diagnose_setup_failure(side, pytest_args)
+        side.note = "mutmut's setup test run failed once and passed on retry"
     # drop mutmut's spinner frames so the real error is what's left
     detail = "\n".join(line for line in output.splitlines() if line.strip() and not SPINNER.match(line))
     raise MutationRunError(f"mutmut run failed in {side.tree} (exit {run.returncode}):\n{detail[-3000:]}")
@@ -435,7 +476,8 @@ def run_side(
     side = Side(tree=tree, tests=unit_suite(tree), pragmas_stripped=pragmas_stripped)
     files = sorted({p for p in (_source_path(tree, name.rpartition(".")[0]) for name in names) if p is not None})
     write_config(tree, config, files, side.tests)
-    output, uncovered = run_mutmut(side, [f"{n}__mutmut_*" for n in names], max_children)
+    pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
+    output, uncovered = run_mutmut(side, [f"{n}__mutmut_*" for n in names], max_children, pytest_args)
     if NOTHING_MATCHES in output:
         side.note = "no mutants (decorated or nothing to mutate)"
         return side
@@ -450,7 +492,6 @@ def run_side(
     if uncovered:
         side.note = "no unit test runs these functions"
     elif canary and side.results:
-        pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
         side.canary_failed = not canary_passes(side, names, pytest_args)
     return side
 
@@ -572,6 +613,15 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     return "\n".join(lines) + "\n"
 
 
+def report_error(message: str) -> None:
+    """Put an error that stops the check where the PR author sees it: an annotation on the check and the job summary."""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::error title=Mutation ratchet::{message.splitlines()[0]}")
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(f"## Mutation ratchet: error\n\n```\n{message}\n```\n")
+
+
 def load_config(merge_base: str) -> dict[str, Any]:
     """[tool.mutmut] as the base branch has it, so a change cannot loosen its own check."""
     try:
@@ -593,7 +643,7 @@ def whole_package(args: argparse.Namespace) -> None:
         side = Side(tree=workdir, tests=unit_suite(workdir), pragmas_stripped=strip_no_mutate_pragmas(workdir))
         files = sorted(str(p.relative_to(workdir)) for p in (workdir / SOURCE_PREFIX).rglob("*.py"))
         write_config(workdir, config, [f for f in files if mutable(f, config.get("do_not_mutate", []))], side.tests)
-        run_mutmut(side, [], args.max_children)
+        run_mutmut(side, [], args.max_children, [str(a) for a in config.get("pytest_add_cli_args", [])])
         results: dict[str, str] = {}
         for line in mutmut(workdir, "results", "--all", "true").stdout.splitlines():
             mutant, sep, status = line.strip().rpartition(": ")
@@ -601,6 +651,7 @@ def whole_package(args: argparse.Namespace) -> None:
                 results[mutant] = status
     except MutationRunError as e:
         print(f"ERROR: {e}")
+        report_error(str(e))
         sys.exit(1)
     finally:
         if args.keep:
@@ -658,7 +709,14 @@ def main() -> None:
         )
         base = None
         if touched.base_names:
-            base = run_side(workdir / "base", touched.base_names, config, args.max_children, stripped["base"])
+            try:
+                base = run_side(workdir / "base", touched.base_names, config, args.max_children, stripped["base"])
+            except SetupFailure as e:
+                raise MutationRunError(
+                    f"The base branch {args.base} at {merge_base[:8]} fails its own unit tests in the mutation tree, "
+                    f"so there is nothing to compare this change against. Fix {args.base} first. "
+                    f"Every PR fails this check until then.\n{e.details()}"
+                ) from e
         head = Side(tree=workdir / "head", pragmas_stripped=stripped["head"])
         if touched.head_names:
             head = run_side(workdir / "head", touched.head_names, config, args.max_children, stripped["head"], canary=True)
@@ -666,6 +724,7 @@ def main() -> None:
         summary = report(args.base, touched, base, head, verdict)
     except MutationRunError as e:
         print(f"ERROR: {e}")
+        report_error(str(e))
         sys.exit(1)
     finally:
         if args.keep:
