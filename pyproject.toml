@@ -22,6 +22,7 @@ dependencies = [
     "pillow>=10.0.0",
     "prometheus-client>=0.20.0",
     "llmd-benchmark-report<0.3,>=0.2.1",
+    "sympy>=1.13.0,<1.15",
 ]
 requires-python = ">=3.12"
 readme = "README.md"
@@ -220,6 +221,7 @@ module = [
     "opentelemetry.*",
     "google.cloud.*",
     "PIL.*",
+    "sympy.*",
 ]
 ignore_missing_imports = true
 
