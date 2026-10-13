@@ -233,6 +233,10 @@ class ConversationReplayDataGenerator(DataGenerator, LazyLoadDataMixin):
     def is_preferred_worker_requested(self) -> bool:
         return True
 
+    def preferred_worker_count(self) -> Optional[int]:
+        # get_data pins request i to worker i % len(blueprints).
+        return len(self.blueprints)
+
     # -- LazyLoadDataMixin interface --------------------------------------
 
     def load_lazy_data(self, data: LazyLoadInferenceAPIData) -> InferenceAPIData:
