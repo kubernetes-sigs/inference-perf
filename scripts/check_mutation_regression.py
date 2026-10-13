@@ -27,6 +27,7 @@ mutating, and hiding code from mutmut behind a decorator fails on its own.
 
 import argparse
 import ast
+import fnmatch
 import io
 import json
 import os
@@ -231,7 +232,8 @@ def parse_hunks(diff: str) -> tuple[set[int], set[int]]:
 
 
 def mutable(path: str | None, do_not_mutate: list[str]) -> bool:
-    return path is not None and path.endswith(".py") and not any(Path(path).match(p) for p in do_not_mutate)
+    # fnmatch on the repo-relative path, as mutmut matches do_not_mutate, so `*` spans directories
+    return path is not None and path.endswith(".py") and not any(fnmatch.fnmatch(path, p) for p in do_not_mutate)
 
 
 def changed_source_files(base: str, do_not_mutate: list[str]) -> list[tuple[str | None, str | None]]:

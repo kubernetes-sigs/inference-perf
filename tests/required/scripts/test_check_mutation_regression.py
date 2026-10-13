@@ -455,3 +455,13 @@ def test_report_error_annotates_and_summarises(
 
     assert capsys.readouterr().out == "::error title=Mutation ratchet::The base branch is red.\n"
     assert "```\nThe base branch is red.\nFailing tests:\n  tests/test_a.py::test_bad\n```" in summary.read_text()
+
+
+# do_not_mutate = ["inference_perf/datagen/*", "skip.py"]. The glob excludes a file two levels below
+# datagen/, since `*` spans directories, and a bare file name excludes nothing outside the repo root.
+def test_mutable_matches_do_not_mutate_like_mutmut(cmr: Any) -> None:
+    patterns = ["inference_perf/datagen/*", "skip.py"]
+
+    assert not cmr.mutable("inference_perf/datagen/sub/b.py", patterns)
+    assert cmr.mutable("inference_perf/loadgen/skip.py", patterns)
+    assert cmr.mutable("inference_perf/loadgen/a.py", patterns)
