@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import importlib.util
+import json
+import os
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 from types import ModuleType
@@ -818,3 +821,74 @@ def test_judge_counts_a_survivor_only_some_reruns_kill(cmr: Any, monkeypatch: py
 
     assert verdict.failures == ["Surviving mutants rose from 1 to 2"]
     assert verdict.flaky == {"inference_perf.m.x_g__mutmut_2": ["tests/test_a.py::test_r"]}
+
+
+# A 0.5 s budget and a command whose shell starts a background sleep and then sleeps itself, both for
+# 30 s. The run stops at the budget with BudgetExhausted, and the background sleep, a grandchild, is
+# killed with it instead of holding the runner.
+def test_run_bounded_stops_the_whole_process_group_at_the_budget(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cmr, "BUDGET", cmr.Budget(0.5 / 60))
+    pid_file = tmp_path / "pid"
+
+    with pytest.raises(cmr.BudgetExhausted):
+        cmr.run_bounded(["sh", "-c", f"sleep 30 & echo $! > {pid_file}; sleep 30"], cwd=tmp_path)
+
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        for _ in range(50):
+            os.kill(pid, 0)
+            time.sleep(0.1)
+
+
+# A command's own 0.2 s limit binds before a 10 minute budget, so it raises TimeoutExpired, which the
+# caller treats as a hang, not BudgetExhausted. With no budget at all, a quick command just runs.
+def test_run_bounded_keeps_the_callers_own_timeout(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "BUDGET", cmr.Budget(10))
+    with pytest.raises(subprocess.TimeoutExpired):
+        cmr.run_bounded(["sleep", "5"], cwd=tmp_path, timeout=0.2)
+
+    monkeypatch.setattr(cmr, "BUDGET", cmr.Budget(None))
+    assert cmr.run_bounded(["echo", "hi"], cwd=tmp_path).stdout == "hi\n"
+
+
+# f changes, the base side finishes, and the budget runs out while mutating the head. The run exits 1,
+# and mutation.json and the summary name the budget, the stage, and f as not reached.
+def test_main_reports_what_the_budget_did_not_reach(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    write_tree(
+        repo,
+        {
+            "pyproject.toml": '[tool.mutmut]\nsource_paths = ["inference_perf"]\n',
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": GT,
+        },
+    )
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    (repo / "inference_perf" / "m.py").write_text("def f(x):\n    return x > 2\n")
+    monkeypatch.chdir(repo)
+    output = tmp_path / "mutation.json"
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--budget-minutes", "1", "--output", str(output)])
+    monkeypatch.setattr(cmr, "static_checks", lambda *a: cmr.Checks())
+    sides = iter([cmr.Side(tree=repo, results={"inference_perf.m.x_f__mutmut_1": "killed"})])
+
+    def run_side(*a: Any, **k: Any) -> Any:
+        side = next(sides, None)
+        if side is None:
+            raise cmr.BudgetExhausted()
+        return side
+
+    monkeypatch.setattr(cmr, "run_side", run_side)
+
+    with pytest.raises(SystemExit) as exited:
+        cmr.main()
+
+    failure = "Ran out of the 1 minute budget while mutating the head. Not reached: `inference_perf.m.x_f`"
+    assert exited.value.code == 1
+    assert json.loads(output.read_text())["failures"] == [failure]
+    assert failure in capsys.readouterr().out
