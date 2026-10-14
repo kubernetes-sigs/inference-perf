@@ -58,7 +58,7 @@ from inference_perf.apis.anthropic_messages import (
     parse_anthropic_thinking,
 )
 from inference_perf.apis.chat import ChatMessage, reasoning_field
-from inference_perf.apis.image_parts import is_image_part, split_data_url, to_openai_image
+from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
 from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
@@ -73,29 +73,26 @@ logger = logging.getLogger(__name__)
 def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
     """Per-image metrics for the images in a replayed request's messages.
 
-    An image sent by URL is counted with unknown size (zero pixels and bytes). Returns None
-    for a request without images, matching how synthetic requests leave it unset.
+    Every image is counted; only those whose size is known (inline bytes with a readable
+    header) are listed as instances, so an image sent by URL does not skew the pixel and
+    byte distributions. Returns None for a request without images, matching how synthetic
+    requests leave it unset.
     """
+    count = 0
     instances: List[Image] = []
     for message in messages:
         for part in message.content if isinstance(message.content, list) else []:
-            image = to_openai_image(part) if is_image_part(part) else None
-            if image is None:
+            if not is_image_part(part):
                 continue
-            data_url = split_data_url(image["image_url"]["url"])
-            if data_url is None:
-                instances.append(Image())
+            image = to_otel_part(part)
+            data = image_bytes(image)
+            if data is None and not image.get("uri"):
                 continue
-            data = data_url[1]
-            width, height = _image_dimensions(data)
-            instances.append(
-                Image(
-                    pixels=width * height,
-                    bytes=len(data) * 3 // 4 - data[-2:].count("="),
-                    aspect_ratio=width / height if height else 0.0,
-                )
-            )
-    return Images(count=len(instances), instances=instances) if instances else None
+            count += 1
+            width, height = _image_dimensions(data) if data is not None else (0, 0)
+            if width and height and data is not None:
+                instances.append(Image(pixels=width * height, bytes=base64_size(data), aspect_ratio=width / height))
+    return Images(count=count, instances=instances) if count else None
 
 
 def _image_dimensions(data: str) -> Tuple[int, int]:

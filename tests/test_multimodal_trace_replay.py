@@ -31,6 +31,7 @@ from PIL import Image as PILImage
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.anthropic_messages import build_anthropic_request_body
 from inference_perf.apis.chat import ChatMessage
+from inference_perf.apis.image_parts import count_missing_images, is_image_part, to_openai_image
 from inference_perf.client.modelserver.otel_instrumentation import summarize_media
 from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
 from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
@@ -472,14 +473,15 @@ class TestReviewRegressions:
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}, _image_block()]}
         ]
         tool_message = _graph_messages(request)[-1]
-        assert tool_message["content"] == [IMAGE, {"type": "text", "text": "done"}]
+        assert tool_message["content"] == [{"type": "text", "text": "done"}, IMAGE]
         assert PNG not in json.dumps([p for p in tool_message["content"] if p.get("type") == "text"])
 
-    def test_undecodable_image_is_measured_without_raising(self) -> None:
+    def test_undecodable_image_is_counted_without_raising(self) -> None:
         images = replayed_images(
             [ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}])]
         )
-        assert images is not None and images.instances[0].pixels == 0
+        # Counted, but not listed: an unknown size must not pull the pixel/byte distributions to zero.
+        assert images is not None and images.count == 1 and images.instances == []
 
     def test_image_detail_is_kept(self) -> None:
         part = {"type": "image_url", "image_url": {"url": DATA_URL, "detail": "low"}}
@@ -598,7 +600,7 @@ class TestExternalReviewRegressions:
         images = replayed_images(
             [ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}])]
         )
-        assert images is not None and images.count == 1 and images.instances[0].bytes == 0
+        assert images is not None and images.count == 1 and images.instances == []
 
     def test_jpeg_with_large_metadata_reports_its_size(self) -> None:
         buf = io.BytesIO()
@@ -606,3 +608,39 @@ class TestExternalReviewRegressions:
         url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
         images = replayed_images([ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": url}}])])
         assert images is not None and images.instances[0].pixels == 640 * 480
+
+
+class TestThirdReviewRegressions:
+    """Third review round: image position among parallel results, robustness, non-image files."""
+
+    def test_image_after_parallel_results_stays_after_them(self) -> None:
+        request: Dict[str, Any] = dict(READ_REQUEST)
+        request["messages"] = [
+            READ_REQUEST["messages"][0],
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "A", "name": "f", "input": {}},
+                    {"type": "tool_use", "id": "B", "name": "f", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                    {"type": "tool_result", "tool_use_id": "B", "content": "b"},
+                    _image_block(),
+                ],
+            },
+        ]
+        tool_a, tool_b = _graph_messages(request)[-2:]
+        assert tool_a == {"role": "tool", "tool_call_id": "A", "content": "a"}
+        assert tool_b == {"role": "tool", "tool_call_id": "B", "content": [{"type": "text", "text": "b"}, IMAGE]}
+
+    def test_non_string_blob_content_is_not_an_image(self) -> None:
+        assert to_openai_image({"type": "blob", "modality": "image", "content": ["x"]}) is None
+
+    def test_chat_file_part_is_not_an_image(self) -> None:
+        pdf = {"type": "file", "file": {"filename": "a.pdf", "file_data": "data:application/pdf;base64,AAAA"}}
+        assert not is_image_part(pdf)
+        assert count_missing_images(pdf) == 0

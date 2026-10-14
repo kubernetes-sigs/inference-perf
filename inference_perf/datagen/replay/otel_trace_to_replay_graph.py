@@ -206,7 +206,7 @@ def _normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _tool_result_messages(responses: List[Dict[str, Any]], leading: Any = "") -> List[Dict[str, Any]]:
+def _tool_result_messages(responses: List[Dict[str, Any]], leading_text: str = "") -> List[Dict[str, Any]]:
     """Build one ``role:tool`` wire message per recorded tool result.
 
     A single recorded message can bundle several tool results — that is how a
@@ -220,10 +220,9 @@ def _tool_result_messages(responses: List[Dict[str, Any]], leading: Any = "") ->
     (see :func:`_replay_message_to_dict`) — Anthropic-native captures put it on a
     ``role: "user"`` message — so the emitted role is normalized to ``"tool"``.
 
-    ``leading`` is any content recorded alongside the results in the same message
-    (text, or a parts list when it holds an image). It has no ``role:tool``
-    message of its own to ride on, so it is prepended to the first result's
-    content rather than dropped.
+    ``leading_text`` is any text recorded alongside the results in the same
+    message. It has no ``role:tool`` message of its own to ride on, so it is
+    prepended to the first result's content rather than dropped.
     """
     messages: List[Dict[str, Any]] = []
     for response in responses:
@@ -236,12 +235,34 @@ def _tool_result_messages(responses: List[Dict[str, Any]], leading: Any = "") ->
         # replaced by the other field (see the field-precedence tests).
         message["content"] = _wire_content(response.get("result", response.get("response", "")))
         messages.append(message)
-    if leading and messages:
+    if leading_text and messages:
         first = messages[0]["content"]
-        if isinstance(leading, str) and isinstance(first, str):
-            messages[0]["content"] = leading + first
-        else:
-            messages[0]["content"] = _as_parts(leading) + _as_parts(first)
+        messages[0]["content"] = leading_text + first if isinstance(first, str) else _as_parts(leading_text) + first
+    return messages
+
+
+def _tool_results_in_order(parts: List[Any]) -> List[Dict[str, Any]]:
+    """Tool-result messages for a recorded message whose results sit beside an image.
+
+    Each text or image part rides on the tool result recorded just before it (the first
+    result, if it comes first), so an image keeps its recorded position.
+    """
+    responses = [p for p in parts if isinstance(p, dict) and p.get("type") == "tool_call_response"]
+    messages = _tool_result_messages(responses)
+    extras: List[Tuple[List[Any], List[Any]]] = [([], []) for _ in messages]
+    current = -1
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "tool_call_response":
+            current += 1
+        elif part.get("type") == "text" or is_image_part(part):
+            (extras[0][0] if current < 0 else extras[current][1]).append(part)
+    for message, (before, after) in zip(messages, extras, strict=True):
+        if before or after:
+            content = _as_parts(_wire_content(before)) + _as_parts(message["content"]) + _as_parts(_wire_content(after))
+            has_image = any(p["type"] == "image_url" for p in content)
+            message["content"] = content if has_image else "".join(p["text"] for p in content)
     return messages
 
 
@@ -295,13 +316,17 @@ def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
                     content_parts.append(part)
                 elif part_type == "tool_call":
                     tool_calls.append(_normalize_tool_call(part))
-            if any(is_image_part(p) for p in content_parts):
+            has_image = any(is_image_part(p) for p in content_parts)
+            if responses:
+                # Parallel tool results expand to one role:tool message each.
+                if has_image:
+                    return _tool_results_in_order(info["parts"])
+                text = "".join(_coerce_text(p.get("content", "")) for p in content_parts)
+                return _tool_result_messages(responses, leading_text=text)
+            if has_image:
                 content: Any = _wire_content(content_parts)
             else:
                 content = "".join(_coerce_text(p.get("content", "")) for p in content_parts)
-            if responses:
-                # Parallel tool results expand to one role:tool message each.
-                return _tool_result_messages(responses, leading=content)
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             # Emit content for text / tool-result messages. For an assistant
@@ -324,12 +349,14 @@ def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
                 # See the parts-format branch above: parallel tool results expand
                 # to one role:tool message each. Text recorded in the same content
                 # list is carried along rather than dropped.
-                siblings = [p for p in content if isinstance(p, dict) and (p.get("type") == "text" or is_image_part(p))]
-                if any(is_image_part(p) for p in siblings):
-                    leading: Any = _wire_content(siblings)
-                else:
-                    leading = "".join(_coerce_text(p.get("content", p.get("text", ""))) for p in siblings)
-                return _tool_result_messages(responses, leading=leading)
+                if any(is_image_part(p) for p in content):
+                    return _tool_results_in_order(content)
+                sibling_text = "".join(
+                    _coerce_text(p.get("content", p.get("text", "")))
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+                return _tool_result_messages(responses, leading_text=sibling_text)
 
         if info.get("tool_calls") is not None:
             msg["tool_calls"] = [_normalize_tool_call(tc) for tc in info["tool_calls"]]
