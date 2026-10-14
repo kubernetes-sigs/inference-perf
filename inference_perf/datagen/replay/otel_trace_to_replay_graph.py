@@ -155,6 +155,9 @@ def _wire_content(value: Any) -> Any:
             text = _coerce_text([part])
             if text:
                 content.append({"type": "text", "text": text})
+    if not any(p["type"] == "image_url" for p in content):
+        # Every image was missing its bytes: send the text, as for a text-only message.
+        return "".join(p["text"] for p in content)
     return content
 
 

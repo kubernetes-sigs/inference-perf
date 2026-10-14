@@ -22,6 +22,8 @@
 """
 
 import hashlib
+import json
+import re
 from typing import Any, Dict, Optional, Tuple
 
 
@@ -31,6 +33,16 @@ def split_data_url(url: str) -> Optional[Tuple[str, str]]:
         header, data = url.split(",", 1)
         return header[len("data:") :].split(";", 1)[0], data
     return None
+
+
+# What :func:`summarize_base64` leaves in place of a payload, e.g. in inference-perf's own spans.
+_SUMMARY = re.compile(r"\[\d+ bytes, sha256:[0-9a-f]{16}\]")
+
+
+def summarize_base64(data: str) -> str:
+    """A short stand-in for a base64 payload: its decoded size and a hash of the payload."""
+    size = len(data) * 3 // 4 - data[-2:].count("=")
+    return f"[{size} bytes, sha256:{hashlib.sha256(data.encode('ascii', 'replace')).hexdigest()[:16]}]"
 
 
 def is_image_part(part: Any) -> bool:
@@ -87,7 +99,7 @@ def to_openai_image(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         part = anthropic_image_to_part(part) or {}
     elif part.get("type") in ("image_url", "input_image"):
         part = openai_image_to_part(part)
-    if part.get("type") == "blob" and part.get("content"):
+    if part.get("type") == "blob" and part.get("content") and not _SUMMARY.fullmatch(part["content"]):
         url = f"data:{part.get('mime_type') or 'image/png'};base64,{part['content']}"
     elif part.get("type") == "uri" and part.get("uri"):
         url = part["uri"]
@@ -100,10 +112,10 @@ def to_openai_image(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def image_digest(part: Dict[str, Any]) -> str:
-    """A short, stable identity for an image part, for comparing messages without its bytes."""
+    """A short, stable identity for an image part (its URL and detail), for comparing messages without its bytes."""
     image = to_openai_image(part)
-    url = image["image_url"]["url"] if image else ""
-    return "[image:" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + "]"
+    identity = json.dumps(image["image_url"] if image else None, sort_keys=True)
+    return "[image:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16] + "]"
 
 
 # Text a tracing tool leaves where it dropped an image: Claude Code's native OTel tool
@@ -113,7 +125,8 @@ _LANGFUSE_MEDIA = "@@@langfuseMedia:"
 
 
 def count_missing_images(value: Any) -> int:
-    """Count images a trace no longer carries: image parts without bytes, and known placeholders.
+    """Count images a trace no longer carries: image parts without bytes (or with only a
+    :func:`summarize_base64` summary), and known placeholders.
 
     Tool-call arguments are skipped, since they are model output rather than content.
     """

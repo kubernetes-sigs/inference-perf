@@ -693,12 +693,13 @@ def _tool_result_content(content: Any, to_parts: Callable[[Any], List[Dict[str, 
     """A tool result's content: a string, a parts list when it holds an image, else JSON text.
 
     Keeping the parts of a list that holds an image (a screenshot read by a tool) makes
-    the image replay as an image rather than as base64 text.
+    the image replay as an image rather than as base64 text. A block ``to_parts`` does not
+    convert (e.g. an Anthropic ``search_result``) is kept as its JSON text.
     """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = to_parts(content)
+        parts = [part for block in content for part in to_parts([block]) or [{"type": "text", "content": json.dumps(block)}]]
         if any(is_image_part(part) for part in parts):
             return parts
     return json.dumps(content)

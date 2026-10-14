@@ -25,13 +25,12 @@ Environment Variables:
     OTEL_TRACE_PER_STAGE: Set to "true" to create one trace per stage instead of per session (default: false)
 """
 
-import hashlib
 import logging
 import os
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING, cast
 from contextlib import contextmanager
 
-from inference_perf.apis.image_parts import split_data_url
+from inference_perf.apis.image_parts import split_data_url, summarize_base64
 
 
 if TYPE_CHECKING:
@@ -538,11 +537,6 @@ def get_otel_instrumentation(service_name: Optional[str] = None, enabled: Option
     return _global_instrumentation
 
 
-def _media_summary(data: str) -> str:
-    size = len(data) * 3 // 4 - data[-2:].count("=")
-    return f"[{size} bytes, sha256:{hashlib.sha256(data.encode('ascii', 'replace')).hexdigest()[:16]}]"
-
-
 def summarize_media(value: Any) -> Any:
     """Copy of request messages with each inline media payload replaced by a short summary.
 
@@ -552,14 +546,14 @@ def summarize_media(value: Any) -> Any:
     """
     if isinstance(value, str):
         data_url = split_data_url(value)
-        return f"data:{data_url[0]};base64,{_media_summary(data_url[1])}" if data_url else value
+        return f"data:{data_url[0]};base64,{summarize_base64(data_url[1])}" if data_url else value
     if isinstance(value, list):
         return [summarize_media(item) for item in value]
     if isinstance(value, dict):
         if value.get("type") == "input_audio" and isinstance(value.get("input_audio"), dict):
             audio = dict(value["input_audio"])
             if isinstance(audio.get("data"), str):
-                audio["data"] = _media_summary(audio["data"])
+                audio["data"] = summarize_base64(audio["data"])
             return {**value, "input_audio": audio}
         return {key: summarize_media(item) for key, item in value.items()}
     return value

@@ -31,6 +31,7 @@ from PIL import Image as PILImage
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.apis.anthropic_messages import build_anthropic_request_body
 from inference_perf.apis.chat import ChatMessage
+from inference_perf.client.modelserver.otel_instrumentation import summarize_media
 from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
 from inference_perf.datagen.replay.otel_trace_replay_datagen import OTelTraceReplayDataGenerator
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
@@ -544,3 +545,64 @@ class TestReviewRegressions:
         calls, _ = build_raw_calls([span])
         assistant = next(iter(build_graph(calls, source_file="t").events.values())).call.messages[1]
         assert assistant["content"] == ""
+
+
+class TestExternalReviewRegressions:
+    """Second review round: summarized spans, sibling blocks, image detail, URL images, JPEG headers."""
+
+    def test_summarized_image_is_missing_not_sent(self, caplog: pytest.LogCaptureFixture) -> None:
+        """inference-perf's own spans, replayed as a trace, carry summaries instead of bytes."""
+        messages = summarize_media([{"role": "user", "content": [{"type": "text", "text": "look"}, IMAGE]}])
+        span = {
+            "trace_id": "t",
+            "span_id": "s",
+            "name": "chat m",
+            "start_time": "2026-01-01T00:00:00",
+            "end_time": "2026-01-01T00:00:01",
+            "attributes": {"gen_ai.operation.name": "chat", "gen_ai.input.messages": json.dumps(messages)},
+        }
+        with caplog.at_level(logging.WARNING):
+            calls, _ = build_raw_calls([span])
+        assert "1 image occurrence(s) in 1 call(s) are missing" in caplog.text
+        assert next(iter(build_graph(calls, source_file="t").events.values())).call.messages[0]["content"] == "look"
+
+    def test_search_result_beside_an_image_keeps_its_text(self) -> None:
+        search = {
+            "type": "search_result",
+            "source": "https://x",
+            "title": "T",
+            "content": [{"type": "text", "text": "SEARCH TEXT"}],
+        }
+        request: Dict[str, Any] = dict(READ_REQUEST)
+        request["messages"] = READ_REQUEST["messages"][:2] + [
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [search, _image_block()]}],
+            }
+        ]
+        content = _graph_messages(request)[-1]["content"]
+        assert content[0] == {"type": "text", "text": json.dumps(search)}
+        assert content[1] == IMAGE
+
+    def test_image_detail_is_part_of_its_identity(self) -> None:
+        def msg(detail: str) -> ComplexReplayMessage:
+            info = {
+                "role": "user",
+                "parts": [{"type": "blob", "modality": "image", "mime_type": "image/png", "content": PNG, "detail": detail}],
+            }
+            return ComplexReplayMessage(role="user", message_info=info, raw_reconstructed_text=reconstruct_llm_input(info))
+
+        assert not messages_equal(msg("low"), msg("high"))
+
+    def test_url_image_is_counted(self) -> None:
+        images = replayed_images(
+            [ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}])]
+        )
+        assert images is not None and images.count == 1 and images.instances[0].bytes == 0
+
+    def test_jpeg_with_large_metadata_reports_its_size(self) -> None:
+        buf = io.BytesIO()
+        PILImage.new("RGB", (640, 480)).save(buf, format="JPEG", exif=b"Exif\x00\x00" + b"\x00" * (60 * 1024))
+        url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        images = replayed_images([ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": url}}])])
+        assert images is not None and images.instances[0].pixels == 640 * 480

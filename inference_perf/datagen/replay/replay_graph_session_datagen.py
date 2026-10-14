@@ -71,16 +71,20 @@ logger = logging.getLogger(__name__)
 
 
 def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
-    """Per-image metrics for the base64 images in a replayed request's messages.
+    """Per-image metrics for the images in a replayed request's messages.
 
-    Returns None for a request without images, matching how synthetic requests leave it unset.
+    An image sent by URL is counted with unknown size (zero pixels and bytes). Returns None
+    for a request without images, matching how synthetic requests leave it unset.
     """
     instances: List[Image] = []
     for message in messages:
         for part in message.content if isinstance(message.content, list) else []:
             image = to_openai_image(part) if is_image_part(part) else None
-            data_url = split_data_url(image["image_url"]["url"]) if image else None
+            if image is None:
+                continue
+            data_url = split_data_url(image["image_url"]["url"])
             if data_url is None:
+                instances.append(Image())
                 continue
             data = data_url[1]
             width, height = _image_dimensions(data)
@@ -95,12 +99,14 @@ def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
 
 
 def _image_dimensions(data: str) -> Tuple[int, int]:
-    """Width and height read from the image header, decoding only the first 48 KiB."""
-    try:
-        with PILImage.open(io.BytesIO(base64.b64decode(data[: 64 * 1024]))) as img:
-            return img.size
-    except (OSError, ValueError, PILImage.DecompressionBombError):
-        return 0, 0
+    """Width and height from the image header: the first 48 KiB usually hold it, else the whole image."""
+    for chunk in dict.fromkeys((data[: 64 * 1024], data)):
+        try:
+            with PILImage.open(io.BytesIO(base64.b64decode(chunk))) as img:
+                return img.size
+        except (OSError, ValueError, PILImage.DecompressionBombError):
+            continue
+    return 0, 0
 
 
 def _expand_tool_call_max_tokens(recorded_tokens: int) -> int:
