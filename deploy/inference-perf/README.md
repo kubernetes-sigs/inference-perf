@@ -20,7 +20,7 @@ Before deployment, navigate to the **`deploy/inference-perf`** directory and edi
 #### Optional Token Parameters
 Hugging Face token can be provided either by providing a value (`token.hfToken`) or by referencing an existing Kubernetes Secret (`token.hfSecret.name` and `token.hfSecret.key`).
 
-> If both `token.hfToken` and the `token.hfSecret` parameters are provided, the chart logic is configured to prioritize the `hfSecret` reference.
+> If both `token.hfToken` and the `token.hfSecret` parameters are provided, the chart logic is configured to prioritize the `token.hfSecret` reference.
 
 | Key | Description | Default |
 | :--- | :--- | :--- |
