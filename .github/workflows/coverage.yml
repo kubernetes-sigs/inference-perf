@@ -94,7 +94,9 @@ jobs:
 
   # Mutation ratchet over the functions a PR touches (#872). A job of its own
   # so it runs beside `coverage` rather than after it. Push events have no
-  # diff to scope it to, so it only runs on PRs.
+  # diff to scope it to, so it only runs on PRs. A lock or pyproject change
+  # runs it too, so the mutmut pin and [tool.mutmut] are checked on the PR
+  # that changes them rather than on every PR after it.
   mutation:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -110,11 +112,11 @@ jobs:
       - name: Check for source changes
         id: changes
         run: |
-          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(inference_perf|tests)/.*\.py$'; then
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(inference_perf|tests)/.*\.py$|^(pdm\.lock|pyproject\.toml)$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "No Python changes under inference_perf/ or tests/; skipping mutation testing."
+            echo "No Python changes under inference_perf/ or tests/ and no change to pdm.lock or pyproject.toml; skipping mutation testing."
           fi
       - name: Set up Python
         if: steps.changes.outputs.code == 'true'
