@@ -20,6 +20,9 @@ rest of the run, so the pairing is pinned across every runner here rather
 than by one example per path.
 """
 
+import os
+import signal
+import time
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple, Type
 
@@ -27,6 +30,7 @@ import pytest
 
 from inference_perf.apis import LazyLoadInferenceAPIData
 from inference_perf.client.modelserver import MockModelServerClient
+from inference_perf.client.server_metrics.base import StageStatus
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -311,3 +315,40 @@ async def test_in_process_stage_is_ended_when_its_body_raises(
     assert recorder.events == [("start", 0), ("end", 0)]
     assert _sample(recorder, "inference_perf_stage_running", {"stage": "0"}) == 0
     assert _sample(recorder, "inference_perf_stages_completed") == 1
+
+
+# A client that sends SIGTERM to this process from its first request.
+class _SigtermOnFirstRequestClient(MockModelServerClient):
+    requests = 0
+
+    async def process_request(self, *args: Any, **kwargs: Any) -> None:
+        self.requests += 1
+        if self.requests == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+        await super().process_request(*args, **kwargs)
+
+
+# The in-process run() (num_workers=0) over two 30 s stages at rate 10, with a
+# SIGTERM during stage 0. Expects stage 0 to end INTERRUPTED within a few
+# requests and stage 1 never to start.
+async def test_sigterm_interrupts_an_in_process_run() -> None:
+    load_config = LoadConfig(
+        type=LoadType.CONSTANT,
+        interval=0,
+        stages=[StandardLoadStage(rate=10, duration=30), StandardLoadStage(rate=10, duration=30)],
+        num_workers=0,
+    )
+    datagen = MockDataGenerator(APIConfig(type=APIType.Completion), DataConfig(type=DataGenType.Mock), None)
+    saved = signal.getsignal(signal.SIGTERM)
+    loadgen, _ = _wired_loadgen(load_config, datagen)
+    client = _SigtermOnFirstRequestClient(LocalRequestMetricCollector(), APIConfig(type=APIType.Completion), mock_latency=0)
+    started = time.monotonic()
+    try:
+        await loadgen.run(client)
+    finally:
+        signal.signal(signal.SIGTERM, saved)
+
+    assert time.monotonic() - started < 5
+    assert loadgen.stage_runtime_info[0].status == StageStatus.INTERRUPTED
+    assert 1 not in loadgen.stage_runtime_info
+    assert client.requests < 5

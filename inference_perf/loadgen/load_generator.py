@@ -1751,6 +1751,8 @@ class LoadGenerator:
                 await self._run_reported_stage(stage_id, self._run_in_process_stage(client, stage_id, stage, progress))
                 progress.refresh(force=True)
                 LocalUserSession.clear_instances()
+                if self.interrupt_sig:
+                    break
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
 
@@ -1783,6 +1785,10 @@ class LoadGenerator:
         async with TaskGroup() as tg:
             time_generator = timer.start_timer(start_time)
             for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
+                if self.interrupt_sig:
+                    logger.info("Loadgen interrupted by a signal")
+                    stage_status = StageStatus.INTERRUPTED
+                    break
                 progress.refresh()
                 data.stage_id = stage_id
                 request_data = LazyLoadDataMixin.get_request(self.datagen, data)
@@ -1811,9 +1817,7 @@ class LoadGenerator:
 
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
-            logger.info("Stage %d - run completed", stage_id)
-        else:
-            logger.info("Stage %d - run failed", stage_id)
+        logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
             rate=stage.rate,
