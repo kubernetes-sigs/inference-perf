@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -184,7 +185,8 @@ def test_functions_run_by_ignores_import_time(cmr: Any, tmp_path: Path) -> None:
 
 
 # A pyproject with [tool.mutmut] between two other tables. The rewrite drops the old table, keeps
-# the others, and appends the shared config plus this run's files and tests. Regex backslashes survive.
+# the others, and appends the shared config plus this run's files and tests, with the child plugin
+# added to pytest's arguments. Regex backslashes survive.
 def test_write_config_replaces_the_mutmut_table(cmr: Any, tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "x"\n\n[tool.mutmut]\nsource_paths = ["old"]\ndebug = true\n\n[tool.ruff]\nline-length = 127\n'
@@ -199,6 +201,7 @@ def test_write_config_replaces_the_mutmut_table(cmr: Any, tmp_path: Path) -> Non
     assert data["tool"]["mutmut"] == {
         "source_paths": ["inference_perf"],
         "do_not_mutate_patterns": ["logger\\.", "raise \\w+\\("],
+        "pytest_add_cli_args": ["-p", "mutation_child_hits"],
         "only_mutate": ["inference_perf/a.py"],
         "pytest_add_cli_args_test_selection": ["tests/test_a.py"],
     }
@@ -1029,3 +1032,62 @@ def test_tests_using_follows_sys_path_names_and_pytest_plugins(cmr: Any, tmp_pat
 
     assert cmr.tests_using(tmp_path, ["tests/optional/harness/slots.py"]) == {"tests/test_req.py"}
     assert cmr.tests_using(tmp_path, ["tests/plugins/fix.py"]) == {"tests/sub/test_s.py"}
+
+
+# Runs pytest on `tests` in `project` with the child plugin loaded and `env` on top of a clean
+# environment. Returns the exit code.
+def pytest_with_plugin(cmr: Any, project: Path, tests: list[str], env: dict[str, str]) -> int:
+    base = {k: v for k, v in os.environ.items() if k not in ("MUTANT_UNDER_TEST", "PYTHONPATH")}
+    full = cmr.harness_env(project, {**base, **env})
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", cmr.CHILD_PLUGIN, *tests]
+    return subprocess.run(command, cwd=project, env=full, capture_output=True).returncode
+
+
+# One test forks a child that records a trampoline hit the way mutmut does, and the next test
+# asserts the hit reached the parent's set. Under mutmut's stats run the plugin merges it at
+# teardown and leaves no hits file behind, so the pair passes. Under any other run it does not.
+def test_child_plugin_carries_child_hits_to_the_test(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "tests" / "test_fork.py").write_text(
+        "import multiprocessing as mp\n"
+        "from mutmut.state import state\n\n\n"
+        "def work():\n"
+        "    state()._stats.add('inference_perf.m.x_child')\n\n\n"
+        "def test_child_records_a_hit():\n"
+        "    p = mp.get_context('fork').Process(target=work)\n"
+        "    p.start()\n"
+        "    p.join()\n"
+        "    assert 'inference_perf.m.x_child' not in state()._stats\n\n\n"
+        "def test_the_hit_reached_the_parent():\n"
+        "    assert 'inference_perf.m.x_child' in state()._stats\n"
+    )
+
+    assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {"MUTANT_UNDER_TEST": "stats"}) == 0
+    assert list((tmp_path / "harness" / "hits" / "project").iterdir()) == []
+    assert pytest_with_plugin(cmr, project, ["tests/test_fork.py"], {}) == 1
+
+
+# inference_perf/m.py has in_child, which the test only runs in a forked process, and in_parent,
+# run directly. Both count as run by the test.
+def test_functions_run_by_sees_code_run_in_a_forked_child(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    (tmp_path / "inference_perf").mkdir()
+    (tmp_path / "inference_perf" / "__init__.py").write_text("")
+    (tmp_path / "inference_perf" / "m.py").write_text("def in_child():\n    return 1\n\n\ndef in_parent():\n    return 2\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_m.py").write_text(
+        "import multiprocessing as mp\n"
+        "from inference_perf.m import in_child, in_parent\n\n\n"
+        "def test_both():\n"
+        "    p = mp.get_context('fork').Process(target=in_child)\n"
+        "    p.start()\n"
+        "    p.join()\n"
+        "    assert in_parent() == 2\n"
+    )
+
+    assert cmr.functions_run_by(tmp_path, ["tests/test_m.py"]) == {
+        "inference_perf.m.x_in_child",
+        "inference_perf.m.x_in_parent",
+    }

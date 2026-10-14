@@ -21,6 +21,9 @@ function the diff touches or deletes, plus every function a changed test runs.
 A test counts as changed when it is added, edited, deleted or renamed, or when
 a helper, conftest.py or package __init__.py it runs is.
 
+Code that only runs in a multiprocessing child counts too. A pytest plugin written
+outside the tree carries the child's trampoline hits and coverage back to the test.
+
 There is no in-code way to opt out. `# pragma: no mutate` is stripped before
 mutating. Some checks need no mutants and fail a change even when nothing is
 in scope: statements mutmut never mutates cannot rise across the changed files,
@@ -33,6 +36,7 @@ mutmut must be the pinned release.
 
 import argparse
 import ast
+import atexit
 import fnmatch
 import importlib.metadata
 import io
@@ -94,6 +98,83 @@ NON_INDEX_SOURCES = ("git", "url", "path", "editable")
 
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
+
+# Code that only runs in a multiprocessing child is invisible twice over: mutmut records trampoline
+# hits in the pytest process, and coverage in a child starts from the config file with the empty
+# context that marks import time. This pytest plugin, loaded into every test run, carries both back
+# to the test that started the child. It is written outside the tree, so a change cannot edit it.
+CHILD_PLUGIN = "mutation_child_hits"
+CHILD_PLUGIN_SOURCE = '''"""Carry what a forked child does back to the test that started it."""
+
+import os
+from pathlib import Path
+
+import pytest
+
+HITS_DIR = Path(os.environ.get("MUTATION_HITS_DIR", "."))
+_current = None
+_count = 0
+_registered = False
+
+
+def pytest_configure(config):
+    global _registered
+    # pytest.main can run more than once in a process, and a forked child inherits the handler
+    if not _registered:
+        _registered = True
+        os.register_at_fork(after_in_child=_in_child)
+
+
+def pytest_sessionstart(session):
+    # coverage in this process has read its config by now. A child reads the config again and
+    # expands this into its static context, so its lines do not read as import time.
+    os.environ["MUTATION_CHILD_CONTEXT"] = "child"
+
+
+def pytest_runtest_setup(item):
+    global _current, _count
+    _count += 1
+    _current = HITS_DIR / f"{os.getpid()}-{_count}.hits"
+
+
+def _in_child():
+    # only mutmut's stats run records hits. A mutant run reaches the child through the environment
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or _current is None:
+        return
+    from mutmut.state import state
+
+    path = _current
+
+    class Recorded(set):
+        def add(self, name):
+            if name not in self:
+                super().add(name)
+                # one line per new name, so a child killed at teardown still leaves its hits
+                with open(path, "a") as f:
+                    f.write(name + "\\n")
+
+    state()._stats = Recorded(state()._stats)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    # before mutmut's own collector reads the set and clears it
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or _current is None or not _current.exists():
+        return
+    from mutmut.state import state
+
+    state()._stats.update(_current.read_text().split())
+    _current.unlink()
+'''
+CHILD_COVERAGE_CONFIG = """[tool.coverage.run]
+source = ["inference_perf"]
+concurrency = ["multiprocessing"]
+# empty in the pytest process, which reads this before the plugin sets the variable; set in a child
+context = "${MUTATION_CHILD_CONTEXT-}"
+"""
+
+# Where the plugin and its coverage config are written. main() puts it next to the trees.
+HARNESS_DIR: Path | None = None
 
 # The canary sets the active mutant to an id mutmut never generated, so every
 # function runs unmutated. Tests that still fail are reacting to the harness. The
@@ -236,6 +317,30 @@ def _kill_group(pid: int) -> None:
 
 def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def harness_dir() -> Path:
+    """The directory holding the child plugin and its coverage config, written on first use."""
+    global HARNESS_DIR
+    if HARNESS_DIR is None:
+        HARNESS_DIR = Path(tempfile.mkdtemp(prefix="mutation-harness-"))
+        atexit.register(shutil.rmtree, HARNESS_DIR, ignore_errors=True)
+    HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+    plugin = HARNESS_DIR / f"{CHILD_PLUGIN}.py"
+    if not plugin.exists():
+        plugin.write_text(CHILD_PLUGIN_SOURCE)
+        (HARNESS_DIR / "coverage.toml").write_text(CHILD_COVERAGE_CONFIG)
+    return HARNESS_DIR
+
+
+def harness_env(tree: Path, env: dict[str, str] | None = None) -> dict[str, str]:
+    """`env` (default os.environ) with the child plugin importable and a hits directory for `tree`."""
+    env = dict(os.environ if env is None else env)
+    hits = harness_dir() / "hits" / tree.name
+    hits.mkdir(parents=True, exist_ok=True)
+    env["MUTATION_HITS_DIR"] = str(hits)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), str(harness_dir())) if p)
+    return env
 
 
 def module_name(path: str) -> str:
@@ -720,10 +825,10 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     # COVERAGE_PROCESS_START from an outer coverage run would start a second tracer
     env = {k: v for k, v in os.environ.items() if k != "COVERAGE_PROCESS_START"}
     env.update(COVERAGE_FILE=str(data), PYTHONPATH=str(tree))
-    cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report="]
-    run_bounded(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "log_cli=false", *cov, *tests], tree, env
-    )
+    env = harness_env(tree, env)
+    cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report=", f"--cov-config={harness_dir() / 'coverage.toml'}"]
+    plugins = ["-p", "no:cacheprovider", "-p", CHILD_PLUGIN]
+    run_bounded([sys.executable, "-m", "pytest", "-q", *plugins, "-o", "log_cli=false", *cov, *tests], tree, env)
     run_bounded([sys.executable, "-m", "coverage", "json", "--show-contexts", "-o", str(report)], tree, env)
     if not report.exists():
         raise MutationRunError(f"coverage over the changed tests produced no report in {tree}")
@@ -732,7 +837,7 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
         rel = os.path.relpath(path, tree) if os.path.isabs(path) else path
         if not rel.startswith(SOURCE_PREFIX):
             continue
-        # an empty context is import or collection time
+        # an empty context is import or collection time; a child's lines carry the plugin's static context
         lines = {int(n) for n, contexts in info.get("contexts", {}).items() if any(contexts)}
         for name, (start, end) in function_spans((tree / rel).read_text()).items():
             # the def line itself runs at import, so a function counts only once its body runs
@@ -761,7 +866,8 @@ def write_config(tree: Path, config: dict[str, Any], files: list[str], tests: li
     """Replace the tree's [tool.mutmut] with the shared config plus this run's scope."""
     pyproject = tree / "pyproject.toml"
     text = re.sub(r"^\[tool\.mutmut\]\n(?:(?!\[).*\n?)*", "", pyproject.read_text(), flags=re.M)
-    merged = {**config, "only_mutate": files, "pytest_add_cli_args_test_selection": tests}
+    pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])] + ["-p", CHILD_PLUGIN]
+    merged = {**config, "pytest_add_cli_args": pytest_args, "only_mutate": files, "pytest_add_cli_args_test_selection": tests}
     # JSON scalars and arrays are valid TOML inline values
     table = "\n".join(["[tool.mutmut]", *(f"{k} = {json.dumps(v)}" for k, v in merged.items())])
     pyproject.write_text(text.rstrip("\n") + "\n\n" + table + "\n")
@@ -784,7 +890,7 @@ def export_working_tree(dest: Path) -> None:
 
 
 def mutmut(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_bounded([sys.executable, "-m", "mutmut", *args], tree)
+    return run_bounded([sys.executable, "-m", "mutmut", *args], tree, harness_env(tree))
 
 
 def pytest_command(tests: list[str], pytest_args: list[str]) -> list[str]:
@@ -1368,6 +1474,8 @@ def whole_package(args: argparse.Namespace) -> None:
     """Mutate every source file against the full unit suite and print survivors per module. Takes hours."""
     config: dict[str, Any] = tomllib.loads(Path("pyproject.toml").read_text())["tool"]["mutmut"]
     workdir = Path(tempfile.mkdtemp(prefix="mutation-all-"))
+    global HARNESS_DIR
+    HARNESS_DIR = workdir.parent / (workdir.name + "-harness")
     try:
         export_working_tree(workdir)
         side = Side(tree=workdir, tests=unit_suite(workdir), pragmas_stripped=strip_no_mutate_pragmas(workdir))
@@ -1388,6 +1496,7 @@ def whole_package(args: argparse.Namespace) -> None:
             print(f"Mutation tree kept in {workdir}")
         else:
             shutil.rmtree(workdir, ignore_errors=True)
+            shutil.rmtree(harness_dir(), ignore_errors=True)
     totals: dict[str, Counter[str]] = {}
     for mutant, status in results.items():
         module = mutant.partition("__mutmut_")[0].rpartition(".")[0]
@@ -1432,6 +1541,8 @@ def main() -> None:
 
     pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
     workdir = Path(tempfile.mkdtemp(prefix="mutation-"))
+    global HARNESS_DIR
+    HARNESS_DIR = workdir / "harness"
     base: Side | None = None
     head: Side | None = None
     try:
