@@ -1,4 +1,4 @@
-# Copyright 2025 The Kubernetes Authors.
+# Copyright 2026 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ Supports:
 
 import json
 from typing import Any, Callable, Dict, List, Optional, Union, cast
+
+from inference_perf.apis.image_parts import image_digest, is_image_part
 
 
 def reconstruct_llm_output(response_data: Union[str, Dict[str, Any], List[Any]]) -> str:
@@ -247,6 +249,10 @@ def _format_tool_result(tool_result: Dict[str, Any]) -> str:
     tool_id = tool_result.get("tool_use_id") or tool_result.get("id", "unknown")
     # Preserve legacy field precedence, falling back to the OTel "response" field.
     result_content = tool_result.get("content") or tool_result.get("result", tool_result.get("response", ""))
+    if isinstance(result_content, list) and any(is_image_part(p) for p in result_content):
+        # A tool result holding an image: its text, with each image as a digest so base64
+        # never counts as text.
+        result_content = _extract_content_from_parts(result_content)
     is_error = tool_result.get("is_error", False)
     error_marker = " [ERROR]" if is_error else ""
     return f"<tool_result: {tool_id}{error_marker}>\n{result_content}\n</tool_result>"
@@ -260,6 +266,8 @@ def reconstruct_each_part_in_message_info(message_info: Dict[str, Any]) -> Dict[
     for part in message_info["parts"]:
         if part["type"] == "tool_call":
             message_info["parts_text"].append(_format_tool_call(part))
+        elif is_image_part(part):
+            message_info["parts_text"].append(image_digest(part))
         else:
             message_info["parts_text"].append(part["content"])
     return message_info
@@ -357,6 +365,9 @@ def _extract_content_from_parts(parts: List[Dict[str, Any]]) -> str:
             # Tool use (input format - same as tool_call)
             content_parts.append(_format_tool_call(part))
 
+        elif is_image_part(part):
+            content_parts.append(image_digest(part))
+
     return "\n".join(content_parts)
 
 
@@ -382,6 +393,9 @@ def _extract_content_from_list(content_list: List[Any]) -> str:
 
             elif item_type == "tool_use":
                 content_parts.append(_format_tool_call(item))
+
+            elif is_image_part(item):
+                content_parts.append(image_digest(item))
 
             # Handle other dict formats
             elif "text" in item:

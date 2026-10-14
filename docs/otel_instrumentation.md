@@ -142,7 +142,8 @@ The following GenAI semantic convention attributes are captured:
 - `gen_ai.request.model`: Model name
 - `gen_ai.request.max_tokens`: Maximum tokens to generate
 - `gen_ai.request.temperature`: Sampling temperature
-- `gen_ai.input.messages`: Input messages as JSON string
+- `gen_ai.input.messages`: Input messages as JSON string. Inline images, video and audio appear as a
+  short summary (`[116304 bytes, sha256:…]`) instead of their bytes.
 
 ### Response Attributes
 - `gen_ai.output.text`: Generated text
