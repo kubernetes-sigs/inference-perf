@@ -28,6 +28,8 @@ from inference_perf.utils.request_queue import RequestQueue
 def _make_load_generator(num_workers: int = 4) -> LoadGenerator:
     datagen = MagicMock(spec=DataGenerator)
     datagen.trace = None
+    # Unpinned, so routing wraps preferred_worker_id over every worker.
+    datagen.is_preferred_worker_requested.return_value = False
     load_config = LoadConfig(
         type=LoadType.CONSTANT,
         num_workers=num_workers,
