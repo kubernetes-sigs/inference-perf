@@ -211,9 +211,6 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 max_tokens=output_len,
             )
 
-        if self.api_config.type == APIType.Chat:
-            return ChatCompletionAPIData(messages=[ChatMessage(role="user", content=self.prompts[i])], max_tokens=output_len)
-
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)
             round = data.data_index // len(self.user_sessions)
@@ -242,6 +239,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session_id=session.user_session_id,
                 target_round=round,
             )
+
+        if self.api_config.type == APIType.Chat:
+            return ChatCompletionAPIData(messages=[ChatMessage(role="user", content=self.prompts[i])], max_tokens=output_len)
         return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:

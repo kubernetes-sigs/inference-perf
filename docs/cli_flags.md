@@ -70,7 +70,7 @@ These command line flags are automatically generated from the CLI parser. The gl
 | `--data.shared_prefix.output_distribution.type` | Enum (normal, skew_normal, lognormal, uniform, poisson, fixed) | Shape of the distribution to sample values from. |
 | `--data.shared_prefix.output_distribution.variance` | float | Variance of the distribution. Exclusive with 'std_dev'. |
 | `--data.shared_prefix.output_distribution.skew` | float | Skewness of the distribution. Only used when type is 'skew_normal'. |
-| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. |
+| `--data.shared_prefix.enable_multi_turn_chat` | boolean | Send each group's prompts as consecutive turns of one chat conversation. Requires api.type completion. |
 | `--data.shared_prefix.multimodal.image.count.min` | int | Smallest value the distribution can produce; samples below are clamped. |
 | `--data.shared_prefix.multimodal.image.count.max` | int | Largest value the distribution can produce; samples above are clamped. |
 | `--data.shared_prefix.multimodal.image.count.mean` | float | Mean of the distribution. |

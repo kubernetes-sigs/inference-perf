@@ -91,7 +91,8 @@ class SharedPrefix(StrictBaseModel):
     )
 
     enable_multi_turn_chat: bool = Field(
-        default=False, description="Send each group's prompts as consecutive turns of one chat conversation."
+        default=False,
+        description="Send each group's prompts as consecutive turns of one chat conversation. Requires api.type completion.",
     )
     multimodal: Optional[SyntheticMultimodalDatagenConfig] = Field(
         default=None, description="Attach synthetic multimodal content (images, video, audio) to generated prompts."
