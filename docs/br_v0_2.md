@@ -67,6 +67,26 @@ including failed requests when determining the window. Modalities with no record
 measurements are omitted; explicitly recorded zero counts remain zero. Rates are
 omitted when there are no successful requests or the window has zero duration.
 
+For workloads that ran sessions (OTel trace-replay agentic workloads),
+`results.session_performance.sessions` is populated as well: session counts
+(`total`, `succeeded`, `failed`), event totals (`total_events`,
+`total_events_completed`, `total_events_cancelled`), `session_rate` (session
+completions per second over the window spanning the sessions), and the
+per-session distributions `session_duration`, `events_per_session`,
+`events_cancelled_per_session`, `input_tokens_per_session`, and
+`output_tokens_per_session`. These figures match the native session lifecycle
+report for the same run; the token distributions depend on the same
+request-level enrichment that report uses.
+
+`total` counts every session the stage ran: sessions that ended without
+recording a metric — still active or never dispatched when the stage was cut
+short by `max_stage_duration` — are added to the ones that did, so a truncated
+stage cannot read as a clean run. The remaining counts and distributions
+describe the recorded sessions only.
+
+The block is omitted entirely for a stage that ran no sessions, so partials from
+non-session workloads are unchanged.
+
 `run.uid` is generated per stage. A composer is free to overwrite it during
 merge.
 

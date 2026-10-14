@@ -1202,7 +1202,30 @@ class ReportGenerator:
             except Exception:
                 logger.exception("Prometheus metrics report generation failed; continuing without it")
 
-        if request_metrics:
+        # Session metrics are enriched once, ahead of the partial-report loop:
+        # the BR0.2 partial carries the same per-session token totals the native
+        # session reports render, and _enrich_sessions is what derives them from
+        # the request metrics. Bucketing by stage_id mirrors br_stage_buckets
+        # below so each stage's partial gets exactly its own sessions.
+        session_metrics: List[SessionLifecycleMetric] = []
+        session_metrics_by_stage: dict[int, List[SessionLifecycleMetric]] = defaultdict(list)
+        # Stages whose session counts the partial has to report. A stage cut
+        # short by max_stage_duration whose sessions all stranded leaves no
+        # request metric either, so it would be missing from br_stage_buckets
+        # below; generate_session_reports emits a per-stage file for it, and the
+        # partial has to match.
+        session_stage_ids: set[int] = set()
+        if self.session_metrics_collector and report_config.session_lifecycle:
+            session_metrics = self.session_metrics_collector.get_metrics()
+            self._enrich_sessions(session_metrics, request_metrics, use_server_output_tokens)
+            for session_metric in session_metrics:
+                session_metrics_by_stage[session_metric.stage_id].append(session_metric)
+                session_stage_ids.add(session_metric.stage_id)
+            for stage_id, stage_runtime_info in runtime_parameters.stages.items():
+                if stage_runtime_info.sessions_not_completed_active or stage_runtime_info.sessions_not_completed_pending:
+                    session_stage_ids.add(stage_id)
+
+        if request_metrics or session_stage_ids:
             # Always emit the inference-perf slice of a BR0.2 report per stage,
             # alongside the native inference-perf reports. Downstream composers
             # (llm-d-benchmark CLI, wrappers, ad-hoc yq merges) layer their
@@ -1218,18 +1241,24 @@ class ReportGenerator:
             # One eid for the whole invocation: run.eid is what lets a
             # composer group the per-stage partials as a single experiment.
             br_run_eid = generate_experiment_eid()
-            for br_stage_id, stage_metrics in br_stage_buckets.items():
+            for br_stage_id in sorted(set(br_stage_buckets) | session_stage_ids):
                 # run.time needs the stage's wall-clock window: the request
                 # timestamps are monotonic and can't be mapped to epoch here.
                 stage_info = runtime_parameters.stages.get(br_stage_id)
                 partial = build_partial_report(
-                    stage_metrics,
+                    br_stage_buckets.get(br_stage_id, []),
                     tokenizer,
                     run_uid=generate_run_uid(br_stage_id),
                     run_eid=br_run_eid,
                     use_server_output_tokens=use_server_output_tokens,
                     stage_start=stage_info.start_time if stage_info else None,
                     stage_end=stage_info.end_time if stage_info else None,
+                    session_metrics=session_metrics_by_stage.get(br_stage_id, []),
+                    sessions_not_completed=(
+                        stage_info.sessions_not_completed_active + stage_info.sessions_not_completed_pending
+                        if stage_info
+                        else 0
+                    ),
                 )
                 lifecycle_reports.append(
                     ReportFile(
@@ -1241,8 +1270,6 @@ class ReportGenerator:
 
         # Session-level reports (OTel agentic workloads only)
         if self.session_metrics_collector and report_config.session_lifecycle:
-            session_metrics = self.session_metrics_collector.get_metrics()
-            self._enrich_sessions(session_metrics, request_metrics, use_server_output_tokens)
             session_reports = self.generate_session_reports(
                 session_metrics,
                 report_config.session_lifecycle,

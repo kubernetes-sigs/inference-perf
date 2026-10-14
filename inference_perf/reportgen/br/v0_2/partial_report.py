@@ -35,7 +35,7 @@ import datetime
 import uuid
 from typing import Any, Dict, List
 
-from inference_perf.apis import RequestLifecycleMetric
+from inference_perf.apis import RequestLifecycleMetric, SessionLifecycleMetric
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 from .adapter import build_results
@@ -67,6 +67,8 @@ def build_partial_report(
     use_server_output_tokens: bool = False,
     stage_start: float | None = None,
     stage_end: float | None = None,
+    session_metrics: List[SessionLifecycleMetric] | None = None,
+    sessions_not_completed: int = 0,
 ) -> Dict[str, Any]:
     """Build the inference-perf partial of a BR0.2 report for one stage.
 
@@ -88,9 +90,25 @@ def build_partial_report(
 
     Pass the same ``use_server_output_tokens`` as the native lifecycle
     reports so both reports of the run agree on token counts.
+
+    ``session_metrics`` are this stage's session lifecycle metrics, already
+    enriched with per-session token totals. They populate
+    ``results.session_performance``; omitting them (every non-session workload)
+    leaves that block out of the emitted partial entirely.
+
+    ``sessions_not_completed`` is the stage's count of sessions that ended
+    without a metric — still active or never dispatched when the stage was cut
+    short. It is added to ``results.session_performance.sessions.total`` so a
+    truncated stage does not look like a clean run.
     """
     run = Run(uid=run_uid, eid=run_eid, time=_build_run_time(stage_start, stage_end))
-    results = build_results(stage_metrics, tokenizer, use_server_output_tokens)
+    results = build_results(
+        stage_metrics,
+        tokenizer,
+        use_server_output_tokens,
+        session_metrics=session_metrics,
+        sessions_not_completed=sessions_not_completed,
+    )
 
     return {
         "version": VERSION,
