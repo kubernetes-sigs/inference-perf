@@ -99,6 +99,8 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         self.num_groups: int = self.shared_prefix.num_groups
         self.num_prompts_per_group: int = self.shared_prefix.num_prompts_per_group
         self.enable_multi_turn_chat: bool = self.shared_prefix.enable_multi_turn_chat
+        if self.enable_multi_turn_chat and api_config.type == APIType.Chat:
+            raise ValueError("shared_prefix enable_multi_turn_chat supports only api.type completion")
         # Keep the default aligned with ConversationReplayDataGenerator.  The
         # optional config value lets multi-turn shared-prefix runs use the
         # target model's actual context window when it is smaller.
@@ -237,6 +239,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 user_session_id=session.user_session_id,
                 target_round=round,
             )
+
+        if self.api_config.type == APIType.Chat:
+            return ChatCompletionAPIData(messages=[ChatMessage(role="user", content=self.prompts[i])], max_tokens=output_len)
         return CompletionAPIData(prompt=self.prompts[i], max_tokens=output_len)
 
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
