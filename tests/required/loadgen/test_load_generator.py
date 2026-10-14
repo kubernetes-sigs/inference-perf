@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import multiprocessing as mp
 import asyncio
 import typing
+import signal
 import sys
 import numpy as np
 from typing import Any
@@ -302,12 +303,14 @@ class TestLoadGenerator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(drained, (2, True))
         self.assertTrue(q.get_channel(0).empty())
 
-    def test_sigint_handler(self) -> None:
-        import signal
-
-        self.assertFalse(self.load_generator.interrupt_sig)
-        self.load_generator._sigint_handler(signal.SIGINT, None)
-        self.assertTrue(self.load_generator.interrupt_sig)
+    def test_sigint_and_sigterm_interrupt_the_run(self) -> None:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                self.load_generator.interrupt_sig = False
+                handler = signal.getsignal(signum)
+                assert callable(handler)
+                handler(signum, None)
+                self.assertTrue(self.load_generator.interrupt_sig)
 
     @patch("inference_perf.loadgen.load_generator.sleep", new_callable=AsyncMock)
     async def test_sigint_without_timeout_is_interrupted(self, mock_sleep: AsyncMock) -> None:

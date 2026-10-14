@@ -31,6 +31,7 @@ cancellation/rendezvous overhead.
 import asyncio
 import multiprocessing as mp
 import os
+import signal
 import sys
 import time
 from typing import Generator, List, Optional, Tuple
@@ -441,6 +442,23 @@ async def test_an_inexact_drop_count_reaches_the_stage_info(
         assert "Stage 0: dropped at least 3 request(s)" in caplog.text
     finally:
         harness.shutdown()
+
+
+async def test_terminate_stops_a_worker_forked_after_the_load_generator() -> None:
+    """Workers fork with the load generator's SIGTERM handler; terminate() must still end them."""
+    harness = _Harness(QuickClient(), teardown_grace_seconds=1.0)
+    worker = harness.loadgen.workers[0]
+    try:
+        await harness.run_stage(0, timeout=1.0)
+        worker.terminate()
+        worker.join(timeout=5.0)
+
+        assert worker.exitcode == -signal.SIGTERM
+    finally:
+        # No harness.shutdown(): setting an event a killed waiter was blocked on never returns.
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
 
 
 async def test_cancel_hostile_task_failure_does_not_kill_worker() -> None:
