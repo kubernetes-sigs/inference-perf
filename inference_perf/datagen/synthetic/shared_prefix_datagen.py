@@ -195,7 +195,7 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
         i = data.data_index % len(self.prompts)
         output_len = self.flat_output_lens[i]
 
-        if self.api_config.type == APIType.Chat or self.prefix_multimodal or self.payload_multimodal:
+        if self.prefix_multimodal or self.payload_multimodal:
             if self.enable_multi_turn_chat:
                 raise NotImplementedError("Multimodal multi-turn shared prefix is not supported yet.")
 
@@ -210,6 +210,9 @@ class SharedPrefixDataGenerator(DataGenerator, LazyLoadDataMixin):
                 multimodal_spec=self._sample_payload_spec(),
                 max_tokens=output_len,
             )
+
+        if self.api_config.type == APIType.Chat:
+            return ChatCompletionAPIData(messages=[ChatMessage(role="user", content=self.prompts[i])], max_tokens=output_len)
 
         if self.enable_multi_turn_chat:
             user_id = data.data_index % len(self.user_sessions)

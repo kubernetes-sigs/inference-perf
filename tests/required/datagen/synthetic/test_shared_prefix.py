@@ -107,7 +107,7 @@ async def test_chat_api_sends_each_prompt_as_a_chat_message() -> None:
         assert api_data.get_route() == "/v1/chat/completions"
 
         body = await api_data.to_request_body(effective_model_name="m", max_tokens=4, ignore_eos=False, streaming=False)
-        assert body["messages"] == [{"role": "user", "content": [{"type": "text", "text": generator.prompts[i]}]}]
+        assert body["messages"] == [{"role": "user", "content": generator.prompts[i]}]
 
 
 def test_completion_api_sends_each_prompt_as_a_completion() -> None:
