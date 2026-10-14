@@ -200,19 +200,32 @@ def test_per_request_fields_computed_metrics_uses_tokenizer_corrected_chunks() -
     assert entry["computed_metrics"]["output_tokens"] == 4
 
 
-def test_per_request_fields_include_session_id_when_set() -> None:
+def test_per_request_fields_include_session_ids_when_set() -> None:
     metric = _metric()
     metric.session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    metric.request_session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30::sa:agent-1:s0"
 
     entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig(request=False, response=False, info=False))
 
     assert entry["session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    assert entry["request_session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30::sa:agent-1:s0"
 
 
-def test_per_request_fields_omit_session_id_when_absent() -> None:
+def test_per_request_fields_keep_parent_session_id_without_request_session_id() -> None:
+    metric = _metric()
+    metric.session_id = "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+
+    entry = build_per_request_lifecycle_entry(metric, PerRequestFieldsConfig())
+
+    assert entry["session_id"] == "wekatrace5_05658118df5d398eec4703ce4fafe679ab30"
+    assert "request_session_id" not in entry
+
+
+def test_per_request_fields_omit_session_ids_when_absent() -> None:
     entry = build_per_request_lifecycle_entry(_metric(), PerRequestFieldsConfig())
 
     assert "session_id" not in entry
+    assert "request_session_id" not in entry
 
 
 @pytest.mark.parametrize("include_raw", [True, False])

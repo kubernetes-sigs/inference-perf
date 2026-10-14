@@ -506,6 +506,7 @@ async def test_child_request_identity_keeps_parent_metrics(
         assert "x-session-id" not in headers
     metric = mock_client.metrics_collector.record_metric.call_args.args[0]
     assert metric.session_id == "trace0_parent"
+    assert metric.request_session_id == "trace0_parent::sa:alpha:s0"
 
 
 @pytest.mark.asyncio

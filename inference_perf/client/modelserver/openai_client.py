@@ -768,6 +768,7 @@ class openAIModelServerClientSession(ModelServerClientSession):
         metric = RequestLifecycleMetric(
             stage_id=stage_id,
             session_id=data.session_id if isinstance(data.session_id, str) else None,
+            request_session_id=data.request_session_id if isinstance(data.request_session_id, str) else None,
             request_data=request_data,
             response_data=response_content,
             info=info,
