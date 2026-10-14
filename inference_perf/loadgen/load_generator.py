@@ -550,6 +550,8 @@ class Worker(mp.Process):
 
         # Ignore SIGINT in workers to prevent multiple calls to SIGINT handler
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        # Forked with the load generator's SIGTERM handler; terminate() needs the default action.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         set_event_loop_policy(uvloop.EventLoopPolicy())
         run(self.loop())
 
@@ -630,7 +632,8 @@ class LoadGenerator:
         self._stage_boundary_seq: Optional["Synchronized[int]"] = None
         self.worker_crash_queue: Optional["mp.SimpleQueue[WorkerCrash]"] = None
         self.worker_failures: List[WorkerFailure] = []
-        signal.signal(signal.SIGINT, self._sigint_handler)
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, self._interrupt_handler)
 
         # Validate that datagen type matches load_type
         if self.load_type == LoadType.TRACE_SESSION_REPLAY:
@@ -711,8 +714,8 @@ class LoadGenerator:
             if self._open_stage is not None:
                 self._stage_ended(self._open_stage)
 
-    def _sigint_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
-        """SIGINT handler that sets interrup_sig flag to True"""
+    def _interrupt_handler(self, _signum: int, _frame: Optional[FrameType]) -> None:
+        """Ends the run after the current stage's teardown, so its reports are still written."""
         self.interrupt_sig = True
 
     def _active_worker_count(self, concurrency_level: Optional[int]) -> int:
@@ -994,11 +997,11 @@ class LoadGenerator:
                 if stage_task:
                     stage_task.close()
                     stage_task = None
-                logger.info("Loadgen encountered SIGINT")
+                logger.info("Loadgen interrupted by a signal")
                 stage_status = StageStatus.INTERRUPTED
                 # Clean up any active session spans (using cached otel_instr)
                 for sid in list(session_spans.keys()):
-                    otel_instr.end_session_span(session_spans[sid], "Session interrupted by SIGINT")
+                    otel_instr.end_session_span(session_spans[sid], "Session interrupted by a signal")
                     del session_spans[sid]
                 break
 
@@ -1413,7 +1416,7 @@ class LoadGenerator:
                 stage_status = StageStatus.TIMED_OUT
                 break
             if self.interrupt_sig:
-                logger.info("Loadgen encountered SIGINT")
+                logger.info("Loadgen interrupted by a signal")
                 stage_status = StageStatus.INTERRUPTED
                 break
             if cb := next((cb for cb in self.circuit_breakers if cb.is_open()), None):
@@ -1722,7 +1725,7 @@ class LoadGenerator:
                 # Stage rendezvous already happened inside _teardown_stage
                 # (bounded, liveness-aware), so no barrier is needed here.
 
-                # If we encountered a SIGINT, we can break out of run stages loop
+                # If we were interrupted by a signal, we can break out of run stages loop
                 if self.interrupt_sig:
                     break
                 progress.refresh(force=True)
@@ -1748,6 +1751,8 @@ class LoadGenerator:
                 await self._run_reported_stage(stage_id, self._run_in_process_stage(client, stage_id, stage, progress))
                 progress.refresh(force=True)
                 LocalUserSession.clear_instances()
+                if self.interrupt_sig:
+                    break
                 if self.stageInterval and stage_id < len(self.stages) - 1:
                     await sleep(self.stageInterval)
 
@@ -1780,6 +1785,10 @@ class LoadGenerator:
         async with TaskGroup() as tg:
             time_generator = timer.start_timer(start_time)
             for data, time_index in zip(self.datagen.get_data(), time_generator, strict=False):
+                if self.interrupt_sig:
+                    logger.info("Loadgen interrupted by a signal")
+                    stage_status = StageStatus.INTERRUPTED
+                    break
                 progress.refresh()
                 data.stage_id = stage_id
                 request_data = LazyLoadDataMixin.get_request(self.datagen, data)
@@ -1808,9 +1817,7 @@ class LoadGenerator:
 
         if stage_status == StageStatus.RUNNING:
             stage_status = StageStatus.COMPLETED
-            logger.info("Stage %d - run completed", stage_id)
-        else:
-            logger.info("Stage %d - run failed", stage_id)
+        logger.info("Stage %d - run %s", stage_id, _STAGE_STATUS_LOG_VERB.get(stage_status, "failed"))
         self.stage_runtime_info[stage_id] = StageRuntimeInfo(
             stage_id=stage_id,
             rate=stage.rate,
