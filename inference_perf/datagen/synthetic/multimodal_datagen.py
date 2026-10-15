@@ -29,7 +29,7 @@ from inference_perf.payloads import (
 )
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution import sample_from_distribution
+from inference_perf.utils.numeric.distribution import sample_lengths, sample_values
 from inference_perf.datagen.multimodal_sampling import (
     resolution_to_wh,
     sample_audio_duration,
@@ -115,7 +115,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         img_cfg = self.multimodal_config.image
         if img_cfg and img_cfg.count:
             img_count_dist = img_cfg.count
-            count = int(sample_from_distribution(img_count_dist, 1, self.rng)[0])
+            count = int(sample_values(img_count_dist, 1, self.rng, integer=True)[0])
             for _ in range(count):
                 w, h = sample_image_resolution(img_cfg, self.rng)
                 spec.images.append(
@@ -130,7 +130,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         vid_cfg = self.multimodal_config.video
         if vid_cfg and vid_cfg.count:
             vid_count_dist = vid_cfg.count
-            count = int(sample_from_distribution(vid_count_dist, 1, self.rng)[0])
+            count = int(sample_values(vid_count_dist, 1, self.rng, integer=True)[0])
             for _ in range(count):
                 profile = sample_video_profile(vid_cfg, self.rng)
                 w, h = resolution_to_wh(profile.resolution)
@@ -157,7 +157,7 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         aud_cfg = self.multimodal_config.audio
         if aud_cfg and aud_cfg.count:
             aud_count_dist = aud_cfg.count
-            count = int(sample_from_distribution(aud_count_dist, 1, self.rng)[0])
+            count = int(sample_values(aud_count_dist, 1, self.rng, integer=True)[0])
             for _ in range(count):
                 spec.audios.append(
                     SyntheticAudioSpec(
@@ -175,8 +175,11 @@ class MultimodalDataGenerator(DataGenerator, LazyLoadDataMixin):
         spec = self._build_spec()
 
         text_len = 100
-        if self.input_distribution:
-            text_len = int(sample_from_distribution(self.input_distribution, 1, self.rng)[0])
+        # Sample from the raw config value: the base-class attribute only
+        # carries the structured Distribution view, and this field may hold
+        # an expression string.
+        if self.config.input_distribution is not None:
+            text_len = int(sample_lengths(self.config.input_distribution, 1, self.rng)[0])
         text_str = self._generate_dummy_text(text_len)
 
         return ChatCompletionAPIData(
