@@ -60,10 +60,8 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
 )
 from inference_perf.config.datagen.replay import BadToolCallHandling, OTelTraceReplayConfig, ToolChoiceMode
 from inference_perf.payloads import RequestMetrics, Text
-from inference_perf.datagen.replay.otel_trace_to_replay_graph import (
-    build_graph,
-    build_raw_calls,
-)
+from inference_perf.datagen.replay.replay_graph_builder import build_graph
+from inference_perf.datagen.replay.otel_trace_to_replay_graph import build_raw_calls
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
 from inference_perf.apis.chat import ChatMessage
 from inference_perf.config import APIConfig, APIType, SessionReplayConfig
