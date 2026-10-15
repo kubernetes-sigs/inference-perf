@@ -148,7 +148,7 @@ BACKEND = Backend(
         "object": "list",
         "data": [{"id": MODEL, "object": "model", "created": 0, "owned_by": "meta-llama"}],
     },
-    expected_supported_apis=[APIType.Completion, APIType.Chat],
+    expected_supported_apis=[APIType.Completion, APIType.Chat, APIType.Template],
     expected_metric_filters=[],
     queue_metric_name="tgi_queue_size",
 )
