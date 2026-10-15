@@ -126,7 +126,9 @@ class FakeStreamingResponse:
         return content
 
 
-def make_client(backend: Backend, api_config: APIConfig, api_key: Optional[str] = None) -> openAIModelServerClient:
+def make_client(
+    backend: Backend, api_config: APIConfig, api_key: Optional[str] = None, ignore_eos: bool = True
+) -> openAIModelServerClient:
     with patch("inference_perf.client.modelserver.openai_client.CustomTokenizer", StubTokenizer):
         return backend.client_cls(
             metrics_collector=MagicMock(),
@@ -137,6 +139,7 @@ def make_client(backend: Backend, api_config: APIConfig, api_key: Optional[str] 
             max_tcp_connections=4,
             additional_filters=[],
             api_key=api_key,
+            ignore_eos=ignore_eos,
         )
 
 
@@ -248,9 +251,15 @@ class BackendClientSuite:
 
     # --- Request payload serialization ---
 
+    # The canned replies below carry 5 or 6 tokens against the client's default
+    # max_tokens of 30. Under ignore_eos that shortfall is a truncation (#655), so
+    # these two success-path tests run with ignore_eos off, which is what the
+    # config would truthfully say about a server that stops early.
     @pytest.mark.asyncio
     async def test_streaming_completion_request_serialization(self) -> None:
-        client = make_client(self.backend, APIConfig(type=APIType.Completion, streaming=True), api_key="test-key")
+        client = make_client(
+            self.backend, APIConfig(type=APIType.Completion, streaming=True), api_key="test-key", ignore_eos=False
+        )
         response = FakeStreamingResponse([sse_stream(self.backend.completion_stream).encode()])
         session = await make_session(client, response)
 
@@ -265,17 +274,18 @@ class BackendClientSuite:
             "model": MODEL,
             "prompt": COMPLETION_PROMPT,
             "max_tokens": 30,
-            "ignore_eos": True,
+            "ignore_eos": False,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
         metric = recorded_metric(client)
         assert metric.error is None
         assert metric.info.response_metrics.output_tokens == 5
+        assert metric.max_tokens == 30
 
     @pytest.mark.asyncio
     async def test_non_streaming_chat_request_serialization(self) -> None:
-        client = make_client(self.backend, APIConfig(type=APIType.Chat, streaming=False))
+        client = make_client(self.backend, APIConfig(type=APIType.Chat, streaming=False), ignore_eos=False)
         response = FakeUnaryResponse(json.dumps(self.backend.chat_response))
         session = await make_session(client, response)
 
@@ -289,12 +299,13 @@ class BackendClientSuite:
             "model": MODEL,
             "messages": [{"role": "user", "content": CHAT_PROMPT}],
             "max_tokens": 30,
-            "ignore_eos": True,
+            "ignore_eos": False,
             "stream": False,
         }
         metric = recorded_metric(client)
         assert metric.error is None
         assert metric.info.response_metrics.output_tokens == 6
+        assert metric.max_tokens == 30
 
     # --- Response parsing: error paths ---
 

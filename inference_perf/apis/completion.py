@@ -20,7 +20,8 @@ from inference_perf.apis import InferenceAPIData, InferenceInfo, UnaryResponseMe
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.config import APIConfig, APIType
-from inference_perf.apis.streaming_parser import parse_sse_stream
+from inference_perf.apis.response_errors import EmptyResponseError, InBandError, in_band_error
+from inference_perf.apis.streaming_parser import finish_reason_of, parse_sse_stream
 
 
 class CompletionAPIData(InferenceAPIData):
@@ -76,6 +77,10 @@ class CompletionAPIData(InferenceAPIData):
         if config.streaming:
             # Use shared streaming parser with completion-specific content extraction
             parsed = await parse_sse_stream(response, extract_content=lambda data: data.get("choices", [{}])[0].get("text"))
+            # A stream that carried neither content nor usage is not a completion
+            # (an error page or an empty stream behind a 200), not a zero-token one.
+            if not parsed.output_text and parsed.server_usage is None:
+                raise EmptyResponseError(parsed.raw_content)
 
             prompt_len = self._resolve_prompt_tokens(parsed.server_usage, tokenizer)
             # Generated text is a continuation, not a sequence start: counting it
@@ -91,25 +96,34 @@ class CompletionAPIData(InferenceAPIData):
                     output_tokens=output_len,
                     output_token_times=parsed.chunk_times,
                     server_usage=parsed.server_usage,
+                    finish_reason=parsed.finish_reason,
                 ),
                 lora_adapter=lora_adapter,
                 extra_info={"raw_response": parsed.raw_content},
             )
         else:
             data = await response.json()
+            # A 200 whose body is an error payload is that error, not a success.
+            if (error_payload := in_band_error(data)) is not None:
+                raise InBandError(error_payload)
             server_usage = data.get("usage")
-            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             choices = data.get("choices", [])
+            output_text = choices[0].get("text", "") if choices else ""
+            # No content and no usage means the body is not a completion at all.
+            if not output_text and server_usage is None:
+                raise EmptyResponseError()
+            prompt_len = self._resolve_prompt_tokens(server_usage, tokenizer)
             if len(choices) == 0:
                 return InferenceInfo(
                     request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
                     lora_adapter=lora_adapter,
                 )
-            output_text = choices[0].get("text", "")
             output_len = tokenizer.count_tokens(output_text, add_special_tokens=False)
             self.model_response = output_text
             return InferenceInfo(
                 request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
+                response_metrics=UnaryResponseMetrics(
+                    output_tokens=output_len, server_usage=server_usage, finish_reason=finish_reason_of(data)
+                ),
                 lora_adapter=lora_adapter,
             )
