@@ -16,10 +16,12 @@ and Weka traces, all funneled through the shared replay-graph session model."""
 
 from .conversation_replay_datagen import ConversationReplayDataGenerator
 from .otel_trace_replay_datagen import OTelTraceReplayDataGenerator
+from .tracelab_trace_replay_datagen import TraceLabTraceReplayDataGenerator
 from .weka_trace_replay_datagen import WekaTraceReplayDataGenerator
 
 __all__ = [
     "ConversationReplayDataGenerator",
     "OTelTraceReplayDataGenerator",
+    "TraceLabTraceReplayDataGenerator",
     "WekaTraceReplayDataGenerator",
 ]
