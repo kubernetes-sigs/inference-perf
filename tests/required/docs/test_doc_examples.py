@@ -37,7 +37,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from inference_perf.config import DataConfig, LoadConfig
-from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.concurrency_schedule import ConcurrencySchedule
+from inference_perf.utils.numeric.expression import Expression, PiecewiseLinear, Predicate
 
 DOCS = sorted((Path(__file__).resolve().parents[3] / "docs").glob("*.md"))
 
@@ -106,6 +107,19 @@ def _check_condition(row: Row) -> None:
     assert round(Predicate(condition).boundary, 2) == ends_at, condition
 
 
+# Breakpoints must equal the claimed comma-separated times. Input: '`Min(1 + t/6, 64)`', '0, 378'.
+def _check_breakpoints(row: Row) -> None:
+    expr = _code(row[0])
+    starts = [round(s.start, 6) for s in PiecewiseLinear(expr).segments]
+    assert starts == [float(x) for x in row[1].split(",")], f"{expr}: breakpoints {starts}"
+
+
+# A concurrency level must start and peak at the claimed levels. Input: '`Min(1 + t/6, 64)`', '1', '64'.
+def _check_concurrency(row: Row) -> None:
+    schedule = ConcurrencySchedule(_code(row[0]))
+    assert (schedule.initial, schedule.peak) == (int(row[1]), int(row[2])), f"{row[0]}: {schedule.initial}, {schedule.peak}"
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -121,6 +135,10 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Condition", "Ends at (s)"): _check_condition,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
+    ("Piecewise-linear expression", "Breakpoints"): _check_breakpoints,
+    ("Rejected piecewise-linear expression", "Why"): _rejects(PiecewiseLinear),
+    ("Concurrency level", "Start", "Peak"): _check_concurrency,
+    ("Rejected concurrency level", "Why"): _rejects(ConcurrencySchedule),
 }
 
 MODELS: Dict[str, Type[BaseModel]] = {"load": LoadConfig, "data": DataConfig}
