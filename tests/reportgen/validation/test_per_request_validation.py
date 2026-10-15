@@ -88,6 +88,16 @@ def test_client_server_token_divergence_is_a_warning() -> None:
     assert warnings and not result.all_errors()
 
 
+def test_client_server_token_divergence_is_a_warning_with_anthropic_spelling() -> None:
+    reports, records = tampered(make_report_set(), PER_REQUEST_FILE)
+    response_metrics = records[0]["info"]["response_metrics"]
+    response_metrics["server_usage"] = {"output_tokens": response_metrics["output_tokens"] * 2}
+
+    result = _validate(reports)
+    warnings = [f for f in result.all_warnings() if f.check == "per_request.token_agreement"]
+    assert warnings and not result.all_errors()
+
+
 def test_systematic_violations_aggregate_into_one_finding() -> None:
     reports, records = tampered(make_report_set(), PER_REQUEST_FILE)
     many: List[Any] = []

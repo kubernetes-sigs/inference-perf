@@ -935,3 +935,50 @@ def test_ntpot_is_unset_for_requests_without_output_tokens() -> None:
 
     only_no_output = summarize_requests([no_output], [50])
     assert only_no_output.successes["latency"]["normalized_time_per_output_token"] is None
+
+
+def test_extract_chunk_text_reads_content_block_start_text() -> None:
+    """A compatible server may put text in content_block_start; it must count (#885)."""
+    from inference_perf.reportgen.base import _extract_chunk_text
+
+    chunk = '{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "Hello start"}}'
+    assert _extract_chunk_text(chunk) == "Hello start"
+
+    # Empty text there carries nothing, matching the live Anthropic parser.
+    empty = '{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}'
+    assert _extract_chunk_text(empty) is None
+
+
+def test_correct_streamed_response_metrics_reads_anthropic_output_tokens() -> None:
+    """Mismatch detection must read output_tokens, not just completion_tokens (#885)."""
+    from unittest.mock import MagicMock
+    from inference_perf.reportgen.base import correct_streamed_response_metrics
+
+    chunks = [
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}',
+        '{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " world"}}',
+    ]
+    chunk_times = [1.0, 2.0]
+
+    def make_metric(server_usage: dict[str, Any]) -> RequestLifecycleMetric:
+        info = InferenceInfo(
+            request_metrics=RequestMetrics(text=Text(input_tokens=5)),
+            response_metrics=StreamedResponseMetrics(
+                output_tokens=2,
+                output_token_times=[],
+                response_chunks=chunks,
+                chunk_times=chunk_times,
+                server_usage=server_usage,
+            ),
+        )
+        return RequestLifecycleMetric(
+            scheduled_time=0.0, start_time=0.0, end_time=3.0, request_data="req", info=info, error=None
+        )
+
+    tokenizer = MagicMock()
+    tokenizer.count_tokens = MagicMock(return_value=1)
+
+    # Server says 2, client re-tokenized 2 -> no mismatch.
+    assert correct_streamed_response_metrics(make_metric({"output_tokens": 2}), tokenizer) is False
+    # Server says 5, client re-tokenized 2 -> mismatch must be reported.
+    assert correct_streamed_response_metrics(make_metric({"output_tokens": 5}), tokenizer) is True

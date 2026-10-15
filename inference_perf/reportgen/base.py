@@ -595,6 +595,10 @@ def _chunk_content(data: Any) -> Optional[str]:
     elif delta := data.get("delta"):
         if isinstance(delta, dict) and (text := delta.get("text")):
             return str(text)
+    elif data.get("type") == "content_block_start":
+        block = data.get("content_block") or {}
+        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+            return str(block["text"])
     return None
 
 
@@ -643,7 +647,7 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     Mutates m.info.response_metrics in place so that the summary, per-stage, and
     per-request reports all see the same tokenizer-corrected token timings.
     Returns True if the tokenizer-derived token count doesn't match the
-    server-reported completion_tokens.
+    server-reported output count (completion_tokens / output_tokens).
     """
     if not (
         isinstance(m.info.response_metrics, StreamedResponseMetrics)
@@ -652,9 +656,7 @@ def correct_streamed_response_metrics(m: RequestLifecycleMetric, tokenizer: Opti
     ):
         return False
 
-    expected_output_tokens = (
-        m.info.response_metrics.server_usage.get("completion_tokens") if m.info.response_metrics.server_usage else None
-    )
+    expected_output_tokens = server_reported_tokens(m.info.response_metrics.server_usage, SERVER_OUTPUT_TOKEN_KEYS)
     output_token_times = retokenize_output_token_times(m.info.response_metrics, tokenizer)
     m.info.response_metrics.output_token_times = output_token_times
     # Do not overwrite output_tokens with the per-chunk sum. Keep the API layer's whole-message

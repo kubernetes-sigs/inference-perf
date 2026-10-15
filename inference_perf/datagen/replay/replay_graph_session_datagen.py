@@ -1275,12 +1275,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             parsed, output_message = await parse_anthropic_stream_response(response)
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
-            output_tokens = (server_usage or {}).get("output_tokens")
-            output_len = (
-                int(output_tokens)
-                if output_tokens is not None
-                else count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
-            )
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1306,12 +1301,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
             usage = data.get("usage") or {}
             output_text, output_message = parse_anthropic_content(data.get("content"))
             input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            output_len = (
-                int(output_tokens)
-                if output_tokens is not None
-                else count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
-            )
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
             base_info = InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -1320,7 +1310,7 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
                     )
                 ),
-                response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+                response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
                 lora_adapter=lora_adapter,
                 extra_info={
                     "stop_reason": data.get("stop_reason"),

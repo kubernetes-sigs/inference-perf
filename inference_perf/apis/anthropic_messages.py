@@ -138,7 +138,7 @@ def parse_anthropic_thinking(content: Any) -> str:
 
 
 def count_anthropic_output_tokens(tokenizer: CustomTokenizer, output_text: str, thinking_text: str) -> int:
-    """Client-side fallback for usage.output_tokens, which counts thinking tokens too (#559)."""
+    """Client-side output-token count; usage.output_tokens is kept separately in server_usage (#559)."""
     # Generated text is a continuation, so no BOS, matching _count_generated_tokens in chat.py.
     total = tokenizer.count_tokens(output_text, add_special_tokens=False)
     if thinking_text:
@@ -345,12 +345,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             parsed, output_message = await parse_anthropic_stream_response(response)
             output_text, server_usage = parsed.output_text, parsed.server_usage
             input_tokens = (server_usage or {}).get("input_tokens")
-            output_tokens = (server_usage or {}).get("output_tokens")
-            output_len = (
-                int(output_tokens)
-                if output_tokens is not None
-                else count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
-            )
+            output_len = count_anthropic_output_tokens(tokenizer, output_text, parsed.reasoning_text)
             return InferenceInfo(
                 request_metrics=RequestMetrics(
                     text=Text(
@@ -374,12 +369,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
-        output_tokens = usage.get("output_tokens")
-        output_len = (
-            int(output_tokens)
-            if output_tokens is not None
-            else count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
-        )
+        output_len = count_anthropic_output_tokens(tokenizer, output_text, parse_anthropic_thinking(data.get("content")))
         extra_info: dict[str, Any] = {
             "stop_reason": data.get("stop_reason"),
             "output_message": output_message,
@@ -389,7 +379,7 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             request_metrics=RequestMetrics(
                 text=Text(input_tokens=int(input_tokens) if input_tokens is not None else self._count_prompt_tokens(tokenizer))
             ),
-            response_metrics=UnaryResponseMetrics(output_tokens=output_len),
+            response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=usage or None),
             lora_adapter=lora_adapter,
             extra_info=extra_info,
         )
