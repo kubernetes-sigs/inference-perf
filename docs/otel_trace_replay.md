@@ -88,13 +88,12 @@ load:
     - concurrent_sessions: 4           # Required: max sessions running simultaneously
       num_sessions: 20                 # Optional: omit to run all remaining sessions
       session_rate: 2.0                # Optional: max new sessions/sec (omit for no limit)
-  worker_max_concurrency: 500          # Optional: set high for trace replay (default: 100)
-                                       # Rule of thumb: concurrent_sessions × 50-100
+  worker_max_concurrency: 100          # Optional: max requests executing per worker (default: 100)
 ```
 
 > **Important:** `data.type: otel_trace_replay` **requires** `load.type: trace_session_replay`. A validator enforces this at startup.
 >
-> **Note on `worker_max_concurrency`:** This limits requests executing against the model server in each worker. Events waiting for their scheduled time or for predecessors do not consume a request slot.
+> **Note on `worker_max_concurrency`:** This limits requests executing against the model server in each worker. Events waiting for their scheduled time or for predecessors do not consume a request slot. When this limit is saturated, ready events queue for capacity, so observed inter-event gaps and session durations may exceed those recorded in the source trace.
 
 ### Router Session Affinity
 

@@ -325,7 +325,10 @@ class Worker(mp.Process):
                 permit_preacquired = False
                 if not isinstance(self.datagen, SessionGenerator):
                     # Preserve bounded queue admission for ordinary request
-                    # loads. Session replay acquires only after dependencies.
+                    # loads. The timeout lets a worker saturated with hung
+                    # requests re-check the loop condition, reach the stage
+                    # boundary, and cancel them after the teardown grace.
+                    # Session replay acquires only after dependencies.
                     try:
                         await wait_for(semaphore.acquire(), timeout=timeout)
                         permit_preacquired = True
