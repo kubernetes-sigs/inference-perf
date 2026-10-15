@@ -14,7 +14,13 @@
 
 """Tests for OpenTelemetry instrumentation."""
 
+from multiprocessing.queues import SimpleQueue
+from typing import Optional
+
+import pytest
+
 from inference_perf.client.modelserver.otel_instrumentation import OTelInstrumentation, get_otel_instrumentation
+from inference_perf.utils.mp_context import MP_CONTEXT
 
 
 def test_otel_instrumentation_init() -> None:
@@ -128,3 +134,31 @@ def test_record_response_metrics_with_error() -> None:
             response_info=None,
             error="Connection timeout",
         )
+
+
+# Runs in the worker: opens one span and reports whether it is recording.
+def _span_records_in_worker(otel: OTelInstrumentation, result: "SimpleQueue[bool]") -> None:
+    with otel.trace_llm_request(operation_name="completions", model_name="test-model") as span:
+        result.put(span is not None and span.is_recording())
+
+
+# An enabled instance goes to a forkserver worker, once with the console exporter and once with OTLP.
+# The worker reports True: the instance pickled and the worker built a live tracer of its own.
+@pytest.mark.parametrize("otlp_endpoint", [None, "http://localhost:4317"])
+def test_enabled_instrumentation_traces_in_forkserver_worker(
+    monkeypatch: pytest.MonkeyPatch, otlp_endpoint: Optional[str]
+) -> None:
+    pytest.importorskip("opentelemetry.sdk.trace")
+    if otlp_endpoint is None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_endpoint)
+    otel = OTelInstrumentation(service_name="test-service", enabled=True)
+
+    result: "SimpleQueue[bool]" = MP_CONTEXT.SimpleQueue()
+    worker = MP_CONTEXT.Process(target=_span_records_in_worker, args=(otel, result))  # type: ignore[attr-defined]
+    worker.start()
+    worker.join(timeout=60)
+
+    assert worker.exitcode == 0
+    assert result.get() is True

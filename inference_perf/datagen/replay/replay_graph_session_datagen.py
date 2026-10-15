@@ -1410,12 +1410,13 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
         super().__init__(api_config, config, tokenizer)
         self.config = config
         self.replay_config = replay_config
-        self.mp_manager = mp_manager
         self.num_workers = max(1, num_workers)
         self.base_seed = base_seed if base_seed is not None else 42
 
         self.output_registry = EventOutputRegistry()
         self.worker_tracker = WorkerSessionTracker()
+        # Keep only the queue proxy. Workers receive this datagen by pickle and the
+        # manager itself does not pickle.
         if mp_manager is not None:
             self.session_completion_queue: Any = mp_manager.Queue()
         else:
