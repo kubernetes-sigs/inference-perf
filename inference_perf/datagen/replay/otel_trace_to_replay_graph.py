@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from inference_perf.datagen.replay.export_replay_graph_to_dot import export_to_dot
+from inference_perf.apis.image_parts import count_missing_images, is_image_part, to_openai_image
 from inference_perf.datagen.replay.otel_trace_utils import (
     reconstruct_llm_output,
     reconstruct_llm_input,
@@ -118,7 +119,8 @@ def _coerce_text(value: Any) -> str:
 
     Recorded ``text`` / tool-result values are usually strings, but some traces
     carry a list of blocks, e.g. ``[{"type": "text", "text": "..."}]``. Extract
-    the text so the wire ``content`` is always a string.
+    the text so the wire ``content`` is a string (see :func:`_wire_content` for
+    lists that carry an image).
     """
     if value is None:
         return ""
@@ -133,6 +135,36 @@ def _coerce_text(value: Any) -> str:
                 out.append(str(block))
         return "".join(out)
     return str(value)
+
+
+def _wire_content(value: Any) -> Any:
+    """Wire ``content`` for a recorded value: its text, or an OpenAI parts list if it holds an image.
+
+    Images keep their recorded position among the text parts, so the recorded bytes are
+    sent as images. Parts of another modality are not sent.
+    """
+    if not isinstance(value, list) or not any(is_image_part(p) for p in value):
+        return _coerce_text(value)
+    content: List[Dict[str, Any]] = []
+    for part in value:
+        if is_image_part(part):
+            image = to_openai_image(part)
+            if image is not None:
+                content.append(image)
+        elif not (isinstance(part, dict) and part.get("type") in ("blob", "uri", "file")):
+            text = _coerce_text([part])
+            if text:
+                content.append({"type": "text", "text": text})
+    if not any(p["type"] == "image_url" for p in content):
+        # Every image was missing its bytes: send the text, as for a text-only message.
+        return "".join(p["text"] for p in content)
+    return content
+
+
+def _as_parts(content: Any) -> List[Dict[str, Any]]:
+    if isinstance(content, list):
+        return content
+    return [{"type": "text", "text": content}] if content else []
 
 
 def _normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,10 +233,36 @@ def _tool_result_messages(responses: List[Dict[str, Any]], leading_text: str = "
         # "result" is the legacy field name; "response" is the current one. Prefer
         # the legacy key when present so an explicit empty result is not silently
         # replaced by the other field (see the field-precedence tests).
-        message["content"] = _coerce_text(response.get("result", response.get("response", "")))
+        message["content"] = _wire_content(response.get("result", response.get("response", "")))
         messages.append(message)
     if leading_text and messages:
-        messages[0]["content"] = leading_text + messages[0]["content"]
+        first = messages[0]["content"]
+        messages[0]["content"] = leading_text + first if isinstance(first, str) else _as_parts(leading_text) + first
+    return messages
+
+
+def _tool_results_in_order(parts: List[Any]) -> List[Dict[str, Any]]:
+    """Tool-result messages for a recorded message whose results sit beside an image.
+
+    Each text or image part rides on the tool result recorded just before it (the first
+    result, if it comes first), so an image keeps its recorded position.
+    """
+    responses = [p for p in parts if isinstance(p, dict) and p.get("type") == "tool_call_response"]
+    messages = _tool_result_messages(responses)
+    extras: List[Tuple[List[Any], List[Any]]] = [([], []) for _ in messages]
+    current = -1
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "tool_call_response":
+            current += 1
+        elif part.get("type") == "text" or is_image_part(part):
+            (extras[0][0] if current < 0 else extras[current][1]).append(part)
+    for message, (before, after) in zip(messages, extras, strict=True):
+        if before or after:
+            content = _as_parts(_wire_content(before)) + _as_parts(message["content"]) + _as_parts(_wire_content(after))
+            has_image = any(p["type"] == "image_url" for p in content)
+            message["content"] = content if has_image else "".join(p["text"] for p in content)
     return messages
 
 
@@ -249,24 +307,32 @@ def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
         if "parts" in info:
             role = info.get("role", x.role)
             msg: Dict[str, Any] = {"role": role}
-            text_parts: List[str] = []
+            content_parts: List[Dict[str, Any]] = []
             tool_calls: List[Dict[str, Any]] = []
             responses = [p for p in info["parts"] if p.get("type") == "tool_call_response"]
             for part in info["parts"]:
                 part_type = part.get("type")
-                if part_type == "text":
-                    text_parts.append(_coerce_text(part.get("content", "")))
+                if part_type == "text" or is_image_part(part):
+                    content_parts.append(part)
                 elif part_type == "tool_call":
                     tool_calls.append(_normalize_tool_call(part))
+            has_image = any(is_image_part(p) for p in content_parts)
             if responses:
                 # Parallel tool results expand to one role:tool message each.
-                return _tool_result_messages(responses, leading_text="".join(text_parts))
+                if has_image:
+                    return _tool_results_in_order(info["parts"])
+                text = "".join(_coerce_text(p.get("content", "")) for p in content_parts)
+                return _tool_result_messages(responses, leading_text=text)
+            if has_image:
+                content: Any = _wire_content(content_parts)
+            else:
+                content = "".join(_coerce_text(p.get("content", "")) for p in content_parts)
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             # Emit content for text / tool-result messages. For an assistant
             # message that is only tool calls, omit content (matches OpenAI).
-            if text_parts or not tool_calls:
-                msg["content"] = "".join(text_parts)
+            if content_parts or not tool_calls:
+                msg["content"] = content
             return [msg]
 
         # Shape 2: raw OpenAI dict.
@@ -283,6 +349,8 @@ def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
                 # See the parts-format branch above: parallel tool results expand
                 # to one role:tool message each. Text recorded in the same content
                 # list is carried along rather than dropped.
+                if any(is_image_part(p) for p in content):
+                    return _tool_results_in_order(content)
                 sibling_text = "".join(
                     _coerce_text(p.get("content", p.get("text", "")))
                     for p in content
@@ -296,8 +364,9 @@ def _replay_message_to_dict(x: ReplayMessage) -> List[Dict[str, Any]]:
         if role == "tool" and info.get("tool_call_id") is not None:
             msg["tool_call_id"] = info["tool_call_id"]
         if content is not None:
-            # Coerce list-of-blocks content to a string; pass strings through.
-            msg["content"] = content if isinstance(content, str) else _coerce_text(content)
+            # Coerce list-of-blocks content to a string (a parts list when it carries
+            # an image); pass strings through.
+            msg["content"] = content if isinstance(content, str) else _wire_content(content)
         elif "tool_calls" not in msg:
             msg["content"] = x.text
         return [msg]
@@ -579,10 +648,15 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
 
     calls: List[RawCall] = []
     total_normalized = 0
+    missing_images = 0
+    calls_missing_images = 0
     for s in llm_spans:
         attrs = s.get("attributes") or {}
         messages, normalized_count = extract_messages(s)
         total_normalized += normalized_count
+        missing = count_missing_images([m.message_info if isinstance(m, ComplexReplayMessage) else m.text for m in messages])
+        missing_images += missing
+        calls_missing_images += bool(missing)
         out_message = extract_output_message(s)
         t_start = int(round((parse_iso(s["start_time"]) - t0) * 1000))
         t_end = int(round((parse_iso(s["end_time"]) - t0) * 1000)) if s.get("end_time") else t_start
@@ -635,6 +709,14 @@ def build_raw_calls(spans: List[Dict[str, Any]], include_errors: bool = False) -
                 tool_definitions=tool_definitions,
                 extra_attributes=extra_attrs,
             )
+        )
+    if missing_images:
+        logger.warning(
+            "%d image occurrence(s) in %d call(s) are missing from the trace (redacted, an uploaded file, "
+            "or a placeholder such as '[image]'); they are not sent as images, so those prompts are "
+            "smaller than recorded",
+            missing_images,
+            calls_missing_images,
         )
     return calls, total_normalized
 

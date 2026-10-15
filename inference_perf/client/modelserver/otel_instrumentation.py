@@ -1,4 +1,4 @@
-# Copyright 2025 The Kubernetes Authors.
+# Copyright 2026 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,9 @@ import logging
 import os
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING, cast
 from contextlib import contextmanager
+
+from inference_perf.apis.image_parts import split_data_url, summarize_base64
+
 
 if TYPE_CHECKING:
     # Local stub for type checking - avoids "Any" issues with --ignore-missing-imports
@@ -532,3 +535,25 @@ def get_otel_instrumentation(service_name: Optional[str] = None, enabled: Option
         _global_instrumentation = OTelInstrumentation(service_name=service_name, enabled=enabled)
 
     return _global_instrumentation
+
+
+def summarize_media(value: Any) -> Any:
+    """Copy of request messages with each inline media payload replaced by a short summary.
+
+    Span attributes would otherwise carry every image, video and audio clip in full. A
+    base64 data URL keeps its ``data:<mime>;base64,`` prefix, followed by
+    ``[<bytes> bytes, sha256:<16 hex>]``; ``input_audio.data`` becomes the summary alone.
+    """
+    if isinstance(value, str):
+        data_url = split_data_url(value)
+        return f"data:{data_url[0]};base64,{summarize_base64(data_url[1])}" if data_url else value
+    if isinstance(value, list):
+        return [summarize_media(item) for item in value]
+    if isinstance(value, dict):
+        if value.get("type") == "input_audio" and isinstance(value.get("input_audio"), dict):
+            audio = dict(value["input_audio"])
+            if isinstance(audio.get("data"), str):
+                audio["data"] = summarize_base64(audio["data"])
+            return {**value, "input_audio": audio}
+        return {key: summarize_media(item) for key, item in value.items()}
+    return value

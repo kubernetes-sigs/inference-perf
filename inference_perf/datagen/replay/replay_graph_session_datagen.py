@@ -23,6 +23,8 @@ affinity, lazy request materialization, and session completion tracking.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import re
@@ -35,6 +37,7 @@ from multiprocessing.managers import SyncManager
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from aiohttp import ClientResponse
+from PIL import Image as PILImage
 
 from inference_perf.apis import (
     ChatCompletionAPIData,
@@ -55,7 +58,8 @@ from inference_perf.apis.anthropic_messages import (
     parse_anthropic_thinking,
 )
 from inference_perf.apis.chat import ChatMessage, reasoning_field
-from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.apis.image_parts import base64_size, image_bytes, is_image_part, to_otel_part
+from inference_perf.payloads import Image, Images, RequestMetrics, Text
 from inference_perf.apis.streaming_parser import parse_sse_stream
 from inference_perf.config import APIConfig, APIType, DataConfig, SessionReplayConfig
 from inference_perf.config.datagen.replay import BadToolCallHandling, ToolChoiceMode
@@ -64,6 +68,42 @@ from inference_perf.datagen.replay.replay_graph_types import InputSegment, Repla
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+def replayed_images(messages: List[ChatMessage]) -> Optional[Images]:
+    """Per-image metrics for the images in a replayed request's messages.
+
+    Every image is counted; only those whose size is known (inline bytes with a readable
+    header) are listed as instances, so an image sent by URL does not skew the pixel and
+    byte distributions. Returns None for a request without images, matching how synthetic
+    requests leave it unset.
+    """
+    count = 0
+    instances: List[Image] = []
+    for message in messages:
+        for part in message.content if isinstance(message.content, list) else []:
+            if not is_image_part(part):
+                continue
+            image = to_otel_part(part)
+            data = image_bytes(image)
+            if data is None and not image.get("uri"):
+                continue
+            count += 1
+            width, height = _image_dimensions(data) if data is not None else (0, 0)
+            if width and height and data is not None:
+                instances.append(Image(pixels=width * height, bytes=base64_size(data), aspect_ratio=width / height))
+    return Images(count=count, instances=instances) if count else None
+
+
+def _image_dimensions(data: str) -> Tuple[int, int]:
+    """Width and height from the image header: the first 48 KiB usually hold it, else the whole image."""
+    for chunk in dict.fromkeys((data[: 64 * 1024], data)):
+        try:
+            with PILImage.open(io.BytesIO(base64.b64decode(chunk))) as img:
+                return img.size
+        except (OSError, ValueError, PILImage.DecompressionBombError):
+            continue
+    return 0, 0
 
 
 def _expand_tool_call_max_tokens(recorded_tokens: int) -> int:
@@ -888,8 +928,13 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                         msg_copy = dict(msg)
                         original_content = msg_copy.get("content", "")
 
-                        # Prepend random session identifier to content
-                        msg_copy["content"] = f"[SESS:{self.session_random_string}] {original_content}"
+                        # Prepend random session identifier to content; a parts list
+                        # (a message carrying an image) gets it as a leading text part.
+                        marker = f"[SESS:{self.session_random_string}] "
+                        if isinstance(original_content, list):
+                            msg_copy["content"] = [{"type": "text", "text": marker}, *original_content]
+                        else:
+                            msg_copy["content"] = f"{marker}{original_content}"
                         result.append(msg_copy)
                         reason = "flag enabled" if self.inject_random_session_id else "duplicate session"
                         logger.debug(f"Event {self.event_id}: injected random session string ({reason})")
@@ -1088,7 +1133,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps([tool_call_chunks[i] for i in sorted(tool_call_chunks)], ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
-                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
+                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=response_chunks,
                     chunk_times=chunk_times,
@@ -1141,7 +1186,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
                     tc_text = json.dumps(tool_calls, ensure_ascii=False)
                 output_len = tokenizer.count_tokens(output_text + tc_text)
             info = SessionInferenceInfo(
-                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len)),
+                request_metrics=RequestMetrics(text=Text(input_tokens=prompt_len), image=replayed_images(self.messages)),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len, server_usage=server_usage),
                 lora_adapter=lora_adapter,
                 output_text=output_text or None,
@@ -1287,7 +1332,8 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
-                    )
+                    ),
+                    image=replayed_images(self.messages),
                 ),
                 response_metrics=StreamedResponseMetrics(
                     response_chunks=parsed.response_chunks,
@@ -1318,7 +1364,8 @@ class SessionAnthropicMessagesAPIData(SessionChatCompletionAPIData):
                         input_tokens=int(input_tokens)
                         if input_tokens is not None
                         else count_anthropic_prompt_tokens(self.messages, tokenizer, self.tool_definitions)
-                    )
+                    ),
+                    image=replayed_images(self.messages),
                 ),
                 response_metrics=UnaryResponseMetrics(output_tokens=output_len),
                 lora_adapter=lora_adapter,
@@ -1905,7 +1952,8 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 # Preserve any assistant preamble content alongside the tool calls
                 # so chat_messages (which becomes the wire payload when no
                 # substitution/injection runs) is not lossy.
-                tc_content = content if isinstance(content, str) and content else None
+                has_image = isinstance(content, list) and any(is_image_part(b) for b in content)
+                tc_content = content if (isinstance(content, str) or has_image) and content else None
                 chat_messages.append(
                     ChatMessage(role=role, content=tc_content, tool_calls=tool_calls, reasoning_content=reasoning_content)
                 )
@@ -1917,7 +1965,9 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                 original_messages.append(tc_msg)
                 continue
 
-            if isinstance(content, list):
+            # A parts list carrying a recorded image is sent as is; any other list is
+            # flattened to text.
+            if isinstance(content, list) and not any(is_image_part(block) for block in content):
                 content_parts = []
                 for block in content:
                     if isinstance(block, dict):
@@ -1929,7 +1979,7 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
                         content_parts.append(str(block))
                 content = " ".join(content_parts)
 
-            content_str = str(content)
+            content_out: Any = content if isinstance(content, list) else str(content)
             # Carry tool_call_id onto the ChatMessage too (not just original_messages),
             # so role:tool linkage survives on the wire when substitution is disabled.
             # tool_call_id belongs on a role:tool message only — don't leak it onto
@@ -1937,10 +1987,10 @@ class ReplayGraphSessionGeneratorBase(SessionGenerator, LazyLoadDataMixin):
             wire_tool_call_id = tool_call_id if role == "tool" else None
             chat_messages.append(
                 ChatMessage(
-                    role=role, content=content_str, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content
+                    role=role, content=content_out, tool_call_id=wire_tool_call_id, reasoning_content=reasoning_content
                 )
             )
-            orig_msg: Dict[str, Any] = {"role": role, "content": content_str}
+            orig_msg: Dict[str, Any] = {"role": role, "content": content_out}
             if wire_tool_call_id is not None:
                 orig_msg["tool_call_id"] = wire_tool_call_id
             if reasoning_content:
