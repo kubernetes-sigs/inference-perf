@@ -159,6 +159,8 @@ class ChainedChatData(ChatCompletionAPIData):
 
     wait_flag_path: Optional[str] = None
     permit_wait_ready_path: Optional[str] = None
+    session_failed_flag_path: Optional[str] = None
+    failure_check_log_path: Optional[str] = None
 
     async def wait_for_predecessors_and_substitute(self) -> None:
         if self.wait_flag_path is None:
@@ -168,6 +170,14 @@ class ChainedChatData(ChatCompletionAPIData):
         if self.permit_wait_ready_path is not None:
             with open(self.permit_wait_ready_path, "w") as f:
                 f.write("ready\n")
+
+    def skip_if_session_failed(self, context: str) -> bool:
+        if self.session_failed_flag_path is None or not os.path.exists(self.session_failed_flag_path):
+            return False
+        if self.failure_check_log_path is not None:
+            with open(self.failure_check_log_path, "a") as f:
+                f.write(f"{context}\n")
+        return True
 
 
 class ChainDataGenerator(MockDataGenerator):
@@ -527,6 +537,67 @@ async def test_permit_released_after_teardown_does_not_dispatch_waiter(
             teardown.cancel()
             with suppress(asyncio.CancelledError):
                 await teardown
+        harness.shutdown()
+
+
+async def test_session_failure_while_waiting_for_permit_skips_request(tmp_path: object) -> None:
+    """A request must recheck session failure after waiting for capacity."""
+    dispatch_log = os.path.join(str(tmp_path), "dispatches.log")
+    release_root = os.path.join(str(tmp_path), "release-root.flag")
+    predecessor_done = os.path.join(str(tmp_path), "predecessor.done")
+    waiter_ready = os.path.join(str(tmp_path), "waiter-ready.flag")
+    session_failed = os.path.join(str(tmp_path), "session-failed.flag")
+    failure_check_log = os.path.join(str(tmp_path), "failure-checks.log")
+    with open(predecessor_done, "w") as f:
+        f.write("done\n")
+
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = StubSessionGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    harness = _Harness(
+        RecordingGateClient(dispatch_log, release_root),
+        teardown_grace_seconds=1.0,
+        datagen=datagen,
+        worker_max_concurrency=1,
+    )
+
+    now = time.perf_counter()
+    root = ChainedChatData(messages=[ChatMessage(role="user", content="session-root")])
+    waiter = ChainedChatData(
+        messages=[ChatMessage(role="user", content="session-waiter")],
+        wait_flag_path=predecessor_done,
+        permit_wait_ready_path=waiter_ready,
+        session_failed_flag_path=session_failed,
+        failure_check_log_path=failure_check_log,
+    )
+    harness.request_queue.put(RequestQueueData(0, root, now, None), 0)
+    harness.request_queue.put(RequestQueueData(0, waiter, now, None), 0)
+
+    try:
+        await _wait_for_line(dispatch_log, "session-root")
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(waiter_ready) and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert os.path.exists(waiter_ready), "waiter did not reach permit admission"
+
+        with open(session_failed, "w") as f:
+            f.write("failed\n")
+        with open(release_root, "w") as f:
+            f.write("done\n")
+
+        deadline = time.monotonic() + 5.0
+        while harness.finished_counter.value < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert harness.finished_counter.value == 2
+        assert harness.active_counter.value == 0
+        assert harness.skipped_counter.value == 1
+        with open(dispatch_log) as f:
+            assert f.read().splitlines() == ["session-root"]
+        with open(failure_check_log) as f:
+            assert f.read().splitlines() == ["post-permit check"]
+    finally:
+        if not os.path.exists(release_root):
+            with open(release_root, "w") as f:
+                f.write("done\n")
         harness.shutdown()
 
 

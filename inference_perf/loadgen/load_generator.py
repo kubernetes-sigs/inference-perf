@@ -423,6 +423,13 @@ class Worker(mp.Process):
                         ):
                             return
 
+                        # A parallel branch may have failed the session while
+                        # this request was waiting for request capacity.
+                        if hasattr(request_data, "skip_if_session_failed") and request_data.skip_if_session_failed(
+                            "post-permit check"
+                        ):
+                            return
+
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
