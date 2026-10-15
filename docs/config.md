@@ -75,36 +75,24 @@ data:
   type: mock|shareGPT|synthetic|random|shared_prefix|cnn_dailymail|billsum_conversations|infinity_instruct|otel_trace_replay|visionarena # Data generation type
   path: ./data/shareGPT/ShareGPT_V3_unfiltered_cleaned_split.json # For shareGPT type, path where dataset to be used is present. Path needs to be set for cnn_dailymail, billsum_conversations and infinity_instruct as well
   load_timeout: 300.0                                  # Dataset loading deadline (seconds); null disables
-  input_distribution:                                 # For synthetic/random types
-    min: 10                                           # Minimum prompt length (tokens)
-    max: 100                                          # Maximum prompt length
-    mean: 50                                          # Average length
-    std_dev: 10                                       # Standard deviation
-    total_count: 100                                  # Total prompts to generate
-  output_distribution:                                # Same structure as input_distribution
-    min: 10
-    max: 100
-    mean: 50
-    std_dev: 10
-    total_count: 100
+  input_distribution: "Min(Max(Normal(50, 10), 10), 100)"   # Prompt length in tokens: a number, or an expression (see expressions.md)
+  output_distribution: "Min(Max(Normal(50, 10), 10), 100)"  # Output length in tokens, same forms
+  # The synthetic and random types sample lengths from these. Dataset types
+  # (shareGPT, cnn_dailymail, ...) use their provable bounds as token filters,
+  # so there the expression must be bounded on both sides.
+  # Other shapes: a bare number is a fixed length; "100 + Uniform(0, 400)";
+  # "Min(LogNormal(5.0, 0.5), 4096)". Draws below 0 are clamped to 0.
   shared_prefix:              # For shared_prefix type
     num_groups: 10            # Number of shared prefix groups
     num_prompts_per_group: 10 # Unique questions per group
     system_prompt_len: 100    # Shared prefix length (tokens)
-    question_len: 50          # Default question length (tokens), used when question_distribution is absent
-    output_len: 50            # Default output length (tokens), used when output_distribution is absent
+    question_len: "Min(Max(Normal(50, 5), 10), 1024)"  # Question length: a number or an expression
+    output_len: 50            # Output length: a number or an expression
     max_model_len: 225000     # Optional multi-turn context ceiling; defaults to 225000, matching conversation_replay
-    question_distribution:    # Optional: distribution for question lengths (overrides question_len)
-      min: 10
-      max: 1024
-      mean: 50
-      std_dev: 5
-    output_distribution:      # Optional: distribution for output lengths (overrides output_len)
-      min: 10
-      max: 1024
-      mean: 50
-      std_dev: 5
 ```
+
+The `{type, min, max, mean, std_dev}` distribution block that these fields used to take still loads, with a
+warning that shows the expression to replace it with. See [Legacy distribution blocks](./expressions.md#legacy-distribution-blocks).
 
 `data.load_timeout` bounds Hub dataset initialization for ShareGPT, CNN/DailyMail,
 VisionArena, and OTel trace replay (300 seconds by default). For ShareGPT and
@@ -121,6 +109,20 @@ that release the GIL, such as network and file I/O.
 
 **Note:** For `otel_trace_replay` type, see the [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) section for complete configuration details.
 
+With `enable_multi_turn_chat`, a shared-prefix `output_len` must leave room for a prompt within `max_model_len`. An expression needs a finite upper bound for that check (see [Value ranges](./expressions.md#value-ranges)): `Min(Normal(50, 10), 99)` fits a 300-token context, a bare `Normal(50, 10)` is rejected.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 2
+    num_prompts_per_group: 4
+    enable_multi_turn_chat: true
+    max_model_len: 300
+    output_len: "Min(Normal(50, 10), 99)"
+```
+
 #### Multimodal Data Generation
 
 For VLMs, the `synthetic` and `shared_prefix` data types accept an optional `multimodal` block that produces images, videos, and/or audio alongside the text prompt:
@@ -132,34 +134,49 @@ data:
   output_distribution: { ... }
   multimodal:
     image:
-      count: { type: uniform, min: 1, max: 2, mean: 1.5 }  # items per request
-      insertion_point: 0.0                                  # 0=prefix, 1=suffix, or a Distribution
+      count: "Uniform(1, 2)"                                # items per request: a number or an expression
+      insertion_point: 0.0                                  # 0=prefix, 1=suffix, or an expression within [0, 1]
       resolutions:                                          # AnyResolution or list of weighted resolutions
         - resolution: "1080p"
           weight: 0.8
         - resolution: "4k"
           weight: 0.2
     video:
-      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      count: 1
       insertion_point: 1.0
       profiles:                                             # (resolution, frames) tuples
         - profile: { resolution: "720p", frames: 32 }
           weight: 1.0
     audio:
-      count: { type: fixed, min: 1, max: 1, mean: 1 }
+      count: 1
       insertion_point: 0.5
       durations:
         - duration: 5.0
           weight: 1.0
 ```
 
-An `insertion_point` distribution samples positions as fractions of the prompt.
-Its `min` and `max` must be within `[0, 1]`; for distributions other than
-`uniform`, `mean` must also be within those bounds. For example,
-`{ type: fixed, min: 0, max: 1, mean: 0.5 }` places media in the middle, just like
-`insertion_point: 0.5`. A `uniform` distribution with `min: 0, max: 1` samples
-throughout the prompt. Token and media count distributions continue to produce
-integers.
+`count` and `insertion_point` take a number or an [expression](./expressions.md) string. An
+`insertion_point` expression samples a position as a fraction of the prompt and must be provably within
+`[0, 1]` (see [Value ranges](./expressions.md#value-ranges)): `"Uniform(0, 1)"` places media anywhere,
+`"Beta(2, 5)"` favours the start, and one that can leave the range is bounded with `Min(Max(..., 0), 1)`.
+Media counts round to whole items.
+
+<!-- checked-example -->
+```yaml
+data:
+  type: synthetic
+  input_distribution: "Min(LogNormal(6, 0.5), 4096)"
+  output_distribution: "Uniform(64, 256)"
+  multimodal:
+    image:
+      count: "Poisson(2)"
+      insertion_point: "Beta(2, 5)"
+```
+
+| Rejected insertion_point | Why |
+| --- | --- |
+| `Normal(0.5, 0.1)` | Unbounded, so not provably within [0, 1]. |
+| `Uniform(0, 2)` | Can reach 2. |
 
 The reportgen output adds `throughput.{images,videos,audios}_per_sec`, `request_size_bytes`, and per-modality distribution blocks (`image.{count,pixels,bytes,aspect_ratio}`, `video.{count,frames,pixels,bytes,aspect_ratio}`, `audio.{count,seconds,bytes}`) to `summary_lifecycle_metrics.json`.
 
@@ -199,8 +216,9 @@ load:
   type: constant|poisson|concurrent|trace_session_replay # Load pattern type
   interval: 1.0                     # Seconds between request batches
   stages:                           # Load progression stages
-    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
+    - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS); a number, or an expression over stage seconds t such as "10 + 5*sin(2*pi*t/60)" (the stage sends the rate integrated over its window, and reports carry the mean)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
@@ -218,6 +236,63 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Rate Expressions
+
+A constant or Poisson stage's `rate` is a number or an [expression](./expressions.md) over stage time `t`. The stage sends the rate integrated over its window, and reports carry the mean rate. A number schedules exactly as it always has.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: "Min(5 + t/2, 40)"         # ramp to 40 req/s, then hold
+    stop_condition: "t >= 120"
+  - rate: "10 + 5*sin(2*pi*t/60)"    # one full cycle around 10 req/s
+    duration: 60
+```
+
+| Rate | Window (s) | Requests | Mean req/s |
+| --- | --- | --- | --- |
+| `10` | 60 | 600 | 10.00 |
+| `5 + t/2` | 60 | 1200 | 20.00 |
+| `Min(5 + t/2, 40)` | 120 | 3575 | 29.79 |
+| `10 + 5*sin(2*pi*t/60)` | 60 | 600 | 10.00 |
+| `2 + 18*Heaviside(t - 30)` | 60 | 660 | 11.00 |
+| `Piecewise((2, t < 30), (20, True))` | 60 | 660 | 11.00 |
+| `40*exp(-t/30)` | 90 | 1140 | 12.67 |
+| `Max(0, 20 - t/3)` | 90 | 600 | 6.67 |
+| `2**(t/10)` | 60 | 908 | 15.15 |
+
+The constant load type spreads requests by how much the rate has built up, so they bunch where the rate is high. The Poisson load type draws each second's count from the rate over that second. A Poisson stage can run past its window, since its counts are random; past the window it holds the window's mean rate.
+
+| Rejected rate | Why |
+| --- | --- |
+| `10 - t` | Goes negative during a 60s stage. |
+| `Normal(10, 1)` | Random. A rate must be the same on every run. |
+| `requests/10` | `requests` is not a known symbol. |
+| `0*t` | Zero over the whole stage, so the stage would send nothing. |
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so a rate expression is rejected there.
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 
@@ -503,18 +578,8 @@ data:
                             # Input lengths then target the fully templated prompt, so the server-side prefill
                             # token count still matches the configured length. Requires a tokenizer with a chat
                             # template, and every input length must exceed the template's fixed token overhead.
-  input_distribution:
-    min: 10             # min length of the synthetic prompts
-    max: 100            # max length of the synthetic prompts
-    mean: 50            # mean length of the synthetic prompts
-    std_dev: 10         # standard deviation of the length of the synthetic prompts
-    total_count: 100    # total number of prompts to generate to fit the above mentioned distribution constraints
-  output_distribution:
-    min: 10             # min length of the output to be generated
-    max: 100            # max length of the output to be generated
-    mean: 50            # mean length of the output to be generated
-    std_dev: 10         # standard deviation of the length of the output to be generated
-    total_count: 100    # total number of output lengths to generate to fit the above mentioned distribution constraints
+  input_distribution: "Min(Max(Normal(50, 10), 10), 100)"   # prompt lengths: mean 50, std dev 10, clipped to [10, 100]
+  output_distribution: "Min(Max(Normal(50, 10), 10), 100)"  # output lengths, same shape
 metrics:
   type: prometheus
   prometheus:

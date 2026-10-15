@@ -8,10 +8,42 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
-
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| [`load.stages[].rate`](./config.md#rate-expressions) (constant, poisson) | yes | no | Nonnegative over the stage and not zero everywhere. |
+| [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
+| [`data.input_distribution`, `data.output_distribution`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
+| [`data.shared_prefix.system_prompt_len`, `question_len`, `output_len`](./config.md#data-generation) | no | yes | Rounded to whole tokens. |
+| [`data.conversation_replay` knobs](./conversation_replay.md#configuration-guide) | no | yes | Counts rounded; `tool_call_latency_sec` keeps fractions. |
+| [`data.synthetic_agentic` knobs and `context_compaction`](./synthetic_agentic.md) | no | yes | Counts rounded; latencies keep fractions. |
+| [`data.multimodal.*.count`](./config.md#multimodal-data-generation) | no | yes | Rounded to whole items. |
+| [`data.multimodal.*.insertion_point`](./config.md#multimodal-data-generation) | no | yes | Provably within [0, 1]. |
+
+A whole-number field also takes a bare number, which is a fixed value. A uniform over whole numbers
+is `Uniform(0.5, 3.5)`: after rounding, 1, 2 and 3 each have the same weight, where `Uniform(1, 3)`
+gives the two ends half the weight of the middle.
+
+## Legacy distribution blocks
+
+Every field above except `rate` and `stop_condition` used to take a `{type, min, max, mean, std_dev}`
+block. The block is deprecated: it still loads, rewritten to the expression it stood for, and the log
+shows that expression so the config can be updated. The block's `min` and `max` become a `Min`/`Max`
+clamp, `variance` becomes the `std_dev` it implies, and `total_count` is ignored because the number of
+values to pre-generate comes from the load stages.
+
+| Block | Expression |
+| --- | --- |
+| `{type: fixed, mean: 99.9}` | `99` (the truncated mean, as a bare number) |
+| `{mean: 512, std_dev: 200, min: 10, max: 1024}` | `Min(Max(Normal(512, 200), 10), 1024)` |
+| `{type: uniform, min: 10, max: 100}` | `Min(Uniform(10, 101), 100)`, or `Uniform(10, 100)` on `data.input_distribution` and `data.output_distribution` |
+| `{type: lognormal, mean: 150, std_dev: 60, min: 1, max: 4096}` | `Min(Max(LogNormal(4.936, 0.385), 1), 4096)`, the underlying normal's parameters moment-matched to the block's mean and std_dev |
+| `{type: poisson, mean: 3, min: 0, max: 10}` | `Min(Poisson(3), 10)` |
+| `{type: skew_normal, mean: 200, std_dev: 80, skew: 2.5, min: 10, max: 2000}` | `Min(Max(200 + 80*(0.928*Abs(Normal(0, 1)) + 0.371*Normal(0, 1)), 10), 2000)`, the Azzalini two-normal form |
+
+The `data.input_distribution` and `data.output_distribution` fields compile with the parameterisations
+their old sampler used, so a `uniform` there stays `Uniform(min, max)` and a `lognormal` is shifted by
+`min`. Same seed, same config gives the same draws run after run; the draws differ from those the block
+produced before it was compiled this way.
 
 ## Grammar
 
@@ -103,6 +135,8 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 ## Value ranges
 
 A field can restrict the values an expression may take, for example a rate must not be negative. A value that can provably fall outside the range is rejected when the config loads; one that can only be caught while sampling raises then. Fields that would rather truncate random draws say so in their own docs.
+
+Every length, count and duration field clamps random draws at 0: `Normal(50, 40)` as a token length never yields a negative count, it yields 0 for the mass below zero. A constant below zero, such as `-5`, is rejected when the config loads. Clamping piles that mass onto 0, so an expression that often crosses zero is better written with its own floor, for example `Max(Normal(50, 40), 1)`.
 
 Some fields need an expression's largest possible value, for example to check that a request fits the model's context. That bound is worked out from the expression: each random variable contributes its support, and `Min`, `Max`, `Abs` and arithmetic combine them. The bound can be wider than the true range but never narrower. An expression with no finite upper bound, such as a bare `Normal(50, 10)`, can be capped with `Min(...)`.
 

@@ -16,7 +16,7 @@ from typing import List, Optional, Union
 
 from pydantic import Field
 
-from inference_perf.config.common import Distribution, InsertionPoint, StrictBaseModel
+from inference_perf.config.common import InsertionPoint, LengthValue, StrictBaseModel
 from inference_perf.payloads import ImageRepresentation, VideoRepresentation
 
 
@@ -67,12 +67,16 @@ class WeightedDuration(StrictBaseModel):
 
 # --- Modality-Specific Request Configs ---
 class MediaDatagenConfig(StrictBaseModel):
-    count: Optional[Distribution] = Field(
-        default=None, description="Distribution of the number of media items to generate per request."
+    count: Optional[LengthValue] = Field(
+        default=None,
+        description="Number of media items to generate per request: a fixed value or an expression string like 'Poisson(2)'.",
     )
     insertion_point: InsertionPoint = Field(
         default=None,
-        description="Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), or a Distribution to sample from.",
+        description=(
+            "Placement of media within the text prompt. Float in range [0.0, 1.0] (0=start, 1=end), "
+            "or an expression string provably within [0, 1] like 'Beta(2, 5)'."
+        ),
     )
 
 

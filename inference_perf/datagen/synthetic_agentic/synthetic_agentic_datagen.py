@@ -26,13 +26,12 @@ import json
 import logging
 import string
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from inference_perf.config import APIConfig, DataConfig
 from inference_perf.config.datagen.replay import SyntheticAgenticConfig
-from inference_perf.config.common import Distribution
 from inference_perf.datagen.replay.replay_graph_session_datagen import ReplayGraphSessionGeneratorBase, ReplaySession
 from inference_perf.datagen.replay.otel_trace_to_replay_graph import tag_user_facing_events
 from inference_perf.datagen.replay.replay_graph_types import GraphCall, GraphEvent, InputSegment, ReplayGraph
@@ -44,7 +43,7 @@ from inference_perf.datagen.synthetic_agentic.synthetic_themes import (
     load_theme,
 )
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
-from inference_perf.utils.numeric.distribution.utils import sample_from_distribution
+from inference_perf.utils.numeric.distribution.utils import sample_values
 
 if TYPE_CHECKING:
     from multiprocessing.managers import SyncManager
@@ -72,15 +71,14 @@ def child_rng(parent_seed: int, *path: int) -> np.random.Generator:
     return np.random.default_rng([parent_seed, *path])
 
 
-def sample_int(dist: Optional[Distribution], rng: np.random.Generator, fallback: Distribution) -> int:
+def sample_int(dist: Optional[Union[int, str]], rng: np.random.Generator, fallback: Union[int, str]) -> int:
     """Resolve `dist` (or `fallback` if None) and draw a single deterministic int.
 
-    Always passes `rng` explicitly to `sample_from_distribution` -- the
-    util's default (unseeded) RNG would break determinism.
+    `dist` is a number or an expression string. Always passes `rng`
+    explicitly -- the util's default (unseeded) RNG would break determinism.
     """
     d = dist if dist is not None else fallback
-    val = sample_from_distribution(d, 1, rng=rng)[0]
-    return int(val)
+    return int(sample_values(d, 1, rng, integer=True)[0])
 
 
 def _pick(rng: np.random.Generator, seq: Sequence[Any]) -> Any:
@@ -445,15 +443,16 @@ def _render_system_head(
 # Determinism: every random draw comes from a child_rng derived from the
 # per-session seed and a stable graph-path tuple; no wall-clock, no hash().
 
-# Fallbacks for optional distribution knobs (used when the config leaves them unset).
-_FB_STEPS = Distribution(type="fixed", mean=2)
-_FB_TOOL_DEFS = Distribution(type="fixed", mean=8)
-_FB_SUB_AGENTS = Distribution(type="uniform", min=2, max=4)
-_FB_PARALLEL = Distribution(type="fixed", mean=1)
+# Fallbacks for optional knobs (used when the config leaves them unset).
+_FB_STEPS = 2
+_FB_TOOL_DEFS = 8
+# the legacy uniform(2, 4) block's exact compilation: 2 and 4 keep their half-weight edges
+_FB_SUB_AGENTS = "Min(Uniform(2, 5), 4)"
+_FB_PARALLEL = 1
 # Wait-time fallbacks (seconds), each set to a realistic value for what it models:
 # a tool round-trip is ~1s; a human reading an answer and typing a follow-up is ~10s.
-_FB_TOOL_LATENCY = Distribution(type="fixed", mean=1)
-_FB_USER_THINK = Distribution(type="fixed", mean=10)
+_FB_TOOL_LATENCY = 1.0
+_FB_USER_THINK = 10.0
 # Output size of a non-terminal async-notification ack turn ("one sub-agent reported,
 # still waiting on the rest").
 #
@@ -462,7 +461,7 @@ _FB_USER_THINK = Distribution(type="fixed", mean=10)
 # fixed content alone, which would make every ack in a chain the identical literal and
 # render the per-notification RNG salts inert. 48 clears that floor while keeping the
 # turn short-form.
-_FB_ACK_TOKENS = Distribution(type="fixed", mean=48)
+_FB_ACK_TOKENS = 48
 
 # Minimum events an agent occupies: one principal call whose output IS the answer
 # (tool loop depth 0, no spawn). A tool loop or a spawn adds its own events on top,
@@ -1684,7 +1683,7 @@ def build_graph_for_session(
             ]
             turn_id = f"{agent_prefix}:t{t}"
             tool_latency = cfg.tool_call_latency_sec or _FB_TOOL_LATENCY
-            turn_wait = int(sample_from_distribution(tool_latency, 1, rng=child_rng(seed, *agent_seed_path, t, 3))[0] * 1000)
+            turn_wait = int(sample_values(tool_latency, 1, child_rng(seed, *agent_seed_path, t, 3), integer=False)[0] * 1000)
             is_last_turn = t == k - 1
             turn_is_terminal = is_last_turn and not will_spawn
             if turn_is_terminal:
@@ -2149,7 +2148,7 @@ def build_graph_for_session(
             think_dist = cfg.user_think_time_sec or _FB_USER_THINK
             # Sample as a float and scale to ms BEFORE truncating to int, so a
             # fractional-second mean (e.g. 0.5s) doesn't collapse to 0/1s.
-            principal_wait = int(sample_from_distribution(think_dist, 1, rng=child_rng(seed, r, 2))[0] * 1000)
+            principal_wait = int(sample_values(think_dist, 1, child_rng(seed, r, 2), integer=False)[0] * 1000)
 
         # Context compaction decision (PRE-turn): if extending the grown transcript
         # into THIS round would cross the trigger, compact instead — start fresh with
