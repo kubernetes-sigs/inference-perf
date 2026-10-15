@@ -644,3 +644,78 @@ class TestThirdReviewRegressions:
         pdf = {"type": "file", "file": {"filename": "a.pdf", "file_data": "data:application/pdf;base64,AAAA"}}
         assert not is_image_part(pdf)
         assert count_missing_images(pdf) == 0
+
+
+class TestPR900ReviewCoverage:
+    """Paths found untested by mutation testing on #900."""
+
+    REMINDER = "<system-reminder>Keep the existing style.</system-reminder>"
+
+    def test_text_beside_a_tool_result_image_is_kept(self) -> None:
+        """Claude Code sends a <system-reminder> text block next to a tool_result holding a screenshot."""
+        request: Dict[str, Any] = dict(READ_REQUEST)
+        request["messages"] = READ_REQUEST["messages"][:2] + [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [_image_block()]},
+                    {"type": "text", "text": self.REMINDER},
+                ],
+            }
+        ]
+        tool_message = _graph_messages(request)[-1]
+        assert tool_message["content"] == [{"type": "text", "text": self.REMINDER}, IMAGE]
+
+        body = build_anthropic_request_body(
+            [ChatMessage(role="tool", tool_call_id="toolu_1", content=tool_message["content"])], None, "m", 10, False
+        )
+        assert body["messages"][0]["content"][0]["content"] == [{"type": "text", "text": self.REMINDER}, _image_block()]
+
+    def test_screenshot_tool_result_is_not_counted_as_text(self) -> None:
+        """A 192 KB screenshot in a tool result must be estimated as a digest, not as its base64."""
+        screenshot = base64.b64encode(b"\x00" * 192 * 1024).decode()
+        response = [{"type": "blob", "modality": "image", "mime_type": "image/png", "content": screenshot}]
+        info = {"role": "tool", "parts": [{"type": "tool_call_response", "id": "toolu_1", "response": response}]}
+        msg = ComplexReplayMessage(role="tool", message_info=info, raw_reconstructed_text=reconstruct_llm_input(info))
+        assert screenshot not in msg.text
+        assert message_tokens(msg) < 100
+
+    def test_url_image_renders_as_an_anthropic_url_source(self) -> None:
+        url = "https://example.com/a.png"
+        body = build_anthropic_request_body(
+            [ChatMessage(role="user", content=[{"type": "image_url", "image_url": {"url": url}}])], None, "m", 10, False
+        )
+        assert body["messages"][0]["content"] == [{"type": "image", "source": {"type": "url", "url": url}}]
+
+    def test_raw_dict_tool_results_keep_image_order(self) -> None:
+        """An OTel message in raw OpenAI shape, with tool_call_response parts beside an image."""
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "A", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                    {"id": "B", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_call_response", "id": "A", "response": "a"},
+                    {"type": "tool_call_response", "id": "B", "response": "b"},
+                    IMAGE,
+                ],
+            },
+        ]
+        span = {
+            "trace_id": "t",
+            "span_id": "s",
+            "name": "chat m",
+            "start_time": "2026-01-01T00:00:00",
+            "end_time": "2026-01-01T00:00:01",
+            "attributes": {"gen_ai.operation.name": "chat", "gen_ai.input.messages": json.dumps(messages)},
+        }
+        calls, _ = build_raw_calls([span])
+        tool_a, tool_b = next(iter(build_graph(calls, source_file="t").events.values())).call.messages[-2:]
+        assert tool_a == {"role": "tool", "tool_call_id": "A", "content": "a"}
+        assert tool_b == {"role": "tool", "tool_call_id": "B", "content": [{"type": "text", "text": "b"}, IMAGE]}
