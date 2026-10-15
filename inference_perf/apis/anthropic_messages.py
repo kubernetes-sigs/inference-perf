@@ -138,7 +138,7 @@ def parse_anthropic_thinking(content: Any) -> str:
 
 
 def count_anthropic_output_tokens(tokenizer: CustomTokenizer, output_text: str, thinking_text: str) -> int:
-    """Client-side fallback for usage.output_tokens, which counts thinking tokens too (#559)."""
+    """Client-side output-token count; usage.output_tokens is kept separately in server_usage (#559)."""
     # Generated text is a continuation, so no BOS, matching _count_generated_tokens in chat.py.
     total = tokenizer.count_tokens(output_text, add_special_tokens=False)
     if thinking_text:

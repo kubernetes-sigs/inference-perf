@@ -124,7 +124,7 @@ async def test_anthropic_messages_request_body_with_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_anthropic_messages_process_response_uses_anthropic_usage() -> None:
+async def test_anthropic_messages_process_response_reports_client_count_with_server_provenance() -> None:
     data = AnthropicMessagesAPIData(messages=[ChatMessage(role="user", content="hello there")])
     response = _mock_response(
         {
