@@ -20,6 +20,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
+from inference_perf.apis.response_errors import InBandError, in_band_error
 from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
@@ -366,6 +367,9 @@ class AnthropicMessagesAPIData(InferenceAPIData):
             )
 
         data = await response.json()
+        # A 200 whose body is an error payload is that error, not a success.
+        if (error_payload := in_band_error(data)) is not None:
+            raise InBandError(error_payload)
         usage = data.get("usage") or {}
         output_text, output_message = parse_anthropic_content(data.get("content"))
         input_tokens = usage.get("input_tokens")
