@@ -11,6 +11,12 @@ By default, reports are saved in a directory named `reports-YYYYMMDD-HHMMSS/`. T
 - **`per_request_lifecycle_metrics.json`**: Raw data for every single request, including timestamps and token counts.
 - **`config.yaml`**: A copy of the configuration used for the run, with credentials redacted (see [Credentials](config.md#credentials)).
 
+For Weka replay runs with `separate_subagent_session_ids` enabled, each per-request
+entry keeps `session_id` as the enclosing replay session used for aggregation and
+adds `request_session_id` for the wire identity sent through
+`api.session_id_header_key`. Parent requests omit `request_session_id` because their
+wire identity is already the enclosing `session_id`.
+
 ## Understanding the Report Structure
 
 Here is an example snippet from a `summary_lifecycle_metrics.json` report:

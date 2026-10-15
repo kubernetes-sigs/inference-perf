@@ -98,9 +98,11 @@ share an ID; overlapping requests are packed into separate streams.
 
 Duplicated replay sessions resolve child IDs from their own parent ID, for example
 `wekatrace0_example_dup1::sa:researcher:s0`. The setting changes request headers and
-session-token routing, while scheduling, dependency tracking, request metrics,
-and session lifecycle reports still use the enclosing trace
-session. The default is `false` to preserve existing benchmark behavior.
+session-token routing, while scheduling, dependency tracking, and session lifecycle
+aggregation still use the enclosing trace session. Per-request lifecycle entries
+keep that parent ID in `session_id` and also record the wire identity in
+`request_session_id` for child requests. The default is `false` to preserve existing
+benchmark behavior.
 
 ---
 
