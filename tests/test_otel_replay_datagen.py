@@ -54,6 +54,7 @@ from inference_perf.datagen.replay.replay_graph_session_datagen import (
     ReplaySession,
     ReplaySessionEvent,
     ReplaySessionState,
+    SessionFailureCause,
     SessionChatCompletionAPIData,
     SessionInferenceInfo,
     WorkerSessionTracker,
@@ -437,6 +438,43 @@ class TestSessionChatCompletionAPIData:
         # Registry should record failure (not empty output)
         assert registry.is_event_failed("session_1:event_1")
         assert registry.get_output_by_event_id("session_1:event_1") is None
+
+    def test_skip_if_session_failed_preserves_original_failure(self) -> None:
+        """A late event is retired without replacing the session's root cause."""
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        tracker.mark_session_failed("session_1", SessionFailureCause.REQUEST_FAILED, "original failure")
+        tracker.record_event_drained("session_1", "session_1:event_0")
+        completion_queue = MagicMock()
+        generator = MagicMock(spec=ReplayGraphSessionGeneratorBase)
+        api_data = self._make_api_data(
+            "session_1:event_1",
+            registry,
+            tracker,
+            completion_queue=completion_queue,
+            total_events=2,
+        )
+        api_data.generator = generator
+
+        assert api_data.skip_if_session_failed("post-permit check") is True
+        assert api_data.skip_request is True
+        assert registry.is_event_failed("session_1:event_1")
+        assert tracker.get_session_failure("session_1") == (
+            SessionFailureCause.REQUEST_FAILED.value,
+            "original failure",
+        )
+        completion_queue.put_nowait.assert_not_called()
+        assert tracker._drained_events["session_1"] == {"session_1:event_0", "session_1:event_1"}
+        generator.evict_worker_session.assert_called_once_with("session_1")
+
+    def test_skip_if_session_failed_is_noop_for_healthy_session(self) -> None:
+        registry = EventOutputRegistry()
+        tracker = WorkerSessionTracker()
+        api_data = self._make_api_data("session_1:event_1", registry, tracker)
+
+        assert api_data.skip_if_session_failed("post-permit check") is False
+        assert api_data.skip_request is False
+        assert not registry.is_event_failed("session_1:event_1")
 
     @pytest.mark.asyncio
     async def test_wait_for_predecessors_waits_and_substitutes(self) -> None:

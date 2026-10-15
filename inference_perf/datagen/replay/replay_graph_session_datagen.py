@@ -548,6 +548,24 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
         # session is evicted once its last event drains.
         self._mark_drained_and_maybe_evict(session_id)
 
+    def skip_if_session_failed(self, context: str) -> bool:
+        """Fail and retire this event if another event failed its session.
+
+        This is a lifecycle operation, not only a predicate: when the session
+        has failed it records this event's failure, sends any required session
+        notification, and marks the event drained.
+        """
+        session_id = self._extract_session_id()
+        if not self.worker_tracker.is_session_failed(session_id):
+            return False
+
+        self._fail_and_notify(
+            session_id,
+            SessionFailureCause.SESSION_ALREADY_FAILED,
+            f"session already failed ({context})",
+        )
+        return True
+
     def _mark_drained_and_maybe_evict(self, session_id: str) -> None:
         """Record this event as drained on the worker; evict the session once all drain.
 
@@ -577,10 +595,7 @@ class SessionChatCompletionAPIData(ChatCompletionAPIData):
     async def wait_for_predecessors_and_substitute(self) -> None:
         session_id = self._extract_session_id()
 
-        if self.worker_tracker.is_session_failed(session_id):
-            self._fail_and_notify(
-                session_id, SessionFailureCause.SESSION_ALREADY_FAILED, "session already failed (pre-wait check)"
-            )
+        if self.skip_if_session_failed("pre-wait check"):
             return
 
         if self.predecessor_event_ids:

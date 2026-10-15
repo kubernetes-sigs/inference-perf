@@ -322,14 +322,18 @@ class Worker(mp.Process):
                 and not self.skip
                 and not self.stop_signal.is_set()
             ):
-                # Bounded acquire so a worker saturated with hung in-flight
-                # requests (all permits held) still re-checks the loop
-                # condition and reaches the stage boundary, where those
-                # requests get the teardown grace and are then cancelled.
-                try:
-                    await wait_for(semaphore.acquire(), timeout=timeout)
-                except (AsyncioTimeoutError, TimeoutError):
-                    continue
+                permit_preacquired = False
+                if not isinstance(self.datagen, SessionGenerator):
+                    # Preserve bounded queue admission for ordinary request
+                    # loads. The timeout lets a worker saturated with hung
+                    # requests re-check the loop condition, reach the stage
+                    # boundary, and cancel them after the teardown grace.
+                    # Session replay acquires only after dependencies.
+                    try:
+                        await wait_for(semaphore.acquire(), timeout=timeout)
+                        permit_preacquired = True
+                    except (AsyncioTimeoutError, TimeoutError):
+                        continue
                 try:
                     # Non-blocking get: a blocking get(timeout=...) holds the
                     # queue's shared reader lock across the poll, so a worker
@@ -341,19 +345,23 @@ class Worker(mp.Process):
                     if item is not None:
                         self._current_stage_id = item.stage_id
                     if item is None:
-                        semaphore.release()
+                        if permit_preacquired:
+                            semaphore.release()
                         continue
                 except TimeoutError:
                     logger.debug(f"[Worker {self.id}] timed out getting request from queue")
-                    semaphore.release()
+                    if permit_preacquired:
+                        semaphore.release()
                     continue
                 except Empty:
-                    semaphore.release()
+                    if permit_preacquired:
+                        semaphore.release()
                     await sleep(0.02)
                     continue
                 except Exception as e:
                     logger.info(f"[Worker {self.id}] hit exception {e}")
-                    semaphore.release()
+                    if permit_preacquired:
+                        semaphore.release()
                     continue
 
                 async def schedule_client(
@@ -362,6 +370,7 @@ class Worker(mp.Process):
                     stage_id: int,
                     semaphore: Semaphore,
                     lora_adapter: Optional[str],
+                    permit_acquired: bool,
                 ) -> None:
                     inflight = False
                     try:
@@ -390,6 +399,37 @@ class Worker(mp.Process):
                             logger.debug(f"[Worker {self.id}] stage tearing down, not dispatching new request")
                             return
 
+                        # Dependency and schedule waits do not consume request
+                        # concurrency. Poll so stage teardown can stop tasks that
+                        # are waiting for a permit without dispatching them.
+                        while (
+                            not permit_acquired
+                            and not self.draining
+                            and self.request_phase.is_set()
+                            and not self.cancel_signal.is_set()
+                        ):
+                            try:
+                                await wait_for(semaphore.acquire(), timeout=timeout)
+                                permit_acquired = True
+                            except (AsyncioTimeoutError, TimeoutError):
+                                continue
+                        # The stage signals may change while acquire() is
+                        # pending, before the worker loop observes teardown.
+                        if (
+                            not permit_acquired
+                            or self.draining
+                            or not self.request_phase.is_set()
+                            or self.cancel_signal.is_set()
+                        ):
+                            return
+
+                        # A parallel branch may have failed the session while
+                        # this request was waiting for request capacity.
+                        if hasattr(request_data, "skip_if_session_failed") and request_data.skip_if_session_failed(
+                            "post-permit check"
+                        ):
+                            return
+
                         with self.active_requests_counter.get_lock():
                             self.active_requests_counter.value += 1
                             inflight = True
@@ -416,7 +456,8 @@ class Worker(mp.Process):
                                 self.skipped_requests_counter.value += 1
                         with self.finished_requests_counter.get_lock():
                             self.finished_requests_counter.value += 1
-                        semaphore.release()
+                        if permit_acquired:
+                            semaphore.release()
 
                 try:
                     stage_id, request, request_time, lora_adapter = item
@@ -427,10 +468,20 @@ class Worker(mp.Process):
                         self.skipped_requests_counter.value += 1
                     with self.finished_requests_counter.get_lock():
                         self.finished_requests_counter.value += 1
-                    semaphore.release()
+                    if permit_preacquired:
+                        semaphore.release()
                     continue
 
-                task = create_task(schedule_client(request_data, request_time, stage_id, semaphore, lora_adapter))
+                task = create_task(
+                    schedule_client(
+                        request_data,
+                        request_time,
+                        stage_id,
+                        semaphore,
+                        lora_adapter,
+                        permit_preacquired,
+                    )
+                )
                 logging.debug(
                     f"creating inference task with request data {request_data}", extra={"request_data": request_data}
                 )
@@ -787,11 +838,9 @@ class LoadGenerator:
         Sessions are dispatched with optional rate limiting (stage.session_rate).
         When a session completes, the next pending session is started to fill the pool.
 
-        Note on worker_max_concurrency: all events for a session are enqueued immediately
-        when the session starts, even if most events are waiting on predecessors. Each waiting
-        event holds a worker semaphore slot for the duration of its wait. Since waiting is done
-        via asyncio.Event (zero threads — just a suspended coroutine), the cost of a high value
-        is negligible. Rule of thumb: worker_max_concurrency >= concurrent_sessions * avg_events_per_session.
+        ``worker_max_concurrency`` limits requests executing against the model
+        server in each worker. Events waiting for their scheduled time or for
+        predecessors do not consume those permits.
         """
         logger.info("Stage %d - session-based run started", stage_id)
 
