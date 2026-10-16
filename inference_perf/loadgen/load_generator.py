@@ -35,6 +35,7 @@ from inference_perf.config import (
 )
 from asyncio import (
     CancelledError,
+    Event,
     Semaphore,
     Task,
     TimeoutError as AsyncioTimeoutError,
@@ -275,6 +276,9 @@ class Worker(mp.Process):
         # True while the stage is winding down: in-flight requests may finish,
         # but no new requests are dispatched to the model server.
         self.draining = False
+        # Created in the worker's event loop so tasks waiting for their scheduled
+        # time can be released as soon as stage teardown begins.
+        self._draining_event: Optional[Event] = None
         self.crash_queue = crash_queue
         # Stage this worker is currently serving, reported alongside a crash so the
         # failure can be attributed to a stage rather than to the run as a whole.
@@ -288,6 +292,7 @@ class Worker(mp.Process):
     async def loop(self) -> None:
         # The self.shared_max_concurrency is initialized to self.max_concurrency
         semaphore = Semaphore(self.max_concurrency)
+        self._draining_event = Event()
         current_concurrency = self.max_concurrency
         tasks = []
         event_loop = get_event_loop()
@@ -368,7 +373,16 @@ class Worker(mp.Process):
                         current_time = time.perf_counter()
                         sleep_time = request_time - current_time
                         if sleep_time > 0:
-                            await sleep(sleep_time)
+                            draining_event = self._draining_event
+                            if draining_event is None:
+                                raise RuntimeError("worker draining event was not initialized")
+                            try:
+                                await wait_for(draining_event.wait(), timeout=sleep_time)
+                            except (AsyncioTimeoutError, TimeoutError):
+                                pass
+                            else:
+                                logger.debug(f"[Worker {self.id}] stage tearing down, dropping scheduled-ahead request")
+                                return
 
                         # Wait for dependencies before dispatching (OTel trace replay)
                         if hasattr(request_data, "wait_for_predecessors_and_substitute"):
@@ -485,6 +499,8 @@ class Worker(mp.Process):
         bound, so the worker always reaches the stage rendezvous.
         """
         self.draining = True
+        if self._draining_event is not None:
+            self._draining_event.set()
         try:
             pending = [t for t in tasks if not t.done()]
             if pending:
@@ -516,6 +532,8 @@ class Worker(mp.Process):
                     if exc is not None:
                         logger.error(f"[Worker {self.id}] task failed during stage: {type(exc).__name__}: {exc}")
         finally:
+            if self._draining_event is not None:
+                self._draining_event.clear()
             self.draining = False
 
     def run(self) -> None:
