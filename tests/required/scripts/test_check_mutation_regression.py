@@ -184,6 +184,21 @@ def test_functions_run_by_ignores_import_time(cmr: Any, tmp_path: Path) -> None:
     assert cmr.functions_run_by(tmp_path, ["tests/test_m.py"]) == {"inference_perf.m.x_f"}
 
 
+# The same module, run from inside mutmut's stats run, which is how this file runs once the script is
+# on main. The child plugin has set MUTATION_CHILD_CONTEXT=child and mutmut MUTANT_UNDER_TEST=stats.
+# Neither reaches the coverage run, so g, called at import, still does not count.
+def test_functions_run_by_ignores_an_outer_harness(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "inference_perf").mkdir()
+    (tmp_path / "inference_perf" / "__init__.py").write_text("")
+    (tmp_path / "inference_perf" / "m.py").write_text("def f():\n    return 1\n\n\ndef g():\n    return 2\n\n\nVALUE = g()\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_m.py").write_text("from inference_perf.m import f\n\n\ndef test_f():\n    assert f() == 1\n")
+    monkeypatch.setenv("MUTATION_CHILD_CONTEXT", "child")
+    monkeypatch.setenv("MUTANT_UNDER_TEST", "stats")
+
+    assert cmr.functions_run_by(tmp_path, ["tests/test_m.py"]) == {"inference_perf.m.x_f"}
+
+
 # A pyproject with [tool.mutmut] between two other tables. The rewrite drops the old table, keeps
 # the others, and appends the shared config plus this run's files and tests, with the child plugin
 # added to pytest's arguments. Regex backslashes survive.
