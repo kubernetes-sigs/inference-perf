@@ -24,6 +24,7 @@ import multiprocessing as mp
 import pickle
 import sys
 import unittest
+from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -60,6 +61,7 @@ from inference_perf.metrics.request_collector import (
 from inference_perf.observability.metrics import MetricSpec, RunContext, StageContext, build_metrics
 from inference_perf.observability.metrics.prometheus import DEFAULT_PORT
 from inference_perf.payloads import RequestMetrics, Text
+from inference_perf.utils.cli_parser import add_global_args, add_pydantic_args, unflatten_dict
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 
 # Match the start method used in production (main.py) so objects are inherited
@@ -188,60 +190,72 @@ class TestHubLifecycleHooks(unittest.TestCase):
         self.assertEqual(seen, [2, 0])
 
 
+# Parses argv the way main_cli does, global args first and then every Config field
+# as a flag, and returns the Config the run would use.
+def _config_from_argv(argv: List[str]) -> Config:
+    parser = ArgumentParser()
+    base_args = add_global_args(parser)
+    add_pydantic_args(parser, Config)
+    args = parser.parse_args(argv)
+    overrides = unflatten_dict({k: v for k, v in vars(args).items() if k not in base_args})
+    return read_config(args.config_file, overrides)
+
+
 class TestObservabilityConfig(unittest.TestCase):
-    def test_defaults_are_on_and_port_matches_server_default(self) -> None:
-        # A Config with no observability block at all.
-        # Expects the endpoint on and bound to loopback:9464, so a run is
-        # scrapeable from its own host without having been configured for it
-        # and exposes nothing to the network until asked to.
-        config = Config()
-        self.assertTrue(config.observability.metrics.enabled)
-        self.assertEqual(config.observability.metrics.host, "127.0.0.1")
+    # A Config with no observability block.
+    # Expects metrics to be None, so a run that never asked for the endpoint opens no port.
+    def test_endpoint_is_off_by_default(self) -> None:
+        self.assertIsNone(Config().observability.metrics)
+
+    # observability.metrics: {} in YAML, the shortest way to turn the endpoint on.
+    # Expects it on at 9464, the server's default port.
+    def test_empty_block_turns_the_endpoint_on_at_the_server_port(self) -> None:
+        metrics = Config.model_validate({"observability": {"metrics": {}}}).observability.metrics
+        assert metrics is not None
         # The config default is a literal to avoid a config <-> observability
-        # import cycle; this pins it to the server's default.
-        self.assertEqual(config.observability.metrics.port, DEFAULT_PORT)
+        # import cycle. This pins it to the server's default.
+        self.assertEqual(metrics.port, DEFAULT_PORT)
 
+    # YAML asking for an ephemeral port.
+    # Expects it to parse as port 0.
     def test_yaml_shape_round_trips(self) -> None:
-        # YAML turning the endpoint off and pinning an ephemeral port.
-        # Expects both to survive parsing, since disabling is now the setting
-        # a user has to write out rather than the default.
-        config = Config.model_validate({"observability": {"metrics": {"enabled": False, "port": 0}}})
-        self.assertEqual(
-            config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(enabled=False, host="127.0.0.1", port=0))
-        )
+        config = Config.model_validate({"observability": {"metrics": {"port": 0}}})
+        self.assertEqual(config.observability, ObservabilityConfig(metrics=RuntimeMetricsConfig(port=0)))
 
-    def test_in_cluster_configs_bind_all_interfaces(self) -> None:
-        # The Helm chart's default values and the config the deploy/ README
-        # turns into a ConfigMap, both run as a Job scraped by pod IP.
-        # Expects both to set host 0.0.0.0, since the loopback default would
-        # leave an in-cluster run unscrapeable.
+    # --observability.metrics.port 9465 with no config file, the way a docker run turns metrics on.
+    # Expects the flag alone to create the block, so the endpoint runs on 9465.
+    def test_port_flag_alone_turns_the_endpoint_on(self) -> None:
+        metrics = _config_from_argv(["--observability.metrics.port", "9465"]).observability.metrics
+        assert metrics is not None
+        self.assertEqual(metrics.port, 9465)
+
+    # The root config.yml (README quickstart, Docker image), the Helm chart's values, and the
+    # deploy/ Job, which runs that same config.yml with its own args.
+    # Expects no endpoint for the quickstart and 9464 for both in-cluster paths.
+    def test_only_the_in_cluster_configs_serve_metrics(self) -> None:
         repo = Path(__file__).resolve().parents[3]
+        self.assertIsNone(read_config(str(repo / "config.yml")).observability.metrics)
         chart = yaml.safe_load((repo / "deploy" / "inference-perf" / "values.yaml").read_text())
-        for config in (Config.model_validate(chart["config"]), read_config(str(repo / "config.yml"))):
-            self.assertEqual(config.observability.metrics.host, "0.0.0.0")
+        job = yaml.safe_load((repo / "deploy" / "manifests.yaml").read_text())
+        # The Job mounts config.yml from a ConfigMap. Read the repo copy it is made from.
+        job_args = [
+            str(repo / "config.yml") if arg == "/etc/config/config.yml" else arg
+            for arg in job["spec"]["template"]["spec"]["containers"][0]["args"]
+        ]
+        for config in (Config.model_validate(chart["config"]), _config_from_argv(job_args)):
+            metrics = config.observability.metrics
+            assert metrics is not None
+            self.assertEqual(metrics.port, 9464)
 
 
 class TestMetricsEndpointFailureLogging(unittest.TestCase):
-    def test_default_port_collision_is_a_warning(self) -> None:
-        # The endpoint fails to bind on the default port, which is what happens
-        # to every run but the first when several share a host (the e2e tier
-        # runs inference-perf subprocesses under `pytest -n auto`).
-        # Expects WARNING, not ERROR: the endpoint is on by default now, so this
-        # is an expected outcome rather than a fault, and ERROR here would be
-        # noise in every parallel run's log.
+    # The endpoint fails to bind on 9464 with "Address already in use".
+    # Expects one ERROR naming the port, since the endpoint only runs when someone asked for it.
+    def test_port_collision_is_an_error(self) -> None:
         with self.assertLogs("inference_perf.main", level="WARNING") as cm:
             log_metrics_endpoint_failure(RuntimeMetricsConfig(), OSError("Address already in use"))
-        self.assertEqual([r.levelname for r in cm.records], ["WARNING"])
-        self.assertIn("default port 9464 unavailable", cm.output[0])
-
-    def test_requested_port_collision_is_an_error(self) -> None:
-        # The endpoint fails to bind on port 9999, which a run only ever uses
-        # because someone asked for it.
-        # Expects ERROR: the user named that port and did not get it.
-        with self.assertLogs("inference_perf.main", level="WARNING") as cm:
-            log_metrics_endpoint_failure(RuntimeMetricsConfig(port=9999), OSError("Address already in use"))
         self.assertEqual([r.levelname for r in cm.records], ["ERROR"])
-        self.assertIn("requested port", cm.output[0])
+        self.assertIn("port 9464", cm.output[0])
 
 
 class TestLoadGeneratorStageObserver(unittest.IsolatedAsyncioTestCase):
