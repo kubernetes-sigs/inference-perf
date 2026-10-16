@@ -45,7 +45,7 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 ## Wall time
 
-**The floor is two serial full-suite runs.** mutmut's stats pass runs the whole unit suite once per side to learn which tests cover which function, so one changed function costs about 8 minutes on a 4-core runner before a mutant runs. Mutant runs are parallel and cost their covering tests' time each. A function in scope only through changed tests costs the changed tests' time per mutant, plus its covering tests' time for each mutant the changed tests did not settle. The job stops itself at 80 minutes and reports what it did not reach. Replays of large merged PRs on a hosted runner took 5 to 79 minutes, and one that changed tests most of the package runs (#796) did not finish in 330 before the changed-tests-first pass existed.
+**The floor is two serial full-suite runs.** mutmut's stats pass runs the whole unit suite once per side to learn which tests cover which function, so one changed function costs about 8 minutes on a 4-core runner before a mutant runs. Mutant runs are parallel and cost their covering tests' time each. A function in scope only through changed tests costs the changed tests' time per mutant, plus its covering tests' time for each mutant the changed tests did not settle. The job stops itself at 80 minutes and reports what it did not reach. Replays of large merged PRs on a hosted runner took 5 to 79 minutes. One whose changed tests run most of the package (#796) did not finish in 330, with or without the changed-tests-first pass.
 
 ## The weekly run
 
