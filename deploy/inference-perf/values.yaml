@@ -68,3 +68,6 @@ config:
     prometheus:
       summary: true
       per_stage: false
+  observability:
+    metrics:
+      port: 9464  # serves runtime metrics on the pod IP for scraping
