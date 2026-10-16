@@ -690,10 +690,8 @@ MUTMUT_CONFIG: dict[str, Any] = {
 
 
 # Commits `base` files plus a pdm.lock pinning mutmut, writes `head` over them in the working tree, and
-# returns the failures of the checks that need no mutants, with MUTMUT_CONFIG as the base's [tool.mutmut].
-def static_failures(
-    cmr: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]
-) -> list[str]:
+# returns the checks that need no mutants, run with MUTMUT_CONFIG as the base's [tool.mutmut].
+def static_result(cmr: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]) -> Any:
     write_tree(repo, {"inference_perf/__init__.py": "", "pdm.lock": MUTMUT_LOCK_ENTRY, **base})
     git(repo, "init", "-q")
     git(repo, "add", ".")
@@ -701,7 +699,14 @@ def static_failures(
     write_tree(repo, head)
     monkeypatch.chdir(repo)
     monkeypatch.setattr(cmr, "installed_mutmut", lambda: FakeDistribution("3.8.0"), raising=False)
-    failures: list[str] = cmr.static_checks("HEAD", MUTMUT_CONFIG).failures
+    return cmr.static_checks("HEAD", MUTMUT_CONFIG)
+
+
+# static_result's failures alone.
+def static_failures(
+    cmr: Any, repo: Path, monkeypatch: pytest.MonkeyPatch, base: dict[str, str], head: dict[str, str]
+) -> list[str]:
+    failures: list[str] = static_result(cmr, repo, monkeypatch, base, head).failures
     return failures
 
 
@@ -1091,3 +1096,198 @@ def test_functions_run_by_sees_code_run_in_a_forked_child(cmr: Any, tmp_path: Pa
         "inference_perf.m.x_in_child",
         "inference_perf.m.x_in_parent",
     }
+
+
+F = "inference_perf.m.x_f__mutmut_"
+
+
+# f has 4 mutants. The changed tests catch 1 on both sides and miss 2 on both, so 2 are settled.
+# They catch 3 only on the base and 4 only on the head: 3 is undecided on the head, 4 on the base.
+# g has mutants 1-2 on the base and 1-3 on the head, so g runs in full like a changed function.
+def test_split_by_changed_tests_leaves_only_disagreements(cmr: Any) -> None:
+    g = "inference_perf.m.x_g__mutmut_"
+    base = {f"{F}1": "killed", f"{F}2": "survived", f"{F}3": "killed", f"{F}4": "no tests", f"{g}1": "killed"}
+    head = {f"{F}1": "timeout", f"{F}2": "no tests", f"{F}3": "survived", f"{F}4": "killed", f"{g}1": "killed"}
+    base[f"{g}2"] = head[f"{g}2"] = head[f"{g}3"] = "killed"
+
+    shortcut = cmr.split_by_changed_tests(
+        ["inference_perf.m.x_f", "inference_perf.m.x_g"],
+        cmr.Side(tree=Path("."), results=base),
+        cmr.Side(tree=Path("."), results=head),
+    )
+
+    assert shortcut.settled == 2
+    assert shortcut.undecided == {f"{F}3": "head", f"{F}4": "base"}
+    assert shortcut.in_full == ["inference_perf.m.x_g"]
+    assert (shortcut.on("base"), shortcut.on("head")) == ([f"{F}4"], [f"{F}3"])
+
+
+# Every changed test is new, so the base has none to run. The head's changed tests catch f's
+# mutant 1 and miss 2. 1 is undecided on the base, where nothing caught it, and 2 is settled.
+def test_split_by_changed_tests_with_no_changed_tests_on_the_base(cmr: Any) -> None:
+    head = cmr.Side(tree=Path("."), results={f"{F}1": "killed", f"{F}2": "survived"})
+
+    shortcut = cmr.split_by_changed_tests(["inference_perf.m.x_f"], None, head)
+
+    assert (shortcut.settled, shortcut.undecided, shortcut.in_full) == (1, {f"{F}1": "base"}, [])
+
+
+# Mutant 1 was missed on the base and mutant 2 on the head. Each is recorded as killed on the side
+# whose changed tests caught it, and each side keeps its own run's result for the one it missed.
+def test_settle_undecided_marks_the_other_side_caught(cmr: Any) -> None:
+    shortcut = cmr.Shortcut(undecided={f"{F}1": "base", f"{F}2": "head"})
+    base = cmr.Side(tree=Path("."), results={f"{F}1": "survived"})
+    head = cmr.Side(tree=Path("."), results={f"{F}2": "survived"})
+
+    cmr.settle_undecided(shortcut, base, head)
+
+    assert base.results == {f"{F}1": "survived", f"{F}2": "killed"}
+    assert head.results == {f"{F}2": "survived", f"{F}1": "killed"}
+
+
+# mutmut given no mutant names runs every mutant in the tree, and given no tests runs the whole tests
+# directory. run_side with either returns an empty side and never writes config or starts mutmut.
+def test_run_side_runs_nothing_without_names_or_tests(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "mutmut", lambda *a: pytest.fail("mutmut started"))
+    monkeypatch.setattr(cmr, "write_config", lambda *a: pytest.fail("config written"))
+
+    assert cmr.run_side(tmp_path, [], {}, 1, 0).results == {}
+    assert cmr.run_side(tmp_path, ["inference_perf.m.x_f"], {}, 1, 0, tests=[]).results == {}
+
+
+# The changed tests are tests/test_new.py, which this side lacks, and tests/optional/test_o.py, which
+# is never in the unit suite. The side has nothing to run, so it gets None and mutmut never starts.
+def test_run_changed_tests_with_none_on_the_side(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_tree(tmp_path, {"tests/test_old.py": "", "tests/optional/test_o.py": ""})
+    monkeypatch.setattr(cmr, "run_side", lambda *a, **k: pytest.fail("mutmut started"))
+
+    tests = ["tests/test_new.py", "tests/optional/test_o.py"]
+    assert cmr.run_changed_tests(tmp_path, ["inference_perf.m.x_f"], tests, {}, 1, 0, False) is None
+
+
+# Builds `mutmut show` output for a mutant of f whose diff has `body` after the header.
+def shown(mutant: str, body: str) -> str:
+    return f"# {mutant}: survived\n--- inference_perf/m.py\n+++ inference_perf/m.py\n{body}"
+
+
+# f starts on line 3 and holds `return x > 1` on lines 5 and 6. mutmut show numbers from f's def, so
+# a mutant of the line-6 copy (diff position 4) maps to 6 and one of the line-5 copy maps to 5.
+# A removed line the source lacks falls back to the def line, 3.
+def test_mutant_line_finds_the_mutated_copy(cmr: Any) -> None:
+    source = "import os\n\ndef f(x):\n    if x:\n        return x > 1\n    return x > 1\n"
+    second = "@@ -1,4 +1,4 @@\n def f(x):\n     if x:\n         return x > 1\n-    return x > 1\n+    return x >= 1"
+    first = "@@ -1,4 +1,4 @@\n def f(x):\n     if x:\n-        return x > 1\n+        return x >= 1\n     return x > 1"
+    missing = "@@ -1,2 +1,2 @@\n def f(x):\n-    return y\n+    return None"
+
+    assert cmr.mutant_line(source, "x_f", shown(f"{F}2", second)) == 6
+    assert cmr.mutant_line(source, "x_f", shown(f"{F}1", first)) == 5
+    assert cmr.mutant_line(source, "x_f", shown(f"{F}3", missing)) == 3
+
+
+# Path, title and message each hold characters GitHub's workflow commands reserve. The message
+# encodes '%', CR and LF and keeps ':' and ','. The path and title encode all five.
+def test_workflow_command_escapes_reserved_characters(cmr: Any) -> None:
+    annotation = cmr.Annotation("a,b:c.py", 7, "T: 50%, done", "line 1\nx > 1, 100%\r")
+
+    assert cmr.workflow_command(annotation) == (
+        "::error file=a%2Cb%3Ac.py,line=7,title=T%3A 50%25%2C done::line 1%0Ax > 1, 100%25%0D"
+    )
+
+
+# m.py holds f (line 1) and g (line 5). Two new survivors in f become annotations on line 2 that quote
+# the mutated line, then g, which no test runs, gets one on its def line, then 20 from the checks.
+# The list stops at MAX_ANNOTATIONS, the most GitHub shows from one step.
+def test_annotations_put_each_failure_on_its_line(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_tree(tmp_path, {"inference_perf/__init__.py": "", "inference_perf/m.py": GT + "\n\ndef g():\n    return 2\n"})
+    diffs = {
+        f"{F}1": shown(f"{F}1", "@@ -1,2 +1,2 @@\n def f(x):\n-    return x > 1\n+    return x >= 1"),
+        f"{F}2": shown(f"{F}2", "@@ -1,2 +1,2 @@\n def f(x):\n-    return x > 1\n+    return x > 2"),
+    }
+    monkeypatch.setattr(cmr, "mutmut", lambda tree, *a: subprocess.CompletedProcess([], 0, diffs[a[1]], ""))
+    verdict = cmr.Verdict(0, 2, {}, ["inference_perf.m.x_g"], [], new=list(diffs))
+    checks = cmr.Checks(annotations=[cmr.Annotation("inference_perf/m.py", 6, "Statement mutmut never mutates", "")] * 20)
+
+    found = cmr.annotations(cmr.Side(tree=tmp_path), verdict, checks)
+
+    assert [(a.line, a.title) for a in found[:3]] == [
+        (2, "Surviving mutant"),
+        (2, "Surviving mutant"),
+        (5, "No test runs this function"),
+    ]
+    assert "return x >= 1" in found[0].message and "return x > 2" in found[1].message
+    assert len(found) == cmr.MAX_ANNOTATIONS
+
+
+# The base has a module-level lambda on line 1, which mutmut never mutates. The head keeps it and
+# appends a cached function whose body is logic. Only the appended statements, lines the change
+# added, are annotated. Line 1 is not, though it counts toward the rise.
+def test_unchecked_statements_are_annotated_only_where_the_change_added_them(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = "_gt = lambda x: x > 1\n\n\ndef f(x):\n    return _gt(x)\n"
+    head = base + "\n\nimport functools\n\n\n@functools.cache\ndef g(x):\n    y = x\n    return y > 1\n"
+
+    checks = static_result(cmr, tmp_path, monkeypatch, {"inference_perf/m.py": base}, {"inference_perf/m.py": head})
+
+    assert "Statements mutmut never mutates rose from 1 to 3" in checks.failures
+    assert sorted(a.line for a in checks.annotations) == [13, 14]
+    assert {a.path for a in checks.annotations} == {"inference_perf/m.py"}
+
+
+# Base: f(x) = x > 1, pinned by tests/test_m.py. The change loosens that test to only call f, so f is
+# in scope through it. Faked mutmut: the changed tests catch both of f's mutants on the base, and on
+# the head catch 2 and miss 1. Only mutant 1 reaches the head's full run, which misses it too, so the
+# run fails 0 to 1, with mutant 1 annotated on f's line and nothing else sent to a full run.
+def test_main_runs_only_undecided_mutants_in_full(
+    cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "repo"
+    write_tree(
+        repo,
+        {
+            "pyproject.toml": '[tool.mutmut]\nsource_paths = ["inference_perf"]\n',
+            "inference_perf/__init__.py": "",
+            "inference_perf/m.py": GT,
+            "tests/test_m.py": "from inference_perf.m import f\n\n\ndef test_f():\n    assert f(2)\n    assert not f(1)\n",
+        },
+    )
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    (repo / "tests" / "test_m.py").write_text("from inference_perf.m import f\n\n\ndef test_f():\n    f(2)\n")
+    monkeypatch.chdir(repo)
+    output = tmp_path / "mutation.json"
+    monkeypatch.setattr("sys.argv", ["check", "--base", "HEAD", "--output", str(output)])
+    monkeypatch.setattr(cmr, "static_checks", lambda *a: cmr.Checks())
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    calls: list[tuple[str, list[str], list[str], bool]] = []
+    changed_tests = {"base": {f"{F}1": "killed", f"{F}2": "killed"}, "head": {f"{F}1": "survived", f"{F}2": "killed"}}
+
+    def run_side(tree: Path, names: list[str], *a: Any, mutants: Any = None, tests: Any = None, **k: Any) -> Any:
+        side_name = tree.name.removesuffix("-changed-tests")
+        calls.append((tree.name, names, mutants or [], tests is not None))
+        results = dict(changed_tests[side_name]) if tests is not None else {m: "survived" for m in mutants or []}
+        return cmr.Side(tree=tree, results=results)
+
+    monkeypatch.setattr(cmr, "run_side", run_side)
+    monkeypatch.setattr(cmr, "still_survives", lambda *a: cmr.Survival(True, []))
+    monkeypatch.setattr(cmr, "mutation_lines", lambda s, m: (str(id(s)), m))
+    diff = shown(f"{F}1", "@@ -1,2 +1,2 @@\n def f(x):\n-    return x > 1\n+    return x >= 1")
+    monkeypatch.setattr(cmr, "mutmut", lambda tree, *a: subprocess.CompletedProcess([], 0, diff, ""))
+
+    with pytest.raises(SystemExit) as exited:
+        cmr.main()
+
+    assert exited.value.code == 1
+    assert calls == [
+        ("base-changed-tests", ["inference_perf.m.x_f"], [], True),
+        ("head-changed-tests", ["inference_perf.m.x_f"], [], True),
+        ("base", [], [], False),
+        ("head", [], [f"{F}1"], False),
+    ]
+    record = json.loads(output.read_text())
+    assert record["failures"] == ["Surviving mutants rose from 0 to 1"]
+    assert (record["settled_by_changed_tests"], record["undecided_by_changed_tests"]) == (1, {f"{F}1": "head"})
+    assert [(a["path"], a["line"]) for a in record["annotations"]] == [("inference_perf/m.py", 2)]
+    assert "::error file=inference_perf/m.py,line=2,title=Surviving mutant::" in capsys.readouterr().out
