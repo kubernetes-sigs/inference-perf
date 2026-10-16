@@ -107,6 +107,7 @@ Explore detailed documentation for specific topics:
 | **Analysis** | Visualizations and plots for performance metrics. | [analysis.md](./docs/analysis.md) |
 | **Troubleshooting** | Diagnosing anomalous results: measurement bugs vs workload mistakes vs real system behavior. | [troubleshooting.md](./docs/troubleshooting.md) |
 | **E2E Tests** | Contributor guide to the end-to-end test tier: running and extending it. | [e2e_tests.md](./docs/e2e_tests.md) |
+| **Mutation Testing** | Contributor guide to the merge-blocking mutation ratchet: what it checks and what each failure means. | [mutation_testing.md](./docs/mutation_testing.md) |
 
 ---
 

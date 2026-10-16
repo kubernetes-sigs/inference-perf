@@ -99,6 +99,10 @@ NON_INDEX_SOURCES = ("git", "url", "path", "editable")
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
 
+# What each failure means and how to pass. Every failing summary and error ends by pointing here.
+DOC_URL = "https://github.com/kubernetes-sigs/inference-perf/blob/main/docs/mutation_testing.md"
+DOC_LINE = f"What each failure means and how to pass: {DOC_URL}"
+
 # Code that only runs in a multiprocessing child is invisible twice over: mutmut records trampoline
 # hits in the pytest process, and coverage in a child starts from the config file with the empty
 # context that marks import time. This pytest plugin, loaded into every test run, carries both back
@@ -1376,7 +1380,7 @@ def out_of_budget(
         print(f"::error title=Mutation ratchet::{failure}")
     scope = f"In scope: {len(touched.existing)} existing, {len(touched.new)} new and {len(touched.deleted)} deleted functions."
     lines = [f"## Mutation ratchet against `{args.base}`", "", scope, *(f"\n{s}" for s in checks.notes + checks.sections)]
-    lines += ["", "FAIL: " + "; ".join(failures)]
+    lines += ["", "FAIL: " + "; ".join(failures), "", DOC_LINE]
     record: dict[str, Any] = {
         "base": args.base,
         "merge_base": merge_base,
@@ -1399,7 +1403,7 @@ def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, c
         print(message)
         return
     lines = [f"## Mutation ratchet against `{args.base}`", "", message, *(f"\n{s}" for s in checks.notes + checks.sections)]
-    lines += ["", "FAIL: " + "; ".join(checks.failures)]
+    lines += ["", "FAIL: " + "; ".join(checks.failures), "", DOC_LINE]
     publish("\n".join(lines) + "\n", {"base": args.base, "merge_base": merge_base, "failures": checks.failures}, args.output)
 
 
@@ -1440,7 +1444,7 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
             lines.append(f"{len(shown) - MAX_SHOWN_SURVIVORS} more not shown.")
         lines.append("</details>")
     lines += [f"\n{section}" for section in checks.notes + checks.sections]
-    lines += ["", "FAIL: " + "; ".join(verdict.failures) if verdict.failures else "PASS"]
+    lines += ["", "FAIL: " + "; ".join(verdict.failures), "", DOC_LINE] if verdict.failures else ["", "PASS"]
     return "\n".join(lines) + "\n"
 
 
@@ -1450,7 +1454,7 @@ def report_error(message: str) -> None:
         print(f"::error title=Mutation ratchet::{message.splitlines()[0]}")
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-            f.write(f"## Mutation ratchet: error\n\n```\n{message}\n```\n")
+            f.write(f"## Mutation ratchet: error\n\n```\n{message}\n```\n\n{DOC_LINE}\n")
 
 
 def load_config(merge_base: str) -> dict[str, Any]:
@@ -1582,7 +1586,7 @@ def main() -> None:
     except BudgetExhausted:
         out_of_budget(args, merge_base, touched, base, head, checks)
     except MutationRunError as e:
-        print(f"ERROR: {e}")
+        print(f"ERROR: {e}\n{DOC_LINE}")
         report_error(str(e))
         sys.exit(1)
     finally:
