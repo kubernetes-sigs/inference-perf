@@ -186,7 +186,7 @@ HARNESS_DIR: Path | None = None
 CANARY_RANGE = 10**9
 
 # A rerun gets its tests' measured time, scaled for a busier runner, plus room for pytest to start.
-# Past that it is hung, and a hang must not run into the workflow's 60 minute limit.
+# Past that it is hung, and a hang must not run into the workflow's timeout.
 RERUN_SLOWDOWN = 5
 RERUN_GRACE_S = 60
 
