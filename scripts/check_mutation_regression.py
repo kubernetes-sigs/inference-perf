@@ -828,9 +828,11 @@ def functions_run_by(tree: Path, tests: list[str]) -> set[str]:
     if not tests:
         return set()
     data, report = tree / ".mutation-coverage", tree / ".mutation-coverage.json"
-    # the tree's own copy must win over the editable install of the checkout, and an inherited
-    # COVERAGE_PROCESS_START from an outer coverage run would start a second tracer
-    env = {k: v for k, v in os.environ.items() if k != "COVERAGE_PROCESS_START"}
+    # the tree's own copy must win over the editable install of the checkout. From an outer run,
+    # COVERAGE_PROCESS_START would start a second tracer, and the child plugin's context would mark
+    # import-time lines as run in a child, as when this script's own tests run under mutmut
+    inherited = {"COVERAGE_PROCESS_START", "MUTATION_CHILD_CONTEXT", "MUTANT_UNDER_TEST"}
+    env = {k: v for k, v in os.environ.items() if k not in inherited}
     env.update(COVERAGE_FILE=str(data), PYTHONPATH=str(tree))
     env = harness_env(tree, env)
     cov = ["--cov=inference_perf", "--cov-context=test", "--cov-report=", f"--cov-config={harness_dir() / 'coverage.toml'}"]
