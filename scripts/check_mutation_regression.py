@@ -244,7 +244,7 @@ class SetupFailure(MutationRunError):
     def details(self) -> str:
         shown = (
             "\n".join(f"  {test}" for test in self.failing)
-            or "  none in a plain rerun, so it is flaky or specific to mutmut's run"
+            or "  none in a rerun outside mutmut, so it is flaky or specific to mutmut's run"
         )
         return f"Failing tests:\n{shown}\nLast lines of the pytest run:\n{self.tail}"
 
@@ -989,7 +989,9 @@ def diagnose_setup_failure(side: Side, pytest_args: list[str]) -> SetupFailure:
     """Run the side's suite unmutated to the end and name what fails. mutmut's setup run swallows pytest's output."""
     command = [sys.executable, "-m", "pytest", "--rootdir=.", "-rfE", "--tb=short", "--disable-warnings", "-p", "no:randomly"]
     command += ["-p", "no:random-order", f"--timeout={DIAGNOSIS_TEST_TIMEOUT_S}", *side.tests, *pytest_args]
-    env = {**os.environ, "MUTANT_UNDER_TEST": canary_id("setup", set())}
+    # with the child plugin loaded, as in mutmut's run, so a test that only fails under the harness is named
+    command += ["-p", CHILD_PLUGIN]
+    env = harness_env(side.tree, {**os.environ, "MUTANT_UNDER_TEST": canary_id("setup", set())})
     try:
         run = run_bounded(command, side.tree / "mutants", env, DIAGNOSIS_TIMEOUT_S)
         output = run.stdout + run.stderr

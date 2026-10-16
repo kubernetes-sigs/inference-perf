@@ -431,6 +431,21 @@ def test_diagnose_setup_failure_names_failing_tests(cmr: Any, tmp_path: Path) ->
     assert "1 failed, 1 passed" in failure.tail
 
 
+# test_harness fails only where the child plugin has set MUTATION_CHILD_CONTEXT, as it does inside
+# mutmut's run. The diagnosis loads the plugin too, so it names that test instead of finding nothing.
+def test_diagnose_setup_failure_reproduces_the_harness(cmr: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cmr, "HARNESS_DIR", tmp_path / "harness")
+    tests = tmp_path / "mutants" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_a.py").write_text(
+        "import os\n\n\ndef test_harness():\n    assert 'MUTATION_CHILD_CONTEXT' not in os.environ\n"
+    )
+
+    failure = cmr.diagnose_setup_failure(cmr.Side(tree=tmp_path, tests=["tests/test_a.py"]), [])
+
+    assert failure.failing == ["tests/test_a.py::test_harness"]
+
+
 # mutmut's stats run fails twice in a row, so run_mutmut raises the diagnosis after exactly two runs.
 # Failing once and passing on retry returns normally and leaves a note.
 def test_run_mutmut_diagnoses_a_setup_failure_that_repeats(cmr: Any, monkeypatch: pytest.MonkeyPatch) -> None:
