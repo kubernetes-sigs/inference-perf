@@ -15,11 +15,13 @@ pdm run check:mutation
 
 **Scope is the functions the diff touches plus the functions the changed tests run.** A function is touched when any line in its span changes, decorators included. A deleted function is in scope with its base-side survivors, so deleting tested code does not pay for anything. A test counts as changed when it is added, edited, deleted or renamed, or when a helper, `conftest.py` or package `__init__.py` it imports is, directly or through another helper. Every function such a test runs on either side joins the scope. That second half is where a loosened assert shows: the source did not change, its survivors did.
 
+**A function in scope only through changed tests runs against the changed tests first.** Its code is the same on both sides, and so is every test that did not change, so those tests catch a given mutant on both sides or on neither. Only the changed tests can make the sides differ. Each such mutant runs against just the changed tests on each side. When they catch it on both sides, or miss it on both, it is settled and counts on neither side. When they catch it on one side and miss it on the other, the rest of the suite runs it on the side that missed, and that result counts. A changed source function elsewhere that hides the mutant from an unchanged test is not seen. It is not seen when no test changes either.
+
 Code that only runs in a multiprocessing child counts. The job loads a pytest plugin that carries a `Worker`'s trampoline hits and coverage back to the test that started it.
 
 ## The rules, and what each failure means
 
-The job summary prints one table row per function in scope with its survivor count on the base and on the PR, then a `FAIL:` line naming every rule that tripped. In order of how often they come up:
+The job summary prints one table row per function in scope with its survivor count on the base and on the PR, then a `FAIL:` line naming every rule that tripped. For a function in scope only through changed tests the counts cover only the mutants the changed tests did not settle. Up to 10 failures also show as annotations on the line they are about, in the PR's Files changed tab: each new survivor with the change no test caught, each new function no test runs, and each new statement mutmut never mutates. In order of how often they come up:
 
 1. **`Surviving mutants rose from N to M`.** One total over the whole scope, not per function, so moving code between functions compares like for like. Each survivor in a function whose count rose is rerun 3 times unless the identical mutation also survived on the base. A survivor every rerun kills is a fluke and does not count. One that only some reruns kill is flaky, is listed with the tests that killed it, and counts. Read the survivor diffs under the table: each is a change to your code that no test noticed. Write the test that notices it. A survivor somewhere else in scope pays for one that is an equivalent mutant, and so does a deleted function's survivor.
 2. **`No test runs <function>`.** A new function no test executes. A survivor can be an equivalent mutant, code nobody runs cannot be, so nothing pays for it. Write a test that calls it.
@@ -43,7 +45,7 @@ Two errors stop the run before a verdict. **`The base branch ... fails its own u
 
 ## Wall time
 
-**The floor is two serial full-suite runs.** mutmut's stats pass runs the whole unit suite once per side to learn which tests cover which function, so one changed function costs about 8 minutes on a 4-core runner before a mutant runs. Mutant runs are parallel and cost their covering tests' time each. Scope from changed tests is the multiplier: a change to a test helper that most of the suite imports widens scope to most of the package.
+**The floor is two serial full-suite runs.** mutmut's stats pass runs the whole unit suite once per side to learn which tests cover which function, so one changed function costs about 8 minutes on a 4-core runner before a mutant runs. Mutant runs are parallel and cost their covering tests' time each. A function in scope only through changed tests costs the changed tests' time per mutant, plus its covering tests' time for each mutant the changed tests did not settle. The job stops itself at 80 minutes and reports what it did not reach. Replays of large merged PRs on a hosted runner took 5 to 76 minutes, and one that changed tests most of the package runs (#796) did not finish in 330 before the changed-tests-first pass existed.
 
 ## The weekly run
 

@@ -99,6 +99,9 @@ NON_INDEX_SOURCES = ("git", "url", "path", "editable")
 # Survivor diffs printed for the head, so a large change keeps a readable summary.
 MAX_SHOWN_SURVIVORS = 30
 
+# GitHub shows at most 10 error annotations from one step and drops the rest.
+MAX_ANNOTATIONS = 10
+
 # What each failure means and how to pass. Every failing summary and error ends by pointing here.
 DOC_URL = "https://github.com/kubernetes-sigs/inference-perf/blob/main/docs/mutation_testing.md"
 DOC_LINE = f"What each failure means and how to pass: {DOC_URL}"
@@ -1013,20 +1016,34 @@ def run_mutmut(side: Side, globs: list[str], max_children: int, pytest_args: lis
 
 
 def run_side(
-    tree: Path, names: list[str], config: dict[str, Any], max_children: int, pragmas_stripped: int, canary: bool = False
+    tree: Path,
+    names: list[str],
+    config: dict[str, Any],
+    max_children: int,
+    pragmas_stripped: int,
+    canary: bool = False,
+    mutants: list[str] | None = None,
+    tests: list[str] | None = None,
 ) -> Side:
-    side = Side(tree=tree, tests=unit_suite(tree), pragmas_stripped=pragmas_stripped)
-    files = sorted({p for p in (_source_path(tree, name.rpartition(".")[0]) for name in names) if p is not None})
+    """Run every mutant of `names`, plus the single `mutants`, against `tests` (default: the unit suite)."""
+    mutants = mutants or []
+    side = Side(tree=tree, tests=unit_suite(tree) if tests is None else tests, pragmas_stripped=pragmas_stripped)
+    globs = [f"{n}__mutmut_*" for n in names] + mutants
+    # mutmut given no names runs every mutant in the tree, and given no tests runs the whole tests directory
+    if not globs or not side.tests:
+        return side
+    hit = sorted(set(names) | {m.partition("__mutmut_")[0] for m in mutants})
+    files = sorted({p for p in (_source_path(tree, name.rpartition(".")[0]) for name in hit) if p is not None})
     write_config(tree, config, files, side.tests)
     pytest_args = [str(a) for a in config.get("pytest_add_cli_args", [])]
-    output, uncovered = run_mutmut(side, [f"{n}__mutmut_*" for n in names], max_children, pytest_args)
+    output, uncovered = run_mutmut(side, globs, max_children, pytest_args)
     if NOTHING_MATCHES in output:
         side.note = "no mutants (decorated or nothing to mutate)"
         return side
-    wanted = set(names)
+    wanted, single = set(names), set(mutants)
     for line in mutmut(tree, "results", "--all", "true").stdout.splitlines():
         mutant, sep, status = line.strip().rpartition(": ")
-        if sep and mutant.partition("__mutmut_")[0] in wanted:
+        if sep and (mutant.partition("__mutmut_")[0] in wanted or mutant in single):
             side.results[mutant] = "no tests" if uncovered and status == "not checked" else status
     unchecked = sorted(m for m, s in side.results.items() if s == "not checked")
     if unchecked:
@@ -1034,8 +1051,80 @@ def run_side(
     if uncovered:
         side.note = "no unit test runs these functions"
     elif canary and side.results:
-        side.canary_failed = not canary_passes(side, names, pytest_args)
+        side.canary_failed = not canary_passes(side, hit, pytest_args)
     return side
+
+
+def changed_tests_tree(tree: Path) -> Path:
+    """A clean copy of a side's tree, so the run against only the changed tests keeps its own mutmut state."""
+    copy = tree.parent / f"{tree.name}-changed-tests"
+    shutil.copytree(tree, copy, ignore=shutil.ignore_patterns("mutants", ".mutation-coverage*"))
+    return copy
+
+
+def run_changed_tests(
+    tree: Path, names: list[str], tests: list[str], config: dict[str, Any], max_children: int, pragmas: int, canary: bool
+) -> Side | None:
+    """Every mutant of `names` against only this side's changed tests. None when the side has none of them."""
+    present = sorted(set(tests) & set(unit_suite(tree)))
+    if not present:
+        return None
+    return run_side(changed_tests_tree(tree), names, config, max_children, pragmas, canary=canary, tests=present)
+
+
+def caught(status: str) -> bool:
+    return status not in SURVIVED
+
+
+@dataclass
+class Shortcut:
+    """Mutants of functions in scope only through changed tests, sorted by whether the changed tests settle them."""
+
+    # mutant -> the side whose changed tests missed it. The other side's changed tests caught it
+    undecided: dict[str, str] = field(default_factory=dict)
+    # functions whose mutants differ between the sides, so they run in full like a changed function
+    in_full: list[str] = field(default_factory=list)
+    # mutants the changed tests caught on both sides or missed on both
+    settled: int = 0
+
+    def on(self, side: str) -> list[str]:
+        return sorted((m for m, s in self.undecided.items() if s == side), key=mutant_order)
+
+
+def split_by_changed_tests(names: list[str], base: Side | None, head: Side | None) -> Shortcut:
+    """Find the mutants whose result can differ between the sides.
+
+    A mutant counts as caught when any test fails. Every test but the changed ones is the same code
+    on both sides, running a function that is the same code on both sides, so it catches a given
+    mutant on both sides or on neither. When the changed tests agree, the two sides agree whatever
+    the rest of the suite does. Only a mutant they catch on one side and miss on the other needs
+    the rest of the suite, run on the side that missed it.
+    """
+    results = {"base": base.results if base else {}, "head": head.results if head else {}}
+    shortcut = Shortcut()
+    for name in names:
+        ids = {side: {m for m in found if m.partition("__mutmut_")[0] == name} for side, found in results.items()}
+        # a side with no changed test to run catches none of the mutants the other side generated
+        if base is None:
+            ids["base"] = ids["head"]
+        if head is None:
+            ids["head"] = ids["base"]
+        if ids["base"] != ids["head"]:
+            shortcut.in_full.append(name)
+            continue
+        for mutant in ids["base"]:
+            on_base, on_head = (caught(results[side].get(mutant, "no tests")) for side in ("base", "head"))
+            if on_base == on_head:
+                shortcut.settled += 1
+            else:
+                shortcut.undecided[mutant] = "head" if on_base else "base"
+    return shortcut
+
+
+def settle_undecided(shortcut: Shortcut, base: Side, head: Side) -> None:
+    """Record what the changed tests already showed: each undecided mutant was caught on the side that did not miss it."""
+    for mutant, missed_on in shortcut.undecided.items():
+        (head if missed_on == "base" else base).results.setdefault(mutant, "killed")
 
 
 def _source_path(tree: Path, module: str) -> str | None:
@@ -1095,6 +1184,8 @@ class Verdict:
     carried: list[str] = field(default_factory=list)
     # survivors every rerun killed, so the first run missed. They do not count
     flukes: list[str] = field(default_factory=list)
+    # survivors in functions whose count rose that were not carried over from the base and still count
+    new: list[str] = field(default_factory=list)
 
 
 def mutation_lines(side: Side, mutant: str) -> tuple[str, ...]:
@@ -1129,6 +1220,7 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
     flaky: dict[str, list[str]] = {}
     flukes: list[str] = []
     carried: list[str] = []
+    new: list[str] = []
     if len(head_surv) > len(base_surv):
         # only a function whose own count rose can hold a survivor the change added
         before, after = by_function(base_surv), by_function(head_surv)
@@ -1140,9 +1232,10 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
         flukes = [m for m, survival in outcomes.items() if not survival.counts]
         flaky = {m: survival.killed_by for m, survival in outcomes.items() if survival.counts and survival.killed_by}
         head_surv = [m for m in head_surv if m not in flukes]
+        new = [m for m in candidates if m not in carried and m not in flukes]
     # unlike a surviving mutant, code no test runs cannot be an equivalent mutant, so nothing can pay for it
     unexecuted = sorted({m.partition("__mutmut_")[0] for m, s in head.results.items() if s == "no tests"} & set(touched.new))
-    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [], carried, flukes)
+    verdict = Verdict(len(base_surv), len(head_surv), flaky, unexecuted, [], carried, flukes, new)
     if verdict.head_survivors > verdict.base_survivors:
         verdict.failures.append(f"Surviving mutants rose from {verdict.base_survivors} to {verdict.head_survivors}")
     if unexecuted:
@@ -1157,6 +1250,13 @@ def judge(touched: Touched, base: Side | None, head: Side, pytest_args: list[str
     return verdict
 
 
+class Annotation(NamedTuple):
+    path: str
+    line: int
+    title: str
+    message: str
+
+
 @dataclass
 class Checks:
     """Findings that need no mutants. They fail a change even when nothing is in scope to mutate."""
@@ -1168,6 +1268,8 @@ class Checks:
     notes: list[str] = field(default_factory=list)
     # changed file -> unchecked statements on the base and with the change
     unchecked: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # failures that sit on a line the change touched, shown on that line in the PR's diff
+    annotations: list[Annotation] = field(default_factory=list)
 
     def fail(self, failure: str, title: str, lines: list[str]) -> None:
         self.failures.append(failure)
@@ -1273,6 +1375,23 @@ def check_unchecked(checks: Checks, merge_base: str, config: dict[str, Any]) -> 
             "Move the logic into an undecorated module-level function or method",
             shown,
         )
+        for path, b, a in rows:
+            if len(a) <= len(b) or not Path(path).is_file():
+                continue
+            diff = git("diff", "-U0", merge_base, "--", path)
+            # an untracked file has no diff, and every line in it is new
+            changed = parse_hunks(diff)[1] if diff else {u.line for u in a}
+            checks.annotations += [
+                Annotation(
+                    path,
+                    u.line,
+                    "Statement mutmut never mutates",
+                    f"No mutant is ever made from this statement ({u.why}), so no test is checked against it. "
+                    "Move the logic into an undecorated module-level function or method and call it from here.",
+                )
+                for u in a
+                if u.line in changed
+            ]
 
 
 def harness_references(paths: list[str]) -> list[str]:
@@ -1357,8 +1476,13 @@ def static_checks(merge_base: str, config: dict[str, Any]) -> Checks:
     return checks
 
 
-def publish(summary: str, record: dict[str, Any], output: str) -> None:
+def publish(summary: str, record: dict[str, Any], output: str, annotated: list[Annotation] | None = None) -> None:
     """Print the summary, add it to the job summary, write the record, and exit 1 if the record holds failures."""
+    annotated = (annotated or [])[:MAX_ANNOTATIONS]
+    if os.environ.get("GITHUB_ACTIONS"):
+        for annotation in annotated:
+            print(workflow_command(annotation))
+    record["annotations"] = [a._asdict() for a in annotated]
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
@@ -1394,7 +1518,7 @@ def out_of_budget(
         "not_reached": PROGRESS.pending,
         "failures": failures,
     }
-    publish("\n".join(lines) + "\n", record, args.output)
+    publish("\n".join(lines) + "\n", record, args.output, checks.annotations)
 
 
 def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, checks: Checks) -> None:
@@ -1404,10 +1528,81 @@ def nothing_to_mutate(message: str, args: argparse.Namespace, merge_base: str, c
         return
     lines = [f"## Mutation ratchet against `{args.base}`", "", message, *(f"\n{s}" for s in checks.notes + checks.sections)]
     lines += ["", "FAIL: " + "; ".join(checks.failures), "", DOC_LINE]
-    publish("\n".join(lines) + "\n", {"base": args.base, "merge_base": merge_base, "failures": checks.failures}, args.output)
+    record = {"base": args.base, "merge_base": merge_base, "failures": checks.failures}
+    publish("\n".join(lines) + "\n", record, args.output, checks.annotations)
 
 
-def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdict: Verdict, checks: Checks) -> str:
+def mutant_line(source: str, function: str, diff: str) -> int:
+    """Line in `source` of the first line a mutant changes, from `mutmut show`'s diff of the function.
+
+    The diff numbers lines from the top of the function. A line with the same text nearest that
+    position is the one, which also absorbs the decorators the diff may leave out.
+    """
+    node = functions(source).get(function)
+    if node is None:
+        return 1
+    removed, position = None, 0
+    for line in diff.splitlines():
+        hunk = re.match(r"^@@ -(\d+)", line)
+        if hunk:
+            position = int(hunk.group(1))
+        elif line.startswith(" "):
+            position += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed = line[1:].strip()
+            break
+    if removed is None:
+        return node.lineno
+    start, end = function_spans(source)[function]
+    lines = source.splitlines()
+    matches = [n for n in range(start, end + 1) if lines[n - 1].strip() == removed]
+    expected = node.lineno + position - 1
+    return min(matches, key=lambda n: abs(n - expected)) if matches else node.lineno
+
+
+def annotations(head: Side, verdict: Verdict, checks: Checks) -> list[Annotation]:
+    """What failed, each on the line it is about: new survivors, then new functions no test runs, then the checks'."""
+    found: list[Annotation] = []
+    for mutant in verdict.new[:MAX_ANNOTATIONS]:
+        module, _, function = mutant.partition("__mutmut_")[0].rpartition(".")
+        path = _source_path(head.tree, module)
+        if path is None:
+            continue
+        try:
+            diff = mutmut(head.tree, "show", mutant).stdout
+        except BudgetExhausted:
+            break
+        added = [line[1:].strip() for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
+        message = "No test fails when this line becomes:\n" + "\n".join(added) + "\nAdd a test that catches the change."
+        found.append(
+            Annotation(path, mutant_line((head.tree / path).read_text(), function, diff), "Surviving mutant", message)
+        )
+    for name in verdict.unexecuted:
+        module, _, function = name.rpartition(".")
+        path = _source_path(head.tree, module)
+        node = functions((head.tree / path).read_text()).get(function) if path else None
+        if path and node:
+            message = "No unit test calls this new function, so no change to it can be caught. Add a test that calls it."
+            found.append(Annotation(path, node.lineno, "No test runs this function", message))
+    return (found + checks.annotations)[:MAX_ANNOTATIONS]
+
+
+def workflow_command(annotation: Annotation) -> str:
+    """The ::error line GitHub turns into an annotation on that line of the PR's diff."""
+
+    def data(text: str) -> str:
+        return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+    def prop(text: str) -> str:
+        return data(text).replace(":", "%3A").replace(",", "%2C")
+
+    a = annotation
+    return f"::error file={prop(a.path)},line={a.line},title={prop(a.title)}::{data(a.message)}"
+
+
+def report(
+    base_ref: str, touched: Touched, base: Side | None, head: Side, verdict: Verdict, checks: Checks, settled: int = 0
+) -> str:
     before = by_function(survivors(base, touched.base_names))
     after = by_function([m for m in survivors(head, touched.head_names) if m not in verdict.flukes])
     lines = [f"## Mutation ratchet against `{base_ref}`", "", "| Function | Why | Base | Head |", "|---|---|---|---|"]
@@ -1417,6 +1612,13 @@ def report(base_ref: str, touched: Touched, base: Side | None, head: Side, verdi
     lines += [f"| `{n}` | new | | {after[n]} |" for n in touched.new]
     lines += [f"| `{b}` | deleted | {before[b]} | |" for b in touched.deleted]
     lines += ["", f"Surviving mutants: {verdict.base_survivors} on the base, {verdict.head_survivors} with this change.", ""]
+    if settled:
+        lines += [
+            f"The changed tests caught or missed {settled} mutants of functions in scope only through them the same way "
+            "on both sides. The rest of the suite is the same on both sides, so those mutants come out the same "
+            "either way, and they count on neither side.",
+            "",
+        ]
     for side, label in ((base, "Base"), (head, "Head")):
         if side is not None and side.note:
             lines.append(f"{label}: {side.note}.")
@@ -1513,6 +1715,14 @@ def whole_package(args: argparse.Namespace) -> None:
     Path(args.output).write_text(json.dumps(results, indent=2) + "\n")
 
 
+def red_base(base_ref: str, merge_base: str, failure: SetupFailure) -> MutationRunError:
+    return MutationRunError(
+        f"The base branch {base_ref} at {merge_base[:8]} fails its own unit tests in the mutation tree, "
+        f"so there is nothing to compare this change against. Fix {base_ref} first. "
+        f"Every PR fails this check until then.\n{failure.details()}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mutation ratchet over the functions changed since the base branch.")
     parser.add_argument("--base", default="origin/main", help="Branch the change merges into (default: origin/main)")
@@ -1549,6 +1759,7 @@ def main() -> None:
     HARNESS_DIR = workdir / "harness"
     base: Side | None = None
     head: Side | None = None
+    shortcut = Shortcut()
     try:
         export_base(merge_base, workdir / "base")
         (workdir / "head").mkdir()
@@ -1565,24 +1776,50 @@ def main() -> None:
             f"Mutating {len(touched.existing)} existing ({len(touched.via_tests)} via changed tests), "
             f"{len(touched.new)} new and {len(touched.deleted)} deleted functions against {args.base} ({merge_base[:8]})."
         )
-        if touched.base_names:
-            PROGRESS.stage, PROGRESS.pending = "mutating the base", sorted(set(touched.base_names) | set(touched.head_names))
+        everything = sorted(set(touched.base_names) | set(touched.head_names))
+        via = sorted(touched.via_tests)
+        if via:
+            PROGRESS.stage, PROGRESS.pending = "running the changed tests against the base", everything
             try:
-                base = run_side(workdir / "base", touched.base_names, config, args.max_children, stripped["base"])
+                base_changed = run_changed_tests(
+                    workdir / "base", via, tests, config, args.max_children, stripped["base"], False
+                )
             except SetupFailure as e:
-                raise MutationRunError(
-                    f"The base branch {args.base} at {merge_base[:8]} fails its own unit tests in the mutation tree, "
-                    f"so there is nothing to compare this change against. Fix {args.base} first. "
-                    f"Every PR fails this check until then.\n{e.details()}"
-                ) from e
+                raise red_base(args.base, merge_base, e) from e
+            PROGRESS.stage = "running the changed tests against the head"
+            head_changed = run_changed_tests(workdir / "head", via, tests, config, args.max_children, stripped["head"], True)
+            shortcut = split_by_changed_tests(via, base_changed, head_changed)
+            print(
+                f"The changed tests settled {shortcut.settled} mutants the same way on both sides. "
+                f"{len(shortcut.undecided)} need the rest of the suite, {len(shortcut.in_full)} functions run in full."
+            )
+        else:
+            head_changed, shortcut = None, Shortcut()
+        changed = [(b, h) for b, h in touched.existing if h not in touched.via_tests]
+        base_names = [b for b, _ in changed] + touched.deleted + shortcut.in_full
+        head_names = [h for _, h in changed] + touched.new + shortcut.in_full
+        if touched.base_names:
+            PROGRESS.stage, PROGRESS.pending = "mutating the base", everything
+            try:
+                base = run_side(
+                    workdir / "base", base_names, config, args.max_children, stripped["base"], mutants=shortcut.on("base")
+                )
+            except SetupFailure as e:
+                raise red_base(args.base, merge_base, e) from e
         head = Side(tree=workdir / "head", pragmas_stripped=stripped["head"])
         if touched.head_names:
             PROGRESS.stage, PROGRESS.pending = "mutating the head", sorted(touched.head_names)
-            head = run_side(workdir / "head", touched.head_names, config, args.max_children, stripped["head"], canary=True)
+            head = run_side(
+                workdir / "head", head_names, config, args.max_children, stripped["head"], True, mutants=shortcut.on("head")
+            )
+        head.canary_failed = head.canary_failed or bool(head_changed and head_changed.canary_failed)
+        if base is not None:
+            settle_undecided(shortcut, base, head)
         verdict = judge(touched, base, head, pytest_args)
         verdict.failures += checks.failures
         PROGRESS.stage, PROGRESS.pending = "writing the report", []
-        summary = report(args.base, touched, base, head, verdict, checks)
+        summary = report(args.base, touched, base, head, verdict, checks, shortcut.settled)
+        annotated = annotations(head, verdict, checks)
     except BudgetExhausted:
         out_of_budget(args, merge_base, touched, base, head, checks)
     except MutationRunError as e:
@@ -1604,6 +1841,9 @@ def main() -> None:
         "new": touched.new,
         "deleted": touched.deleted,
         "via_tests": sorted(touched.via_tests),
+        "settled_by_changed_tests": shortcut.settled,
+        "undecided_by_changed_tests": shortcut.undecided,
+        "run_in_full": shortcut.in_full,
         "base_results": base.results if base else {},
         "head_results": head.results,
         "flaky": verdict.flaky,
@@ -1614,7 +1854,7 @@ def main() -> None:
         "canary_failed": head.canary_failed,
         "failures": verdict.failures,
     }
-    publish(summary, record, args.output)
+    publish(summary, record, args.output, annotated)
 
 
 if __name__ == "__main__":
