@@ -8,10 +8,9 @@ Every checked table in this file is verified by `tests/required/docs/test_doc_ex
 
 ## Where expressions are accepted
 
-No config field accepts an expression yet. Fields are listed here as they are added, each linking to its own docs.
-
 | Field | `t` | Random | Rule |
 | --- | --- | --- | --- |
+| [`load.stages[].stop_condition`](./config.md#stop-conditions) (constant, poisson) | yes | no | A [condition](#conditions). |
 
 ## Grammar
 
@@ -99,6 +98,35 @@ A condition may use `+ * /`, powers, `sqrt`, `exp`, `log`, `Min`, `Max`, the fou
 | `t` | A number, not a condition. |
 | `Normal(0, 1) >= t` | Random. A condition must be the same on every run. |
 | `requests >= 1000` | `requests` is not a known symbol. |
+
+### Measured symbols
+
+Besides `t`, a condition may read what the stage has measured so far. A comparison on a measured symbol cannot be solved before the run, so it is evaluated as results arrive: on every result the request metric collector hands to the load generator, the path that feeds the circuit breakers. The time part is still proved, twice. With every measured comparison false, the condition must hold from some time onward on its own: that time is the stage's deadline, which the load generator schedules against. With every measured comparison true, it must again hold from some time onward: that is the earliest a result can end the stage. So measured symbols only ever end a stage before its deadline, and a condition that cannot end on time alone is rejected.
+
+| Symbol | Reads |
+| --- | --- |
+| `completed` | Results observed so far in the stage, successes and failures. |
+| `errors` | Failed results observed so far in the stage. |
+| `latency_mean`, `latency_p1` to `latency_p99` | Request latency over the window of recent successful results. |
+| `ttft_mean`, `ttft_p1` to `ttft_p99` | Time to first token over the window; only streamed responses contribute. |
+| `tpot_mean`, `tpot_p1` to `tpot_p99` | Time per output token over the window; only streamed responses with more than one token contribute. |
+
+An aggregate has no value until its window is full, and a comparison on a missing value is false, so `(t >= 600) | (ttft_p99 > 2)` ends at 600 if the window never fills. A counter cannot flap, so it ends the stage on the exact result that flipped it. A windowed percentile can, so the stage's `hold` asks for the condition on that many consecutive results first. The window and the hold are set on the stage, see [Stop Conditions](./config.md#stop-conditions).
+
+| Condition | Ends by (s) | Can end from (s) |
+| --- | --- | --- |
+| `(t >= 600) \| (ttft_p99 > 2)` | 600 | 0 |
+| `((t >= 60) & (ttft_p99 > 2)) \| (t >= 600)` | 600 | 60 |
+| `(t >= 300) \| (errors >= 10)` | 300 | 0 |
+| `(t >= 300) \| (errors / completed > 0.5)` | 300 | 0 |
+| `((t >= 30) & (latency_p50 > 1)) \| (t >= 120)` | 120 | 30 |
+
+| Rejected condition | Why |
+| --- | --- |
+| `errors > 10` | Cannot end on time alone; write `(t >= 600) \| (errors > 10)`. |
+| `(t >= 60) & (ttft_p99 > 2)` | Same: with `ttft_p99 > 2` false it never holds. |
+| `latency_p100 > 1` | Percentiles run from `_p1` to `_p99`. |
+| `(t >= 600) \| (ttft > 2)` | A bare metric is not a symbol; use an aggregate such as `ttft_p99`. |
 
 ## Value ranges
 

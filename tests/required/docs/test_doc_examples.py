@@ -106,6 +106,13 @@ def _check_condition(row: Row) -> None:
     assert round(Predicate(condition).boundary, 2) == ends_at, condition
 
 
+# A condition over measured symbols must end by the claimed second on time alone and be able to end from the other.
+def _check_measured_condition(row: Row) -> None:
+    condition, ends_by, can_end_from = _code(row[0]), float(row[1]), float(row[2])
+    predicate = Predicate(condition)
+    assert (round(predicate.boundary, 2), round(predicate.earliest, 2)) == (ends_by, can_end_from), condition
+
+
 # Each example in a rejected table must raise when built the way its table says.
 def _rejects(build: Callable[[str], object]) -> Callable[[Row], None]:
     def check(row: Row) -> None:
@@ -119,6 +126,7 @@ CHECKS: Dict[Tuple[str, ...], Callable[[Row], None]] = {
     ("Expression", "Mean"): _check_mean,
     ("Expression", "Lower", "Upper"): _check_bounds,
     ("Condition", "Ends at (s)"): _check_condition,
+    ("Condition", "Ends by (s)", "Can end from (s)"): _check_measured_condition,
     ("Rejected expression", "Why"): _rejects(Expression),
     ("Rejected condition", "Why"): _rejects(Predicate),
 }

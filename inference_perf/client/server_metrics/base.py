@@ -54,6 +54,9 @@ class StageRuntimeInfo(BaseModel):
     dropped_requests: Optional[int] = None
     # False when the queue could not count every dropped request, which makes dropped_requests a lower bound.
     dropped_requests_exact: Optional[bool] = None
+    # Stage seconds at which a stop condition over measured symbols held and ended
+    # the stage before its deadline; None when the stage ran to the deadline.
+    stop_condition_met_at: Optional[float] = None
     # Session-replay stages only: sessions still active (dispatched but not finished) or
     # pending (never dispatched) when the stage ended.
     sessions_not_completed_active: int = 0

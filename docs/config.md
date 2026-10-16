@@ -201,6 +201,7 @@ load:
   stages:                           # Load progression stages
     - rate: 1                       # Requests per second (CONSTANT or POISSON LOADS)
       duration: 30                  # Seconds to maintain this rate (CONSTANT or POISSON LOADS)
+      stop_condition: "t >= 30"     # Alternative to duration (duration: N means "t >= N"): stop admitting requests once this holds, t = stage seconds; may read measured symbols, see Stop Conditions (CONSTANT or POISSON LOADS)
       concurrency_level: 3          # Level of concurrency/number of worker threads (CONCURRENT LOADS)
       num_requests: 40              # Number of requests to be processed by concurrency_level worker threads (CONCURRENT LOADS)
   num_workers: 4                    # Concurrent worker threads (default: cgroup-aware CPU count: min(CPU affinity, cgroup CPU quota when present, host CPUs))
@@ -218,6 +219,43 @@ load:
 ```
 
 **Note:** `trace_session_replay` load type has different stage parameters. See [OpenTelemetry Trace Replay](#opentelemetry-trace-replay) for configuration details.
+
+#### Stop Conditions
+
+A constant or Poisson stage ends after exactly one of `duration` (seconds) or `stop_condition`, a condition over stage time `t`. `duration: N` means `stop_condition: "t >= N"`, and existing configs are unchanged. The condition is solved when the config loads, so the stage ends at an exact time, fractional seconds included. See [Conditions](./expressions.md#conditions) for what a condition may contain and what is rejected.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: poisson
+  stages:
+  - rate: 5
+    duration: 30                              # ends at 30s
+  - rate: 20
+    stop_condition: "t > 90.5"                # ends at 90.5s
+  - rate: 40
+    stop_condition: "(t >= 300) | (t >= 60)"  # whichever first: 60s
+```
+
+A condition may also read what the stage has measured: `completed`, `errors`, and `latency`, `ttft` or `tpot` with `_mean` or `_p1` to `_p99` over recent results. It still has to end on time alone, so measured symbols only ever end a stage earlier than its deadline. The object form sets how they are read: `window`, the results the aggregates are computed over (an aggregate has no value until it is full), and `hold`, the consecutive results the condition must hold on before it ends the stage. A string uses a window of 100 and a hold of 1. See [Measured symbols](./expressions.md#measured-symbols) for the symbols and the rules.
+
+<!-- checked-example -->
+```yaml
+load:
+  type: constant
+  stages:
+  - rate: 20
+    stop_condition: "(t >= 300) | (errors >= 10)"   # the tenth failure ends it; 300s at the latest
+  - rate: 40
+    stop_condition:
+      condition: "((t >= 30) & (ttft_p99 > 2)) | (t >= 600)"   # after 30s, once p99 TTFT exceeds 2s
+      window: 200                                              # p99 over the last 200 successful results
+      hold: 3                                                  # on 3 consecutive results
+```
+
+A stage ended this way is COMPLETED. The load generator logs the stage second the condition held at and the values it read, and the requests it had scheduled after that point are reported as dropped.
+
+Under `load.type: trace_replay` the trace sets when each request is sent, so `stop_condition` is rejected there.
 
 #### Retrying Transport Faults
 
