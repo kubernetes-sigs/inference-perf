@@ -22,7 +22,7 @@ each accepted shape compiles to, and the message for each rejected shape.
 import pytest
 from sympy import Interval, oo
 
-from inference_perf.utils.numeric.expression import Expression, Predicate
+from inference_perf.utils.numeric.expression import Expression, Predicate, is_measured_symbol
 from inference_perf.utils.numeric.expression import expression as expression_module
 
 
@@ -199,3 +199,75 @@ class TestExpressionBoundary:
     def test_expression_rejects_condition(self) -> None:
         with pytest.raises(ValueError, match="use Predicate"):
             Expression("t >= 60")
+
+
+class TestMeasuredSymbols:
+    # '(t >= 600) | (ttft_p99 > 2)' reads ttft_p99: boundary 600 (it ends by then on time alone) and earliest 0
+    # (a result can end it from the start), with the measured and free symbol sets exposed.
+    def test_or_with_time_bound(self) -> None:
+        p = Predicate("(t >= 600) | (ttft_p99 > 2)")
+        assert p.boundary == 600.0
+        assert p.earliest == 0.0
+        assert p.measured_symbols == {"ttft_p99"}
+        assert p.free_symbols == {"t", "ttft_p99"}
+
+    # '((t >= 60) & (ttft_p99 > 2)) | (t >= 600)': deadline 600, and no result can end it before 60.
+    def test_and_delays_earliest(self) -> None:
+        p = Predicate("((t >= 60) & (ttft_p99 > 2)) | (t >= 600)")
+        assert (p.boundary, p.earliest) == (600.0, 60.0)
+
+    # holds(t, values) on that condition: true at t=70 with ttft_p99=3, false at t=50 (before 60), false at t=70
+    # with ttft_p99=1, false at t=70 with no value for ttft_p99 (the comparison is false), true at t=600 regardless.
+    def test_holds_with_values(self) -> None:
+        p = Predicate("((t >= 60) & (ttft_p99 > 2)) | (t >= 600)")
+        assert p.holds(70, {"ttft_p99": 3.0})
+        assert not p.holds(50, {"ttft_p99": 3.0})
+        assert not p.holds(70, {"ttft_p99": 1.0})
+        assert not p.holds(70)
+        assert not p.holds(70, {})
+        assert p.holds(600)
+
+    # '(t >= 300) | (errors/completed > 0.5)' combines two counters arithmetically: true with 6 errors in 10
+    # completed, false with 4 in 10, and false (not an error) with both at 0.
+    def test_arithmetic_over_counters(self) -> None:
+        p = Predicate("(t >= 300) | (errors/completed > 0.5)")
+        assert p.measured_symbols == {"errors", "completed"}
+        assert p.holds(1, {"errors": 6, "completed": 10})
+        assert not p.holds(1, {"errors": 4, "completed": 10})
+        assert not p.holds(1, {"errors": 0, "completed": 0})
+
+    # Each aggregate spelling is a measured symbol: latency, ttft and tpot with _mean or _p1 to _p99.
+    @pytest.mark.parametrize("name", ["latency_mean", "ttft_p1", "tpot_p50", "latency_p99"])
+    def test_aggregate_symbols(self, name: str) -> None:
+        assert is_measured_symbol(name)
+        assert Predicate(f"(t >= 60) | ({name} > 1)").measured_symbols == {name}
+
+    # p0, p100, p999, a bare metric name, _max and an unrelated name are not symbols; rejected naming them.
+    @pytest.mark.parametrize("name", ["latency_p0", "latency_p100", "ttft_p999", "ttft", "latency_max", "requests"])
+    def test_unknown_measured_symbol(self, name: str) -> None:
+        assert not is_measured_symbol(name)
+        with pytest.raises(ValueError, match=rf"disallowed symbol\(s\) \['{name}'\]"):
+            Predicate(f"(t >= 60) | ({name} > 1)")
+
+    # 'errors > 10' alone can never end the stage on time; rejected, and the message gives the form to use.
+    def test_measured_only_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"must also end on time alone, e.g. '\(t >= 600\) \| \(errors > 10\)'"):
+            Predicate("errors > 10")
+
+    # '(t >= 60) & (ttft_p99 > 2)' has a time part but never holds with the measured part false; rejected, naming
+    # the time bound to add.
+    def test_and_without_time_bound_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="never holds on time alone; add a time bound"):
+            Predicate("(t >= 60) & (ttft_p99 > 2)")
+
+    # '((t >= 60) & (t < 120) & (errors > 1)) | (t >= 600)' lapses once errors hold (true on [60, 120), then from
+    # 600); rejected like a time-only window.
+    def test_window_once_measured_holds_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"holds only on \[60, 120\) or \[600, infinity\) once its measured"):
+            Predicate("((t >= 60) & (t < 120) & (errors > 1)) | (t >= 600)")
+
+    # A time-only condition reads no measured symbols, and its earliest equals its boundary (60.0).
+    def test_time_only_has_no_measured_symbols(self) -> None:
+        p = Predicate("t >= 60")
+        assert p.measured_symbols == frozenset()
+        assert p.earliest == p.boundary == 60.0

@@ -11,6 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .expression import Expression, Predicate
+from .expression import Expression, Predicate, is_measured_symbol
 
-__all__ = ["Expression", "Predicate"]
+__all__ = ["Expression", "Predicate", "is_measured_symbol"]

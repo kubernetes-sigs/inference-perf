@@ -24,6 +24,7 @@ import unittest.mock
 import numpy as np
 
 from inference_perf.client.modelserver import MockModelServerClient
+from inference_perf.client.server_metrics.base import StageRuntimeInfo
 from inference_perf.config import (
     APIConfig,
     APIType,
@@ -32,10 +33,12 @@ from inference_perf.config import (
     LoadConfig,
     LoadType,
     StandardLoadStage,
+    StopConditionConfig,
 )
 from inference_perf.datagen import DataGenerator
 from inference_perf.datagen.synthetic.mock_datagen import MockDataGenerator
 from inference_perf.loadgen.load_generator import LoadGenerator
+from inference_perf.metrics.request_collector import MultiprocessRequestMetricCollector
 from inference_perf.metrics.request_collector.local import LocalRequestMetricCollector
 
 
@@ -116,5 +119,79 @@ async def test_mp_run_completes_stop_condition_stage() -> None:
         for stage_id in (0, 1):
             assert loadgen.stage_runtime_info[stage_id].status.name == "COMPLETED"
             assert loadgen.stage_runtime_info[stage_id].dropped_requests == 0
+    finally:
+        await loadgen.stop()
+
+
+# Runs one CONSTANT stage in-process against a mock server whose every request times out (so every result is an
+# error), with the load generator observing the collector as main wires it; returns the stage's runtime info and
+# how many results were recorded.
+async def _run_in_process_with_errors(stage: StandardLoadStage) -> tuple[StageRuntimeInfo, int]:
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    load_config = LoadConfig(type=LoadType.CONSTANT, stages=[stage], num_workers=0, worker_max_concurrency=4)
+    loadgen = LoadGenerator(datagen, load_config)
+    collector = LocalRequestMetricCollector()
+    collector.add_observer(loadgen.observe_result)
+    client = MockModelServerClient(collector, api_config, timeout=0.001, mock_latency=0.01)
+    await loadgen.run(client)
+    return loadgen.stage_runtime_info[0], len(collector.get_metrics())
+
+
+# In-process at rate 50 with '(t >= 10) | (errors >= 5)': the stage ends COMPLETED on its fifth failed result, long
+# before the 500 requests its 10s deadline would send, and stop_condition_met_at records the stage second.
+async def test_in_process_run_ends_on_measured_condition() -> None:
+    stage = StandardLoadStage(rate=50, stop_condition="(t >= 10) | (errors >= 5)")
+    info, count = await _run_in_process_with_errors(stage)
+    assert info.status.name == "COMPLETED"
+    assert info.stop_condition_met_at is not None and info.stop_condition_met_at < 5
+    assert 5 <= count < 100, count
+
+
+# The object form flows through the run: hold=3 on the same condition needs errors >= 5 on three consecutive
+# results, so at least seven results are recorded before the stage ends COMPLETED.
+async def test_in_process_run_honours_hold() -> None:
+    stage = StandardLoadStage(rate=50, stop_condition=StopConditionConfig(condition="(t >= 10) | (errors >= 5)", hold=3))
+    info, count = await _run_in_process_with_errors(stage)
+    assert info.status.name == "COMPLETED"
+    assert info.stop_condition_met_at is not None
+    assert 7 <= count < 100, count
+
+
+# A time-only stage (duration=1 at rate 4, every request failing) runs to its deadline: COMPLETED with
+# stop_condition_met_at None.
+async def test_time_only_stage_records_no_measured_stop() -> None:
+    info, count = await _run_in_process_with_errors(StandardLoadStage(rate=4, duration=1))
+    assert info.status.name == "COMPLETED"
+    assert info.stop_condition_met_at is None
+    assert count in (3, 4), count
+
+
+# Multiprocess run, two workers at rate 20 with '(t >= 10) | (errors >= 5)', every request timing out, results
+# drained by the multiprocess collector in the main process: the stage COMPLETES early with stop_condition_met_at
+# set, far fewer than its 200 scheduled requests recorded, and the undispatched remainder reported as dropped.
+async def test_mp_run_ends_on_measured_condition() -> None:
+    api_config = APIConfig(type=APIType.Chat)
+    datagen = MockDataGenerator(api_config, DataConfig(type=DataGenType.Mock), None)
+    load_config = LoadConfig(
+        type=LoadType.CONSTANT,
+        interval=0.1,
+        stages=[StandardLoadStage(rate=20, stop_condition="(t >= 10) | (errors >= 5)")],
+        num_workers=2,
+        worker_max_concurrency=4,
+        stage_teardown_grace_seconds=10.0,
+    )
+    loadgen = LoadGenerator(datagen, load_config)
+    collector = MultiprocessRequestMetricCollector()
+    collector.add_observer(loadgen.observe_result)
+    client = MockModelServerClient(collector, api_config, timeout=0.001, mock_latency=0.01)
+    try:
+        async with collector.start():
+            await loadgen.run(client)
+        info = loadgen.stage_runtime_info[0]
+        assert info.status.name == "COMPLETED"
+        assert info.stop_condition_met_at is not None
+        assert info.dropped_requests is not None and info.dropped_requests > 0
+        assert 5 <= len(collector.get_metrics()) < 200, len(collector.get_metrics())
     finally:
         await loadgen.stop()

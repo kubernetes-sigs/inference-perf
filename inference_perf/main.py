@@ -444,6 +444,10 @@ def main_cli() -> None:
         metrics_registry=metrics_hub.registry,
     )
 
+    # A stop condition over measured symbols reads results the way the circuit
+    # breakers do: from the collector's observer path, in this process.
+    collector.add_observer(loadgen.observe_result)
+
     # Wire session metrics collector into reportgen if it exists
     if session_metrics_collector:
         reportgen.session_metrics_collector = session_metrics_collector

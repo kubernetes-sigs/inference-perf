@@ -28,6 +28,7 @@ from inference_perf.config import (
     MultiLoRAConfig,
     StandardLoadStage,
     StageGenType,
+    StopConditionConfig,
     SweepConfig,
     TraceSessionReplayLoadStage,
 )
@@ -271,3 +272,58 @@ def test_trace_replay_rejects_stop_condition() -> None:
     with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
         LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, stop_condition="t >= 60")])
     LoadConfig(type=LoadType.TRACE_REPLAY, stages=[StandardLoadStage(rate=1, duration=30)])
+
+
+# --- StandardLoadStage.stop_condition over measured symbols ------------------------
+
+
+# The object form {condition: '(t >= 300) | (errors >= 10)', window: 20, hold: 3} loads with those settings; the
+# stage's effective_duration is the 300s deadline and its predicate reads errors.
+def test_standard_load_stage_stop_condition_object_form() -> None:
+    stage = StandardLoadStage(rate=10, stop_condition={"condition": "(t >= 300) | (errors >= 10)", "window": 20, "hold": 3})
+    assert isinstance(stage.stop_condition, StopConditionConfig)
+    assert stage.stop_settings == StopConditionConfig(condition="(t >= 300) | (errors >= 10)", window=20, hold=3)
+    assert stage.effective_duration == 300.0
+    assert stage.predicate.measured_symbols == {"errors"}
+
+
+# A string stop_condition and the duration shorthand both normalise to the object form with window 100 and hold 1.
+def test_stop_settings_defaults() -> None:
+    by_string = StandardLoadStage(rate=10, stop_condition="(t >= 300) | (errors >= 10)")
+    assert by_string.stop_settings == StopConditionConfig(condition="(t >= 300) | (errors >= 10)", window=100, hold=1)
+    assert StandardLoadStage(rate=10, duration=60).stop_settings == StopConditionConfig(condition="t >= 60")
+
+
+# window=0 and hold=0 are rejected, as is an unknown key ('windows') in the object form.
+def test_stop_condition_object_form_bounds() -> None:
+    with pytest.raises(ValidationError):
+        StopConditionConfig(condition="t >= 60", window=0)
+    with pytest.raises(ValidationError):
+        StopConditionConfig(condition="t >= 60", hold=0)
+    with pytest.raises(ValidationError):
+        StandardLoadStage(rate=10, stop_condition={"condition": "t >= 60", "windows": 5})
+
+
+# 'errors >= 10' alone cannot end the stage on time; rejected at config load with the form to use.
+def test_stop_condition_measured_only_rejected() -> None:
+    with pytest.raises(ValidationError, match="must also end on time alone"):
+        StandardLoadStage(rate=10, stop_condition="errors >= 10")
+
+
+# Reassigning the object form rebuilds the predicate: 't >= 60' replaced by '(t >= 120) | (errors >= 1)' gives
+# effective_duration 120.0 and a predicate that reads errors.
+def test_predicate_rebuilt_when_object_form_changes() -> None:
+    stage = StandardLoadStage(rate=10, stop_condition=StopConditionConfig(condition="t >= 60"))
+    assert stage.effective_duration == 60.0
+    stage.stop_condition = StopConditionConfig(condition="(t >= 120) | (errors >= 1)")
+    assert stage.effective_duration == 120.0
+    assert stage.predicate.measured_symbols == {"errors"}
+
+
+# TRACE_REPLAY rejects the object form of stop_condition the way it rejects the string.
+def test_trace_replay_rejects_object_form() -> None:
+    with pytest.raises(ValidationError, match="Stage 0: stop_condition has no effect under TRACE_REPLAY"):
+        LoadConfig(
+            type=LoadType.TRACE_REPLAY,
+            stages=[StandardLoadStage(rate=1, stop_condition={"condition": "(t >= 60) | (errors >= 1)"})],
+        )
