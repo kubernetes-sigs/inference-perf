@@ -573,9 +573,10 @@ async def test_respawned_worker_resyncs_stage_rendezvous(tmp_path: object) -> No
         harness.shutdown()
 
 
+# 4 requests at +0.1s, +30s, +31s, +32s with a 10s grace, interrupted at 1.5s.
+# Expects teardown under 5s without waiting for the last three: 1 dispatch,
+# 4 finished, 3 skipped, same worker.
 async def test_interrupted_stage_drops_scheduled_ahead_requests(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Requests pulled into worker tasks but not yet due must retire as soon
-    as the stage starts draining; only a request already sent gets the grace."""
     dispatch_log = os.path.join(str(tmp_path), "dispatch.log")
     harness = _Harness(DispatchLogClient(dispatch_log), teardown_grace_seconds=10.0)
 
