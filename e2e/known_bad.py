@@ -20,16 +20,18 @@ tag itself names that version: a pin at a broken release stays red, only
 ``latest`` and other floating tags route around it. An entry goes inert
 once the floating tag moves past it.
 
-CLI, used by the e2e workflow:
+CLI, used by the e2e workflow. Both commands exit 0 with an answer, so any
+other exit is an error the workflow fails on rather than a decision:
 
-    python e2e/known_bad.py version <base_url>          # prints it, or exits 1
-    python e2e/known_bad.py skip-reason <tag> <version> # prints it and exits 0, or exits 1
+    python e2e/known_bad.py version <base_url>          # the version, or "unknown"
+    python e2e/known_bad.py skip-reason <tag> <version> # the reason, or nothing to run it
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from http.client import HTTPException
 from pathlib import Path
 from typing import Mapping
 from urllib.error import URLError
@@ -38,17 +40,19 @@ from urllib.request import urlopen
 KNOWN_BAD = Path(__file__).resolve().parent / "vllm_known_bad.txt"
 
 
-def load_known_bad(path: Path = KNOWN_BAD) -> dict[str, str]:
-    """Version -> reason. A listed version without a reason is a malformed table."""
+def load_known_bad(path: Path) -> dict[str, str]:
+    """Version -> reason. A version without a reason, or listed twice, is a malformed table."""
     known: dict[str, str] = {}
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        version, _, reason = line.partition(" ")
-        if not reason.strip():
+        version, *reason = line.split(None, 1)
+        if not reason:
             raise ValueError(f"{path}:{lineno}: {version} has no reason")
-        known[version] = reason.strip()
+        if version in known:
+            raise ValueError(f"{path}:{lineno}: {version} is listed twice")
+        known[version] = reason[0]
     return known
 
 
@@ -69,7 +73,7 @@ def resolved_version(base_url: str, timeout: float = 10.0) -> str | None:
     try:
         with urlopen(f"{base_url}/version", timeout=timeout) as response:
             payload = json.load(response)
-    except (URLError, OSError, ValueError):
+    except (URLError, OSError, HTTPException, ValueError):
         return None
     version = payload.get("version") if isinstance(payload, dict) else None
     return version if isinstance(version, str) and version else None
@@ -78,15 +82,12 @@ def resolved_version(base_url: str, timeout: float = 10.0) -> str | None:
 def main(argv: list[str]) -> int:
     match argv:
         case ["version", base_url]:
-            answer = resolved_version(base_url)
+            print(resolved_version(base_url) or "unknown")
         case ["skip-reason", tag, version]:
-            answer = skip_reason(tag, version, load_known_bad())
+            print(skip_reason(tag, version, load_known_bad(KNOWN_BAD)) or "")
         case _:
             print("usage: known_bad.py version <base_url> | skip-reason <tag> <version>", file=sys.stderr)
             return 2
-    if answer is None:
-        return 1
-    print(answer)
     return 0
 
 

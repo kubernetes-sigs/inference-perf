@@ -137,6 +137,7 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
+          ran=0
           for v in $VLLM_VERSIONS; do
             if e2e/vllm_cpu_server.sh start "$v"; then
               # A red release must name what it resolved to; latest
@@ -155,11 +156,16 @@ jobs:
 
               # A release listed in e2e/vllm_known_bad.txt is skipped, not
               # failed, and loudly: the annotation names it on every run
-              # until the tag floats past it.
-              if reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+              # until the tag floats past it. A helper that cannot decide fails
+              # the release rather than running it against what may be broken.
+              if ! reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::error::$v: e2e/known_bad.py skip-reason failed, see the log"
+                failed="$failed $v"
+              elif [ -n "$reason" ]; then
                 echo "::warning::$v resolved to $resolved, skipped: $reason"
                 echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
               else
+                ran=$((ran + 1))
                 E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
                   nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
                   |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
@@ -174,6 +180,11 @@ jobs:
 
           if [ -n "$failed" ]; then
             echo "::error::live-oracle slice failed for:$failed"
+            exit 1
+          fi
+          # Every release skipped tests nothing, so it fails like an empty table.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::every release in e2e/vllm_releases.txt was skipped as known-bad"
             exit 1
           fi
 
@@ -299,6 +310,7 @@ jobs:
         run: |
           set -uo pipefail
           failed=""
+          ran=0
 
           # run_pass <version> <model> <modalities> <pytest -k expression>
           run_pass() {
@@ -318,18 +330,24 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
 
               # Known-bad releases are skipped the way the job above does it.
-              if reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+              if ! reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::error::$tag: e2e/known_bad.py skip-reason failed, see the log"
+                failed="$failed $tag"
+              elif [ -n "$reason" ]; then
                 echo "::warning::$tag resolved to $resolved, skipped: $reason"
                 echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
-              elif E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
-                nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
-                |& tee "$out"; then
-                if grep -qE '[0-9]+ skipped' "$out"; then
-                  echo "::error::$tag: pass selected '$select' but skipped cases (see $out)"
+              else
+                ran=$((ran + 1))
+                if E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
+                  nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
+                  |& tee "$out"; then
+                  if grep -qE '[0-9]+ skipped' "$out"; then
+                    echo "::error::$tag: pass selected '$select' but skipped cases (see $out)"
+                    failed="$failed $tag"
+                  fi
+                else
                   failed="$failed $tag"
                 fi
-              else
-                failed="$failed $tag"
               fi
             else
               failed="$failed $tag"
@@ -345,6 +363,11 @@ jobs:
 
           if [ -n "$failed" ]; then
             echo "::error::multimodal slice failed for:$failed"
+            exit 1
+          fi
+          # Same rule as the job above: every pass skipped tests nothing.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::every pass in e2e/vllm_multimodal_releases.txt was skipped as known-bad"
             exit 1
           fi
 
