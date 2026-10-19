@@ -90,7 +90,7 @@ distribution = true
 format = {cmd = "ruff format", help = "Format code with ruff"}
 "check:format" = {cmd = "ruff format --check", help = "Verify code is formatted, without changing any file"}
 lint = {cmd = "ruff check", help = "Lint code with ruff"}
-type-check = {cmd = "mypy --strict ./inference_perf ./tests", help = "Strict mypy over inference_perf and tests"}
+type-check = {cmd = "mypy --strict ./inference_perf ./tests ./e2e/known_bad.py", help = "Strict mypy over inference_perf, tests, and the e2e known-bad helper"}
 "check:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py --check", help = "Verify docs/cli_flags.md is in sync with the CLI"}
 "update:cli-flags" = {cmd = "python scripts/sync_cli_flags_doc.py", help = "Regenerate docs/cli_flags.md from the CLI"}
 "check:runtime-metrics" = {cmd = "python scripts/sync_runtime_metrics_doc.py --check", help = "Verify every exported runtime metric is documented and the doc is in sync with the registry"}
