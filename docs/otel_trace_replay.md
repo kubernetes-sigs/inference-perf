@@ -214,6 +214,43 @@ two extra keys for telemetry:
 These keys are gated behind `len(...) > 0`, so a default-config run
 produces an identical wire format to upstream main.
 
+### Images (multimodal traces)
+
+Agents put images in their requests: a coding agent reads a screenshot, and a
+computer-use agent sends the screen after every action. Replay sends the
+**recorded image bytes as image parts, in the recorded position**, with the same
+bytes on every call, so the server decodes, encodes and charges each image as it
+did during the recorded run.
+
+| Recorded API | Where the image is | Replayed as |
+|---|---|---|
+| Anthropic Messages | `image` block in a user message or inside a `tool_result` | an image in the same message or tool result |
+| Chat Completions | `image_url` part in any message, including `role: "tool"` | an `image_url` part in the same message |
+| Responses | `input_image` in a `message` or a `function_call_output`; computer use's `computer_call_output` screenshot | an `image_url` part in the same message or tool result (computer use as calls to a `computer` function) |
+| OTel GenAI | `blob` / `uri` parts | an `image_url` part (a data URL for `blob`) |
+
+Claude Code's raw-body logs (`OTEL_LOG_RAW_API_BODIES`) are accepted as Anthropic
+wire captures; they store a streamed call's response as one JSON message.
+
+**Any recorded API can be replayed with either `api.type`.** Recorded images
+keep their content and position either way. With `api.type: chat`, an image
+recorded inside a tool result is sent in the `role: "tool"` message, so whether
+the model sees it depends on the server's chat template: some render images in
+tool turns (e.g. Qwen3-VL and DeepSeek-V4.1), while some models behind
+OpenAI-compatible APIs accept the image but ignore it. With
+`api.type: anthropic_messages` (vLLM serves it at `/v1/messages`), tool-result
+images are sent natively in `tool_result`.
+
+**Tokens.** Reported input tokens come from the server's `usage`, so they include
+each image at the target model's cost, which differs between models. Per-request
+image metrics (count, pixels, bytes, aspect ratio) are in `request_metrics.image`.
+
+**Missing images.** A trace may not carry an image's bytes: it was redacted,
+replaced by a placeholder (`[image]`, `@@@langfuseMedia:…@@@`, or the
+`[<bytes> bytes, sha256:…]` summary in inference-perf's own spans), or uploaded as a
+file (`file_id`). Loading such a trace logs a warning with the number of affected
+images and calls, since those prompts are smaller than recorded.
+
 ### Scaling a Small Corpus
 
 For stress testing with a corpus smaller than your target session count, set

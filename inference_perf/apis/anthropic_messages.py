@@ -20,6 +20,7 @@ from aiohttp import ClientResponse
 
 from inference_perf.apis.base import InferenceAPIData, InferenceInfo, StreamedResponseMetrics, UnaryResponseMetrics
 from inference_perf.apis.chat import ChatMessage, _clean_parameters
+from inference_perf.apis.image_parts import is_image_part, openai_image_to_part
 from inference_perf.apis.streaming_parser import ParsedSSEStream, parse_sse_stream
 from inference_perf.config import APIConfig, APIType
 from inference_perf.payloads import RequestBody, RequestMetrics, Text
@@ -57,6 +58,16 @@ def _tool_arguments(tool_input: Any) -> str:
     return json.dumps(tool_input if isinstance(tool_input, dict) else {}, ensure_ascii=False)
 
 
+def _anthropic_image(part: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert an OpenAI ``image_url`` part to an Anthropic ``image`` block."""
+    image = openai_image_to_part(part)
+    if image["type"] == "blob":
+        return {"type": "image", "source": {"type": "base64", "media_type": image["mime_type"], "data": image["content"]}}
+    if image["type"] == "uri":
+        return {"type": "image", "source": {"type": "url", "url": image["uri"]}}
+    return None
+
+
 def _anthropic_content(content: str | list[dict[str, Any]] | None) -> str | list[dict[str, Any]]:
     if content is None:
         return ""
@@ -68,10 +79,12 @@ def _anthropic_content(content: str | list[dict[str, Any]] | None) -> str | list
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")
-        if block_type in ("text", "tool_use", "tool_result"):
+        if block_type in ("text", "tool_use", "tool_result", "image"):
             blocks.append(block)
         elif block_type == "input_text":
             blocks.append({"type": "text", "text": block.get("text", "")})
+        elif block_type == "image_url" and (image := _anthropic_image(block)) is not None:
+            blocks.append(image)
     return blocks
 
 
@@ -80,13 +93,15 @@ def _anthropic_message(message: ChatMessage) -> dict[str, Any] | None:
         return None
 
     if message.role == "tool":
+        # A tool result holding an image (a screenshot) keeps it as an image block.
+        has_image = isinstance(message.content, list) and any(is_image_part(part) for part in message.content)
         return {
             "role": "user",
             "content": [
                 {
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id or "",
-                    "content": _content_text(message.content),
+                    "content": _anthropic_content(message.content) if has_image else _content_text(message.content),
                 }
             ],
         }

@@ -1,4 +1,4 @@
-# Copyright 2025 The Kubernetes Authors.
+# Copyright 2026 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,7 +39,9 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+from inference_perf.apis.image_parts import anthropic_image_to_part, is_image_part, openai_image_to_part
 
 # Detected file shapes, returned by detect_trace_format().
 FORMAT_OTEL_JSON = "otel_json"
@@ -485,7 +487,7 @@ def _text_from_content(content: Any) -> str:
 
 
 def _text_parts(content: Any) -> List[Dict[str, Any]]:
-    """Convert a message content field to one OTel text part per source part.
+    """Convert a message content field to OTel parts: one text or image part per source part.
 
     A structured content list keeps its part boundaries rather than being joined, so the
     converted message mirrors what the harness actually sent.
@@ -497,16 +499,34 @@ def _text_parts(content: Any) -> List[Dict[str, Any]]:
         for part in content:
             if isinstance(part, dict) and part.get("type") in ("input_text", "output_text", "text"):
                 parts.append({"type": "text", "content": part.get("text", "")})
+            elif isinstance(part, dict) and part.get("type") in ("image_url", "input_image"):
+                parts.append(openai_image_to_part(part))
             elif isinstance(part, str) and part:
                 parts.append({"type": "text", "content": part})
         return parts
     return []
 
 
+# Computer use is a built-in Responses tool, not a function. Replay sends its calls as calls
+# to a function of this name, so a Chat Completions server can answer them.
+_COMPUTER_TOOL = "computer"
+
+
+def _computer_call_part(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "tool_call",
+        "id": item.get("call_id", item.get("id", "")),
+        "name": _COMPUTER_TOOL,
+        "arguments": item.get("action") if isinstance(item.get("action"), dict) else {},
+    }
+
+
 def _convert_responses_input(input_items: Any) -> List[Dict[str, Any]]:
     """Convert Responses API input[] items to OTel messages in parts format.
 
-    Item types: message, function_call, function_call_output. Reasoning items are skipped.
+    Item types: message, function_call, function_call_output, and computer use's
+    computer_call / computer_call_output (replayed as calls to a ``computer`` function).
+    Reasoning items are skipped.
     """
     if isinstance(input_items, str):
         return [{"role": "user", "parts": [{"type": "text", "content": input_items}]}]
@@ -520,9 +540,34 @@ def _convert_responses_input(input_items: Any) -> List[Dict[str, Any]]:
         item_type = item.get("type", "")
 
         if item_type == "message":
-            text = _text_from_content(item.get("content", []))
+            content = item.get("content", [])
+            if isinstance(content, list) and any(is_image_part(p) for p in content):
+                # An image keeps its own part, in place; text-only content stays one
+                # newline-joined text part.
+                messages.append({"role": item.get("role", ""), "parts": _text_parts(content)})
+                continue
+            text = _text_from_content(content)
             if text:
                 messages.append({"role": item.get("role", ""), "parts": [{"type": "text", "content": text}]})
+
+        elif item_type == "computer_call":
+            messages.append({"role": "assistant", "parts": [_computer_call_part(item)]})
+
+        elif item_type == "computer_call_output":
+            output = item.get("output")
+            image = openai_image_to_part(output) if isinstance(output, dict) else None
+            messages.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "type": "tool_call_response",
+                            "id": item.get("call_id", item.get("id", "")),
+                            "result": [image] if image else json.dumps(output),
+                        }
+                    ],
+                }
+            )
 
         elif item_type == "function_call":
             messages.append(
@@ -548,7 +593,7 @@ def _convert_responses_input(input_items: Any) -> List[Dict[str, Any]]:
                         {
                             "type": "tool_call_response",
                             "id": item.get("call_id", item.get("id", "")),
-                            "result": output if isinstance(output, str) else json.dumps(output),
+                            "result": _tool_result_content(output, _text_parts),
                         }
                     ],
                 }
@@ -583,6 +628,9 @@ def _convert_responses_output(output_items: List[Any], finish_reason: Optional[s
                 }
             )
 
+        elif item_type == "computer_call":
+            parts.append(_computer_call_part(item))
+
         # type=reasoning: skipped
 
     if not parts:
@@ -613,7 +661,7 @@ def _convert_chat_messages(messages: List[Any]) -> List[Dict[str, Any]]:
                         {
                             "type": "tool_call_response",
                             "id": tool_call_id,
-                            "result": content if isinstance(content, str) else json.dumps(content),
+                            "result": _tool_result_content(content, _text_parts),
                         }
                     ],
                 }
@@ -639,6 +687,22 @@ def _convert_chat_messages(messages: List[Any]) -> List[Dict[str, Any]]:
             result.append({"role": role, "parts": parts})
 
     return result
+
+
+def _tool_result_content(content: Any, to_parts: Callable[[Any], List[Dict[str, Any]]]) -> Any:
+    """A tool result's content: a string, a parts list when it holds an image, else JSON text.
+
+    Keeping the parts of a list that holds an image (a screenshot read by a tool) makes
+    the image replay as an image rather than as base64 text. A block ``to_parts`` does not
+    convert (e.g. an Anthropic ``search_result``) is kept as its JSON text.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [part for block in content for part in to_parts([block]) or [{"type": "text", "content": json.dumps(block)}]]
+        if any(is_image_part(part) for part in parts):
+            return parts
+    return json.dumps(content)
 
 
 def _anthropic_blocks_to_parts(content: Any) -> List[Dict[str, Any]]:
@@ -675,13 +739,16 @@ def _anthropic_blocks_to_parts(content: Any) -> List[Dict[str, Any]]:
                     "arguments": _parse_arguments(block.get("input", {})),
                 }
             )
+        elif block_type == "image":
+            image = anthropic_image_to_part(block)
+            if image:
+                parts.append(image)
         elif block_type == "tool_result":
-            result = block.get("content")
             parts.append(
                 {
                     "type": "tool_call_response",
                     "id": block.get("tool_use_id", ""),
-                    "result": result if isinstance(result, str) else json.dumps(result),
+                    "result": _tool_result_content(block.get("content"), _anthropic_blocks_to_parts),
                 }
             )
         # type=thinking / redacted_thinking: skipped
@@ -789,6 +856,20 @@ def _extract_tool_defs(tools: List[Any], nested: bool) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for t in tools:
         if not isinstance(t, dict):
+            continue
+        if not nested and t.get("type") in ("computer_use_preview", "computer"):
+            result.append(
+                {
+                    "type": "function",
+                    "name": _COMPUTER_TOOL,
+                    "description": "Computer use: perform an action on the screen and return a screenshot.",
+                    "parameters": {"type": "object"},
+                }
+            )
+            continue
+        if not nested and not t.get("name"):
+            # A built-in Responses tool (web_search, file_search, ...) is unnamed and runs
+            # on the server; its calls are not replayed either.
             continue
         fn = t.get("function", t) if nested else t
         result.append(
@@ -1006,10 +1087,14 @@ def convert_anthropic_record(record: Dict[str, Any], trace_id: str, line_no: int
 
     response_body = record.get("response") or ""
     http_status = int(record.get("status", 200))
+    # Claude Code's raw-body logs record a streamed request's response already
+    # assembled into one JSON message, so a complete message counts as finished too.
+    assembled = _parse_json_object(response_body) if not _looks_like_sse(response_body) else None
     if (
         request.get("stream") is True
         and 200 <= http_status < 300
         and not _has_sse_terminal_event(response_body, "message_stop")
+        and not (assembled and assembled.get("type") == "message" and assembled.get("stop_reason"))
     ):
         logger.warning("Skipping incomplete Anthropic SSE wire record at line %d", line_no)
         return None
