@@ -18,7 +18,9 @@
 # without a server. latest deliberately has no golden; its live slice
 # is where upstream metric drift goes red first. When declarations and a
 # release genuinely diverge, that red forces the explicit choice:
-# version-aware query declarations (#669) or pruning the entry.
+# version-aware query declarations (#669) or pruning the entry. A release
+# that is broken upstream is a different case: list it in
+# e2e/vllm_known_bad.txt and latest routes around it until it moves on.
 
 v0.26.0
 latest

@@ -140,20 +140,30 @@ jobs:
           for v in $VLLM_VERSIONS; do
             if e2e/vllm_cpu_server.sh start "$v"; then
               # A red release must name what it resolved to; latest
-              # points at a different release over time.
+              # points at a different release over time. The venv python
+              # directly, not via nix develop: the dev shell's hook runs a
+              # pdm sync whose stdout would land in the captured value.
+              resolved="$(.venv/bin/python e2e/known_bad.py version http://127.0.0.1:8000 || echo unknown)"
               {
                 echo "### $v resolved to"
                 echo '```'
-                curl -sf http://127.0.0.1:8000/version || true
-                echo
+                echo "$resolved"
                 docker inspect --format '{{index .RepoDigests 0}}' \
                   "docker.io/vllm/vllm-openai-cpu:$v" || true
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
 
-              E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
-                nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
-                |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+              # A release listed in e2e/vllm_known_bad.txt is skipped, not
+              # failed, and loudly: the annotation names it on every run
+              # until the tag floats past it.
+              if reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::warning::$v resolved to $resolved, skipped: $reason"
+                echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
+              else
+                E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_VERSION="$v" \
+                  nix develop -c pdm run test:e2e:live -o log_cli_level=DEBUG \
+                  |& tee "test_vllm_e2e-$v.out" || failed="$failed $v"
+              fi
             else
               failed="$failed $v"
             fi
@@ -296,17 +306,22 @@ jobs:
             local tag="${model##*/}-$v"
             local out="test_multimodal_e2e-$tag.out"
             if VLLM_MODEL="$model" e2e/vllm_cpu_server.sh start "$v"; then
+              local resolved reason
+              resolved="$(.venv/bin/python e2e/known_bad.py version http://127.0.0.1:8000 || echo unknown)"
               {
                 echo "### $model on $v resolved to"
                 echo '```'
-                curl -sf http://127.0.0.1:8000/version || true
-                echo
+                echo "$resolved"
                 docker inspect --format '{{index .RepoDigests 0}}' \
                   "docker.io/vllm/vllm-openai-cpu:$v" || true
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
 
-              if E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
+              # Known-bad releases are skipped the way the job above does it.
+              if reason="$(.venv/bin/python e2e/known_bad.py skip-reason "$v" "$resolved")"; then
+                echo "::warning::$tag resolved to $resolved, skipped: $reason"
+                echo "skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
+              elif E2E_VLLM_BASE_URL=http://127.0.0.1:8000 E2E_VLLM_MODALITIES="$modalities" \
                 nix develop -c pdm run test:e2e:multimodal -k "$select" -rs -o log_cli_level=DEBUG \
                 |& tee "$out"; then
                 if grep -qE '[0-9]+ skipped' "$out"; then
