@@ -105,3 +105,29 @@ def test_aiperf_stdout_roundtrip(tmp_path: Path, capsys: pytest.CaptureFixture[s
     saved.write_text(out)
     config = read_config(str(saved))
     assert config.api.streaming is True
+
+
+def test_sweep_list_is_a_refusal_not_a_usage_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "converted.yaml"
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "-o", str(out), "--", "--model", "m", "--osl", "64"]
+    assert run(argv + ["--concurrency", "8,16"]) == 2
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "REFUSE --concurrency: '8,16' is a parameter sweep" in err
+
+
+def test_api_key_never_reaches_the_emitted_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["aiperf-profile", "--peer-version", "v0.12.0", "--", "--model", "m", "--osl", "64", "--api-key", "sk-test"]
+    assert run(argv) == 0
+    out = capsys.readouterr().out
+    assert "sk-test" not in out
+    assert "--api-key '<redacted>'" in out  # the recorded argv is scrubbed too
+    body = "\n".join(line for line in out.splitlines() if not line.startswith("#"))
+    assert "api_key" not in body
+    comment = " ".join(line.lstrip("# ") for line in out.splitlines() if line.startswith("#"))
+    assert "set server.api_key" in comment  # the assumption line, however the block wraps
+    saved = tmp_path / "aiperf.yaml"
+    saved.write_text(out)
+    config = read_config(str(saved))
+    assert config.server is not None
+    assert config.server.api_key is None
