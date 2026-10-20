@@ -144,7 +144,84 @@ def test_default_load_is_concurrency_one_with_derived_count() -> None:
     stage = config.load.stages[0]
     assert isinstance(stage, ConcurrentLoadStage)
     assert stage.concurrency_level == 1
-    assert stage.num_requests == 10  # max(10, concurrency * 2)
+    assert stage.num_requests == 10  # _validate_profiling: prof.setdefault("requests", 10)
+
+
+@pytest.mark.parametrize("concurrency", ["1", "8", "32"])
+def test_unbounded_run_sends_ten_requests_whatever_the_concurrency(concurrency: str) -> None:
+    # v0.12.0 _validate_profiling (aiperf/config/flags/_converter_profiling.py):
+    # prof.setdefault("requests", 10) when no bound is given, and nothing
+    # re-derives it from the concurrency, whatever the --request-count help
+    # string says.
+    conversion = convert(["--model", "m", "--osl", "64", "--concurrency", concurrency])
+    assert conversion.refusals == []
+    config = conversion.config
+    assert config is not None
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == int(concurrency)
+    assert stage.num_requests == 10
+    assert any('prof.setdefault("requests", 10)' in item for item in conversion.assumptions), conversion.assumptions
+
+
+def test_unbounded_rate_run_sends_ten_requests() -> None:
+    conversion = convert(["--model", "m", "--osl", "64", "--request-rate", "5"])
+    assert conversion.refusals == []
+    config = conversion.config
+    assert config is not None
+    stage = config.load.stages[0]
+    assert isinstance(stage, StandardLoadStage)
+    assert stage.rate == 5
+    assert stage.duration == 2  # 10 requests at 5 per second
+
+
+@pytest.mark.parametrize(
+    ("argv", "flag"),
+    [
+        (["--model", "m", "--osl", "64", "--request-count", "100,500"], "--request-count"),
+        (["--model", "m", "--osl", "64", "--num-requests", "100,500"], "--num-requests"),
+        (["--model", "m", "--osl", "64", "--concurrency", "8,16"], "--concurrency"),
+        (["--model", "m", "--osl", "64", "--concurrency=8,16"], "--concurrency"),
+        (["--model", "m", "--osl", "64", "--request-rate", "10,20"], "--request-rate"),
+        (["--model", "m", "--osl", "64", "--request-rate", "10", "--benchmark-duration", "10,20"], "--benchmark-duration"),
+        (["--model", "m", "--osl", "64,128"], "--osl"),
+        (["--model", "m", "--osl", "64", "--osl-stddev", "0,8"], "--osl-stddev"),
+        (["--model", "m", "--osl", "64", "--isl", "100,200"], "--isl"),
+        (["--model", "m", "--osl", "64", "--isl-stddev", "0,16"], "--isl-stddev"),
+        (["--model", "m", "--osl", "64", "--prefill-concurrency", "2,4"], "--prefill-concurrency"),
+        (["--model", "m", "--osl", "64", "--num-users", "2,4"], "--num-users"),
+        (["--model", "m", "--osl", "64", "--conversation-num", "10,20"], "--conversation-num"),
+        (["--model", "m", "--osl", "64", "--conversation-turn-mean", "1,2"], "--conversation-turn-mean"),
+    ],
+)
+def test_sweep_lists_refuse_with_a_named_reason(argv: List[str], flag: str) -> None:
+    # parse_int_or_int_list and parse_float_or_float_list at v0.12.0 turn a
+    # comma-separated value into a parameter sweep, one run per value. The
+    # peer accepts the argv, so this is a refusal (exit 2), not a usage error.
+    conversion = convert(argv)
+    assert conversion.config is None
+    assert any(refusal.startswith(f"{flag}: ") and "parameter sweep" in refusal for refusal in conversion.refusals), (
+        conversion.refusals
+    )
+
+
+def test_trailing_comma_collapses_to_the_single_value() -> None:
+    # "8," is the single value 8 at v0.12.0: parse_int_or_int_list drops the
+    # empty part, so neither a sweep nor a usage error.
+    conversion = convert(["--model", "m", "--osl", "64", "--concurrency", "8,"])
+    assert conversion.refusals == []
+    config = conversion.config
+    assert config is not None
+    stage = config.load.stages[0]
+    assert isinstance(stage, ConcurrentLoadStage)
+    assert stage.concurrency_level == 8
+
+
+@pytest.mark.parametrize("tail", [["--bogus", "-1"], ["--bogus", "x"], ["--bogus=x"], ["--bogus"]])
+def test_unknown_flag_refuses_once(tail: List[str]) -> None:
+    conversion = convert(["--model", "m", "--osl", "64"] + tail)
+    assert conversion.config is None
+    assert conversion.refusals == ["--bogus: not in the verified aiperf profile v0.12.0 flag surface"]
 
 
 def test_unset_osl_refuses() -> None:
@@ -247,8 +324,9 @@ def test_mapped_reporting_and_server_fields() -> None:
     assert config.load.num_workers == 4
     assert config.load.request_timeout == 120
     assert config.server is not None
-    assert config.server.api_key is not None
-    assert config.server.api_key.get_secret_value() == "sk-test"
+    # The key is never written: the file is meant to be checked in.
+    assert config.server.api_key is None
+    assert any("set server.api_key" in item for item in conversion.assumptions), conversion.assumptions
     assert config.api.headers == {"X-Team": "infra"}
     assert config.api.session_id_header_key == "X-Session-Id"
     assert config.storage is not None

@@ -32,9 +32,10 @@ silently wrong, so annotating it is enough; anything that can alter them
 refuses rather than guesses.
 """
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import FrozenSet, List, Optional
 
 from inference_perf.config import Config, Distribution, DistributionType
 
@@ -52,6 +53,49 @@ class PeerUsageError(Exception):
     unparsable number, missing required flag). Distinct from a refusal: the
     peer tool would have rejected this argv too.
     """
+
+
+# argparse's own negative-number rule (``_negative_number_matcher``).
+_NEGATIVE_NUMBER = re.compile(r"^-\d+$|^-\d*\.\d+$")
+
+
+def is_value_token(token: str) -> bool:
+    """True when ``token`` reads as a flag's value rather than as a flag.
+
+    A bare negative number counts as a value, the way argparse classifies it
+    for ``vllm bench serve``; both frontends use the same rule so an unknown
+    flag consumes its one value and refuses once instead of once per token.
+    """
+    return not token.startswith("-") or _NEGATIVE_NUMBER.match(token) is not None
+
+
+REDACTED = "<redacted>"
+
+
+def redact_values(argv: List[str], flags: FrozenSet[str]) -> List[str]:
+    """A copy of ``argv`` with the value of every flag in ``flags`` replaced.
+
+    The emitted comment block records the source argv verbatim, so a credential
+    passed on the peer CLI has to be scrubbed there as well as from the config
+    body. Both the ``--flag value`` and ``--flag=value`` spellings are covered.
+    """
+    out: List[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        i += 1
+        name, eq, _ = token.partition("=")
+        if name in flags:
+            if eq:
+                out.append(f"{name}={REDACTED}")
+            else:
+                out.append(token)
+                if i < len(argv):
+                    out.append(REDACTED)
+                    i += 1
+            continue
+        out.append(token)
+    return out
 
 
 @dataclass

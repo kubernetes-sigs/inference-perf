@@ -28,9 +28,20 @@ Verified v0.12.0 behavior the rows rely on:
   ``stream`` follows ``--streaming`` (default false; streaming is opt-in,
   unlike vllm bench, which always streams).
 - No sampling parameters are injected by the client.
-- ``--request-count`` unset is auto-derived for synthetic data as
-  ``max(10, concurrency * 2)``; the default load shape is a concurrency
-  phase at concurrency 1.
+- ``--request-count`` unset on an unbounded run means exactly 10 requests
+  whatever the concurrency (``prof.setdefault("requests", 10)`` in
+  ``_validate_profiling``); the ``max(10, concurrency * 2)`` in the flag's
+  help string is not what the code does. The default load shape is a
+  concurrency phase at concurrency 1.
+- A comma-separated value on a magic-list field (``--concurrency 8,16``,
+  ``--request-count 100,500``, ``--request-rate 10,20``, the ISL and OSL
+  means and stddevs, and the rest of ``MAGIC_LIST_FIELDS``) is a parameter
+  sweep, one run per value, and refuses; a trailing comma collapses to the
+  single value, as ``parse_int_or_int_list`` does.
+- ``--api-key`` is never written into the emitted config, which is meant to
+  be checked in; it is recorded as an assumption to set ``server.api_key``
+  on the run host. A missing key fails on the first request and cannot
+  change the offered workload.
 - ``--num-dataset-entries`` (default 100) is a pool of unique entries reused
   across requests, a false friend of vllm's ``--num-prompts``.
 
@@ -73,7 +84,14 @@ from inference_perf.config import (
     VideoProfile,
 )
 from inference_perf.payloads import ImageRepresentation, VideoRepresentation
-from inference_perf.tools.convert.model import Conversion, PeerUsageError, fixed_dist, normal_dist
+from inference_perf.tools.convert.model import (
+    Conversion,
+    PeerUsageError,
+    fixed_dist,
+    is_value_token,
+    normal_dist,
+    redact_values,
+)
 from inference_perf.tools.convert.versions import (
     AIPERF_PROFILE_VERSIONS,
     AiperfProfileFacts,
@@ -810,10 +828,20 @@ _BESPOKE: Set[str] = {
 
 _WARMUP_AGENTIC: Set[str] = {"agentic_cache_warmup_duration", "agentic_warmup_grace_period"}
 
+# Flags whose value is a credential: scrubbed from the recorded argv.
+_SECRET_FLAGS = frozenset(alias for spec in _FIELDS if spec.field == "api_key" for alias in spec.aliases)
+
 WARMUP_NOTE = (
     "warmup: aiperf excludes its warmup phase from the measured window; inference-perf measures every"
     " request it sends. Workaround per docs/comparability.md: add a short first stage to load.stages and"
     " compare later stages only. The converted run includes cold-start effects the aiperf run excluded"
+)
+
+UNBOUNDED_COUNT_NOTE = (
+    "--request-count unset: an unbounded aiperf run sends exactly {count} requests whatever the"
+    " concurrency (_validate_profiling in aiperf/config/flags/_converter_profiling.py,"
+    ' prof.setdefault("requests", {count})); the max(10, concurrency * 2) in the --request-count help'
+    " string is not what the code does"
 )
 
 SYNTHETIC_NOTE = (
@@ -829,6 +857,8 @@ class _Parsed:
     def __init__(self) -> None:
         self.values: Dict[str, ParsedValue] = {}
         self.negated: Set[str] = set()
+        # The alias the caller spelled, for messages that name the flag.
+        self.spelled: Dict[str, str] = {}
 
     def present(self, field: str) -> bool:
         return field in self.values
@@ -905,18 +935,20 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
     while i < len(argv):
         token = argv[i]
         i += 1
-        if not token.startswith("-"):
+        if is_value_token(token):
             conversion.refuse(token, f"{TOOL_NAME} takes no positional arguments here")
             continue
         name, eq, inline = token.partition("=")
         entry = _ALIASES.get(name)
         if entry is None:
             conversion.refuse(name, f"not in the verified {TOOL_NAME} v0.12.0 flag surface")
-            # Skip a following value token so one unknown flag refuses once.
-            if not eq and i < len(argv) and not argv[i].startswith("-"):
+            # Consume the flag's one value, a negative number included, so an
+            # unknown flag refuses once rather than once per token.
+            if not eq and i < len(argv) and is_value_token(argv[i]):
                 i += 1
             continue
         spec, negation = entry
+        parsed.spelled[spec.field] = name
         if spec.kind == "flag":
             if eq:
                 value = inline.strip().lower()
@@ -945,6 +977,33 @@ def _parse(argv: List[str], conversion: Conversion) -> _Parsed:
         else:
             parsed.values[spec.field] = value_str
     return parsed
+
+
+def _refuse_sweeps(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileFacts) -> None:
+    """Refuse the magic-list sweep spelling on the fields that parse it.
+
+    At v0.12.0 ``parse_int_or_int_list`` and ``parse_float_or_float_list``
+    turn ``--concurrency 8,16`` into a parameter sweep, one run per value, and
+    collapse a lone value with a trailing comma to that value. The converter
+    emits one config for one run, and the peer accepts the argv, so a sweep is
+    a refusal rather than a usage error. The first value is kept in place so
+    the row that reads the field does not raise a usage error on top of the
+    refusal; no config is emitted once a refusal exists.
+    """
+    for field in sorted(facts.sweep_fields):
+        raw = parsed.raw(field)
+        if raw is None or "," not in raw:
+            continue
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        if not parts:
+            continue  # the peer's int() rejects it as well; left to the usage error
+        if len(parts) > 1:
+            conversion.refuse(
+                parsed.spelled.get(field, "--" + field.replace("_", "-")),
+                f"'{raw}' is a parameter sweep at {facts.version} (a magic list, one run per value);"
+                " the converter emits one config for one run, so pass a single value per conversion",
+            )
+        parsed.values[field] = parts[0]
 
 
 def _norm(value: Optional[str]) -> str:
@@ -1134,12 +1193,8 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
             count = int(rate * seconds)
         else:
             if request_count is None:
-                request_count = max(facts.auto_request_count_floor, 0)
-                conversion.assume(
-                    f"--request-count unset: aiperf derives max({facts.auto_request_count_floor},"
-                    f" concurrency * {facts.auto_request_count_concurrency_factor}) = {request_count} for"
-                    " synthetic data"
-                )
+                request_count = facts.unbounded_request_count
+                conversion.assume(UNBOUNDED_COUNT_NOTE.format(count=request_count))
             implied = request_count / rate
             if implied <= 0 or implied != int(implied):
                 conversion.refuse(
@@ -1171,14 +1226,8 @@ def _convert_load(conversion: Conversion, parsed: _Parsed, facts: AiperfProfileF
             f" at concurrency {facts.default_concurrency}"
         )
     if request_count is None:
-        request_count = max(
-            facts.auto_request_count_floor,
-            facts.auto_request_count_concurrency_factor * level,
-        )
-        conversion.assume(
-            f"--request-count unset: aiperf derives max({facts.auto_request_count_floor},"
-            f" concurrency * {facts.auto_request_count_concurrency_factor}) = {request_count} for synthetic data"
-        )
+        request_count = facts.unbounded_request_count
+        conversion.assume(UNBOUNDED_COUNT_NOTE.format(count=request_count))
     conversion.assume(
         "the worker pool must cover the concurrency level: load.num_workers x load.worker_max_concurrency"
         f" (defaults: cpu count x 100) must be at least {level}"
@@ -1413,6 +1462,9 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
     conversion.source_version = facts.version
 
     parsed = _parse(argv, conversion)
+    _refuse_sweeps(conversion, parsed, facts)
+    # The comment block records the argv; the key must not survive there either.
+    conversion.argv = redact_values(conversion.argv, _SECRET_FLAGS)
 
     # Input and dataset flags that select loaders with no verified twin.
     for field, flag in (
@@ -1621,8 +1673,9 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
 
     if parsed.present("api_key"):
         conversion.assume(
-            "--api-key is written into server.api_key in clear text; inference-perf redacts it from logs"
-            " and saved copies of the config"
+            "--api-key is not written: the converted file is meant to be checked in, so set server.api_key"
+            " on the run host instead (a missing key fails on the first request and cannot change the"
+            " offered workload)"
         )
     if parsed.flag("use_legacy_max_tokens") and api_type == APIType.Chat:
         conversion.assume("--use-legacy-max-tokens matches inference-perf's chat payload, which sends legacy max_tokens")
@@ -1719,8 +1772,6 @@ def convert_aiperf_profile(argv: List[str], peer_version: str) -> Conversion:
         "model_name": model_name,
         "ignore_eos": bool(ignore_eos) if ignore_eos is not None else False,
     }
-    if parsed.present("api_key"):
-        server_kwargs["api_key"] = parsed.raw("api_key")
 
     tokenizer_kwargs: Dict[str, Any] = {
         "pretrained_model_name_or_path": tokenizer_id if tokenizer_id is not None else model_name
