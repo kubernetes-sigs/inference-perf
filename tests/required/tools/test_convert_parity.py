@@ -140,11 +140,13 @@ def test_convert_reproduces_fixture(case_dir: Path) -> None:
     assert got == want
 
 
-def test_no_cases_yet_is_visible() -> None:
-    # Until the parity harness lands, the discovery above is empty; this
-    # placeholder documents that the oracle is pending rather than passing.
-    if _discover_cases():
-        pytest.skip("parity cases present; the parametrized oracle runs")
+def test_parity_cases_are_in_tree() -> None:
+    # A skip, not a pass, while #736 has not landed e2e/tests/parity: the
+    # pending oracle stays visible in the run summary instead of counting as
+    # green. Once the directory exists it must hold at least one case.
+    if not CASES_DIR.is_dir():
+        pytest.skip(f"{CASES_DIR.relative_to(REPO_ROOT)} not in tree yet (#736): the acceptance oracle is pending")
+    assert _discover_cases(), f"{CASES_DIR} exists but holds no */vllm-bench.args"
 
 
 def test_pin_matches_parity_harness() -> None:
