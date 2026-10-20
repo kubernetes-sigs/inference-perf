@@ -276,6 +276,20 @@ def test_all_refusals_are_collected_not_thrown() -> None:
     assert len(conversion.refusals) == 4
 
 
+@pytest.mark.parametrize("tail", [["--bogus", "-1"], ["--bogus", "x"], ["--bogus=x"], ["--bogus"]])
+def test_unknown_flag_refuses_once(tail: List[str]) -> None:
+    # argparse hands an unknown flag and its value back as two tokens; the
+    # value, a negative number included, must not refuse a second time.
+    conversion = convert(["--model", "m"] + tail)
+    assert conversion.config is None
+    assert conversion.refusals == ["--bogus: not in the verified vllm bench serve v0.10.0 flag surface"]
+
+
+def test_stray_positional_refuses_as_positional() -> None:
+    conversion = convert(["--model", "m", "stray"])
+    assert conversion.refusals == ["stray: vllm bench serve takes no positional arguments"]
+
+
 def test_unverified_version_refuses() -> None:
     conversion = convert(["--model", "m"], version="v0.11.0")
     assert conversion.config is None

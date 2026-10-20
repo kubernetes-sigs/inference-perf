@@ -52,7 +52,7 @@ from inference_perf.config import (
     StorageConfig,
     StorageConfigBase,
 )
-from inference_perf.tools.convert.model import Conversion, PeerUsageError, fixed_dist, uniform_dist
+from inference_perf.tools.convert.model import Conversion, PeerUsageError, fixed_dist, is_value_token, uniform_dist
 from inference_perf.tools.convert.versions import (
     VLLM_BENCH_VERSIONS,
     VllmBenchFacts,
@@ -382,11 +382,18 @@ def convert_vllm_bench(argv: List[str], peer_version: str) -> Conversion:
 
     mirror = _Mirror()
     ns, unknown = mirror.parser.parse_known_args(argv)
-    for token in unknown:
-        if token.startswith("-"):
-            conversion.refuse(token.split("=", 1)[0], f"not in the verified {TOOL_NAME} {facts.version} flag surface")
-        else:
+    # argparse hands an unknown flag and its value back as two tokens; consume
+    # the value, a negative number included, so one unknown flag refuses once.
+    i = 0
+    while i < len(unknown):
+        token = unknown[i]
+        i += 1
+        if is_value_token(token):
             conversion.refuse(token, f"{TOOL_NAME} takes no positional arguments")
+            continue
+        conversion.refuse(token.split("=", 1)[0], f"not in the verified {TOOL_NAME} {facts.version} flag surface")
+        if "=" not in token and i < len(unknown) and is_value_token(unknown[i]):
+            i += 1
     present = mirror.present_dests(argv)
 
     # Standing annotations: they hold for every conversion at this pin.

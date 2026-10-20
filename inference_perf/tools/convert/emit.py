@@ -19,13 +19,16 @@ its own. Only fields the conversion actually derived are emitted
 (``exclude_unset``): inference-perf defaults stay owned by inference-perf,
 except where a table row emits a field explicitly because the peer default
 disagrees with the inference-perf default (``server.ignore_eos`` and
-``api.streaming``).
+``api.streaming``). Credentials are never written: a converted file is meant
+to be checked in next to a parity case, so ``server.api_key`` stays unset and
+the aiperf frontend records ``--api-key`` as an assumption to satisfy on the
+run host.
 """
 
 import shlex
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Dict, List
+from typing import List
 
 import yaml
 
@@ -77,24 +80,10 @@ def comment_block(conversion: Conversion) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _reveal_api_key(conversion: Conversion, dumped: Dict[str, Any]) -> None:
-    # SecretStr dumps as a masked placeholder, and Config validation rejects a
-    # config whose credentials hold the placeholder, so the emitted file must
-    # carry the real value the caller passed on the peer CLI. The matching
-    # assumption line warning about the clear-text key is added by the
-    # frontend that mapped the flag.
-    if conversion.config is None or conversion.config.server is None:
-        return
-    secret = conversion.config.server.api_key
-    if secret is not None and isinstance(dumped.get("server"), dict):
-        dumped["server"]["api_key"] = secret.get_secret_value()
-
-
 def emit_yaml(conversion: Conversion) -> str:
     """Render a successful conversion as commented YAML."""
     if conversion.config is None:
         raise ValueError("cannot emit a refused conversion")
     dumped = conversion.config.model_dump(mode="json", exclude_unset=True)
-    _reveal_api_key(conversion, dumped)
     body = yaml.safe_dump(dumped, sort_keys=False, default_flow_style=False)
     return comment_block(conversion) + body
