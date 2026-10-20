@@ -7,9 +7,10 @@ requests at an LLM server and time the answers. When the two print different
 numbers for "the same" benchmark, the first question is whether they were
 actually asked to send the same traffic. In the past the answer has often been
 no. One tool's `range_ratio: 0` meant "random lengths" while the other's meant
-"fixed". One tool sends a warmup request the other does not. One spaces
-requests evenly, the other spaces them randomly. Each of those took days to
-find because nothing checked it. This directory is that check.
+"fixed". One tool sends a warmup request the other does not. One pins the
+total time its requests are spread over, the other lets it drift. Each of
+those took days to find because nothing checked it. This directory is that
+check.
 
 Words used below:
 
@@ -106,8 +107,10 @@ warmup traffic to ignore before checking anything. If a tool needs a nonzero
 value here, that is itself a difference between the tools, and it stays
 written down in the case file on purpose.
 
-`arrival` is required in rate mode and is either `constant` (evenly spaced)
-or `poisson` (random gaps). There is no rate tolerance number in the file:
+`arrival` is required in rate mode and is either `constant` or `poisson`.
+Both draw random gaps between requests. `constant` then scales its gaps to add
+up to exactly the stage duration. `poisson` does not, so its total time
+drifts. There is no rate tolerance number in the file:
 the allowed wobble is `rate_tolerance(num_requests, arrival)` from
 `load_shape.py`, which at 600 requests is 5% for `constant` and about 16% for
 `poisson` (four standard deviations of the random spacing). The way to
@@ -115,13 +118,14 @@ tighten a case is to raise `num_requests`, never to edit a number.
 
 ## Differences that are expected and allowed for
 
-- **Spacing between requests.** At the same rate, `vllm bench serve` picks
-  random gaps between requests (Poisson) while inference-perf's `constant`
-  load spaces them evenly. Cases check the average rate only, never the
-  spacing pattern, and each tool gets the tolerance its own spacing earns
-  (`tools.<tool>.arrival`). When the two tools are compared directly, the
-  looser of the two tolerances applies, since the evenly spaced tool adds
-  almost no wobble of its own.
+- **Spacing between requests.** Both tools draw random gaps between
+  requests. inference-perf's `constant` load scales its gaps to add up to
+  exactly the stage duration, so its average rate comes out almost exact.
+  `vllm bench serve` uses plain Poisson gaps, whose total drifts. Cases check
+  the average rate only, never the spacing pattern. Each tool gets the
+  tolerance its own spacing earns (`tools.<tool>.arrival`). When the two tools
+  are compared directly, the looser of the two tolerances applies, since the
+  `constant` tool adds almost no wobble of its own.
 - **Prompt length is approximate.** Both tools aim for `prompt_tokens` under
   the same tokenizer, but text built from random token ids does not always
   tokenize back to the same count. Hence `prompt_tokens_rel_tol` instead of an
@@ -150,7 +154,14 @@ The inference-perf side always runs; the absorber needs nothing installed. The
 vllm side needs a runnable vllm: either set `$VLLM_BENCH_BIN` to one you
 already have, or set `$VLLM_BENCH_PROVISION=1` to let the test clone and
 install the pinned version once (large download, see
-`e2e/utils/vllm_bench.py`). Without either, the vllm-side tests skip.
+`e2e/utils/vllm_bench.py`). Without either, the vllm-side tests skip. With
+`$VLLM_REQUIRED=1` they fail instead, both when no vllm is found and when the
+one found is not the pinned version.
+
+`pdm run test:e2e` collects everything under `e2e/`, so this directory also
+runs in CI's merge-blocking `e2e-tests` job. There the inference-perf side runs
+and gates. No CI job sets `$VLLM_BENCH_BIN`, so the vllm side and the
+tool-against-tool comparison skip and never gate.
 
 The vllm side has not been run yet. The args files and
 `leading_extra_requests` were worked out by reading the pinned vllm source, not

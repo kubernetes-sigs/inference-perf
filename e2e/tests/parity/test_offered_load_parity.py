@@ -60,7 +60,14 @@ from utils.load_shape import (
 )
 from utils.net import get_free_port
 from utils.testdata import extract_tarball
-from utils.vllm_bench import VllmUnavailable, ensure_vllm_bench_bin, run_vllm_bench, warn_if_pin_stale
+from utils.vllm_bench import (
+    VllmUnavailable,
+    check_vllm_version,
+    ensure_vllm_bench_bin,
+    run_vllm_bench,
+    vllm_required,
+    warn_if_pin_stale,
+)
 
 MODEL_NAME = "google/gemma-3-270m"
 TOKENIZER_TARBALL = "e2e/testdata/models/google_gemma-3-270m.tar.gz"
@@ -176,9 +183,10 @@ def _tool_settings(expected: Dict[str, Any], tool: str) -> Dict[str, Any]:
 
 # How far a tool's measured rate may sit from the configured one, from
 # load_shape.rate_tolerance(n, arrival). `arrival` is the tool's spacing pattern
-# declared in expected.yaml under tools.<tool>.arrival ("constant" for evenly
-# spaced, "poisson" for random). At n=600: 5% for constant, about 16% for
-# poisson. Fails with a pointer to the case file if the pattern is missing.
+# declared in expected.yaml under tools.<tool>.arrival ("constant" for random
+# gaps scaled to fill the stage duration exactly, "poisson" for plain random
+# gaps). At n=600: 5% for constant, about 16% for poisson. Fails with a pointer
+# to the case file if the pattern is missing.
 def _rate_tol(expected: Dict[str, Any], tool: str, n: int, case_dir: Path) -> float:
     arrival = _tool_settings(expected, tool).get("arrival")
     assert isinstance(arrival, str), (
@@ -222,8 +230,9 @@ _PROFILES: Dict[Tuple[str, str], OfferedLoad] = {}
 # The one place a tool actually gets run. Starts a fresh absorber on a free port
 # with the pacing from expected.yaml (default 40ms first chunk, 5ms between
 # chunks), runs the tool against it, then summarizes the recording with the
-# tool's leading_extra_requests dropped. Skips (not fails) the vllm side when
-# no vllm is available. Cached, so a second call for the same case+tool is free.
+# tool's leading_extra_requests dropped. Skips the vllm side when no vllm is
+# available, or fails it when VLLM_REQUIRED=1. Then checks the vllm version
+# against the pin. Cached, so a second call for the same case+tool is free.
 async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
     key = (case_dir.name, tool)
     if key in _PROFILES:
@@ -234,7 +243,10 @@ async def _offered_load(case_dir: Path, tool: str) -> OfferedLoad:
         try:
             vllm_bin = ensure_vllm_bench_bin()
         except VllmUnavailable as e:
+            if vllm_required():
+                pytest.fail(f"VLLM_REQUIRED is set and {e}")
             pytest.skip(str(e))
+        check_vllm_version(vllm_bin)
 
     expected = _expected(case_dir)
     pacing = expected.get("absorber", {})
@@ -273,7 +285,7 @@ def _assert_prompt_lens(lens: List[int], target: int, rel_tol: float, who: str) 
 # requests (after dropping warmup), every max_tokens == 64, every request has
 # stream=true and ignore_eos=true, every prompt is 128 tokens +-15%, and the
 # average arrival rate is 40/s within rate_tolerance(600, arrival): +-5% for
-# inference-perf (even spacing), +-16% for vllm bench (random spacing). For a
+# inference-perf (constant), +-16% for vllm bench (poisson). For a
 # concurrency case, load_shape.assert_delivered_concurrency applies: never more
 # than the configured number in flight, and on average within half a slot of it
 # over the steady-state window. Runs once per (case, tool); the vllm side skips
@@ -318,9 +330,9 @@ async def test_offered_load_matches_expected(case_dir: Path, tool: str) -> None:
 # no reference numbers involved: same request count, same multiset of
 # max_tokens, same stream/ignore_eos flags, mean prompt length within
 # prompt_tokens_rel_tol, and by load mode either average rates within the
-# looser of the two tools' rate tolerances (the evenly spaced tool adds almost
-# no wobble of its own, so the randomly spaced tool's tolerance covers the
-# difference), or the same peak in flight and steady-state averages within half
+# looser of the two tools' rate tolerances (the constant tool adds almost no
+# wobble of its own, so the poisson tool's tolerance covers the difference),
+# or the same peak in flight and steady-state averages within half
 # a slot of each other. Skips when the vllm side is unavailable.
 @pytest.mark.parametrize("case_dir", CASE_DIRS, ids=lambda p: p.name)
 async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
@@ -351,7 +363,7 @@ async def test_tools_offer_the_same_workload(case_dir: Path) -> None:
         assert ip.realized_rate == pytest.approx(vb.realized_rate, rel=tol), (
             f"realized arrival rates differ: inference-perf {ip.realized_rate:.2f}/s "
             f"vs vllm-bench {vb.realized_rate:.2f}/s (±{tol:.0%}; the average should agree even though "
-            f"the spacing between requests differs on purpose: even vs random)"
+            f"the spacing between requests differs on purpose: constant vs poisson)"
         )
     elif load["mode"] == "concurrency":
         level = int(load["concurrency"])

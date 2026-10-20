@@ -21,14 +21,14 @@ the comparison does not quietly go stale against an old vllm.
 
 Where the vllm executable comes from, tried in this order:
   1. $VLLM_BENCH_BIN: path to a `vllm` you already have. Nothing to install.
-     Use this for local work and in CI.
   2. $VLLM_BENCH_PROVISION=1: clone the pinned vllm and pip-install it (which
      pulls in torch, so it is a large download) into a venv under a cache
      directory. Reused on later runs.
   3. Neither set: raise VllmUnavailable, which the tests turn into a skip.
 
-A missing vllm therefore skips the vllm-side tests. It never fails the suite,
-the same way the llm-d-inference-sim tests skip when the sim is absent.
+A missing vllm therefore skips the vllm-side tests, the same way the
+llm-d-inference-sim tests skip when the sim is absent. With VLLM_REQUIRED=1 a
+missing vllm, or one that is not the pinned version, fails them instead.
 """
 
 from __future__ import annotations
@@ -55,16 +55,15 @@ logger = logging.getLogger(__name__)
 # compare against GitHub's latest release, best-effort.
 #
 # The case files (cases/*/vllm-bench.args) were written by reading this exact
-# tag (tree 6d8d0a24c02bfd84d46b3016b865a44f048ae84b). What each flag means is
+# tag (commit 6d8d0a24c02bfd84d46b3016b865a44f048ae84b). What each flag means is
 # defined in vllm/benchmarks/serve.py and vllm/benchmarks/datasets.py and has
 # changed between vllm versions, so re-read both files when bumping.
 VLLM_PINNED_REF = "v0.10.0"
-# Extra packages to pip-install next to the pinned vllm (space-separated; the
-# CI workflow reads this constant too). vllm does not cap its transformers
-# version, and transformers 5 removed a tokenizer attribute
-# (all_special_tokens_extended) that this vllm reads at bench startup, so
-# without this pin the run crashes before sending a request. Review when
-# bumping the vllm pin.
+# Extra packages to pip-install next to the pinned vllm (space-separated).
+# vllm does not cap its transformers version, and transformers 5 removed a
+# tokenizer attribute (all_special_tokens_extended) that this vllm reads at
+# bench startup, so without this pin the run crashes before sending a
+# request. Review when bumping the vllm pin.
 VLLM_COMPAT_PINS = "transformers<5"
 VLLM_PIN_DATE = datetime.date(2026, 1, 15)
 VLLM_STALENESS_WARN_DAYS = 180
@@ -85,7 +84,12 @@ class VllmBenchResult:
 
 
 class VllmUnavailable(Exception):
-    """No usable vllm was found or installed. The tests catch this and skip."""
+    """No usable vllm was found or installed. The tests catch this and skip, or fail under VLLM_REQUIRED."""
+
+
+def vllm_required() -> bool:
+    """True when VLLM_REQUIRED is set to anything but "" or "0"."""
+    return os.environ.get("VLLM_REQUIRED", "0") not in ("", "0")
 
 
 def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
@@ -125,7 +129,8 @@ def warn_if_pin_stale(*, check_upstream: bool = False) -> None:
 # Python, and PYTHONPATH wins over that Python's own installed packages, so if
 # vllm inherited it, it would import this repo's torch (built for a different
 # Python) and crash on startup. So these are stripped from vllm's environment.
-# LD_LIBRARY_PATH is kept: CI's Python needs it to find libpython.
+# LD_LIBRARY_PATH is kept: a Python built against a shared libpython can need
+# it to find that library.
 _HOST_PYTHON_ENV_VARS = frozenset(
     {
         "PYTHONPATH",
@@ -172,11 +177,17 @@ def _bench_serve_cmd(vllm_bin: str, args: List[str]) -> List[str]:
     the real `vllm bench serve` when there is no such python, for example when
     $VLLM_BENCH_BIN points at a wrapper script.
     """
-    resolved = shutil.which(vllm_bin) or vllm_bin
-    python = Path(resolved).parent / "python"
-    if python.exists():
+    python = _sibling_python(vllm_bin)
+    if python is not None:
         return [str(python), "-c", _BENCH_SERVE_SHIM, *args]
     return [vllm_bin, "bench", "serve", *args]
+
+
+def _sibling_python(vllm_bin: str) -> Optional[Path]:
+    """The `python` next to the `vllm` executable, or None when there is none."""
+    resolved = shutil.which(vllm_bin) or vllm_bin
+    python = Path(resolved).parent / "python"
+    return python if python.exists() else None
 
 
 def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
@@ -184,21 +195,58 @@ def _run(cmd: List[str]) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(cmd, capture_output=True, text=True, check=True, env=_isolated_env())
 
 
+def installed_vllm_version(vllm_bin: str) -> Optional[str]:
+    """The version of the vllm package behind vllm_bin, or None if it cannot be read.
+
+    Read from package metadata by the python next to vllm_bin, so the check
+    does not import vllm and its torch.
+    """
+    python = _sibling_python(vllm_bin)
+    if python is None:
+        return None
+    probe = "import importlib.metadata as m; print(m.version('vllm'))"
+    try:
+        out = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, timeout=60, env=_isolated_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def check_vllm_version(vllm_bin: str) -> None:
+    """Warn when the vllm behind vllm_bin is not VLLM_PINNED_REF, and fail instead under VLLM_REQUIRED.
+
+    The args files were written against the pinned tag's flag meanings, so
+    another version can run them and send a different workload without error.
+    """
+    pinned = VLLM_PINNED_REF.removeprefix("v")
+    version = installed_vllm_version(vllm_bin)
+    if version is None:
+        assert not vllm_required(), f"cannot read the vllm version behind {vllm_bin}, VLLM_REQUIRED needs {pinned}"
+        logger.warning("cannot read the vllm version behind %s, parity cases were written against %s", vllm_bin, pinned)
+        return
+    # A local build label such as +cpu does not change the bench CLI.
+    if version.split("+")[0] != pinned:
+        assert not vllm_required(), f"vllm reports {version!r}, VLLM_REQUIRED needs the pinned {pinned}"
+        logger.warning("vllm reports %r, parity cases were written against %s", version, pinned)
+
+
 def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     """Return the path of a runnable `vllm` executable, or raise VllmUnavailable.
 
     Tried in order:
-      1. $VLLM_BENCH_BIN set -> use it as is (this is what CI does: it installs
-         vllm under a compatible Python and points here). Nothing to install.
+      1. $VLLM_BENCH_BIN set -> use it as is, for example a vllm installed
+         under a separate Python 3.12. Nothing to install.
       2. $VLLM_BENCH_PROVISION set -> clone the pinned vllm and pip-install it
          (with torch, so a multi-GB download) into a venv under cache_dir.
          Reused if it already exists.
       3. neither -> raise VllmUnavailable, so the tests skip.
 
     The default is to skip rather than silently start a multi-GB install during
-    an ordinary `pdm run test:e2e`. Note vllm supports Python <=3.12 and this
-    repo runs 3.14, so option 2 usually also needs $VLLM_PYTHON pointed at a
-    3.12 interpreter; CI avoids that by using option 1.
+    an ordinary `pdm run test:e2e`. The pinned vllm needs Python <=3.12 and
+    this repo's environment is usually newer, so option 2 also needs
+    $VLLM_PYTHON pointed at a 3.12 interpreter. Option 1 avoids that.
     """
     override = os.environ.get("VLLM_BENCH_BIN")
     if override:
@@ -225,7 +273,7 @@ def ensure_vllm_bench_bin(cache_dir: Optional[Path] = None) -> str:
     if not shutil.which("git"):
         raise VllmUnavailable("git not available to clone vllm")
 
-    # vllm does not build on Python 3.14 yet, so the venv is created with
+    # The pinned vllm needs Python <=3.12, so the venv is created with
     # $VLLM_PYTHON (e.g. python3.12) when set.
     venv_python = os.environ.get("VLLM_PYTHON", "python")
 
