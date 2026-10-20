@@ -80,10 +80,33 @@ class AiperfProfileFacts:
         }
     )
     arrival_patterns: FrozenSet[str] = frozenset({"constant", "poisson", "gamma"})
-    # Request count auto-derivation for synthetic data when --request-count is
-    # unset: max(floor, concurrency * factor).
-    auto_request_count_floor: int = 10
-    auto_request_count_concurrency_factor: int = 2
+    # An unbounded run (no --request-count, --benchmark-duration or session
+    # bound, and not a fixed schedule) sends exactly this many requests:
+    # src/aiperf/config/flags/_converter_profiling.py, _validate_profiling,
+    # ``prof.setdefault("requests", 10)``. Nothing re-derives it from the
+    # concurrency; the ``max(10, concurrency * 2)`` in the --request-count
+    # help string is a formula the code does not implement.
+    unbounded_request_count: int = 10
+    # CLI fields whose BeforeValidator is parse_int_or_int_list or
+    # parse_float_or_float_list (cli_config.py): a comma-separated value is a
+    # parameter sweep, one run per value, and a trailing comma collapses to
+    # the single value. The same names as MAGIC_LIST_FIELDS in sweep/expand.py.
+    sweep_fields: FrozenSet[str] = frozenset(
+        {
+            "benchmark_duration",
+            "concurrency",
+            "conversation_num",
+            "conversation_turn_mean",
+            "num_users",
+            "prefill_concurrency",
+            "prompt_input_tokens_mean",
+            "prompt_input_tokens_stddev",
+            "prompt_output_tokens_mean",
+            "prompt_output_tokens_stddev",
+            "request_count",
+            "request_rate",
+        }
+    )
     # The default load shape when neither --concurrency nor --request-rate is
     # given: a concurrency phase at this level.
     default_concurrency: int = 1
